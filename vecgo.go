@@ -5,14 +5,11 @@ import (
 	"container/heap"
 	"encoding/gob"
 	"errors"
-	"fmt"
 	"io"
 	"os"
-	"runtime"
 	"sync"
 
 	"github.com/hupe1980/vecgo/hnsw"
-	"golang.org/x/sync/errgroup"
 )
 
 var (
@@ -112,59 +109,6 @@ func (vg *Vecgo[T]) Insert(item *VectorWithData[T]) (uint32, error) {
 	vg.store[id] = item.Data
 
 	return id, nil
-}
-
-// BatchInsert inserts multiple elements into the Vecgo index concurrently.
-func (vg *Vecgo[T]) BatchInsert(items []*VectorWithData[T]) ([]uint32, error) {
-	// Create an error group to manage multiple goroutines
-	eg := errgroup.Group{}
-
-	eg.SetLimit(runtime.NumCPU())
-
-	// Create a channel to receive IDs of inserted items
-	idCh := make(chan uint32, len(items))
-
-	// Function to insert a single item and signal completion to the error group
-	insertItem := func(item *VectorWithData[T]) error {
-		id, err := vg.Insert(item)
-		if err != nil {
-			return fmt.Errorf("error inserting item: %w", err)
-		}
-
-		idCh <- id
-
-		return nil
-	}
-
-	// Launch a goroutine for each item to insert them concurrently
-	for _, item := range items {
-		item := item // Capture range variable
-
-		eg.Go(func() error {
-			return insertItem(item)
-		})
-	}
-
-	// Close the ID channel after all goroutines have completed
-	go func() {
-		_ = eg.Wait()
-
-		close(idCh)
-	}()
-
-	// Preallocate the ids slice with the length of items
-	ids := make([]uint32, 0, len(items))
-
-	// Collect inserted item IDs from the channel
-	for id := range idCh {
-		ids = append(ids, id)
-	}
-
-	if err := eg.Wait(); err != nil {
-		return nil, err
-	}
-
-	return ids, nil
 }
 
 // SearchResult represents a search result.

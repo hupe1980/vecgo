@@ -79,7 +79,7 @@ type HNSW struct {
 
 	opts Options
 
-	mutex sync.RWMutex
+	mutex sync.Mutex
 }
 
 // New creates a new HNSW instance with the given dimension and options

@@ -42,9 +42,6 @@ func main() {
 			log.Fatal(err)
 		}
 	}
-	// if _, err := vg.BatchInsert(items); err != nil {
-	// 	log.Fatal(err)
-	// }
 
 	end := time.Since(start)
 

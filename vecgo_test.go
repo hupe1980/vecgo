@@ -123,7 +123,7 @@ func TestVecgo(t *testing.T) {
 func BenchmarkInsertAndBatchInsert(b *testing.B) {
 	dim := 1024
 
-	// BenchmarkInsertAndBatchInsert/InsertOneByOne-10         	    2508	   2217397 ns/op	   42861 B/op	    1107 allocs/op
+	// BenchmarkInsertAndBatchInsert/InsertOneByOne-10         	    2805	   2312472 ns/op	   44282 B/op	    1170 allocs/op	    1112 allocs/op	    1107 allocs/op
 	b.Run("InsertOneByOne", func(b *testing.B) {
 		vg := New[int](dim)
 
@@ -144,28 +144,6 @@ func BenchmarkInsertAndBatchInsert(b *testing.B) {
 			if err != nil {
 				b.Fatalf("Insert failed: %v", err)
 			}
-		}
-	})
-
-	// BenchmarkInsertAndBatchInsert/BatchInsert-10            	    2643	   2269005 ns/op	   43646 B/op	    1140 allocs/op
-	b.Run("BatchInsert", func(b *testing.B) {
-		vg := New[int](dim)
-
-		vectors := hnsw.GenerateRandomVectors(b.N, dim, 4711)
-		vectorWithData := make([]*VectorWithData[int], b.N)
-
-		for i := 0; i < b.N; i++ {
-			vectorWithData[i] = &VectorWithData[int]{
-				Vector: vectors[i],
-				Data:   i,
-			}
-		}
-
-		b.ResetTimer()
-
-		_, err := vg.BatchInsert(vectorWithData)
-		if err != nil {
-			b.Fatalf("BatchInsert failed: %v", err)
 		}
 	})
 }
