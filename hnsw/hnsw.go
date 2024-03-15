@@ -209,6 +209,7 @@ func (h *HNSW) findShortestPath(node *Node) (*Node, float32, error) {
 					currObj = newObj
 					// Update the currently shortest distance
 					currDist = newDist
+					// If a smaller match found, continue
 					changed = true
 				}
 			}

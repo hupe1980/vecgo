@@ -1,4 +1,8 @@
 # 🧬🔍🗄️ Vecgo
+![Build Status](https://github.com/hupe1980/vecgo/workflows/build/badge.svg) 
+[![Go Reference](https://pkg.go.dev/badge/github.com/hupe1980/vecgo.svg)](https://pkg.go.dev/github.com/hupe1980/vecgo)
+[![goreportcard](https://goreportcard.com/badge/github.com/hupe1980/vecgo)](https://goreportcard.com/report/github.com/hupe1980/vecgo)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 Vecgo is a Go library designed for efficient vector indexing and searching, emphasizing approximate nearest neighbor search using the HNSW (Hierarchical Navigable Small World) algorithm. It offers a versatile and user-friendly interface for managing and querying vast collections of high-dimensional vectors.
 
