@@ -26,7 +26,7 @@ func (h *HNSW) Stats() {
 		levelStats[h.nodes[i].Layer]++
 
 		// Loop through each connection
-		for i2 := int(h.nodes[i].Layer); i2 >= 0; i2-- {
+		for i2 := h.nodes[i].Layer; i2 >= 0; i2-- {
 			if len(h.nodes[i].Connections[i2]) > i2 {
 				total := len(h.nodes[i].Connections[i2])
 				connectionStats[i2] += total
@@ -36,6 +36,7 @@ func (h *HNSW) Stats() {
 	}
 
 	fmt.Println("Node Levels:")
+
 	for k, v := range levelStats {
 		avg := connectionStats[k] / max(1, connectionNodeStats[k])
 		fmt.Printf("\tLevel %d:\n", k)

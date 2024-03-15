@@ -19,8 +19,8 @@ var (
 	// ErrNotFound is returned when an item is not found.
 	ErrNotFound = errors.New("not found")
 
-	// ErrInvalidEFValue is returned when the Explore Factor (EF) is less than the value of k.
-	ErrInvalidEFValue = errors.New("Explore Factor (EF) must be at least the value of k")
+	// ErrInvalidEFValue is returned when the explore factor (ef) is less than the value of k.
+	ErrInvalidEFValue = errors.New("explore factor (ef) must be at least the value of k")
 )
 
 // Options contains configuration options for Vecgo.
@@ -132,12 +132,14 @@ func (vg *Vecgo[T]) BatchInsert(items []*VectorWithData[T]) ([]uint32, error) {
 		}
 
 		idCh <- id
+
 		return nil
 	}
 
 	// Launch a goroutine for each item to insert them concurrently
 	for _, item := range items {
 		item := item // Capture range variable
+
 		eg.Go(func() error {
 			return insertItem(item)
 		})
@@ -146,6 +148,7 @@ func (vg *Vecgo[T]) BatchInsert(items []*VectorWithData[T]) ([]uint32, error) {
 	// Close the ID channel after all goroutines have completed
 	go func() {
 		_ = eg.Wait()
+
 		close(idCh)
 	}()
 
@@ -199,7 +202,7 @@ func (vg *Vecgo[T]) KNNSearch(query []float32, k int, optFns ...func(o *KNNSearc
 		return nil, err
 	}
 
-	return vg.extractSearchResults(bestCandidates)
+	return vg.extractSearchResults(bestCandidates), nil
 }
 
 // BruteSearch performs a brute-force search.
@@ -209,15 +212,15 @@ func (vg *Vecgo[T]) BruteSearch(query []float32, k int) ([]SearchResult[T], erro
 		return nil, err
 	}
 
-	return vg.extractSearchResults(bestCandidates)
+	return vg.extractSearchResults(bestCandidates), nil
 }
 
 // extractSearchResults extracts search results from a priority queue.
-func (vg *Vecgo[T]) extractSearchResults(bestCandidates *hnsw.PriorityQueue) ([]SearchResult[T], error) {
+func (vg *Vecgo[T]) extractSearchResults(bestCandidates *hnsw.PriorityQueue) []SearchResult[T] {
 	result := make([]SearchResult[T], 0, bestCandidates.Len())
 
 	for i := 0; i < bestCandidates.Len(); i++ {
-		item := heap.Pop(bestCandidates).(*hnsw.PriorityQueueItem)
+		item, _ := heap.Pop(bestCandidates).(*hnsw.PriorityQueueItem)
 		if item.Node != 0 {
 			result = append(result, SearchResult[T]{
 				ID:       item.Node,
@@ -227,7 +230,7 @@ func (vg *Vecgo[T]) extractSearchResults(bestCandidates *hnsw.PriorityQueue) ([]
 		}
 	}
 
-	return result, nil
+	return result
 }
 
 // SaveToWriter saves the Vecgo database to an io.Writer.

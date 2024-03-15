@@ -25,7 +25,7 @@ func TestMaxValidation(t *testing.T) {
 	}
 
 	// Confirm the min element is as we expect
-	maxItem := h.Top().(*PriorityQueueItem)
+	maxItem, _ := h.Top().(*PriorityQueueItem)
 
 	assert.Equal(t, float32(10.030000), maxItem.Distance)
 	assert.Equal(t, uint32(15), maxItem.Node)
@@ -42,7 +42,7 @@ func TestMaxValidation(t *testing.T) {
 	assert.Equal(t, 10, h.Len())
 
 	// Confirm expected next element
-	maxItem = h.Top().(*PriorityQueueItem)
+	maxItem, _ = h.Top().(*PriorityQueueItem)
 
 	assert.Equal(t, float32(1.000800), maxItem.Distance)
 	assert.Equal(t, uint32(17), maxItem.Node)
@@ -56,7 +56,7 @@ func TestMaxValidation(t *testing.T) {
 	assert.Equal(t, 1, h.Len())
 
 	// Last remaining (smallest) element
-	maxItem = h.Top().(*PriorityQueueItem)
+	maxItem, _ = h.Top().(*PriorityQueueItem)
 
 	assert.Equal(t, float32(0.001000), maxItem.Distance)
 	assert.Equal(t, uint32(2), maxItem.Node)
@@ -85,7 +85,7 @@ func TestMinValidation(t *testing.T) {
 	}
 
 	// Confirm the min element is as we expect
-	maxItem := h.Top().(*PriorityQueueItem)
+	maxItem, _ := h.Top().(*PriorityQueueItem)
 
 	assert.Equal(t, float32(0.001), maxItem.Distance)
 	assert.Equal(t, uint32(2), maxItem.Node)
@@ -102,7 +102,7 @@ func TestMinValidation(t *testing.T) {
 	assert.Equal(t, 10, h.Len())
 
 	// Confirm expected next element
-	maxItem = h.Top().(*PriorityQueueItem)
+	maxItem, _ = h.Top().(*PriorityQueueItem)
 
 	assert.Equal(t, float32(1.000900), maxItem.Distance)
 	assert.Equal(t, uint32(8), maxItem.Node)
@@ -116,7 +116,7 @@ func TestMinValidation(t *testing.T) {
 	assert.Equal(t, 1, h.Len())
 
 	// Last remaining (smallest) element
-	maxItem = h.Top().(*PriorityQueueItem)
+	maxItem, _ = h.Top().(*PriorityQueueItem)
 
 	assert.Equal(t, float32(10.03), maxItem.Distance)
 

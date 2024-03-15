@@ -80,29 +80,6 @@ func TestValidateInsertSearch(t *testing.T) {
 			Precision:  0.99,
 			K:          10,
 		},
-
-		/*
-			{
-				VectorSize:     100000,
-				VectorDim:      16,
-				M:              16,
-				EF: 200,
-				Heuristic:      true,
-				Precision:      0.95,
-				K:              10,
-			},
-
-				{
-					VectorSize:     1000000,
-					VectorDim:      32,
-					M:              24,
-					EF: 300,
-					Heuristic:      true,
-					Precision:      0.95,
-					K:              10,
-				},
-		*/
-
 		{
 			VectorSize: 1000,
 			VectorDim:  16,
@@ -180,7 +157,7 @@ func TestValidateInsertSearch(t *testing.T) {
 
 				for i2 := tc.K - 1; i2 >= 0; i2-- {
 					if bestCandidatesBrute.Len() > 0 {
-						item := heap.Pop(bestCandidatesBrute).(*PriorityQueueItem)
+						item, _ := heap.Pop(bestCandidatesBrute).(*PriorityQueueItem)
 						groundResults[i][i2] = item.Node
 					}
 				}
@@ -201,7 +178,7 @@ func TestValidateInsertSearch(t *testing.T) {
 						break
 					}
 
-					item := heap.Pop(bestCandidates).(*PriorityQueueItem)
+					item, _ := heap.Pop(bestCandidates).(*PriorityQueueItem)
 					totalSearch++
 
 					for k := tc.K - 1; k >= 0; k-- {
@@ -215,7 +192,7 @@ func TestValidateInsertSearch(t *testing.T) {
 			precision := float64(hitSuccess) / (float64(len(vecs)) * float64(tc.K))
 
 			fmt.Printf("Precision => %f\n", precision)
-			assert.GreaterOrEqual(t, precision, float64(tc.Precision))
+			assert.GreaterOrEqual(t, precision, tc.Precision)
 		})
 	}
 }

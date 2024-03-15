@@ -38,7 +38,7 @@ func (pq *PriorityQueue) Swap(i, j int) {
 
 // Push adds x to the priority queue.
 func (pq *PriorityQueue) Push(x any) {
-	item := x.(*PriorityQueueItem)
+	item, _ := x.(*PriorityQueueItem)
 	item.Index = len(pq.Items)
 	pq.Items = append(pq.Items, item)
 }
@@ -48,12 +48,14 @@ func (pq *PriorityQueue) Pop() any {
 	if len(pq.Items) == 0 {
 		return nil // Or handle the error accordingly
 	}
+
 	old := pq.Items
 	n := len(old)
 	item := old[n-1]
 	old[n-1] = nil       // Avoid memory leak
 	item.Index = -1      // For safety
 	pq.Items = old[:n-1] // Reslice without creating a new underlying array
+
 	return item
 }
 

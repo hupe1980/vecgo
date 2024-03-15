@@ -126,9 +126,9 @@ func (h *HNSW) Insert(v []float32) (uint32, error) {
 	id := uint32(len(h.nodes))
 
 	node := &Node{
-		ID:          id, //h.nextID(),
+		ID:          id,
 		Vector:      vectorCopy,
-		Layer:       int(math.Floor(-math.Log(rand.Float64()) * h.ml)), // generate random level
+		Layer:       int(math.Floor(-math.Log(rand.Float64()) * h.ml)), // nolint gosec
 		Connections: make([][]uint32, h.mmax+1),
 	}
 
@@ -159,7 +159,7 @@ func (h *HNSW) Insert(v []float32) (uint32, error) {
 		node.Connections[level] = make([]uint32, topCandidates.Len())
 
 		for i := topCandidates.Len() - 1; i >= 0; i-- {
-			candidate := heap.Pop(topCandidates).(*PriorityQueueItem)
+			candidate, _ := heap.Pop(topCandidates).(*PriorityQueueItem)
 			node.Connections[level][i] = candidate.Node
 		}
 	}
@@ -185,6 +185,7 @@ func (h *HNSW) Insert(v []float32) (uint32, error) {
 func (h *HNSW) findShortestPath(node *Node) (*Node, float32, error) {
 	// Current distance from our starting-point (ep)
 	currObj := h.nodes[h.ep]
+
 	currDist, err := h.opts.DistanceFunc(currObj.Vector, node.Vector)
 	if err != nil {
 		return nil, 0, err
@@ -194,8 +195,10 @@ func (h *HNSW) findShortestPath(node *Node) (*Node, float32, error) {
 		changed := true
 		for changed {
 			changed = false
+
 			for _, nodeID := range currObj.Connections[level] {
 				newObj := h.nodes[nodeID]
+
 				newDist, err := h.opts.DistanceFunc(newObj.Vector, node.Vector)
 				if err != nil {
 					return nil, 0, err
@@ -269,7 +272,7 @@ func (h *HNSW) BruteSearch(query []float32, k int) (*PriorityQueue, error) {
 			continue
 		}
 
-		largestDist := topCandidates.Top().(*PriorityQueueItem)
+		largestDist, _ := topCandidates.Top().(*PriorityQueueItem)
 
 		if nodeDist < largestDist.Distance {
 			heap.Pop(topCandidates)
@@ -323,7 +326,7 @@ func (h *HNSW) Link(first uint32, second uint32, level int) {
 
 		// Order by best performing match (index 0) .. lowest
 		for i := maxConnections - 1; i >= 0; i-- {
-			item := heap.Pop(topCandidates).(*PriorityQueueItem)
+			item, _ := heap.Pop(topCandidates).(*PriorityQueueItem)
 			node.Connections[level][i] = item.Node
 		}
 	}
@@ -332,6 +335,7 @@ func (h *HNSW) Link(first uint32, second uint32, level int) {
 // searchLayer performs a search in a specified layer of the HNSW graph
 func (h *HNSW) searchLayer(q []float32, ep *PriorityQueueItem, topCandidates *PriorityQueue, ef int, level int) error {
 	var visited bitset.BitSet
+
 	visited.Set(uint(ep.Node))
 
 	// Add the new candidate to our queue
@@ -348,14 +352,14 @@ func (h *HNSW) searchLayer(q []float32, ep *PriorityQueueItem, topCandidates *Pr
 	for candidates.Len() > 0 {
 		lowerBound := topCandidates.Top().(*PriorityQueueItem).Distance
 
-		candidate := heap.Pop(candidates).(*PriorityQueueItem)
+		candidate, _ := heap.Pop(candidates).(*PriorityQueueItem)
 		if candidate.Distance > lowerBound {
 			break
 		}
 
 		node := h.nodes[candidate.Node]
 
-		if len(node.Connections) > int(level) { // Check if level is within bounds
+		if len(node.Connections) > level { // Check if level is within bounds
 			conns := node.Connections[level]
 
 			for _, n := range conns {
@@ -386,7 +390,6 @@ func (h *HNSW) searchLayer(q []float32, ep *PriorityQueueItem, topCandidates *Pr
 				}
 			}
 		}
-
 	}
 
 	return nil
@@ -420,10 +423,9 @@ func (h *HNSW) selectNeighboursHeuristic(topCandidates *PriorityQueue, M int, or
 
 		// Add existing candidates to our new queue
 		for topCandidates.Len() > 0 {
-			item := heap.Pop(topCandidates).(*PriorityQueueItem)
+			item, _ := heap.Pop(topCandidates).(*PriorityQueueItem)
 			heap.Push(newCandidates, item)
 		}
-
 	} else {
 		newCandidates = topCandidates
 	}
@@ -435,7 +437,7 @@ func (h *HNSW) selectNeighboursHeuristic(topCandidates *PriorityQueue, M int, or
 			break
 		}
 
-		item := heap.Pop(newCandidates).(*PriorityQueueItem)
+		item, _ := heap.Pop(newCandidates).(*PriorityQueueItem)
 		hit := true
 
 		// Search through each item and determine if distance from node lower for items in set
@@ -456,7 +458,7 @@ func (h *HNSW) selectNeighboursHeuristic(topCandidates *PriorityQueue, M int, or
 
 	// Add any additional items from tmpCandidates if current items < M
 	for len(items) < M && tmpCandidates.Len() > 0 {
-		item := heap.Pop(tmpCandidates).(*PriorityQueueItem)
+		item, _ := heap.Pop(tmpCandidates).(*PriorityQueueItem)
 		items = append(items, item)
 	}
 
@@ -482,16 +484,15 @@ func (h *HNSW) findEp(q []float32, currObj *Node) (*Node, float32, error) {
 		for scan {
 			scan = false
 
-			for _, nodeId := range currObj.Connections[level] {
-				nodeDist, err := h.opts.DistanceFunc(h.nodes[nodeId].Vector, q)
+			for _, nodeID := range currObj.Connections[level] {
+				nodeDist, err := h.opts.DistanceFunc(h.nodes[nodeID].Vector, q)
 				if err != nil {
 					return nil, 0, err
 				}
 
 				if nodeDist < currDist {
-
 					// Update the starting point to our new node
-					match = h.nodes[nodeId]
+					match = h.nodes[nodeID]
 
 					// Update the currently shortest distance
 					currDist = nodeDist

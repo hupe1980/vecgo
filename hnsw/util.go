@@ -3,7 +3,7 @@ package hnsw
 import "math/rand"
 
 func GenerateRandomVectors(num int, dimensions int, seed int64) [][]float32 {
-	r := rand.New(rand.NewSource(seed))
+	r := rand.New(rand.NewSource(seed)) // nolint gosec
 
 	vectors := make([][]float32, num)
 

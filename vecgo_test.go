@@ -129,6 +129,7 @@ func BenchmarkInsertAndBatchInsert(b *testing.B) {
 
 		vectors := hnsw.GenerateRandomVectors(b.N, dim, 4711)
 		vectorWithData := make([]*VectorWithData[int], b.N)
+
 		for i := 0; i < b.N; i++ {
 			vectorWithData[i] = &VectorWithData[int]{
 				Vector: vectors[i],
@@ -152,6 +153,7 @@ func BenchmarkInsertAndBatchInsert(b *testing.B) {
 
 		vectors := hnsw.GenerateRandomVectors(b.N, dim, 4711)
 		vectorWithData := make([]*VectorWithData[int], b.N)
+
 		for i := 0; i < b.N; i++ {
 			vectorWithData[i] = &VectorWithData[int]{
 				Vector: vectors[i],
@@ -160,6 +162,7 @@ func BenchmarkInsertAndBatchInsert(b *testing.B) {
 		}
 
 		b.ResetTimer()
+
 		_, err := vg.BatchInsert(vectorWithData)
 		if err != nil {
 			b.Fatalf("BatchInsert failed: %v", err)
