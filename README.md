@@ -1,6 +1,6 @@
-# 🧬🔍🗄️ VecGo
+# 🧬🔍🗄️ Vecgo
 
-VecGo is a Go library designed for efficient vector indexing and searching, emphasizing approximate nearest neighbor search using the HNSW (Hierarchical Navigable Small World) algorithm. It offers a versatile and user-friendly interface for managing and querying vast collections of high-dimensional vectors.
+Vecgo is a Go library designed for efficient vector indexing and searching, emphasizing approximate nearest neighbor search using the HNSW (Hierarchical Navigable Small World) algorithm. It offers a versatile and user-friendly interface for managing and querying vast collections of high-dimensional vectors.
 
 :warning: This is experimental and subject to breaking changes.
 
@@ -14,7 +14,7 @@ VecGo is a Go library designed for efficient vector indexing and searching, emph
 
 ## Usage
 
-Here's a basic example demonstrating how to perform nearest neighbor search with VecGo:
+Here's a basic example demonstrating how to perform nearest neighbor search with Vecgo:
 
 
 ```go

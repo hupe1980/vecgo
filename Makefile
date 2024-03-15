@@ -17,7 +17,7 @@ lint:
 .PHONY: test
 ## test: Runs go test with default values
 test: 
-	@go test ./...
+	@go test -v ./...
 
 .PHONY: help
 ## help: Prints this help message
