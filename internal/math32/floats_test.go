@@ -13,13 +13,16 @@ func TestDot(t *testing.T) {
 		a, b     []float32
 		expected float32
 	}{
-		{"Positive values", []float32{1, 2, 3}, []float32{4, 5, 6}, 32.0},
-		{"Negative values", []float32{-1, -2, -3}, []float32{-4, -5, -6}, 32.0},
-		{"More than 4", []float32{1, 2, 3, 1, 2, 3}, []float32{4, 5, 6, 4, 5, 6}, 64.0},
-		{"Mixed values", []float32{1, -2, 3}, []float32{-4, 5, -6}, -32.0},
-		{"Zero values", []float32{0, 0, 0}, []float32{0, 0, 0}, 0.0},
+		{"Positive values (size 3)", []float32{1, 2, 3}, []float32{4, 5, 6}, 32.0},
+		{"Negative values (size 3)", []float32{-1, -2, -3}, []float32{-4, -5, -6}, 32.0},
+		{"More than 4 (size 6)", []float32{1, 2, 3, 1, 2, 3}, []float32{4, 5, 6, 4, 5, 6}, 64.0},
+		{"Mixed values (size 3)", []float32{1, -2, 3}, []float32{-4, 5, -6}, -32.0},
+		{"Zero values (size 3)", []float32{0, 0, 0}, []float32{0, 0, 0}, 0.0},
+		{"Positive values (size 9)", []float32{1, 2, 3, 4, 5, 6, 7, 8, 9}, []float32{1, 2, 3, 4, 5, 6, 7, 8, 9}, 285.0},
+		{"Positive values (size 10)", []float32{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}, []float32{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}, 385.0},
+		{"Positive values (size 15)", []float32{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}, []float32{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}, 1240.0},
+		{"Positive values (size 16)", []float32{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}, []float32{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}, 1496.0},
 	}
-
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			result := Dot(tc.a, tc.b)
