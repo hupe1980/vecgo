@@ -29,6 +29,8 @@ void _vdot_neon(float *a, float *b, long n, float* ret) {
     sum1 = vaddq_f32(sum1, sum2);
     sum1 = vpaddq_f32(sum1, sum1);
     sum1 = vpaddq_f32(sum1, sum1);
+
+    // Extract the final result
     float32x2_t sum2_lanes = vget_low_f32(sum1);
     *ret = vget_lane_f32(sum2_lanes, 0);
 }

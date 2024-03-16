@@ -17,8 +17,10 @@ func main() {
 
 	vg := vecgo.New[int](dim, func(o *vecgo.Options) {
 		o.HNSW.M = 32
-		//o.HNSW.DistanceFunc = metric.CosineSimilarity
-	})
+		// o.HNSW.EF = 200
+		// o.HNSW.Heuristic = false
+		// o.HNSW.DistanceFunc = metric.CosineSimilarity
+	}) // nolint wsl
 
 	items := make([]*vecgo.VectorWithData[int], 0, size)
 	for i, v := range hnsw.GenerateRandomVectors(size, dim, seed) {
