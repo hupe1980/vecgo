@@ -163,7 +163,9 @@ func (vg *Vecgo[T]) BruteSearch(query []float32, k int) ([]SearchResult[T], erro
 func (vg *Vecgo[T]) extractSearchResults(bestCandidates *hnsw.PriorityQueue) []SearchResult[T] {
 	result := make([]SearchResult[T], 0, bestCandidates.Len())
 
-	for i := 0; i < bestCandidates.Len(); i++ {
+	k := bestCandidates.Len()
+
+	for i := 0; i < k; i++ {
 		item, _ := heap.Pop(bestCandidates).(*hnsw.PriorityQueueItem)
 		if item.Node != 0 {
 			result = append(result, SearchResult[T]{

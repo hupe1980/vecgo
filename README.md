@@ -43,6 +43,7 @@ func main() {
 	}
 
 	k := 5
+	
 	result, err := vg.KNNSearch([]float32{1.0, 2.0, 2.5}, k)
 	if err != nil {
 		log.Fatal(err)

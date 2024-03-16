@@ -80,8 +80,9 @@ func TestVecgo(t *testing.T) {
 
 		results, err := vg.KNNSearch(query, 2)
 		require.NoError(t, err)
-		require.Len(t, results, 1)
+		require.Len(t, results, 2)
 		assert.Equal(t, float32(24.0), results[0].Data)
+		assert.Equal(t, float32(42.0), results[1].Data)
 	})
 
 	t.Run("Brute", func(t *testing.T) {
@@ -115,8 +116,9 @@ func TestVecgo(t *testing.T) {
 
 		results, err := vg.BruteSearch(query, 2)
 		require.NoError(t, err)
-		require.Len(t, results, 1)
+		require.Len(t, results, 2)
 		assert.Equal(t, float32(12.0), results[0].Data)
+		assert.Equal(t, float32(24.0), results[1].Data)
 	})
 }
 
