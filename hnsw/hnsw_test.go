@@ -155,7 +155,7 @@ func TestValidateInsertSearch(t *testing.T) {
 			groundResults := make([][]uint32, len(vecs))
 
 			for i := 0; i < len(vecs); i++ {
-				bestCandidatesBrute, _ := h.BruteSearch(vecs[i], tc.K)
+				bestCandidatesBrute, _ := h.BruteSearch(vecs[i], tc.K, func(id uint32) bool { return true })
 
 				groundResults[i] = make([]uint32, tc.K)
 
@@ -171,7 +171,7 @@ func TestValidateInsertSearch(t *testing.T) {
 			totalSearch := 0
 
 			for i := 0; i < len(vecs); i++ {
-				bestCandidates, err := h.KNNSearch(vecs[i], tc.K, tc.EF)
+				bestCandidates, err := h.KNNSearch(vecs[i], tc.K, tc.EF, func(id uint32) bool { return true })
 				if err != nil {
 					log.Fatal(err)
 				}

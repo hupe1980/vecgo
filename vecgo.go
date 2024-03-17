@@ -114,24 +114,45 @@ func (vg *Vecgo[T]) Insert(item *VectorWithData[T]) (uint32, error) {
 
 // SearchResult represents a search result.
 type SearchResult[T any] struct {
-	ID       uint32
+	// ID is the identifier of the search result.
+	ID uint32
+
+	// Distance is the distance between the query vector and the result vector.
 	Distance float32
-	Data     T
+
+	// Data is the associated data of the search result.
+	Data T
 }
 
+// Data is a generic struct representing data associated with a vector.
+type Data[T any] struct {
+	Value T // Value holds the associated data.
+}
+
+// FilterFunc is a function type used for filtering search results.
+type FilterFunc[T any] func(id uint32, data *Data[T]) bool
+
 // KNNSearchOptions contains options for KNN search.
-type KNNSearchOptions struct {
+type KNNSearchOptions[T any] struct {
 	// EF (Explore Factor) specifies the size of the dynamic list for the nearest neighbors during the search.
 	// Higher EF leads to more accurate but slower search.
 	// EF cannot be set lower than the number of queried nearest neighbors (k).
 	// The value of EF can be anything between k and the size of the dataset.
 	EF int
+
+	// FilterWithData indicates whether to filter search results along with associated data.
+	FilterWithData bool
+
+	// FilterFunc is a function used to filter search results.
+	FilterFunc FilterFunc[T]
 }
 
 // KNNSearch performs a K-nearest neighbor search.
-func (vg *Vecgo[T]) KNNSearch(query []float32, k int, optFns ...func(o *KNNSearchOptions)) ([]SearchResult[T], error) {
-	opts := KNNSearchOptions{
-		EF: 50,
+func (vg *Vecgo[T]) KNNSearch(query []float32, k int, optFns ...func(o *KNNSearchOptions[T])) ([]SearchResult[T], error) {
+	opts := KNNSearchOptions[T]{
+		EF:             50,
+		FilterWithData: true,
+		FilterFunc:     nil,
 	}
 
 	for _, fn := range optFns {
@@ -142,7 +163,19 @@ func (vg *Vecgo[T]) KNNSearch(query []float32, k int, optFns ...func(o *KNNSearc
 		return nil, ErrInvalidEFValue
 	}
 
-	bestCandidates, err := vg.index.KNNSearch(query, k, opts.EF)
+	bestCandidates, err := vg.index.KNNSearch(query, k, opts.EF, func(id uint32) bool {
+		if opts.FilterFunc == nil {
+			return true
+		}
+
+		if opts.FilterWithData {
+			return opts.FilterFunc(id, &Data[T]{
+				Value: vg.store[id],
+			})
+		}
+
+		return opts.FilterFunc(id, nil)
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -150,9 +183,39 @@ func (vg *Vecgo[T]) KNNSearch(query []float32, k int, optFns ...func(o *KNNSearc
 	return vg.extractSearchResults(bestCandidates), nil
 }
 
+// BruteSearchOptions contains options for brute-force search.
+type BruteSearchOptions[T any] struct {
+	// FilterWithData indicates whether to filter search results along with associated data.
+	FilterWithData bool
+
+	// FilterFunc is a function used to filter search results.
+	FilterFunc FilterFunc[T]
+}
+
 // BruteSearch performs a brute-force search.
-func (vg *Vecgo[T]) BruteSearch(query []float32, k int) ([]SearchResult[T], error) {
-	bestCandidates, err := vg.index.BruteSearch(query, k)
+func (vg *Vecgo[T]) BruteSearch(query []float32, k int, optFns ...func(o *BruteSearchOptions[T])) ([]SearchResult[T], error) {
+	opts := BruteSearchOptions[T]{
+		FilterWithData: true,
+		FilterFunc:     nil,
+	}
+
+	for _, fn := range optFns {
+		fn(&opts)
+	}
+
+	bestCandidates, err := vg.index.BruteSearch(query, k, func(id uint32) bool {
+		if opts.FilterFunc == nil {
+			return true
+		}
+
+		if opts.FilterWithData {
+			return opts.FilterFunc(id, &Data[T]{
+				Value: vg.store[id],
+			})
+		}
+
+		return opts.FilterFunc(id, nil)
+	})
 	if err != nil {
 		return nil, err
 	}

@@ -1,3 +1,4 @@
+// Package hnsw implements the Hierarchical Navigable Small World (HNSW) graph for approximate nearest neighbor search.
 package hnsw
 
 import (
@@ -102,7 +103,7 @@ func New(dimension int, optFns ...func(o *Options)) *HNSW {
 		ep:        0,
 		maxLevel:  0,
 		ml:        1 / math.Log(1.0*float64(opts.M)),
-		nodes:     []*Node{{ID: 0, Layer: 0, Vector: make([]float32, dimension), Connections: make([][]uint32, 2*opts.M+1)}},
+		nodes:     []*Node{{ID: 0, Layer: 0, Vector: make([]float32, dimension), Connections: make([][]uint32, 2*opts.M)}},
 		opts:      opts,
 	}
 }
@@ -128,7 +129,7 @@ func (h *HNSW) Insert(v []float32) (uint32, error) {
 		ID:          id,
 		Vector:      vectorCopy,
 		Layer:       int(math.Floor(-math.Log(rand.Float64()) * h.ml)), // nolint gosec
-		Connections: make([][]uint32, h.mmax+1),
+		Connections: make([][]uint32, h.mmax),
 	}
 
 	// Find single shortest path from top layers above our current node, which will be our new starting-point
@@ -139,7 +140,12 @@ func (h *HNSW) Insert(v []float32) (uint32, error) {
 
 	// For all levels equal and below our current node, find the top (closest) candidates and create a link
 	for level := min(node.Layer, h.maxLevel); level >= 0; level-- {
-		topCandidates, err := h.searchLayer(vectorCopy, &queue.PriorityQueueItem{Distance: currDist, Node: currObj.ID}, h.opts.EF, level)
+		topCandidates, err := h.searchLayer(&searchParams{
+			Query:      node.Vector,
+			EntryPoint: &queue.PriorityQueueItem{Distance: currDist, Node: currObj.ID},
+			EF:         h.opts.EF,
+			Level:      level,
+		})
 		if err != nil {
 			return 0, err
 		}
@@ -179,51 +185,20 @@ func (h *HNSW) Insert(v []float32) (uint32, error) {
 	return node.ID, nil
 }
 
-func (h *HNSW) findShortestPath(node *Node) (*Node, float32, error) {
-	// Current distance from our starting-point (ep)
-	currObj := h.nodes[h.ep]
-
-	currDist, err := h.opts.DistanceFunc(currObj.Vector, node.Vector)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	for level := currObj.Layer; level > node.Layer; level-- {
-		changed := true
-		for changed {
-			changed = false
-
-			for _, nodeID := range currObj.Connections[level] {
-				newObj := h.nodes[nodeID]
-
-				newDist, err := h.opts.DistanceFunc(newObj.Vector, node.Vector)
-				if err != nil {
-					return nil, 0, err
-				}
-
-				if newDist < currDist {
-					// Update the starting point to our new node
-					currObj = newObj
-					// Update the currently shortest distance
-					currDist = newDist
-					// If a smaller match found, continue
-					changed = true
-				}
-			}
-		}
-	}
-
-	return currObj, currDist, nil
-}
-
 // KNNSearch performs a k-nearest neighbor search in the HNSW graph
-func (h *HNSW) KNNSearch(q []float32, k int, efSearch int) (*queue.PriorityQueue, error) {
+func (h *HNSW) KNNSearch(q []float32, k int, efSearch int, filter func(id uint32) bool) (*queue.PriorityQueue, error) {
 	ep, currDist, err := h.findEP(q, h.nodes[h.ep])
 	if err != nil {
 		return nil, err
 	}
 
-	topCandidates, err := h.searchLayer(q, &queue.PriorityQueueItem{Distance: currDist, Node: ep.ID}, efSearch, 0)
+	topCandidates, err := h.searchLayer(&searchParams{
+		Query:      q,
+		EntryPoint: &queue.PriorityQueueItem{Distance: currDist, Node: ep.ID},
+		EF:         efSearch,
+		Level:      0,
+		Filter:     filter,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -236,7 +211,7 @@ func (h *HNSW) KNNSearch(q []float32, k int, efSearch int) (*queue.PriorityQueue
 }
 
 // BruteSearch performs a brute-force search in the HNSW graph
-func (h *HNSW) BruteSearch(query []float32, k int) (*queue.PriorityQueue, error) {
+func (h *HNSW) BruteSearch(query []float32, k int, filter func(id uint32) bool) (*queue.PriorityQueue, error) {
 	topCandidates := &queue.PriorityQueue{
 		Order: true,
 	}
@@ -244,12 +219,14 @@ func (h *HNSW) BruteSearch(query []float32, k int) (*queue.PriorityQueue, error)
 	heap.Init(topCandidates)
 
 	for _, node := range h.nodes {
+		if !filter(node.ID) {
+			continue
+		}
+
 		nodeDist, err := h.opts.DistanceFunc(query, node.Vector)
 		if err != nil {
 			return nil, err
 		}
-
-		// TODO filter
 
 		if topCandidates.Len() < k {
 			heap.Push(topCandidates, &queue.PriorityQueueItem{
@@ -323,11 +300,68 @@ func (h *HNSW) Link(first uint32, second uint32, level int) error {
 	return nil
 }
 
+// findShortestPath finds the shortest path from the top layers to the specified node in the HNSW graph
+func (h *HNSW) findShortestPath(node *Node) (*Node, float32, error) {
+	// Current distance from our starting-point (ep)
+	currObj := h.nodes[h.ep]
+
+	currDist, err := h.opts.DistanceFunc(currObj.Vector, node.Vector)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	for level := currObj.Layer; level > node.Layer; level-- {
+		changed := true
+		for changed {
+			changed = false
+
+			for _, nodeID := range currObj.Connections[level] {
+				newObj := h.nodes[nodeID]
+
+				newDist, err := h.opts.DistanceFunc(newObj.Vector, node.Vector)
+				if err != nil {
+					return nil, 0, err
+				}
+
+				if newDist < currDist {
+					// Update the starting point to our new node
+					currObj = newObj
+					// Update the currently shortest distance
+					currDist = newDist
+					// If a smaller match found, continue
+					changed = true
+				}
+			}
+		}
+	}
+
+	return currObj, currDist, nil
+}
+
+// searchParams represents the parameters for performing a search operation in the HNSW graph.
+type searchParams struct {
+	// Query is the vector for which nearest neighbors are being searched.
+	Query []float32
+
+	// EntryPoint represents the starting point for the search operation.
+	EntryPoint *queue.PriorityQueueItem
+
+	// EF (Exploration Factor) specifies the size of the dynamic candidate list during the search.
+	EF int
+
+	// Level represents the level of the HNSW graph at which the search is performed.
+	Level int
+
+	// Filter is an optional filter function that can be applied to the search results.
+	// If provided, only the nodes passing the filter condition will be considered in the search.
+	Filter func(id uint32) bool
+}
+
 // searchLayer performs a search in a specified layer of the HNSW graph
-func (h *HNSW) searchLayer(q []float32, ep *queue.PriorityQueueItem, ef int, level int) (*queue.PriorityQueue, error) {
+func (h *HNSW) searchLayer(params *searchParams) (*queue.PriorityQueue, error) {
 	var visited bitset.BitSet
 
-	visited.Set(uint(ep.Node))
+	visited.Set(uint(params.EntryPoint.Node))
 
 	// Add the new candidate to our queue
 	candidates := &queue.PriorityQueue{
@@ -335,14 +369,14 @@ func (h *HNSW) searchLayer(q []float32, ep *queue.PriorityQueueItem, ef int, lev
 	}
 
 	heap.Init(candidates)
-	heap.Push(candidates, ep)
+	heap.Push(candidates, params.EntryPoint)
 
 	topCandidates := &queue.PriorityQueue{
 		Order: true, // max-heap
 	}
 
 	heap.Init(topCandidates)
-	heap.Push(topCandidates, ep)
+	heap.Push(topCandidates, params.EntryPoint)
 
 	for candidates.Len() > 0 {
 		lowerBound := topCandidates.Top().(*queue.PriorityQueueItem).Distance
@@ -354,27 +388,32 @@ func (h *HNSW) searchLayer(q []float32, ep *queue.PriorityQueueItem, ef int, lev
 
 		node := h.nodes[candidate.Node]
 
-		if len(node.Connections) > level { // Check if level is within bounds
-			conns := node.Connections[level]
+		if len(node.Connections) > params.Level { // Check if level is within bounds
+			conns := node.Connections[params.Level]
 
 			for _, n := range conns {
 				if !visited.Test(uint(n)) {
 					visited.Set(uint(n))
 
-					distance, err := h.opts.DistanceFunc(q, h.nodes[n].Vector)
+					distance, err := h.opts.DistanceFunc(params.Query, h.nodes[n].Vector)
 					if err != nil {
 						return nil, err
 					}
-
-					topDistance := topCandidates.Top().(*queue.PriorityQueueItem).Distance
 
 					item := &queue.PriorityQueueItem{
 						Distance: distance,
 						Node:     n,
 					}
 
+					if params.Filter != nil && !params.Filter(item.Node) {
+						heap.Push(candidates, item)
+						continue
+					}
+
+					topDistance := topCandidates.Top().(*queue.PriorityQueueItem).Distance
+
 					// Add the element to topCandidates if size < EF
-					if topCandidates.Len() < ef {
+					if topCandidates.Len() < params.EF {
 						heap.Push(topCandidates, item)
 						heap.Push(candidates, item)
 					} else if topDistance > distance {
