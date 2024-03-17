@@ -6,6 +6,8 @@ import (
 	"log"
 	"testing"
 
+	"github.com/hupe1980/vecgo/queue"
+	"github.com/hupe1980/vecgo/util"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -131,7 +133,9 @@ func TestValidateInsertSearch(t *testing.T) {
 		testname := fmt.Sprintf("Vec=%d,Dim=%d,Heuristic=%t,M=%d,Precision=%f", tc.VectorSize, tc.VectorDim, tc.Heuristic, tc.M, tc.Precision)
 
 		t.Run(testname, func(t *testing.T) {
-			vecs := GenerateRandomVectors(tc.VectorSize, tc.VectorDim, 4711)
+			rng := util.NewRNG(4711)
+
+			vecs := rng.GenerateRandomVectors(tc.VectorSize, tc.VectorDim)
 
 			assert.Equal(t, tc.VectorSize, len(vecs))
 			assert.Equal(t, tc.VectorDim, len(vecs[0]))
@@ -157,7 +161,7 @@ func TestValidateInsertSearch(t *testing.T) {
 
 				for i2 := tc.K - 1; i2 >= 0; i2-- {
 					if bestCandidatesBrute.Len() > 0 {
-						item, _ := heap.Pop(bestCandidatesBrute).(*PriorityQueueItem)
+						item, _ := heap.Pop(bestCandidatesBrute).(*queue.PriorityQueueItem)
 						groundResults[i][i2] = item.Node
 					}
 				}
@@ -178,7 +182,7 @@ func TestValidateInsertSearch(t *testing.T) {
 						break
 					}
 
-					item, _ := heap.Pop(bestCandidates).(*PriorityQueueItem)
+					item, _ := heap.Pop(bestCandidates).(*queue.PriorityQueueItem)
 					totalSearch++
 
 					for k := tc.K - 1; k >= 0; k-- {

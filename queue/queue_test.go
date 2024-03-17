@@ -1,4 +1,4 @@
-package hnsw
+package queue
 
 import (
 	"container/heap"

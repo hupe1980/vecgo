@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/hupe1980/vecgo/hnsw"
+	"github.com/hupe1980/vecgo/util"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -129,7 +129,9 @@ func BenchmarkInsertAndBatchInsert(b *testing.B) {
 	b.Run("InsertOneByOne", func(b *testing.B) {
 		vg := New[int](dim)
 
-		vectors := hnsw.GenerateRandomVectors(b.N, dim, 4711)
+		rng := util.NewRNG(4711)
+
+		vectors := rng.GenerateRandomVectors(b.N, dim)
 		vectorWithData := make([]*VectorWithData[int], b.N)
 
 		for i := 0; i < b.N; i++ {

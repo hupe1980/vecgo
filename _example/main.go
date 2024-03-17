@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/hupe1980/vecgo"
-	"github.com/hupe1980/vecgo/hnsw"
+	"github.com/hupe1980/vecgo/util"
 )
 
 func main() {
@@ -22,15 +22,17 @@ func main() {
 		// o.HNSW.DistanceFunc = metric.CosineSimilarity
 	}) // nolint wsl
 
+	rng := util.NewRNG(seed)
+
 	items := make([]*vecgo.VectorWithData[int], 0, size)
-	for i, v := range hnsw.GenerateRandomVectors(size, dim, seed) {
+	for i, v := range rng.GenerateRandomVectors(size, dim) {
 		items = append(items, &vecgo.VectorWithData[int]{
 			Vector: v,
 			Data:   i,
 		})
 	}
 
-	query := hnsw.GenerateRandomVectors(1, dim, seed)[0]
+	query := rng.GenerateRandomVectors(1, dim)[0]
 
 	fmt.Println("--- Insert ---")
 	fmt.Println("Dimension:", dim)

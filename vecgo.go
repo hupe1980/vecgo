@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/hupe1980/vecgo/hnsw"
+	"github.com/hupe1980/vecgo/queue"
 )
 
 var (
@@ -160,13 +161,13 @@ func (vg *Vecgo[T]) BruteSearch(query []float32, k int) ([]SearchResult[T], erro
 }
 
 // extractSearchResults extracts search results from a priority queue.
-func (vg *Vecgo[T]) extractSearchResults(bestCandidates *hnsw.PriorityQueue) []SearchResult[T] {
+func (vg *Vecgo[T]) extractSearchResults(bestCandidates *queue.PriorityQueue) []SearchResult[T] {
 	result := make([]SearchResult[T], 0, bestCandidates.Len())
 
 	k := bestCandidates.Len()
 
 	for i := 0; i < k; i++ {
-		item, _ := heap.Pop(bestCandidates).(*hnsw.PriorityQueueItem)
+		item, _ := heap.Pop(bestCandidates).(*queue.PriorityQueueItem)
 		if item.Node != 0 {
 			result = append(result, SearchResult[T]{
 				ID:       item.Node,

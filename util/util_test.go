@@ -1,4 +1,4 @@
-package hnsw
+package util
 
 import (
 	"testing"
@@ -7,7 +7,9 @@ import (
 )
 
 func TestGenerateRandomVectors(t *testing.T) {
-	v := GenerateRandomVectors(8, 32, 4711)
+	rng := NewRNG(4711)
+
+	v := rng.GenerateRandomVectors(8, 32)
 
 	assert.Equal(t, 8, len(v))
 	assert.Equal(t, 32, len(v[0]))

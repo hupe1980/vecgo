@@ -9,6 +9,7 @@ import (
 
 	"github.com/bits-and-blooms/bitset"
 	"github.com/hupe1980/vecgo/metric"
+	"github.com/hupe1980/vecgo/queue"
 )
 
 // ErrDimensionMismatch is a named error type for dimension mismatch
@@ -136,28 +137,28 @@ func (h *HNSW) Insert(v []float32) (uint32, error) {
 		return 0, err
 	}
 
-	topCandidates := &PriorityQueue{
+	topCandidates := &queue.PriorityQueue{
 		Order: false,
 	}
 
 	// For all levels equal and below our current node, find the top (closest) candidates and create a link
 	for level := min(node.Layer, h.maxLevel); level >= 0; level-- {
-		err = h.searchLayer(vectorCopy, &PriorityQueueItem{Distance: currDist, Node: currObj.ID}, topCandidates, h.opts.EF, level)
+		err = h.searchLayer(vectorCopy, &queue.PriorityQueueItem{Distance: currDist, Node: currObj.ID}, topCandidates, h.opts.EF, level)
 		if err != nil {
 			return 0, err
 		}
 
 		// Switch type, naive k-NN, or Heuristic HNSW for linking nearest neighbours
 		if h.opts.Heuristic {
-			h.selectNeighboursHeuristic(topCandidates, h.opts.M, false)
+			h.selectNeighboursHeuristic(topCandidates, h.mmax, false)
 		} else {
-			h.selectNeighboursSimple(topCandidates, h.opts.M)
+			h.selectNeighboursSimple(topCandidates, h.mmax)
 		}
 
 		node.Connections[level] = make([]uint32, topCandidates.Len())
 
 		for i := topCandidates.Len() - 1; i >= 0; i-- {
-			candidate, _ := heap.Pop(topCandidates).(*PriorityQueueItem)
+			candidate, _ := heap.Pop(topCandidates).(*queue.PriorityQueueItem)
 			node.Connections[level][i] = candidate.Node
 		}
 	}
@@ -220,19 +221,19 @@ func (h *HNSW) findShortestPath(node *Node) (*Node, float32, error) {
 }
 
 // KNNSearch performs a k-nearest neighbor search in the HNSW graph
-func (h *HNSW) KNNSearch(q []float32, k int, efSearch int) (*PriorityQueue, error) {
-	topCandidates := &PriorityQueue{
+func (h *HNSW) KNNSearch(q []float32, k int, efSearch int) (*queue.PriorityQueue, error) {
+	topCandidates := &queue.PriorityQueue{
 		Order: true,
 	}
 
 	heap.Init(topCandidates)
 
-	ep, currDist, err := h.findEp(q, h.nodes[h.ep])
+	ep, currDist, err := h.findEP(q, h.nodes[h.ep])
 	if err != nil {
 		return nil, err
 	}
 
-	if err := h.searchLayer(q, &PriorityQueueItem{Distance: currDist, Node: ep.ID}, topCandidates, efSearch, 0); err != nil {
+	if err := h.searchLayer(q, &queue.PriorityQueueItem{Distance: currDist, Node: ep.ID}, topCandidates, efSearch, 0); err != nil {
 		return nil, err
 	}
 
@@ -244,8 +245,8 @@ func (h *HNSW) KNNSearch(q []float32, k int, efSearch int) (*PriorityQueue, erro
 }
 
 // BruteSearch performs a brute-force search in the HNSW graph
-func (h *HNSW) BruteSearch(query []float32, k int) (*PriorityQueue, error) {
-	topCandidates := &PriorityQueue{
+func (h *HNSW) BruteSearch(query []float32, k int) (*queue.PriorityQueue, error) {
+	topCandidates := &queue.PriorityQueue{
 		Order: true,
 	}
 
@@ -260,7 +261,7 @@ func (h *HNSW) BruteSearch(query []float32, k int) (*PriorityQueue, error) {
 		// TODO filter
 
 		if topCandidates.Len() < k {
-			heap.Push(topCandidates, &PriorityQueueItem{
+			heap.Push(topCandidates, &queue.PriorityQueueItem{
 				Node:     node.ID,
 				Distance: nodeDist,
 			})
@@ -268,12 +269,12 @@ func (h *HNSW) BruteSearch(query []float32, k int) (*PriorityQueue, error) {
 			continue
 		}
 
-		largestDist, _ := topCandidates.Top().(*PriorityQueueItem)
+		largestDist, _ := topCandidates.Top().(*queue.PriorityQueueItem)
 
 		if nodeDist < largestDist.Distance {
 			heap.Pop(topCandidates)
 
-			heap.Push(topCandidates, &PriorityQueueItem{
+			heap.Push(topCandidates, &queue.PriorityQueueItem{
 				Node:     node.ID,
 				Distance: nodeDist,
 			})
@@ -292,11 +293,12 @@ func (h *HNSW) Link(first uint32, second uint32, level int) error {
 	}
 
 	node := h.nodes[first]
+
 	node.Connections[level] = append(node.Connections[level], second)
 
 	if len(node.Connections[level]) > maxConnections {
 		// Add the new candidate to our queue
-		topCandidates := &PriorityQueue{
+		topCandidates := &queue.PriorityQueue{
 			Order: false,
 		}
 
@@ -308,7 +310,7 @@ func (h *HNSW) Link(first uint32, second uint32, level int) error {
 				return err
 			}
 
-			heap.Push(topCandidates, &PriorityQueueItem{Node: id, Distance: distance})
+			heap.Push(topCandidates, &queue.PriorityQueueItem{Node: id, Distance: distance})
 		}
 
 		if h.opts.Heuristic {
@@ -322,7 +324,7 @@ func (h *HNSW) Link(first uint32, second uint32, level int) error {
 
 		// Order by best performing match (index 0) .. lowest
 		for i := maxConnections - 1; i >= 0; i-- {
-			item, _ := heap.Pop(topCandidates).(*PriorityQueueItem)
+			item, _ := heap.Pop(topCandidates).(*queue.PriorityQueueItem)
 			node.Connections[level][i] = item.Node
 		}
 	}
@@ -331,26 +333,28 @@ func (h *HNSW) Link(first uint32, second uint32, level int) error {
 }
 
 // searchLayer performs a search in a specified layer of the HNSW graph
-func (h *HNSW) searchLayer(q []float32, ep *PriorityQueueItem, topCandidates *PriorityQueue, ef int, level int) error {
+func (h *HNSW) searchLayer(q []float32, ep *queue.PriorityQueueItem, topCandidates *queue.PriorityQueue, ef int, level int) error {
 	var visited bitset.BitSet
 
 	visited.Set(uint(ep.Node))
 
 	// Add the new candidate to our queue
-	candidates := &PriorityQueue{
-		Order: false,
+	candidates := &queue.PriorityQueue{
+		Order: false, // min-heap
 	}
+
 	heap.Init(candidates)
 	heap.Push(candidates, ep)
 
 	topCandidates.Order = true // max-heap
+
 	heap.Init(topCandidates)
 	heap.Push(topCandidates, ep)
 
 	for candidates.Len() > 0 {
-		lowerBound := topCandidates.Top().(*PriorityQueueItem).Distance
+		lowerBound := topCandidates.Top().(*queue.PriorityQueueItem).Distance
 
-		candidate, _ := heap.Pop(candidates).(*PriorityQueueItem)
+		candidate, _ := heap.Pop(candidates).(*queue.PriorityQueueItem)
 		if candidate.Distance > lowerBound {
 			break
 		}
@@ -369,9 +373,9 @@ func (h *HNSW) searchLayer(q []float32, ep *PriorityQueueItem, topCandidates *Pr
 						return err
 					}
 
-					topDistance := topCandidates.Top().(*PriorityQueueItem).Distance
+					topDistance := topCandidates.Top().(*queue.PriorityQueueItem).Distance
 
-					item := &PriorityQueueItem{
+					item := &queue.PriorityQueueItem{
 						Distance: distance,
 						Node:     n,
 					}
@@ -394,26 +398,27 @@ func (h *HNSW) searchLayer(q []float32, ep *PriorityQueueItem, topCandidates *Pr
 }
 
 // selectNeighboursSimple selects the nearest neighbors using a simple approach
-func (h *HNSW) selectNeighboursSimple(topCandidates *PriorityQueue, M int) {
-	for topCandidates.Len() > M {
+func (h *HNSW) selectNeighboursSimple(topCandidates *queue.PriorityQueue, m int) {
+	for topCandidates.Len() > m {
 		_ = heap.Pop(topCandidates)
 	}
 }
 
 // selectNeighboursHeuristic selects the nearest neighbors using a heuristic approach
-func (h *HNSW) selectNeighboursHeuristic(topCandidates *PriorityQueue, M int, order bool) {
-	// If results < M, return, nothing required
-	if topCandidates.Len() < M {
+func (h *HNSW) selectNeighboursHeuristic(topCandidates *queue.PriorityQueue, m int, order bool) {
+	// If results < m, return, nothing required
+	if topCandidates.Len() < m {
 		return
 	}
 
 	// Create our new priority queues
-	newCandidates := &PriorityQueue{}
+	newCandidates := &queue.PriorityQueue{}
 
-	tmpCandidates := &PriorityQueue{Order: order}
+	tmpCandidates := &queue.PriorityQueue{Order: order}
+
 	heap.Init(tmpCandidates)
 
-	items := make([]*PriorityQueueItem, 0, M)
+	items := make([]*queue.PriorityQueueItem, 0, m)
 
 	if !order {
 		newCandidates.Order = order
@@ -421,7 +426,7 @@ func (h *HNSW) selectNeighboursHeuristic(topCandidates *PriorityQueue, M int, or
 
 		// Add existing candidates to our new queue
 		for topCandidates.Len() > 0 {
-			item, _ := heap.Pop(topCandidates).(*PriorityQueueItem)
+			item, _ := heap.Pop(topCandidates).(*queue.PriorityQueueItem)
 			heap.Push(newCandidates, item)
 		}
 	} else {
@@ -431,11 +436,12 @@ func (h *HNSW) selectNeighboursHeuristic(topCandidates *PriorityQueue, M int, or
 	// Scan through our new queue (order changed from min-heap > max-heap or vice-versa depending on order arg)
 	for newCandidates.Len() > 0 {
 		// Finish if items reaches our desired length
-		if len(items) >= M {
+		if len(items) >= m {
 			break
 		}
 
-		item, _ := heap.Pop(newCandidates).(*PriorityQueueItem)
+		item, _ := heap.Pop(newCandidates).(*queue.PriorityQueueItem)
+
 		hit := true
 
 		// Search through each item and determine if distance from node lower for items in set
@@ -455,8 +461,8 @@ func (h *HNSW) selectNeighboursHeuristic(topCandidates *PriorityQueue, M int, or
 	}
 
 	// Add any additional items from tmpCandidates if current items < M
-	for len(items) < M && tmpCandidates.Len() > 0 {
-		item, _ := heap.Pop(tmpCandidates).(*PriorityQueueItem)
+	for len(items) < m && tmpCandidates.Len() > 0 {
+		item, _ := heap.Pop(tmpCandidates).(*queue.PriorityQueueItem)
 		items = append(items, item)
 	}
 
@@ -466,8 +472,8 @@ func (h *HNSW) selectNeighboursHeuristic(topCandidates *PriorityQueue, M int, or
 	}
 }
 
-// findEp finds the entry-point (ep) in the HNSW graph
-func (h *HNSW) findEp(q []float32, currObj *Node) (*Node, float32, error) {
+// findEP finds the entry-point (ep) in the HNSW graph
+func (h *HNSW) findEP(q []float32, currObj *Node) (*Node, float32, error) {
 	currDist, err := h.opts.DistanceFunc(q, currObj.Vector)
 	if err != nil {
 		return nil, 0, err
