@@ -137,13 +137,9 @@ func (h *HNSW) Insert(v []float32) (uint32, error) {
 		return 0, err
 	}
 
-	topCandidates := &queue.PriorityQueue{
-		Order: false,
-	}
-
 	// For all levels equal and below our current node, find the top (closest) candidates and create a link
 	for level := min(node.Layer, h.maxLevel); level >= 0; level-- {
-		err = h.searchLayer(vectorCopy, &queue.PriorityQueueItem{Distance: currDist, Node: currObj.ID}, topCandidates, h.opts.EF, level)
+		topCandidates, err := h.searchLayer(vectorCopy, &queue.PriorityQueueItem{Distance: currDist, Node: currObj.ID}, h.opts.EF, level)
 		if err != nil {
 			return 0, err
 		}
@@ -222,18 +218,13 @@ func (h *HNSW) findShortestPath(node *Node) (*Node, float32, error) {
 
 // KNNSearch performs a k-nearest neighbor search in the HNSW graph
 func (h *HNSW) KNNSearch(q []float32, k int, efSearch int) (*queue.PriorityQueue, error) {
-	topCandidates := &queue.PriorityQueue{
-		Order: true,
-	}
-
-	heap.Init(topCandidates)
-
 	ep, currDist, err := h.findEP(q, h.nodes[h.ep])
 	if err != nil {
 		return nil, err
 	}
 
-	if err := h.searchLayer(q, &queue.PriorityQueueItem{Distance: currDist, Node: ep.ID}, topCandidates, efSearch, 0); err != nil {
+	topCandidates, err := h.searchLayer(q, &queue.PriorityQueueItem{Distance: currDist, Node: ep.ID}, efSearch, 0)
+	if err != nil {
 		return nil, err
 	}
 
@@ -333,7 +324,7 @@ func (h *HNSW) Link(first uint32, second uint32, level int) error {
 }
 
 // searchLayer performs a search in a specified layer of the HNSW graph
-func (h *HNSW) searchLayer(q []float32, ep *queue.PriorityQueueItem, topCandidates *queue.PriorityQueue, ef int, level int) error {
+func (h *HNSW) searchLayer(q []float32, ep *queue.PriorityQueueItem, ef int, level int) (*queue.PriorityQueue, error) {
 	var visited bitset.BitSet
 
 	visited.Set(uint(ep.Node))
@@ -346,7 +337,9 @@ func (h *HNSW) searchLayer(q []float32, ep *queue.PriorityQueueItem, topCandidat
 	heap.Init(candidates)
 	heap.Push(candidates, ep)
 
-	topCandidates.Order = true // max-heap
+	topCandidates := &queue.PriorityQueue{
+		Order: true, // max-heap
+	}
 
 	heap.Init(topCandidates)
 	heap.Push(topCandidates, ep)
@@ -370,7 +363,7 @@ func (h *HNSW) searchLayer(q []float32, ep *queue.PriorityQueueItem, topCandidat
 
 					distance, err := h.opts.DistanceFunc(q, h.nodes[n].Vector)
 					if err != nil {
-						return err
+						return nil, err
 					}
 
 					topDistance := topCandidates.Top().(*queue.PriorityQueueItem).Distance
@@ -394,7 +387,7 @@ func (h *HNSW) searchLayer(q []float32, ep *queue.PriorityQueueItem, topCandidat
 		}
 	}
 
-	return nil
+	return topCandidates, nil
 }
 
 // selectNeighboursSimple selects the nearest neighbors using a simple approach

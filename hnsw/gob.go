@@ -20,6 +20,14 @@ func (h *HNSW) GobEncode() ([]byte, error) {
 		return nil, err
 	}
 
+	if err := encoder.Encode(h.mmax); err != nil {
+		return nil, err
+	}
+
+	if err := encoder.Encode(h.mmax0); err != nil {
+		return nil, err
+	}
+
 	if err := encoder.Encode(h.ml); err != nil {
 		return nil, err
 	}
@@ -48,6 +56,14 @@ func (h *HNSW) GobDecode(data []byte) error {
 	decoder := gob.NewDecoder(bytes.NewBuffer(data))
 
 	if err := decoder.Decode(&h.dimension); err != nil {
+		return err
+	}
+
+	if err := decoder.Decode(&h.mmax); err != nil {
+		return err
+	}
+
+	if err := decoder.Decode(&h.mmax0); err != nil {
 		return err
 	}
 
