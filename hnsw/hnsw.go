@@ -7,8 +7,6 @@ import (
 	"math/rand"
 	"sync"
 
-	"log"
-
 	"github.com/bits-and-blooms/bitset"
 	"github.com/hupe1980/vecgo/metric"
 )
@@ -170,7 +168,9 @@ func (h *HNSW) Insert(v []float32) (uint32, error) {
 	// Next link the neighbour nodes to our new node, making it visible
 	for level := min(node.Layer, h.maxLevel); level >= 0; level-- {
 		for _, neighbourNode := range node.Connections[level] {
-			h.Link(neighbourNode, node.ID, level)
+			if err := h.Link(neighbourNode, node.ID, level); err != nil {
+				return 0, err
+			}
 		}
 	}
 
@@ -227,19 +227,12 @@ func (h *HNSW) KNNSearch(q []float32, k int, efSearch int) (*PriorityQueue, erro
 
 	heap.Init(topCandidates)
 
-	currObj := h.nodes[h.ep]
-
-	match, currDist, err := h.findEp(q, currObj)
+	ep, currDist, err := h.findEp(q, h.nodes[h.ep])
 	if err != nil {
 		return nil, err
 	}
 
-	var node uint32
-	if match != nil {
-		node = match.ID
-	}
-
-	if err := h.searchLayer(q, &PriorityQueueItem{Distance: currDist, Node: node}, topCandidates, efSearch, 0); err != nil {
+	if err := h.searchLayer(q, &PriorityQueueItem{Distance: currDist, Node: ep.ID}, topCandidates, efSearch, 0); err != nil {
 		return nil, err
 	}
 
@@ -263,6 +256,8 @@ func (h *HNSW) BruteSearch(query []float32, k int) (*PriorityQueue, error) {
 		if err != nil {
 			return nil, err
 		}
+
+		// TODO filter
 
 		if topCandidates.Len() < k {
 			heap.Push(topCandidates, &PriorityQueueItem{
@@ -289,7 +284,7 @@ func (h *HNSW) BruteSearch(query []float32, k int) (*PriorityQueue, error) {
 }
 
 // Link adds links between nodes in the HNSW graph
-func (h *HNSW) Link(first uint32, second uint32, level int) {
+func (h *HNSW) Link(first uint32, second uint32, level int) error {
 	maxConnections := h.mmax
 	// HNSW allows double the connections for the bottom level (0)
 	if level == 0 {
@@ -310,7 +305,7 @@ func (h *HNSW) Link(first uint32, second uint32, level int) {
 		for _, id := range node.Connections[level] {
 			distance, err := h.opts.DistanceFunc(node.Vector, h.nodes[id].Vector)
 			if err != nil {
-				log.Fatal(err)
+				return err
 			}
 
 			heap.Push(topCandidates, &PriorityQueueItem{Node: id, Distance: distance})
@@ -331,6 +326,8 @@ func (h *HNSW) Link(first uint32, second uint32, level int) {
 			node.Connections[level][i] = item.Node
 		}
 	}
+
+	return nil
 }
 
 // searchLayer performs a search in a specified layer of the HNSW graph
@@ -476,7 +473,7 @@ func (h *HNSW) findEp(q []float32, currObj *Node) (*Node, float32, error) {
 		return nil, 0, err
 	}
 
-	var match *Node
+	match := currObj
 
 	// Find single shortest path from top layers above our current node, which will be our new starting-point
 	for level := h.maxLevel; level > 0; level-- {

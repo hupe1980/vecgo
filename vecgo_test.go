@@ -53,17 +53,17 @@ func TestVecgo(t *testing.T) {
 		vg := New[float32](3)
 
 		vec1 := VectorWithData[float32]{
-			Vector: []float32{1.0, 0.0, 0.0},
+			Vector: []float32{05, 1.0, 0.5},
 			Data:   42.0,
 		}
 
 		vec2 := VectorWithData[float32]{
-			Vector: []float32{0.0, 1.0, 0.0},
+			Vector: []float32{0.5, 1.0, 1.0},
 			Data:   24.0,
 		}
 
 		vec3 := VectorWithData[float32]{
-			Vector: []float32{0.0, 0.0, 1.0},
+			Vector: []float32{0.5, 0.5, 1.0},
 			Data:   12.0,
 		}
 
@@ -82,24 +82,24 @@ func TestVecgo(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, results, 2)
 		assert.Equal(t, float32(24.0), results[0].Data)
-		assert.Equal(t, float32(42.0), results[1].Data)
+		assert.Equal(t, float32(12.0), results[1].Data)
 	})
 
 	t.Run("Brute", func(t *testing.T) {
 		vg := New[float32](3)
 
 		vec1 := VectorWithData[float32]{
-			Vector: []float32{1.0, 0.0, 0.1},
+			Vector: []float32{05, 1.0, 0.5},
 			Data:   42.0,
 		}
 
 		vec2 := VectorWithData[float32]{
-			Vector: []float32{0.0, 0.5, 0.0},
+			Vector: []float32{0.5, 1.0, 1.0},
 			Data:   24.0,
 		}
 
 		vec3 := VectorWithData[float32]{
-			Vector: []float32{0.3, 0.0, 1.0},
+			Vector: []float32{0.5, 0.5, 1.0},
 			Data:   12.0,
 		}
 
@@ -117,8 +117,8 @@ func TestVecgo(t *testing.T) {
 		results, err := vg.BruteSearch(query, 2)
 		require.NoError(t, err)
 		require.Len(t, results, 2)
-		assert.Equal(t, float32(12.0), results[0].Data)
-		assert.Equal(t, float32(24.0), results[1].Data)
+		assert.Equal(t, float32(24.0), results[0].Data)
+		assert.Equal(t, float32(12.0), results[1].Data)
 	})
 }
 
