@@ -91,7 +91,7 @@ func TestCosineSimilarity(t *testing.T) {
 			name:       "Negative Values",
 			vector1:    []float32{-1, -2, -3},
 			vector2:    []float32{4, 5, 6},
-			expected:   -0.9746318, // Expected cosine similarity value for these vectors
+			expected:   -0.9746319, // Expected cosine similarity value for these vectors
 			shouldFail: false,
 		},
 		{
@@ -171,5 +171,21 @@ func TestSquaredL2(t *testing.T) {
 				assert.Equal(t, tt.expected, actual)
 			}
 		})
+	}
+}
+
+func BenchmarkCosineSimilarity(b *testing.B) {
+	v1 := make([]float32, 1000)
+	v2 := make([]float32, 1000)
+
+	for i := range v1 {
+		v1[i] = float32(i)
+		v2[i] = float32(i)
+	}
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		_, _ = CosineSimilarity(v1, v2)
 	}
 }

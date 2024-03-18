@@ -19,15 +19,15 @@ func CosineSimilarity(v1, v2 []float32) (float32, error) {
 	}
 
 	dotProduct := math32.Dot(v1, v2)
-	magnitudeA := Magnitude(v1)
-	magnitudeB := Magnitude(v2)
+	sumA := math32.Dot(v1, v1)
+	sumB := math32.Dot(v2, v2)
 
 	// Avoid division by zero
-	if magnitudeA == 0 || magnitudeB == 0 {
+	if sumA == 0 || sumB == 0 {
 		return 0, nil
 	}
 
-	return dotProduct / (magnitudeA * magnitudeB), nil
+	return dotProduct / math32.Sqrt(sumA*sumB), nil
 }
 
 // SquaredL2 calculates the squared L2 distance between two float32 slices.
