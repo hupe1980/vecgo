@@ -1,8 +1,8 @@
 package math32
 
 var (
-	useAVX512 bool // nolint unused
-	useNEON   bool // nolint unused
+	useAVX  bool // nolint unused
+	useNEON bool // nolint unused
 )
 
 // Dot two vectors.

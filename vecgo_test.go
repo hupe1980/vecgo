@@ -125,7 +125,6 @@ func TestVecgo(t *testing.T) {
 func BenchmarkInsertAndBatchInsert(b *testing.B) {
 	dim := 1024
 
-	// BenchmarkInsertAndBatchInsert/InsertOneByOne-10         	    2805	   2312472 ns/op	   44282 B/op	    1170 allocs/op	    1112 allocs/op	    1107 allocs/op
 	b.Run("InsertOneByOne", func(b *testing.B) {
 		vg := New[int](dim)
 
