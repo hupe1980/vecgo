@@ -16,7 +16,7 @@ func main() {
 	size := 50000
 	k := 10
 
-	vg := vecgo.NewHNSW[int](dim, func(o *hnsw.Options) {
+	vg := vecgo.NewHNSW[int](func(o *hnsw.Options) {
 		o.M = 32
 		// o.EF = 200
 		// o.Heuristic = false

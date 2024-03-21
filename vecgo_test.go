@@ -11,7 +11,7 @@ import (
 
 func TestVecgo(t *testing.T) {
 	t.Run("InsertAndRetrieve", func(t *testing.T) {
-		vg := NewHNSW[float32](3)
+		vg := NewHNSW[float32]()
 
 		vec := VectorWithData[float32]{
 			Vector: []float32{1.0, 2.0, 3.0},
@@ -27,7 +27,7 @@ func TestVecgo(t *testing.T) {
 	})
 
 	t.Run("SaveAndLoad", func(t *testing.T) {
-		vg := NewHNSW[float32](3)
+		vg := NewHNSW[float32]()
 
 		vec := VectorWithData[float32]{
 			Vector: []float32{1.0, 2.0, 3.0},
@@ -58,7 +58,7 @@ func TestVecgo(t *testing.T) {
 	})
 
 	t.Run("KNN", func(t *testing.T) {
-		vg := NewHNSW[float32](3)
+		vg := NewHNSW[float32]()
 
 		vec1 := VectorWithData[float32]{
 			Vector: []float32{05, 1.0, 0.5},
@@ -94,7 +94,7 @@ func TestVecgo(t *testing.T) {
 	})
 
 	t.Run("Brute", func(t *testing.T) {
-		vg := NewHNSW[float32](3)
+		vg := NewHNSW[float32]()
 
 		vec1 := VectorWithData[float32]{
 			Vector: []float32{05, 1.0, 0.5},
@@ -134,7 +134,7 @@ func BenchmarkInsertAndBatchInsert(b *testing.B) {
 	dim := 1024
 
 	b.Run("InsertOneByOne", func(b *testing.B) {
-		vg := NewHNSW[int](dim)
+		vg := NewHNSW[int]()
 
 		rng := util.NewRNG(4711)
 

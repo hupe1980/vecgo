@@ -31,14 +31,14 @@ type Vecgo[T any] struct {
 }
 
 // NewFlat creates a new Vecgo instance with a flat index.
-func NewFlat[T any](dimension int, optFns ...func(o *flat.Options)) *Vecgo[T] {
+func NewFlat[T any](optFns ...func(o *flat.Options)) *Vecgo[T] {
 	opts := flat.DefaultOptions
 
 	for _, fn := range optFns {
 		fn(&opts)
 	}
 
-	i := flat.New(dimension, func(o *flat.Options) {
+	i := flat.New(func(o *flat.Options) {
 		*o = opts
 	})
 
@@ -46,14 +46,14 @@ func NewFlat[T any](dimension int, optFns ...func(o *flat.Options)) *Vecgo[T] {
 }
 
 // NewHNSW creates a new Vecgo instance with an HNSW index.
-func NewHNSW[T any](dimension int, optFns ...func(o *hnsw.Options)) *Vecgo[T] {
+func NewHNSW[T any](optFns ...func(o *hnsw.Options)) *Vecgo[T] {
 	opts := hnsw.DefaultOptions
 
 	for _, fn := range optFns {
 		fn(&opts)
 	}
 
-	i := hnsw.New(dimension, func(o *hnsw.Options) {
+	i := hnsw.New(func(o *hnsw.Options) {
 		*o = opts
 	})
 
@@ -91,8 +91,6 @@ func NewFromReader[T any](r io.Reader) (*Vecgo[T], error) {
 	if err := decoder.Decode(newIndex); err != nil {
 		return nil, err
 	}
-
-	newIndex.Stats()
 
 	vg.index = newIndex
 
@@ -254,13 +252,11 @@ func (vg *Vecgo[T]) extractSearchResults(bestCandidates *queue.PriorityQueue) []
 
 	for i := 0; i < k; i++ {
 		item, _ := heap.Pop(bestCandidates).(*queue.PriorityQueueItem)
-		if item.Node != 0 {
-			result = append(result, SearchResult[T]{
-				ID:       item.Node,
-				Distance: item.Distance,
-				Data:     vg.store[item.Node],
-			})
-		}
+		result = append(result, SearchResult[T]{
+			ID:       item.Node,
+			Distance: item.Distance,
+			Data:     vg.store[item.Node],
+		})
 	}
 
 	return result

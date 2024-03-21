@@ -4,6 +4,7 @@ package flat
 import (
 	"container/heap"
 	"sync"
+	"sync/atomic"
 
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/queue"
@@ -31,15 +32,17 @@ var DefaultOptions = Options{
 
 // Flat represents a flat index for vector storage and search.
 type Flat struct {
-	dimension    int     // Dimension of vectors
+	dimension    int32   // Dimension of vectors
 	nodes        []*Node // Nodes in the index
 	distanceFunc index.DistanceFunc
-	opts         Options    // Options for the index
+	opts         Options // Options for the index
+	initOnce     sync.Once
+	insertOnce   sync.Once
 	mutex        sync.Mutex // Mutex for concurrent access
 }
 
 // New creates a new instance of the flat index with the given dimension and options.
-func New(dimension int, optFns ...func(o *Options)) *Flat {
+func New(optFns ...func(o *Options)) *Flat {
 	opts := DefaultOptions
 
 	for _, fn := range optFns {
@@ -47,8 +50,8 @@ func New(dimension int, optFns ...func(o *Options)) *Flat {
 	}
 
 	return &Flat{
-		dimension:    dimension,
-		nodes:        []*Node{{ID: 0, Vector: make([]float32, dimension)}},
+		//dimension:    dimension,
+		//nodes:        []*Node{{ID: 0, Vector: make([]float32, dimension)}},
 		distanceFunc: index.NewDistanceFunc(opts.DistanceType),
 		opts:         opts,
 	}
@@ -56,9 +59,15 @@ func New(dimension int, optFns ...func(o *Options)) *Flat {
 
 // Insert inserts a vector into the flat index.
 func (f *Flat) Insert(v []float32) (uint32, error) {
+	f.initOnce.Do(func() {
+		if f.dimension == 0 {
+			atomic.StoreInt32(&f.dimension, int32(len(v)))
+		}
+	})
+
 	// Check if dimensions of the input vector match the expected dimension
-	if len(v) != f.dimension {
-		return 0, &index.ErrDimensionMismatch{Expected: f.dimension, Actual: len(v)}
+	if len(v) != int(f.dimension) {
+		return 0, &index.ErrDimensionMismatch{Expected: int(f.dimension), Actual: len(v)}
 	}
 
 	// Make a copy of the vector to ensure changes outside this function don't affect the node
@@ -67,6 +76,19 @@ func (f *Flat) Insert(v []float32) (uint32, error) {
 
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
+
+	wasFirst := false
+
+	f.insertOnce.Do(func() {
+		if len(f.nodes) == 0 {
+			wasFirst = true
+			f.nodes = []*Node{{ID: 0, Vector: vectorCopy}}
+		}
+	})
+
+	if wasFirst {
+		return 0, nil
+	}
 
 	// next ID
 	id := uint32(len(f.nodes))

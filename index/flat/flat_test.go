@@ -11,12 +11,12 @@ import (
 func TestFlat(t *testing.T) {
 	t.Run("Insert", func(t *testing.T) {
 		// Initialize the flat index
-		f := New(3)
+		f := New()
 
 		// Insert a vector
 		id, err := f.Insert([]float32{1.0, 2.0, 3.0})
 		require.NoError(t, err)
-		assert.Equal(t, uint32(1), id)
+		assert.Equal(t, uint32(0), id)
 
 		// Test dimension mismatch error
 		_, err = f.Insert([]float32{1.0, 2.0})
@@ -26,7 +26,7 @@ func TestFlat(t *testing.T) {
 
 	t.Run("KNNSearch", func(t *testing.T) {
 		// Initialize the flat index
-		f := New(3)
+		f := New()
 
 		// Insert vectors
 		_, _ = f.Insert([]float32{1.0, 2.0, 3.0})
@@ -43,7 +43,7 @@ func TestFlat(t *testing.T) {
 
 	t.Run("BruteSearch", func(t *testing.T) {
 		// Initialize the flat index
-		f := New(3)
+		f := New()
 
 		// Insert vectors
 		_, _ = f.Insert([]float32{1.0, 2.0, 3.0})

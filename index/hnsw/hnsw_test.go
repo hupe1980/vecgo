@@ -24,7 +24,7 @@ type TestCases struct {
 }
 
 func TestNew(t *testing.T) {
-	h := New(1024, func(o *Options) {
+	h := New(func(o *Options) {
 		o.M = 8
 		o.EF = 200
 	})
@@ -140,7 +140,7 @@ func TestValidateInsertSearch(t *testing.T) {
 			assert.Equal(t, tc.VectorSize, len(vecs))
 			assert.Equal(t, tc.VectorDim, len(vecs[0]))
 
-			h := New(len(vecs[0]), func(o *Options) {
+			h := New(func(o *Options) {
 				o.M = tc.M
 				o.EF = tc.EF
 				o.Heuristic = tc.Heuristic

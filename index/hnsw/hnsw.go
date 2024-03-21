@@ -6,6 +6,7 @@ import (
 	"math"
 	"math/rand"
 	"sync"
+	"sync/atomic"
 
 	"github.com/bits-and-blooms/bitset"
 	"github.com/hupe1980/vecgo/index"
@@ -52,7 +53,9 @@ var DefaultOptions = Options{
 
 // HNSW represents the Hierarchical Navigable Small World graph
 type HNSW struct {
-	dimension int
+	sync.RWMutex
+
+	dimension int32
 	mmax      int     // Max number of connections per element/per layer
 	mmax0     int     // Max for the 0 layer
 	ml        float64 // Normalization factor for level generation
@@ -65,11 +68,12 @@ type HNSW struct {
 
 	opts Options
 
-	mutex sync.Mutex
+	initOnce   *sync.Once
+	insertOnce *sync.Once
 }
 
-// New creates a new HNSW instance with the given dimension and options
-func New(dimension int, optFns ...func(o *Options)) *HNSW {
+// New creates a new HNSW instance with the given options
+func New(optFns ...func(o *Options)) *HNSW {
 	opts := DefaultOptions
 
 	for _, fn := range optFns {
@@ -83,40 +87,79 @@ func New(dimension int, optFns ...func(o *Options)) *HNSW {
 	}
 
 	return &HNSW{
-		dimension:    dimension,
 		mmax:         opts.M,
 		mmax0:        2 * opts.M,
-		ep:           0,
-		maxLevel:     0,
 		ml:           1 / math.Log(1.0*float64(opts.M)),
-		nodes:        []*Node{{ID: 0, Layer: 0, Vector: make([]float32, dimension), Connections: make([][]uint32, 2*opts.M)}},
 		distanceFunc: index.NewDistanceFunc(opts.DistanceType),
 		opts:         opts,
+
+		initOnce:   &sync.Once{},
+		insertOnce: &sync.Once{},
 	}
 }
 
 // Insert inserts a new element into the HNSW graph
 func (h *HNSW) Insert(v []float32) (uint32, error) {
+	h.initOnce.Do(func() {
+		if h.isEmpty() {
+			atomic.StoreInt32(&h.dimension, int32(len(v)))
+		}
+	})
+
 	// Check if dimensions of the input vector match the expected dimension
-	if len(v) != h.dimension {
-		return 0, &index.ErrDimensionMismatch{Expected: h.dimension, Actual: len(v)}
+	dim := int(atomic.LoadInt32(&h.dimension))
+	if len(v) != dim {
+		return 0, &index.ErrDimensionMismatch{Expected: dim, Actual: len(v)}
 	}
 
 	// Make a copy of the vector to ensure changes outside this function don't affect the node
 	vectorCopy := make([]float32, len(v))
 	copy(vectorCopy, v)
 
-	h.mutex.Lock()
-	defer h.mutex.Unlock()
+	wasFirst := false
+
+	h.insertOnce.Do(func() {
+		if h.isEmpty() {
+			h.Lock()
+			defer h.Unlock()
+
+			wasFirst = true
+
+			h.ep = 0
+			h.maxLevel = 0
+			h.nodes = []*Node{{ID: 0, Layer: 0, Vector: vectorCopy, Connections: [][]uint32{
+				make([]uint32, 0, h.mmax0),
+			}}}
+		}
+	})
+
+	if wasFirst {
+		return 0, nil
+	}
+
+	h.Lock()
+	defer h.Unlock()
 
 	// next ID
 	id := uint32(len(h.nodes))
 
+	layer := int(math.Floor(-math.Log(rand.Float64()) * h.ml)) // nolint gosec
+
 	node := &Node{
-		ID:          id,
-		Vector:      vectorCopy,
-		Layer:       int(math.Floor(-math.Log(rand.Float64()) * h.ml)), // nolint gosec
-		Connections: make([][]uint32, h.mmax),
+		ID:     id,
+		Vector: vectorCopy,
+		Layer:  layer,
+	}
+
+	node.Connections = make([][]uint32, layer+1)
+
+	for i := layer; i >= 0; i-- {
+		capacity := h.mmax
+		if i == 0 {
+			capacity = h.mmax0
+		}
+
+		node.Connections[i] = make([]uint32, 0, capacity)
 	}
 
 	// Find single shortest path from top layers above our current node, which will be our new starting-point
@@ -206,7 +249,7 @@ func (h *HNSW) BruteSearch(query []float32, k int, filter func(id uint32) bool) 
 	heap.Init(topCandidates)
 
 	for _, node := range h.nodes {
-		if !filter(node.ID) || node.ID == 0 {
+		if !filter(node.ID) {
 			continue
 		}
 
@@ -285,6 +328,13 @@ func (h *HNSW) Link(first uint32, second uint32, level int) error {
 	}
 
 	return nil
+}
+
+func (h *HNSW) isEmpty() bool {
+	h.RLock()
+	defer h.RUnlock()
+
+	return len(h.nodes) == 0
 }
 
 // findShortestPath finds the shortest path from the top layers to the specified node in the HNSW graph
