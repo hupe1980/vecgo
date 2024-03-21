@@ -146,20 +146,10 @@ func (h *HNSW) Insert(v []float32) (uint32, error) {
 	layer := int(math.Floor(-math.Log(rand.Float64()) * h.ml)) // nolint gosec
 
 	node := &Node{
-		ID:     id,
-		Vector: vectorCopy,
-		Layer:  layer,
-	}
-
-	node.Connections = make([][]uint32, layer+1)
-
-	for i := layer; i >= 0; i-- {
-		capacity := h.mmax
-		if i == 0 {
-			capacity = h.mmax0
-		}
-
-		node.Connections[i] = make([]uint32, 0, capacity)
+		ID:          id,
+		Vector:      vectorCopy,
+		Layer:       layer,
+		Connections: make([][]uint32, layer+1),
 	}
 
 	// Find single shortest path from top layers above our current node, which will be our new starting-point
@@ -217,6 +207,12 @@ func (h *HNSW) Insert(v []float32) (uint32, error) {
 
 // KNNSearch performs a k-nearest neighbor search in the HNSW graph
 func (h *HNSW) KNNSearch(q []float32, k int, efSearch int, filter func(id uint32) bool) (*queue.PriorityQueue, error) {
+	if h.isEmpty() {
+		return &queue.PriorityQueue{
+			Order: true,
+		}, nil
+	}
+
 	ep, currDist, err := h.findEP(q, h.nodes[h.ep])
 	if err != nil {
 		return nil, err
@@ -242,6 +238,12 @@ func (h *HNSW) KNNSearch(q []float32, k int, efSearch int, filter func(id uint32
 
 // BruteSearch performs a brute-force search in the HNSW graph
 func (h *HNSW) BruteSearch(query []float32, k int, filter func(id uint32) bool) (*queue.PriorityQueue, error) {
+	if h.isEmpty() {
+		return &queue.PriorityQueue{
+			Order: true,
+		}, nil
+	}
+
 	topCandidates := &queue.PriorityQueue{
 		Order: true,
 	}

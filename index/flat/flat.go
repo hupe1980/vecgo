@@ -32,13 +32,14 @@ var DefaultOptions = Options{
 
 // Flat represents a flat index for vector storage and search.
 type Flat struct {
+	sync.RWMutex
+
 	dimension    int32   // Dimension of vectors
 	nodes        []*Node // Nodes in the index
 	distanceFunc index.DistanceFunc
 	opts         Options // Options for the index
-	initOnce     sync.Once
-	insertOnce   sync.Once
-	mutex        sync.Mutex // Mutex for concurrent access
+	initOnce     *sync.Once
+	insertOnce   *sync.Once
 }
 
 // New creates a new instance of the flat index with the given dimension and options.
@@ -50,37 +51,39 @@ func New(optFns ...func(o *Options)) *Flat {
 	}
 
 	return &Flat{
-		//dimension:    dimension,
-		//nodes:        []*Node{{ID: 0, Vector: make([]float32, dimension)}},
 		distanceFunc: index.NewDistanceFunc(opts.DistanceType),
 		opts:         opts,
+
+		initOnce:   &sync.Once{},
+		insertOnce: &sync.Once{},
 	}
 }
 
 // Insert inserts a vector into the flat index.
 func (f *Flat) Insert(v []float32) (uint32, error) {
 	f.initOnce.Do(func() {
-		if f.dimension == 0 {
+		if f.isEmpty() {
 			atomic.StoreInt32(&f.dimension, int32(len(v)))
 		}
 	})
 
 	// Check if dimensions of the input vector match the expected dimension
-	if len(v) != int(f.dimension) {
-		return 0, &index.ErrDimensionMismatch{Expected: int(f.dimension), Actual: len(v)}
+	dim := int(atomic.LoadInt32(&f.dimension))
+	if len(v) != dim {
+		return 0, &index.ErrDimensionMismatch{Expected: dim, Actual: len(v)}
 	}
 
 	// Make a copy of the vector to ensure changes outside this function don't affect the node
 	vectorCopy := make([]float32, len(v))
 	copy(vectorCopy, v)
 
-	f.mutex.Lock()
-	defer f.mutex.Unlock()
-
 	wasFirst := false
 
 	f.insertOnce.Do(func() {
-		if len(f.nodes) == 0 {
+		if f.isEmpty() {
+			f.Lock()
+			defer f.Unlock()
+
 			wasFirst = true
 			f.nodes = []*Node{{ID: 0, Vector: vectorCopy}}
 		}
@@ -89,6 +92,9 @@ func (f *Flat) Insert(v []float32) (uint32, error) {
 	if wasFirst {
 		return 0, nil
 	}
+
+	f.Lock()
+	defer f.Unlock()
 
 	// next ID
 	id := uint32(len(f.nodes))
@@ -106,6 +112,12 @@ func (f *Flat) KNNSearch(q []float32, k int, efSearch int, filter func(id uint32
 
 // BruteSearch performs a brute-force search in the flat index.
 func (f *Flat) BruteSearch(query []float32, k int, filter func(id uint32) bool) (*queue.PriorityQueue, error) {
+	if f.isEmpty() {
+		return &queue.PriorityQueue{
+			Order: true,
+		}, nil
+	}
+
 	topCandidates := &queue.PriorityQueue{
 		Order: true,
 	}
@@ -144,4 +156,11 @@ func (f *Flat) BruteSearch(query []float32, k int, filter func(id uint32) bool) 
 	}
 
 	return topCandidates, nil
+}
+
+func (f *Flat) isEmpty() bool {
+	f.RLock()
+	defer f.RUnlock()
+
+	return len(f.nodes) == 0
 }
