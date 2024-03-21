@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/hupe1980/vecgo"
+	"github.com/hupe1980/vecgo/index/hnsw"
 	"github.com/hupe1980/vecgo/util"
 )
 
@@ -15,11 +16,10 @@ func main() {
 	size := 50000
 	k := 10
 
-	vg := vecgo.New[int](dim, func(o *vecgo.Options) {
-		o.HNSW.M = 32
-		// o.HNSW.EF = 200
-		// o.HNSW.Heuristic = false
-		// o.HNSW.DistanceFunc = metric.CosineSimilarity
+	vg := vecgo.NewHNSW[int](dim, func(o *hnsw.Options) {
+		o.M = 32
+		// o.EF = 200
+		// o.Heuristic = false
 	}) // nolint wsl
 
 	rng := util.NewRNG(seed)

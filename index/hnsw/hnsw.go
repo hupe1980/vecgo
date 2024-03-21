@@ -3,29 +3,14 @@ package hnsw
 
 import (
 	"container/heap"
-	"fmt"
 	"math"
 	"math/rand"
 	"sync"
 
 	"github.com/bits-and-blooms/bitset"
-	"github.com/hupe1980/vecgo/metric"
+	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/queue"
 )
-
-// ErrDimensionMismatch is a named error type for dimension mismatch
-type ErrDimensionMismatch struct {
-	Expected int // Expected dimensions
-	Actual   int // Actual dimensions
-}
-
-// Error returns the error message for dimension mismatch
-func (e *ErrDimensionMismatch) Error() string {
-	return fmt.Sprintf("dimension mismatch: expected %d, got %d", e.Expected, e.Actual)
-}
-
-// DistanceFunc represents a function for calculating the distance between two vectors
-type DistanceFunc func(v1, v2 []float32) (float32, error)
 
 // Node represents a node in the HNSW graph
 type Node struct {
@@ -54,16 +39,15 @@ type Options struct {
 	// The heuristic algorithm is generally faster but may sacrifice some accuracy.
 	Heuristic bool
 
-	// DistanceFunc represents the distance function for calculating distance between vectors.
-	// This function is essential for performing distance calculations during search operations.
-	DistanceFunc DistanceFunc
+	// DistanceType represents the type of distance function used for calculating distances between vectors.
+	DistanceType index.DistanceType
 }
 
 var DefaultOptions = Options{
 	M:            8,
 	EF:           200,
 	Heuristic:    true,
-	DistanceFunc: metric.SquaredL2,
+	DistanceType: index.DistanceTypeSquaredL2,
 }
 
 // HNSW represents the Hierarchical Navigable Small World graph
@@ -76,6 +60,8 @@ type HNSW struct {
 	maxLevel  int     // Track the current max level used
 
 	nodes []*Node
+
+	distanceFunc index.DistanceFunc
 
 	opts Options
 
@@ -97,14 +83,15 @@ func New(dimension int, optFns ...func(o *Options)) *HNSW {
 	}
 
 	return &HNSW{
-		dimension: dimension,
-		mmax:      opts.M,
-		mmax0:     2 * opts.M,
-		ep:        0,
-		maxLevel:  0,
-		ml:        1 / math.Log(1.0*float64(opts.M)),
-		nodes:     []*Node{{ID: 0, Layer: 0, Vector: make([]float32, dimension), Connections: make([][]uint32, 2*opts.M)}},
-		opts:      opts,
+		dimension:    dimension,
+		mmax:         opts.M,
+		mmax0:        2 * opts.M,
+		ep:           0,
+		maxLevel:     0,
+		ml:           1 / math.Log(1.0*float64(opts.M)),
+		nodes:        []*Node{{ID: 0, Layer: 0, Vector: make([]float32, dimension), Connections: make([][]uint32, 2*opts.M)}},
+		distanceFunc: index.NewDistanceFunc(opts.DistanceType),
+		opts:         opts,
 	}
 }
 
@@ -112,7 +99,7 @@ func New(dimension int, optFns ...func(o *Options)) *HNSW {
 func (h *HNSW) Insert(v []float32) (uint32, error) {
 	// Check if dimensions of the input vector match the expected dimension
 	if len(v) != h.dimension {
-		return 0, &ErrDimensionMismatch{Expected: h.dimension, Actual: len(v)}
+		return 0, &index.ErrDimensionMismatch{Expected: h.dimension, Actual: len(v)}
 	}
 
 	// Make a copy of the vector to ensure changes outside this function don't affect the node
@@ -219,11 +206,11 @@ func (h *HNSW) BruteSearch(query []float32, k int, filter func(id uint32) bool) 
 	heap.Init(topCandidates)
 
 	for _, node := range h.nodes {
-		if !filter(node.ID) {
+		if !filter(node.ID) || node.ID == 0 {
 			continue
 		}
 
-		nodeDist, err := h.opts.DistanceFunc(query, node.Vector)
+		nodeDist, err := h.distanceFunc(query, node.Vector)
 		if err != nil {
 			return nil, err
 		}
@@ -273,7 +260,7 @@ func (h *HNSW) Link(first uint32, second uint32, level int) error {
 		heap.Init(topCandidates)
 
 		for _, id := range node.Connections[level] {
-			distance, err := h.opts.DistanceFunc(node.Vector, h.nodes[id].Vector)
+			distance, err := h.distanceFunc(node.Vector, h.nodes[id].Vector)
 			if err != nil {
 				return err
 			}
@@ -305,7 +292,7 @@ func (h *HNSW) findShortestPath(node *Node) (*Node, float32, error) {
 	// Current distance from our starting-point (ep)
 	currObj := h.nodes[h.ep]
 
-	currDist, err := h.opts.DistanceFunc(currObj.Vector, node.Vector)
+	currDist, err := h.distanceFunc(currObj.Vector, node.Vector)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -318,7 +305,7 @@ func (h *HNSW) findShortestPath(node *Node) (*Node, float32, error) {
 			for _, nodeID := range currObj.Connections[level] {
 				newObj := h.nodes[nodeID]
 
-				newDist, err := h.opts.DistanceFunc(newObj.Vector, node.Vector)
+				newDist, err := h.distanceFunc(newObj.Vector, node.Vector)
 				if err != nil {
 					return nil, 0, err
 				}
@@ -395,7 +382,7 @@ func (h *HNSW) searchLayer(params *searchParams) (*queue.PriorityQueue, error) {
 				if !visited.Test(uint(n)) {
 					visited.Set(uint(n))
 
-					distance, err := h.opts.DistanceFunc(params.Query, h.nodes[n].Vector)
+					distance, err := h.distanceFunc(params.Query, h.nodes[n].Vector)
 					if err != nil {
 						return nil, err
 					}
@@ -478,7 +465,7 @@ func (h *HNSW) selectNeighboursHeuristic(topCandidates *queue.PriorityQueue, m i
 
 		// Search through each item and determine if distance from node lower for items in set
 		for _, v := range items {
-			distance, _ := h.opts.DistanceFunc(h.nodes[v.Node].Vector, h.nodes[item.Node].Vector)
+			distance, _ := h.distanceFunc(h.nodes[v.Node].Vector, h.nodes[item.Node].Vector)
 			if distance < item.Distance {
 				hit = false
 				break
@@ -506,7 +493,7 @@ func (h *HNSW) selectNeighboursHeuristic(topCandidates *queue.PriorityQueue, m i
 
 // findEP finds the entry-point (ep) in the HNSW graph
 func (h *HNSW) findEP(q []float32, currObj *Node) (*Node, float32, error) {
-	currDist, err := h.opts.DistanceFunc(q, currObj.Vector)
+	currDist, err := h.distanceFunc(q, currObj.Vector)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -521,7 +508,7 @@ func (h *HNSW) findEP(q []float32, currObj *Node) (*Node, float32, error) {
 			scan = false
 
 			for _, nodeID := range currObj.Connections[level] {
-				nodeDist, err := h.opts.DistanceFunc(h.nodes[nodeID].Vector, q)
+				nodeDist, err := h.distanceFunc(h.nodes[nodeID].Vector, q)
 				if err != nil {
 					return nil, 0, err
 				}

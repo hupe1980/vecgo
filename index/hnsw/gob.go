@@ -3,12 +3,8 @@ package hnsw
 import (
 	"bytes"
 	"encoding/gob"
-)
 
-// Compile time checks to ensure HNSW satisfies the gob interfaces.
-var (
-	_ gob.GobEncoder = (*HNSW)(nil)
-	_ gob.GobDecoder = (*HNSW)(nil)
+	"github.com/hupe1980/vecgo/index"
 )
 
 // GobEncode method for HNSW.
@@ -86,6 +82,8 @@ func (h *HNSW) GobDecode(data []byte) error {
 	if err := decoder.Decode(&h.opts); err != nil {
 		return err
 	}
+
+	h.distanceFunc = index.NewDistanceFunc(h.opts.DistanceType)
 
 	return nil
 }

@@ -5,11 +5,13 @@ import "fmt"
 // Stats prints statistics about the HNSW graph
 func (h *HNSW) Stats() {
 	fmt.Println("Options:")
+	fmt.Printf("\tDistanceType = %s\n", h.opts.DistanceType)
 	fmt.Printf("\tM = %d\n", h.opts.M)
 	fmt.Printf("\tEF = %d\n", h.opts.EF)
 	fmt.Printf("\tHeuristic = %v\n\n", h.opts.Heuristic)
 
 	fmt.Println("Parameters:")
+	fmt.Printf("\tdimension = %d\n", h.dimension)
 	fmt.Printf("\tmmax = %d\n", h.mmax)
 	fmt.Printf("\tmmax0 = %d\n", h.mmax0)
 	fmt.Printf("\tep = %d\n", h.ep)

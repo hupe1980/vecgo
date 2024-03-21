@@ -4,14 +4,13 @@
 [![goreportcard](https://goreportcard.com/badge/github.com/hupe1980/vecgo)](https://goreportcard.com/report/github.com/hupe1980/vecgo)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Vecgo is a Go library designed for efficient vector indexing and searching, emphasizing approximate nearest neighbor search using the HNSW (Hierarchical Navigable Small World) algorithm. It offers a versatile and user-friendly interface for managing and querying vast collections of high-dimensional vectors.
+Vecgo is a Go library designed for efficient vector indexing and searching, supporting various index types and emphasizing approximate nearest neighbor search. It provides a versatile and user-friendly interface for managing and querying vast collections of high-dimensional vectors.
 
 :warning: This is experimental and subject to breaking changes.
 
 ## Features
 
-- HNSW algorithm implementation for approximate nearest neighbor search.
-- Support for brute-force and heuristic search methods.
+- Support for multiple index types, including flat and HNSW (Hierarchical Navigable Small World) algorithms.
 - Customizable options for memory usage and search performance.
 - Efficient handling of high-dimensional vectors.
 - Embeddable vector store for seamless integration with Go applications.
@@ -32,7 +31,7 @@ import (
 )
 
 func main() {
-	vg := vecgo.New[string](3)
+	vg := vecgo.NewHNSW[string](3)
 
 	_, err := vg.Insert(&vecgo.VectorWithData[string]{
 		Vector: []float32{1.0, 2.0, 2.5},

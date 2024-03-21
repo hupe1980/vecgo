@@ -9,7 +9,9 @@ import (
 	"os"
 	"sync"
 
-	"github.com/hupe1980/vecgo/hnsw"
+	"github.com/hupe1980/vecgo/index"
+	"github.com/hupe1980/vecgo/index/flat"
+	"github.com/hupe1980/vecgo/index/hnsw"
 	"github.com/hupe1980/vecgo/queue"
 )
 
@@ -21,32 +23,47 @@ var (
 	ErrInvalidEFValue = errors.New("explore factor (ef) must be at least the value of k")
 )
 
-// Options contains configuration options for Vecgo.
-type Options struct {
-	HNSW hnsw.Options
-}
-
 // Vecgo is a vector store database.
 type Vecgo[T any] struct {
-	index *hnsw.HNSW
+	index index.Index
 	store map[uint32]T
 	mutex sync.Mutex
 }
 
-// New creates a new Vecgo instance with the given dimension and options.
-func New[T any](dimension int, optFns ...func(o *Options)) *Vecgo[T] {
-	opts := Options{
-		HNSW: hnsw.DefaultOptions,
-	}
+// NewFlat creates a new Vecgo instance with a flat index.
+func NewFlat[T any](dimension int, optFns ...func(o *flat.Options)) *Vecgo[T] {
+	opts := flat.DefaultOptions
 
 	for _, fn := range optFns {
 		fn(&opts)
 	}
 
+	i := flat.New(dimension, func(o *flat.Options) {
+		*o = opts
+	})
+
+	return New[T](i)
+}
+
+// NewHNSW creates a new Vecgo instance with an HNSW index.
+func NewHNSW[T any](dimension int, optFns ...func(o *hnsw.Options)) *Vecgo[T] {
+	opts := hnsw.DefaultOptions
+
+	for _, fn := range optFns {
+		fn(&opts)
+	}
+
+	i := hnsw.New(dimension, func(o *hnsw.Options) {
+		*o = opts
+	})
+
+	return New[T](i)
+}
+
+// New creates a new Vecgo instance with the given index.
+func New[T any](i index.Index) *Vecgo[T] {
 	return &Vecgo[T]{
-		index: hnsw.New(dimension, func(o *hnsw.Options) {
-			*o = opts.HNSW
-		}),
+		index: i,
 		store: make(map[uint32]T),
 	}
 }
@@ -68,10 +85,16 @@ func NewFromReader[T any](r io.Reader) (*Vecgo[T], error) {
 
 	vg := &Vecgo[T]{}
 
+	newIndex := &hnsw.HNSW{}
+
 	// Decode the index
-	if err := decoder.Decode(&vg.index); err != nil {
+	if err := decoder.Decode(newIndex); err != nil {
 		return nil, err
 	}
+
+	newIndex.Stats()
+
+	vg.index = newIndex
 
 	// Decode the store
 	if err := decoder.Decode(&vg.store); err != nil {

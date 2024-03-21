@@ -11,7 +11,7 @@ import (
 
 func TestVecgo(t *testing.T) {
 	t.Run("InsertAndRetrieve", func(t *testing.T) {
-		vg := New[float32](3)
+		vg := NewHNSW[float32](3)
 
 		vec := VectorWithData[float32]{
 			Vector: []float32{1.0, 2.0, 3.0},
@@ -27,7 +27,7 @@ func TestVecgo(t *testing.T) {
 	})
 
 	t.Run("SaveAndLoad", func(t *testing.T) {
-		vg := New[float32](3)
+		vg := NewHNSW[float32](3)
 
 		vec := VectorWithData[float32]{
 			Vector: []float32{1.0, 2.0, 3.0},
@@ -36,6 +36,10 @@ func TestVecgo(t *testing.T) {
 
 		id, err := vg.Insert(&vec)
 		require.NoError(t, err)
+
+		r, err := vg.KNNSearch([]float32{1.0, 2.0, 3.0}, 1)
+		require.NoError(t, err)
+		require.Len(t, r, 1)
 
 		var buf bytes.Buffer
 		err = vg.SaveToWriter(&buf)
@@ -47,10 +51,14 @@ func TestVecgo(t *testing.T) {
 		data, err := vgLoaded.Get(id)
 		require.NoError(t, err)
 		assert.Equal(t, vec.Data, data)
+
+		r, err = vgLoaded.KNNSearch([]float32{1.0, 2.0, 3.0}, 1)
+		require.NoError(t, err)
+		require.Len(t, r, 1)
 	})
 
 	t.Run("KNN", func(t *testing.T) {
-		vg := New[float32](3)
+		vg := NewHNSW[float32](3)
 
 		vec1 := VectorWithData[float32]{
 			Vector: []float32{05, 1.0, 0.5},
@@ -86,7 +94,7 @@ func TestVecgo(t *testing.T) {
 	})
 
 	t.Run("Brute", func(t *testing.T) {
-		vg := New[float32](3)
+		vg := NewHNSW[float32](3)
 
 		vec1 := VectorWithData[float32]{
 			Vector: []float32{05, 1.0, 0.5},
@@ -126,7 +134,7 @@ func BenchmarkInsertAndBatchInsert(b *testing.B) {
 	dim := 1024
 
 	b.Run("InsertOneByOne", func(b *testing.B) {
-		vg := New[int](dim)
+		vg := NewHNSW[int](dim)
 
 		rng := util.NewRNG(4711)
 
