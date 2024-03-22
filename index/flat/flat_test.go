@@ -37,8 +37,8 @@ func TestFlat(t *testing.T) {
 		results, err := f.KNNSearch([]float32{0.0, 0.0, 0.0}, 2, 0, func(id uint32) bool { return true })
 		require.NoError(t, err)
 		assert.Equal(t, 2, len(results))
-		assert.Equal(t, uint32(1), results[0].ID)
-		assert.Equal(t, uint32(2), results[1].ID)
+		assert.Equal(t, uint32(0), results[0].ID)
+		assert.Equal(t, uint32(1), results[1].ID)
 	})
 
 	t.Run("BruteSearch", func(t *testing.T) {
@@ -54,7 +54,7 @@ func TestFlat(t *testing.T) {
 		results, err := f.BruteSearch([]float32{0.0, 0.0, 0.0}, 2, func(id uint32) bool { return true })
 		require.NoError(t, err)
 		assert.Equal(t, 2, len(results))
-		assert.Equal(t, uint32(1), results[0].ID)
-		assert.Equal(t, uint32(2), results[1].ID)
+		assert.Equal(t, uint32(0), results[0].ID)
+		assert.Equal(t, uint32(1), results[1].ID)
 	})
 }

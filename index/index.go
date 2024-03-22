@@ -55,6 +55,7 @@ func (dt DistanceType) String() string {
 	}
 }
 
+// SearchResult represents a search result.
 type SearchResult struct {
 	// ID is the identifier of the search result.
 	ID uint32

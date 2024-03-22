@@ -117,11 +117,10 @@ func (f *Flat) BruteSearch(query []float32, k int, filter func(id uint32) bool) 
 	}
 
 	topCandidates := queue.NewMax(k)
-
 	heap.Init(topCandidates)
 
 	for _, node := range f.nodes {
-		if !filter(node.ID) || node.ID == 0 {
+		if !filter(node.ID) {
 			continue
 		}
 
