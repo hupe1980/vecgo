@@ -18,6 +18,20 @@ type PriorityQueue struct {
 	Items []*PriorityQueueItem // Items contains the elements of the priority queue.
 }
 
+func NewMin(capacity int) *PriorityQueue {
+	return &PriorityQueue{
+		Order: false,
+		Items: make([]*PriorityQueueItem, 0, capacity),
+	}
+}
+
+func NewMax(capacity int) *PriorityQueue {
+	return &PriorityQueue{
+		Order: true,
+		Items: make([]*PriorityQueueItem, 0, capacity),
+	}
+}
+
 // Len returns the number of elements in the priority queue.
 func (pq *PriorityQueue) Len() int { return len(pq.Items) }
 
@@ -62,4 +76,18 @@ func (pq *PriorityQueue) Pop() any {
 // Top returns the top element of the priority queue.
 func (pq *PriorityQueue) Top() any {
 	return pq.Items[0]
+}
+
+func (pq *PriorityQueue) Cap() int {
+	return cap(pq.Items)
+}
+
+// Reset clears all items from the queue
+func (pq *PriorityQueue) Reset() {
+	pq.Items = pq.Items[:0]
+}
+
+// ResetCap drops existing queue items, and allocates a new queue with the given capacity
+func (pq *PriorityQueue) ResetCap(capacity int) {
+	pq.Items = make([]*PriorityQueueItem, 0, capacity)
 }

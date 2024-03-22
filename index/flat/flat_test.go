@@ -34,11 +34,11 @@ func TestFlat(t *testing.T) {
 		_, _ = f.Insert([]float32{7.0, 8.0, 9.0})
 
 		// Perform brute-force search
-		result, err := f.KNNSearch([]float32{0.0, 0.0, 0.0}, 2, 0, func(id uint32) bool { return true })
+		results, err := f.KNNSearch([]float32{0.0, 0.0, 0.0}, 2, 0, func(id uint32) bool { return true })
 		require.NoError(t, err)
-		assert.Equal(t, 2, result.Len())
-		assert.Equal(t, uint32(2), result.Items[0].Node)
-		assert.Equal(t, uint32(1), result.Items[1].Node)
+		assert.Equal(t, 2, len(results))
+		assert.Equal(t, uint32(1), results[0].ID)
+		assert.Equal(t, uint32(2), results[1].ID)
 	})
 
 	t.Run("BruteSearch", func(t *testing.T) {
@@ -51,10 +51,10 @@ func TestFlat(t *testing.T) {
 		_, _ = f.Insert([]float32{7.0, 8.0, 9.0})
 
 		// Perform brute-force search
-		result, err := f.BruteSearch([]float32{0.0, 0.0, 0.0}, 2, func(id uint32) bool { return true })
+		results, err := f.BruteSearch([]float32{0.0, 0.0, 0.0}, 2, func(id uint32) bool { return true })
 		require.NoError(t, err)
-		require.Equal(t, 2, result.Len())
-		assert.Equal(t, uint32(2), result.Items[0].Node)
-		assert.Equal(t, uint32(1), result.Items[1].Node)
+		assert.Equal(t, 2, len(results))
+		assert.Equal(t, uint32(1), results[0].ID)
+		assert.Equal(t, uint32(2), results[1].ID)
 	})
 }

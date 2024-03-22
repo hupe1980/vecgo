@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/hupe1980/vecgo/metric"
-	"github.com/hupe1980/vecgo/queue"
 )
 
 // ErrDimensionMismatch is a named error type for dimension mismatch
@@ -56,6 +55,14 @@ func (dt DistanceType) String() string {
 	}
 }
 
+type SearchResult struct {
+	// ID is the identifier of the search result.
+	ID uint32
+
+	// Distance is the distance between the query vector and the result vector.
+	Distance float32
+}
+
 // Index represents an index for vector search
 type Index interface {
 	gob.GobEncoder
@@ -65,10 +72,10 @@ type Index interface {
 	Insert(v []float32) (uint32, error)
 
 	// KNNSearch performs a K-nearest neighbor search
-	KNNSearch(q []float32, k int, efSearch int, filter func(id uint32) bool) (*queue.PriorityQueue, error)
+	KNNSearch(q []float32, k int, efSearch int, filter func(id uint32) bool) ([]SearchResult, error)
 
 	// BruteSearch performs a brute-force search
-	BruteSearch(query []float32, k int, filter func(id uint32) bool) (*queue.PriorityQueue, error)
+	BruteSearch(query []float32, k int, filter func(id uint32) bool) ([]SearchResult, error)
 
 	// Stats prints statistics about the index
 	Stats()

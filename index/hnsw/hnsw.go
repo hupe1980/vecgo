@@ -13,6 +13,9 @@ import (
 	"github.com/hupe1980/vecgo/queue"
 )
 
+// Compile time check to ensure HNSW satisfies the Index interface.
+var _ index.Index = (*HNSW)(nil)
+
 // Node represents a node in the HNSW graph
 type Node struct {
 	Connections [][]uint32 // Links to other nodes
@@ -191,7 +194,7 @@ func (h *HNSW) Insert(v []float32) (uint32, error) {
 	// Next link the neighbour nodes to our new node, making it visible
 	for level := min(node.Layer, h.maxLevel); level >= 0; level-- {
 		for _, neighbourNode := range node.Connections[level] {
-			if err := h.Link(neighbourNode, node.ID, level); err != nil {
+			if err := h.link(neighbourNode, node.ID, level); err != nil {
 				return 0, err
 			}
 		}
@@ -206,11 +209,9 @@ func (h *HNSW) Insert(v []float32) (uint32, error) {
 }
 
 // KNNSearch performs a k-nearest neighbor search in the HNSW graph
-func (h *HNSW) KNNSearch(q []float32, k int, efSearch int, filter func(id uint32) bool) (*queue.PriorityQueue, error) {
+func (h *HNSW) KNNSearch(q []float32, k int, efSearch int, filter func(id uint32) bool) ([]index.SearchResult, error) {
 	if h.isEmpty() {
-		return &queue.PriorityQueue{
-			Order: true,
-		}, nil
+		return nil, nil
 	}
 
 	ep, currDist, err := h.findEP(q, h.nodes[h.ep])
@@ -233,20 +234,26 @@ func (h *HNSW) KNNSearch(q []float32, k int, efSearch int, filter func(id uint32
 		_ = heap.Pop(topCandidates)
 	}
 
-	return topCandidates, nil
+	results := make([]index.SearchResult, topCandidates.Len())
+
+	for i := topCandidates.Len() - 1; i >= 0; i-- {
+		item, _ := heap.Pop(topCandidates).(*queue.PriorityQueueItem)
+		results[i] = index.SearchResult{
+			ID:       item.Node,
+			Distance: item.Distance,
+		}
+	}
+
+	return results, nil
 }
 
 // BruteSearch performs a brute-force search in the HNSW graph
-func (h *HNSW) BruteSearch(query []float32, k int, filter func(id uint32) bool) (*queue.PriorityQueue, error) {
+func (h *HNSW) BruteSearch(query []float32, k int, filter func(id uint32) bool) ([]index.SearchResult, error) {
 	if h.isEmpty() {
-		return &queue.PriorityQueue{
-			Order: true,
-		}, nil
+		return nil, nil
 	}
 
-	topCandidates := &queue.PriorityQueue{
-		Order: true,
-	}
+	topCandidates := queue.NewMax(k)
 
 	heap.Init(topCandidates)
 
@@ -281,11 +288,21 @@ func (h *HNSW) BruteSearch(query []float32, k int, filter func(id uint32) bool) 
 		}
 	}
 
-	return topCandidates, nil
+	results := make([]index.SearchResult, topCandidates.Len())
+
+	for i := topCandidates.Len() - 1; i >= 0; i-- {
+		item, _ := heap.Pop(topCandidates).(*queue.PriorityQueueItem)
+		results[i] = index.SearchResult{
+			ID:       item.Node,
+			Distance: item.Distance,
+		}
+	}
+
+	return results, nil
 }
 
-// Link adds links between nodes in the HNSW graph
-func (h *HNSW) Link(first uint32, second uint32, level int) error {
+// link adds links between nodes in the HNSW graph
+func (h *HNSW) link(first uint32, second uint32, level int) error {
 	maxConnections := h.mmax
 	// HNSW allows double the connections for the bottom level (0)
 	if level == 0 {
@@ -298,9 +315,7 @@ func (h *HNSW) Link(first uint32, second uint32, level int) error {
 
 	if len(node.Connections[level]) > maxConnections {
 		// Add the new candidate to our queue
-		topCandidates := &queue.PriorityQueue{
-			Order: false,
-		}
+		topCandidates := queue.NewMin(maxConnections)
 
 		heap.Init(topCandidates)
 
@@ -403,18 +418,14 @@ func (h *HNSW) searchLayer(params *searchParams) (*queue.PriorityQueue, error) {
 	visited.Set(uint(params.EntryPoint.Node))
 
 	// Add the new candidate to our queue
-	candidates := &queue.PriorityQueue{
-		Order: false, // min-heap
-	}
-
+	candidates := queue.NewMin(params.EF)
 	heap.Init(candidates)
+
 	heap.Push(candidates, params.EntryPoint)
 
-	topCandidates := &queue.PriorityQueue{
-		Order: true, // max-heap
-	}
-
+	topCandidates := queue.NewMax(params.EF)
 	heap.Init(topCandidates)
+
 	heap.Push(topCandidates, params.EntryPoint)
 
 	for candidates.Len() > 0 {
@@ -483,16 +494,18 @@ func (h *HNSW) selectNeighboursHeuristic(topCandidates *queue.PriorityQueue, m i
 	}
 
 	// Create our new priority queues
-	newCandidates := &queue.PriorityQueue{}
-
-	tmpCandidates := &queue.PriorityQueue{Order: order}
-
-	heap.Init(tmpCandidates)
-
 	items := make([]*queue.PriorityQueueItem, 0, m)
 
+	var (
+		tmpCandidates *queue.PriorityQueue
+		newCandidates *queue.PriorityQueue
+	)
+
 	if !order {
-		newCandidates.Order = order
+		tmpCandidates = queue.NewMin(topCandidates.Len())
+		heap.Init(tmpCandidates)
+
+		newCandidates = queue.NewMin(topCandidates.Len())
 		heap.Init(newCandidates)
 
 		// Add existing candidates to our new queue
@@ -501,6 +514,9 @@ func (h *HNSW) selectNeighboursHeuristic(topCandidates *queue.PriorityQueue, m i
 			heap.Push(newCandidates, item)
 		}
 	} else {
+		tmpCandidates = queue.NewMax(topCandidates.Len())
+		heap.Init(tmpCandidates)
+
 		newCandidates = topCandidates
 	}
 

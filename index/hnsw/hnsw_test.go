@@ -1,12 +1,10 @@
 package hnsw
 
 import (
-	"container/heap"
 	"fmt"
 	"log"
 	"testing"
 
-	"github.com/hupe1980/vecgo/queue"
 	"github.com/hupe1980/vecgo/util"
 	"github.com/stretchr/testify/assert"
 )
@@ -159,11 +157,8 @@ func TestValidateInsertSearch(t *testing.T) {
 
 				groundResults[i] = make([]uint32, tc.K)
 
-				for i2 := tc.K - 1; i2 >= 0; i2-- {
-					if bestCandidatesBrute.Len() > 0 {
-						item, _ := heap.Pop(bestCandidatesBrute).(*queue.PriorityQueueItem)
-						groundResults[i][i2] = item.Node
-					}
+				for i2, item := range bestCandidatesBrute {
+					groundResults[i][i2] = item.ID
 				}
 			}
 
@@ -176,17 +171,16 @@ func TestValidateInsertSearch(t *testing.T) {
 					log.Fatal(err)
 				}
 
-				for i3 := tc.K - 1; i3 >= 0; i3-- {
-					if bestCandidates.Len() == 0 {
+				for _, item := range bestCandidates {
+					if len(bestCandidates) == 0 {
 						fmt.Println("No matches")
 						break
 					}
 
-					item, _ := heap.Pop(bestCandidates).(*queue.PriorityQueueItem)
 					totalSearch++
 
 					for k := tc.K - 1; k >= 0; k-- {
-						if item.Node == groundResults[i][k] {
+						if item.ID == groundResults[i][k] {
 							hitSuccess++
 						}
 					}

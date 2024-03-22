@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/hupe1980/vecgo"
-	"github.com/hupe1980/vecgo/index/hnsw"
 	"github.com/hupe1980/vecgo/util"
 )
 
@@ -16,11 +15,7 @@ func main() {
 	size := 50000
 	k := 10
 
-	vg := vecgo.NewHNSW[int](func(o *hnsw.Options) {
-		o.M = 32
-		// o.EF = 200
-		// o.Heuristic = false
-	}) // nolint wsl
+	vg := vecgo.NewFlat[int]()
 
 	rng := util.NewRNG(seed)
 
@@ -59,34 +54,12 @@ func main() {
 		result []vecgo.SearchResult[int]
 	)
 
-	fmt.Println("--- KNN ---")
-
-	start = time.Now()
-
-	result, err = vg.KNNSearch(query, k, func(o *vecgo.KNNSearchOptions[int]) {
-		o.EF = 80
-		// o.FilterWithData = false
-		// o.FilterFunc = func(id uint32, data *vecgo.Data[int]) bool {
-		// 	return id%2 == 0
-		// }
-	}) // nolint wsl
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	end = time.Since(start)
-
-	printResult(result)
-
-	fmt.Printf("Seconds: %.8f\n\n", end.Seconds())
-
 	fmt.Println("--- Brute ---")
 
 	start = time.Now()
 
-	result, err = vg.BruteSearch(query, k, func(o *vecgo.BruteSearchOptions[int]) {
-		// o.FilterWithData = false
-		// o.FilterFunc = func(id uint32, data *vecgo.Data[int]) bool {
+	result, err = vg.BruteSearch(query, k, func(o *vecgo.BruteSearchOptions) {
+		// o.FilterFunc = func(id uint32) bool {
 		// 	return id%2 == 0
 		// }
 	}) // nolint wsl

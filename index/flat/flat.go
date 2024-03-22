@@ -106,21 +106,17 @@ func (f *Flat) Insert(v []float32) (uint32, error) {
 }
 
 // KNNSearch performs a K-nearest neighbor search in the flat index.
-func (f *Flat) KNNSearch(q []float32, k int, efSearch int, filter func(id uint32) bool) (*queue.PriorityQueue, error) {
+func (f *Flat) KNNSearch(q []float32, k int, efSearch int, filter func(id uint32) bool) ([]index.SearchResult, error) {
 	return f.BruteSearch(q, k, filter)
 }
 
 // BruteSearch performs a brute-force search in the flat index.
-func (f *Flat) BruteSearch(query []float32, k int, filter func(id uint32) bool) (*queue.PriorityQueue, error) {
+func (f *Flat) BruteSearch(query []float32, k int, filter func(id uint32) bool) ([]index.SearchResult, error) {
 	if f.isEmpty() {
-		return &queue.PriorityQueue{
-			Order: true,
-		}, nil
+		return nil, nil
 	}
 
-	topCandidates := &queue.PriorityQueue{
-		Order: true,
-	}
+	topCandidates := queue.NewMax(k)
 
 	heap.Init(topCandidates)
 
@@ -155,7 +151,17 @@ func (f *Flat) BruteSearch(query []float32, k int, filter func(id uint32) bool) 
 		}
 	}
 
-	return topCandidates, nil
+	results := make([]index.SearchResult, topCandidates.Len())
+
+	for i := topCandidates.Len() - 1; i >= 0; i-- {
+		item, _ := heap.Pop(topCandidates).(*queue.PriorityQueueItem)
+		results[i] = index.SearchResult{
+			ID:       item.Node,
+			Distance: item.Distance,
+		}
+	}
+
+	return results, nil
 }
 
 func (f *Flat) isEmpty() bool {

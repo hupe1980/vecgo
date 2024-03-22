@@ -2,7 +2,6 @@
 package vecgo
 
 import (
-	"container/heap"
 	"encoding/gob"
 	"errors"
 	"io"
@@ -12,7 +11,6 @@ import (
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/index/flat"
 	"github.com/hupe1980/vecgo/index/hnsw"
-	"github.com/hupe1980/vecgo/queue"
 )
 
 var (
@@ -135,45 +133,37 @@ func (vg *Vecgo[T]) Insert(item *VectorWithData[T]) (uint32, error) {
 
 // SearchResult represents a search result.
 type SearchResult[T any] struct {
+	index.SearchResult
 	// ID is the identifier of the search result.
-	ID uint32
+	//ID uint32
 
 	// Distance is the distance between the query vector and the result vector.
-	Distance float32
+	//Distance float32
 
 	// Data is the associated data of the search result.
 	Data T
 }
 
-// Data is a generic struct representing data associated with a vector.
-type Data[T any] struct {
-	Value T // Value holds the associated data.
-}
-
 // FilterFunc is a function type used for filtering search results.
-type FilterFunc[T any] func(id uint32, data *Data[T]) bool
+type FilterFunc func(id uint32) bool
 
 // KNNSearchOptions contains options for KNN search.
-type KNNSearchOptions[T any] struct {
+type KNNSearchOptions struct {
 	// EF (Explore Factor) specifies the size of the dynamic list for the nearest neighbors during the search.
 	// Higher EF leads to more accurate but slower search.
 	// EF cannot be set lower than the number of queried nearest neighbors (k).
 	// The value of EF can be anything between k and the size of the dataset.
 	EF int
 
-	// FilterWithData indicates whether to filter search results along with associated data.
-	FilterWithData bool
-
 	// FilterFunc is a function used to filter search results.
-	FilterFunc FilterFunc[T]
+	FilterFunc FilterFunc
 }
 
 // KNNSearch performs a K-nearest neighbor search.
-func (vg *Vecgo[T]) KNNSearch(query []float32, k int, optFns ...func(o *KNNSearchOptions[T])) ([]SearchResult[T], error) {
-	opts := KNNSearchOptions[T]{
-		EF:             50,
-		FilterWithData: true,
-		FilterFunc:     nil,
+func (vg *Vecgo[T]) KNNSearch(query []float32, k int, optFns ...func(o *KNNSearchOptions)) ([]SearchResult[T], error) {
+	opts := KNNSearchOptions{
+		EF:         50,
+		FilterFunc: nil,
 	}
 
 	for _, fn := range optFns {
@@ -189,13 +179,7 @@ func (vg *Vecgo[T]) KNNSearch(query []float32, k int, optFns ...func(o *KNNSearc
 			return true
 		}
 
-		if opts.FilterWithData {
-			return opts.FilterFunc(id, &Data[T]{
-				Value: vg.store[id],
-			})
-		}
-
-		return opts.FilterFunc(id, nil)
+		return opts.FilterFunc(id)
 	})
 	if err != nil {
 		return nil, err
@@ -205,19 +189,15 @@ func (vg *Vecgo[T]) KNNSearch(query []float32, k int, optFns ...func(o *KNNSearc
 }
 
 // BruteSearchOptions contains options for brute-force search.
-type BruteSearchOptions[T any] struct {
-	// FilterWithData indicates whether to filter search results along with associated data.
-	FilterWithData bool
-
+type BruteSearchOptions struct {
 	// FilterFunc is a function used to filter search results.
-	FilterFunc FilterFunc[T]
+	FilterFunc FilterFunc
 }
 
 // BruteSearch performs a brute-force search.
-func (vg *Vecgo[T]) BruteSearch(query []float32, k int, optFns ...func(o *BruteSearchOptions[T])) ([]SearchResult[T], error) {
-	opts := BruteSearchOptions[T]{
-		FilterWithData: true,
-		FilterFunc:     nil,
+func (vg *Vecgo[T]) BruteSearch(query []float32, k int, optFns ...func(o *BruteSearchOptions)) ([]SearchResult[T], error) {
+	opts := BruteSearchOptions{
+		FilterFunc: nil,
 	}
 
 	for _, fn := range optFns {
@@ -229,13 +209,7 @@ func (vg *Vecgo[T]) BruteSearch(query []float32, k int, optFns ...func(o *BruteS
 			return true
 		}
 
-		if opts.FilterWithData {
-			return opts.FilterFunc(id, &Data[T]{
-				Value: vg.store[id],
-			})
-		}
-
-		return opts.FilterFunc(id, nil)
+		return opts.FilterFunc(id)
 	})
 	if err != nil {
 		return nil, err
@@ -245,17 +219,16 @@ func (vg *Vecgo[T]) BruteSearch(query []float32, k int, optFns ...func(o *BruteS
 }
 
 // extractSearchResults extracts search results from a priority queue.
-func (vg *Vecgo[T]) extractSearchResults(bestCandidates *queue.PriorityQueue) []SearchResult[T] {
-	result := make([]SearchResult[T], 0, bestCandidates.Len())
+func (vg *Vecgo[T]) extractSearchResults(bestCandidates []index.SearchResult) []SearchResult[T] {
+	result := make([]SearchResult[T], 0, len(bestCandidates))
 
-	k := bestCandidates.Len()
-
-	for i := 0; i < k; i++ {
-		item, _ := heap.Pop(bestCandidates).(*queue.PriorityQueueItem)
+	for _, item := range bestCandidates {
 		result = append(result, SearchResult[T]{
-			ID:       item.Node,
-			Distance: item.Distance,
-			Data:     vg.store[item.Node],
+			SearchResult: index.SearchResult{
+				ID:       item.ID,
+				Distance: item.Distance,
+			},
+			Data: vg.store[item.ID],
 		})
 	}
 
