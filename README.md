@@ -32,8 +32,9 @@ import (
 
 func main() {
 	vg := vecgo.NewHNSW[string]()
+	// vg := vecgo.NewFlat[string]()
 
-	_, err := vg.Insert(&vecgo.VectorWithData[string]{
+	_, err := vg.Insert(vecgo.VectorWithData[string]{
 		Vector: []float32{1.0, 2.0, 2.5},
 		Data:   "Hello World!",
 	})

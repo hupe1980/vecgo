@@ -2,6 +2,7 @@ package vecgo
 
 import (
 	"bytes"
+	"sync"
 	"testing"
 
 	"github.com/hupe1980/vecgo/util"
@@ -18,7 +19,7 @@ func TestVecgo(t *testing.T) {
 			Data:   42.0,
 		}
 
-		id, err := vg.Insert(&vec)
+		id, err := vg.Insert(vec)
 		require.NoError(t, err)
 
 		data, err := vg.Get(id)
@@ -34,7 +35,7 @@ func TestVecgo(t *testing.T) {
 			Data:   42.0,
 		}
 
-		id, err := vg.Insert(&vec)
+		id, err := vg.Insert(vec)
 		require.NoError(t, err)
 
 		r, err := vg.KNNSearch([]float32{1.0, 2.0, 3.0}, 1)
@@ -75,13 +76,13 @@ func TestVecgo(t *testing.T) {
 			Data:   12.0,
 		}
 
-		_, err := vg.Insert(&vec1)
+		_, err := vg.Insert(vec1)
 		require.NoError(t, err)
 
-		_, err = vg.Insert(&vec2)
+		_, err = vg.Insert(vec2)
 		require.NoError(t, err)
 
-		_, err = vg.Insert(&vec3)
+		_, err = vg.Insert(vec3)
 		require.NoError(t, err)
 
 		query := []float32{0.5, 0.5, 0.5}
@@ -111,13 +112,13 @@ func TestVecgo(t *testing.T) {
 			Data:   12.0,
 		}
 
-		_, err := vg.Insert(&vec1)
+		_, err := vg.Insert(vec1)
 		require.NoError(t, err)
 
-		_, err = vg.Insert(&vec2)
+		_, err = vg.Insert(vec2)
 		require.NoError(t, err)
 
-		_, err = vg.Insert(&vec3)
+		_, err = vg.Insert(vec3)
 		require.NoError(t, err)
 
 		query := []float32{0.5, 0.5, 0.5}
@@ -139,10 +140,10 @@ func BenchmarkInsertAndBatchInsert(b *testing.B) {
 		rng := util.NewRNG(4711)
 
 		vectors := rng.GenerateRandomVectors(b.N, dim)
-		vectorWithData := make([]*VectorWithData[int], b.N)
+		vectorWithData := make([]VectorWithData[int], b.N)
 
 		for i := 0; i < b.N; i++ {
-			vectorWithData[i] = &VectorWithData[int]{
+			vectorWithData[i] = VectorWithData[int]{
 				Vector: vectors[i],
 				Data:   i,
 			}
@@ -152,6 +153,53 @@ func BenchmarkInsertAndBatchInsert(b *testing.B) {
 
 		for i := 0; i < b.N; i++ {
 			_, err := vg.Insert(vectorWithData[i])
+			if err != nil {
+				b.Fatalf("Insert failed: %v", err)
+			}
+		}
+	})
+
+	b.Run("InsertParallel", func(b *testing.B) {
+		vg := NewHNSW[int]()
+
+		rng := util.NewRNG(4711)
+
+		vectors := rng.GenerateRandomVectors(b.N, dim)
+		vectorWithData := make([]VectorWithData[int], b.N)
+
+		for i := 0; i < b.N; i++ {
+			vectorWithData[i] = VectorWithData[int]{
+				Vector: vectors[i],
+				Data:   i,
+			}
+		}
+
+		b.ResetTimer()
+
+		errCh := make(chan error, b.N) // Error channel to receive errors from goroutines
+
+		var wg sync.WaitGroup
+
+		wg.Add(b.N)
+
+		for i := 0; i < b.N; i++ {
+			go func(i int) {
+				defer wg.Done()
+
+				_, err := vg.Insert(vectorWithData[i])
+				if err != nil {
+					errCh <- err
+				}
+			}(i)
+		}
+
+		go func() {
+			wg.Wait()
+			close(errCh) // Close the error channel after all goroutines are done
+		}()
+
+		// Collect errors from the error channel
+		for err := range errCh {
 			if err != nil {
 				b.Fatalf("Insert failed: %v", err)
 			}

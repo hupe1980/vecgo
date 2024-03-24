@@ -19,9 +19,9 @@ func main() {
 
 	rng := util.NewRNG(seed)
 
-	items := make([]*vecgo.VectorWithData[int], 0, size)
+	items := make([]vecgo.VectorWithData[int], 0, size)
 	for i, v := range rng.GenerateRandomVectors(size, dim) {
-		items = append(items, &vecgo.VectorWithData[int]{
+		items = append(items, vecgo.VectorWithData[int]{
 			Vector: v,
 			Data:   i,
 		})

@@ -117,7 +117,7 @@ type VectorWithData[T any] struct {
 }
 
 // Insert inserts a vector along with associated data into the database.
-func (vg *Vecgo[T]) Insert(item *VectorWithData[T]) (uint32, error) {
+func (vg *Vecgo[T]) Insert(item VectorWithData[T]) (uint32, error) {
 	id, err := vg.index.Insert(item.Vector)
 	if err != nil {
 		return 0, err
@@ -163,7 +163,7 @@ type KNNSearchOptions struct {
 func (vg *Vecgo[T]) KNNSearch(query []float32, k int, optFns ...func(o *KNNSearchOptions)) ([]SearchResult[T], error) {
 	opts := KNNSearchOptions{
 		EF:         50,
-		FilterFunc: nil,
+		FilterFunc: func(id uint32) bool { return true },
 	}
 
 	for _, fn := range optFns {
@@ -175,10 +175,6 @@ func (vg *Vecgo[T]) KNNSearch(query []float32, k int, optFns ...func(o *KNNSearc
 	}
 
 	bestCandidates, err := vg.index.KNNSearch(query, k, opts.EF, func(id uint32) bool {
-		if opts.FilterFunc == nil {
-			return true
-		}
-
 		return opts.FilterFunc(id)
 	})
 	if err != nil {
@@ -197,7 +193,7 @@ type BruteSearchOptions struct {
 // BruteSearch performs a brute-force search.
 func (vg *Vecgo[T]) BruteSearch(query []float32, k int, optFns ...func(o *BruteSearchOptions)) ([]SearchResult[T], error) {
 	opts := BruteSearchOptions{
-		FilterFunc: nil,
+		FilterFunc: func(id uint32) bool { return true },
 	}
 
 	for _, fn := range optFns {
@@ -205,10 +201,6 @@ func (vg *Vecgo[T]) BruteSearch(query []float32, k int, optFns ...func(o *BruteS
 	}
 
 	bestCandidates, err := vg.index.BruteSearch(query, k, func(id uint32) bool {
-		if opts.FilterFunc == nil {
-			return true
-		}
-
 		return opts.FilterFunc(id)
 	})
 	if err != nil {
