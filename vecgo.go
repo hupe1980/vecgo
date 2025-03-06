@@ -83,7 +83,7 @@ func NewFromReader[T any](r io.Reader) (*Vecgo[T], error) {
 
 	vg := &Vecgo[T]{}
 
-	newIndex := &hnsw.HNSW{}
+	newIndex := hnsw.New()
 
 	// Decode the index
 	if err := decoder.Decode(newIndex); err != nil {
