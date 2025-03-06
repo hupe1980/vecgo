@@ -8,9 +8,9 @@ import (
 	"os"
 	"sync"
 
-	"github.com/hupe1980/vecgo/index"
-	"github.com/hupe1980/vecgo/index/flat"
-	"github.com/hupe1980/vecgo/index/hnsw"
+	"github.com/ylerby/vecgo/index"
+	"github.com/ylerby/vecgo/index/flat"
+	"github.com/ylerby/vecgo/index/hnsw"
 )
 
 var (

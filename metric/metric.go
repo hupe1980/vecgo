@@ -3,7 +3,7 @@ package metric
 import (
 	"errors"
 
-	"github.com/hupe1980/vecgo/internal/math32"
+	"github.com/ylerby/vecgo/internal/math32"
 )
 
 // Magnitude calculates the magnitude (length) of a float32 slice.

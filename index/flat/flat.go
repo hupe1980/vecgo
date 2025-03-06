@@ -6,8 +6,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/hupe1980/vecgo/index"
-	"github.com/hupe1980/vecgo/queue"
+	"github.com/ylerby/vecgo/index"
+	"github.com/ylerby/vecgo/queue"
 )
 
 // Compile time check to ensure Flat satisfies the Index interface.

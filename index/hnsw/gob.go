@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"encoding/gob"
 
-	"github.com/hupe1980/vecgo/index"
+	"github.com/ylerby/vecgo/index"
 )
 
 // GobEncode method for HNSW.

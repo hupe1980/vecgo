@@ -3,9 +3,9 @@ package flat
 import (
 	"testing"
 
-	"github.com/hupe1980/vecgo/index"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/ylerby/vecgo/index"
 )
 
 func TestFlat(t *testing.T) {

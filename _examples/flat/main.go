@@ -5,8 +5,8 @@ import (
 	"log"
 	"time"
 
-	"github.com/hupe1980/vecgo"
-	"github.com/hupe1980/vecgo/util"
+	"github.com/ylerby/vecgo"
+	"github.com/ylerby/vecgo/util"
 )
 
 func main() {

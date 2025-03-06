@@ -5,7 +5,7 @@ import (
 	"encoding/gob"
 	"fmt"
 
-	"github.com/hupe1980/vecgo/metric"
+	"github.com/ylerby/vecgo/metric"
 )
 
 // ErrDimensionMismatch is a named error type for dimension mismatch

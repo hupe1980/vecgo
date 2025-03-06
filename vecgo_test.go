@@ -5,9 +5,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/hupe1980/vecgo/util"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/ylerby/vecgo/util"
 )
 
 func TestVecgo(t *testing.T) {

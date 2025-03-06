@@ -1,4 +1,4 @@
-module github.com/hupe1980/vecgo
+module github.com/ylerby/vecgo
 
 go 1.22.1
 

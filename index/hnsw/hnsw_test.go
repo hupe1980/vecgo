@@ -5,8 +5,8 @@ import (
 	"log"
 	"testing"
 
-	"github.com/hupe1980/vecgo/util"
 	"github.com/stretchr/testify/assert"
+	"github.com/ylerby/vecgo/util"
 )
 
 type TestCases struct {

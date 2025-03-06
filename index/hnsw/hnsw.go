@@ -9,8 +9,8 @@ import (
 	"sync/atomic"
 
 	"github.com/bits-and-blooms/bitset"
-	"github.com/hupe1980/vecgo/index"
-	"github.com/hupe1980/vecgo/queue"
+	"github.com/ylerby/vecgo/index"
+	"github.com/ylerby/vecgo/queue"
 )
 
 // Compile time check to ensure HNSW satisfies the Index interface.
