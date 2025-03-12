@@ -3,12 +3,13 @@ package hnsw
 
 import (
 	"container/heap"
+	"github.com/RoaringBitmap/roaring"
 	"math"
 	"math/rand"
 	"sync"
 	"sync/atomic"
 
-	"github.com/bits-and-blooms/bitset"
+	_ "github.com/RoaringBitmap/roaring"
 	"github.com/ylerby/vecgo/index"
 	"github.com/ylerby/vecgo/queue"
 )
@@ -413,9 +414,9 @@ type searchParams struct {
 
 // searchLayer performs a search in a specified layer of the HNSW graph
 func (h *HNSW) searchLayer(params *searchParams) (*queue.PriorityQueue, error) {
-	var visited bitset.BitSet
+	visited := roaring.New()
 
-	visited.Set(uint(params.EntryPoint.Node))
+	visited.Add(params.EntryPoint.Node)
 
 	// Add the new candidate to our queue
 	candidates := queue.NewMin(params.EF)
@@ -442,8 +443,9 @@ func (h *HNSW) searchLayer(params *searchParams) (*queue.PriorityQueue, error) {
 			conns := node.Connections[params.Level]
 
 			for _, n := range conns {
-				if !visited.Test(uint(n)) {
-					visited.Set(uint(n))
+
+				if !visited.Contains(n) {
+					visited.Add(n)
 
 					distance, err := h.distanceFunc(params.Query, h.nodes[n].Vector)
 					if err != nil {
