@@ -9,7 +9,6 @@ import (
 	"sync"
 	"sync/atomic"
 
-	_ "github.com/RoaringBitmap/roaring"
 	"github.com/ylerby/vecgo/index"
 	"github.com/ylerby/vecgo/queue"
 )
