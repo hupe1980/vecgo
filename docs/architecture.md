@@ -71,24 +71,50 @@ The main entry point provides:
 
 ### 2. Coordinator (`engine/coordinator.go`)
 
-The coordinator orchestrates all operations:
+The coordinator is a **proper interface** that orchestrates all mutation operations. This provides clean abstraction and compile-time verification.
 
-**Single-Shard Mode** (default):
-- Direct pass-through to index
-- Single lock for all writes
-- Metadata updates inline with index operations
+**Coordinator Interface**:
+```go
+type Coordinator[T any] interface {
+    Insert(ctx context.Context, vector []float32, data T) (uint64, error)
+    BatchInsert(ctx context.Context, vectors [][]float32, data []T) ([]uint64, error)
+    Update(ctx context.Context, id uint64, vector []float32, data T) error
+    Delete(ctx context.Context, id uint64) error
+    Get(ctx context.Context, id uint64) ([]float32, T, error)
+    GetMetadata(ctx context.Context, id uint64) (T, error)
+    KNNSearch(ctx context.Context, query []float32, k int, filter metadata.Filter) ([]search.Result[T], error)
+    BruteSearch(ctx context.Context, query []float32, k int, filter metadata.Filter) ([]search.Result[T], error)
+}
+```
 
-**Multi-Shard Mode** (`.Shards(n)` in builder):
-- Hash-based vector distribution across N shards
-- Independent locks per shard (parallel writes)
-- Fan-out search to all shards, merge results
-- **Performance**: 2.7x-3.4x write throughput on multi-core systems
+**Implementations**:
+
+1. **Tx[T]** (Single-Shard Coordinator):
+   - Direct pass-through to index
+   - Single lock for all writes
+   - Metadata updates inline with index operations
+   - O(1) Get/GetMetadata by ID
+
+2. **ShardedCoordinator[T]** (Multi-Shard Coordinator):
+   - Hash-based vector distribution across N shards
+   - Independent locks per shard (parallel writes)
+   - Fan-out search to all shards, merge results
+   - **GlobalID encoding**: `[ShardID:8 bits][LocalID:24 bits]`
+   - O(1) routing for Update/Delete/Get operations
+   - **Performance**: 2.7x-3.4x write throughput on multi-core systems
+
+3. **ValidatedCoordinator[T]** (Validation Middleware):
+   - Wraps any Coordinator with input validation
+   - Checks for nil vectors, NaN/Inf values, dimension mismatches
+   - Enforces limits: max dimension, batch size, metadata size
+   - Enabled by default, disable with `.WithoutValidation()`
 
 **Key Methods**:
-- `Insert(ctx, vector)`: Route to shard, update metadata, append WAL
-- `Update(ctx, id, vector)`: Lookup shard, update in-place
+- `Insert(ctx, vector, data)`: Route to shard via GlobalID, update metadata, append WAL
+- `Update(ctx, id, vector, data)`: Decode GlobalID for O(1) shard routing
 - `Delete(ctx, id)`: Soft delete (tombstone), trigger compaction if threshold exceeded
-- `Search(ctx, query, k)`: Fan-out to all shards, merge top-k results
+- `Get(ctx, id)`: Decode GlobalID, retrieve vector + metadata from correct shard
+- `KNNSearch(ctx, query, k, filter)`: Fan-out to all shards, merge top-k results, translate GlobalIDs in filters
 
 ### 3. Index Implementations
 

@@ -11,24 +11,29 @@ import (
 
 // ShardedCoordinator wraps multiple independent coordinators (shards) to enable
 // parallel write throughput. This eliminates the global lock bottleneck by
-// partitioning vectors across shards based on ID hashing.
+// partitioning vectors across shards.
 //
-// Design:
-//   - Hash-based sharding: shard = id % numShards
+// # ID Encoding
+//
+// ShardedCoordinator uses GlobalID encoding: [ShardID:8 bits][LocalID:24 bits]
+// This enables O(1) shard routing for Update/Delete operations without external mapping.
+//
+// # Design
+//
 //   - Each shard is a complete Tx[T] with its own lock
 //   - Write operations route to a single shard (shard-level lock only)
 //   - Search operations fan out to all shards in parallel and merge results
+//   - IDs are globally unique and self-describing (contain shard routing info)
 //
-// Performance Impact:
+// # Performance
+//
 //   - Target: 3-8x write speedup on multi-core systems
 //   - Search: Parallel fan-out maintains low latency
-//
-// Backward Compatibility:
-//   - Implements same Coordinator[T] interface as Tx[T]
-//   - Drop-in replacement for single-coordinator mode
+//   - Update/Delete: O(1) shard lookup from ID
 type ShardedCoordinator[T any] struct {
 	shards    []*Tx[T]
 	numShards int
+	nextShard int // round-robin counter for insert distribution
 }
 
 // NewSharded creates a new sharded coordinator with independent shards.
@@ -41,6 +46,7 @@ type ShardedCoordinator[T any] struct {
 //   - codec: Shared codec for serialization (can be nil for default)
 //
 // All slice parameters must have the same length (numShards).
+// Maximum supported shards: 256 (due to GlobalID encoding).
 //
 // Example:
 //
@@ -48,8 +54,6 @@ type ShardedCoordinator[T any] struct {
 //	for i := range indexes {
 //	    indexes[i], _ = hnsw.NewSharded(i, 4, hnsw.WithDimension(128))
 //	}
-//	dataStores := ...  // create 4 data stores
-//	metaStores := ...  // create 4 metadata stores
 //	coord, _ := engine.NewSharded(indexes, dataStores, metaStores, nil, nil)
 func NewSharded[T any](
 	indexes []index.Index,
@@ -57,10 +61,13 @@ func NewSharded[T any](
 	metaStores []*metadata.UnifiedIndex,
 	durabilities []Durability,
 	codec codec.Codec,
-) (*ShardedCoordinator[T], error) {
+) (Coordinator[T], error) {
 	numShards := len(indexes)
 	if numShards == 0 {
 		return nil, fmt.Errorf("sharded: at least one shard required")
+	}
+	if numShards > MaxShards {
+		return nil, fmt.Errorf("sharded: %d shards exceeds maximum %d", numShards, MaxShards)
 	}
 	if len(dataStores) != numShards {
 		return nil, fmt.Errorf("dataStores length %d != numShards %d", len(dataStores), numShards)
@@ -82,53 +89,60 @@ func NewSharded[T any](
 
 	shards := make([]*Tx[T], numShards)
 	for i := range indexes {
-		tx, err := New(indexes[i], dataStores[i], metaStores[i], durabilities[i], codec)
+		coord, err := New(indexes[i], dataStores[i], metaStores[i], durabilities[i], codec)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create shard %d: %w", i, err)
 		}
-		shards[i] = tx
+		// Type assert since New returns interface but we know it's *Tx[T]
+		shards[i] = coord.(*Tx[T])
 	}
 
 	return &ShardedCoordinator[T]{
 		shards:    shards,
 		numShards: numShards,
+		nextShard: 0,
 	}, nil
 }
 
-// shardForID returns the shard that owns the given ID.
-// Uses hash-based partitioning: shard = id % numShards
-func (sc *ShardedCoordinator[T]) shardForID(id uint32) *Tx[T] {
-	return sc.shards[int(id)%sc.numShards]
+// shardForID returns the shard that owns the given global ID.
+// Uses GlobalID encoding to extract shard index in O(1).
+func (sc *ShardedCoordinator[T]) shardForID(id uint32) (*Tx[T], error) {
+	gid := GlobalID(id)
+	shardIdx := gid.ShardIndex()
+	if shardIdx >= sc.numShards {
+		return nil, fmt.Errorf("invalid shard index %d in ID %d (have %d shards)", shardIdx, id, sc.numShards)
+	}
+	return sc.shards[shardIdx], nil
 }
 
 // Insert adds a vector+payload+metadata atomically to a shard.
 //
-// The shard is selected using a global counter (sum of vector counts) modulo numShards.
-// This ensures balanced distribution across shards while maintaining HNSW's
-// requirement that each shard's first insert gets ID=0.
-//
-// Each shard allocates its own local IDs (0, 1, 2, ...) independently.
+// Shard selection uses round-robin for balanced distribution.
+// Returns a GlobalID that encodes the shard index for future Update/Delete routing.
 func (sc *ShardedCoordinator[T]) Insert(ctx context.Context, vector []float32, data T, meta metadata.Metadata) (uint32, error) {
-	// Simple round-robin: use the sum of all shards' vector counts
-	total := 0
-	for _, shard := range sc.shards {
-		if shardIndex, ok := shard.txIndex.(index.Shard); ok {
-			total += shardIndex.VectorCount()
-		}
-	}
-	shardIdx := total % sc.numShards
+	// Round-robin shard selection
+	shardIdx := sc.nextShard
+	sc.nextShard = (sc.nextShard + 1) % sc.numShards
 
-	// Insert into that shard (shard allocates its own local ID)
-	return sc.shards[shardIdx].Insert(ctx, vector, data, meta)
+	// Insert into shard (shard allocates its own local ID)
+	localID, err := sc.shards[shardIdx].Insert(ctx, vector, data, meta)
+	if err != nil {
+		return 0, err
+	}
+
+	// Return global ID with shard encoded
+	return uint32(NewGlobalID(shardIdx, localID)), nil
 }
 
 // BatchInsert adds multiple vectors+payloads+metadata.
 //
 // Items are distributed across shards in round-robin fashion for balanced load.
-// Each shard uses its own local ID space (0, 1, 2, ...).
-//
-// Returns the list of IDs assigned (one per input vector). IDs are local to each shard.
+// Returns GlobalIDs that encode shard routing information.
 func (sc *ShardedCoordinator[T]) BatchInsert(ctx context.Context, vectors [][]float32, dataSlice []T, metadataSlice []metadata.Metadata) ([]uint32, error) {
+	if len(vectors) == 0 {
+		return nil, nil
+	}
+
 	// Group items by shard (round-robin distribution)
 	type shardBatch struct {
 		indices   []int // original indices for result ordering
@@ -146,9 +160,10 @@ func (sc *ShardedCoordinator[T]) BatchInsert(ctx context.Context, vectors [][]fl
 		}
 	}
 
-	// Distribute items round-robin
+	// Distribute items round-robin starting from current nextShard
+	startShard := sc.nextShard
 	for i := range vectors {
-		shardIdx := i % sc.numShards
+		shardIdx := (startShard + i) % sc.numShards
 		batch := shardBatches[shardIdx]
 		batch.indices = append(batch.indices, i)
 		batch.vectors = append(batch.vectors, vectors[i])
@@ -157,11 +172,13 @@ func (sc *ShardedCoordinator[T]) BatchInsert(ctx context.Context, vectors [][]fl
 			batch.metadata = append(batch.metadata, metadataSlice[i])
 		}
 	}
+	// Update nextShard for subsequent inserts
+	sc.nextShard = (startShard + len(vectors)) % sc.numShards
 
 	// Insert batches into each shard in parallel
 	type shardResult struct {
 		shardIdx int
-		ids      []uint32
+		ids      []uint32 // local IDs from shard
 		err      error
 	}
 	resultsCh := make(chan shardResult, sc.numShards)
@@ -188,11 +205,12 @@ func (sc *ShardedCoordinator[T]) BatchInsert(ctx context.Context, vectors [][]fl
 		shardIDsMap[res.shardIdx] = res.ids
 	}
 
-	// Map shard-local IDs back to original order
+	// Map shard-local IDs to global IDs in original order
 	for shardIdx, batch := range shardBatches {
-		shardIDs := shardIDsMap[shardIdx]
+		localIDs := shardIDsMap[shardIdx]
 		for i, originalIdx := range batch.indices {
-			allIDs[originalIdx] = shardIDs[i]
+			// Convert local ID to global ID with shard encoding
+			allIDs[originalIdx] = uint32(NewGlobalID(shardIdx, localIDs[i]))
 		}
 	}
 
@@ -200,22 +218,57 @@ func (sc *ShardedCoordinator[T]) BatchInsert(ctx context.Context, vectors [][]fl
 }
 
 // Update updates a vector+payload+metadata atomically in the appropriate shard.
+// The shard is determined by extracting the shard index from the GlobalID.
 func (sc *ShardedCoordinator[T]) Update(ctx context.Context, id uint32, vector []float32, data T, meta metadata.Metadata) error {
-	shard := sc.shardForID(id)
-	return shard.Update(ctx, id, vector, data, meta)
+	gid := GlobalID(id)
+	shard, err := sc.shardForID(id)
+	if err != nil {
+		return err
+	}
+	// Use local ID for shard operation
+	return shard.Update(ctx, gid.LocalID(), vector, data, meta)
 }
 
 // Delete removes a vector+payload+metadata atomically from the appropriate shard.
+// The shard is determined by extracting the shard index from the GlobalID.
 func (sc *ShardedCoordinator[T]) Delete(ctx context.Context, id uint32) error {
-	shard := sc.shardForID(id)
-	return shard.Delete(ctx, id)
+	gid := GlobalID(id)
+	shard, err := sc.shardForID(id)
+	if err != nil {
+		return err
+	}
+	// Use local ID for shard operation
+	return shard.Delete(ctx, gid.LocalID())
+}
+
+// Get retrieves the data associated with an ID from the appropriate shard.
+// The shard is determined by extracting the shard index from the GlobalID.
+func (sc *ShardedCoordinator[T]) Get(id uint32) (T, bool) {
+	shard, err := sc.shardForID(id)
+	if err != nil {
+		var zero T
+		return zero, false
+	}
+	gid := GlobalID(id)
+	return shard.Get(gid.LocalID())
+}
+
+// GetMetadata retrieves the metadata associated with an ID from the appropriate shard.
+// The shard is determined by extracting the shard index from the GlobalID.
+func (sc *ShardedCoordinator[T]) GetMetadata(id uint32) (metadata.Metadata, bool) {
+	shard, err := sc.shardForID(id)
+	if err != nil {
+		return nil, false
+	}
+	gid := GlobalID(id)
+	return shard.GetMetadata(gid.LocalID())
 }
 
 // KNNSearch performs a K-nearest neighbor search across all shards in parallel.
 //
 // This method fans out the query to all shards simultaneously, collects results,
-// and merges them to return the global top-k results. This ensures that sharded
-// mode returns the same results as non-sharded mode (with similar recall).
+// and merges them to return the global top-k results. Result IDs are GlobalIDs
+// that encode shard routing information.
 //
 // Performance:
 //   - Parallel fan-out utilizes multiple cores for search
@@ -228,24 +281,41 @@ func (sc *ShardedCoordinator[T]) KNNSearch(ctx context.Context, query []float32,
 
 	// Fan out to all shards in parallel
 	type shardResult struct {
-		results []index.SearchResult
-		err     error
+		shardIdx int
+		results  []index.SearchResult
+		err      error
 	}
 	resultsCh := make(chan shardResult, sc.numShards)
 
 	for i := 0; i < sc.numShards; i++ {
 		go func(shardIdx int) {
-			results, err := sc.shards[shardIdx].KNNSearch(ctx, query, k, opts)
-			resultsCh <- shardResult{results: results, err: err}
+			// Wrap filter to convert local IDs to global IDs before checking
+			shardOpts := opts
+			if opts != nil && opts.Filter != nil {
+				userFilter := opts.Filter
+				shardOpts = &index.SearchOptions{
+					EFSearch: opts.EFSearch,
+					Filter: func(localID uint32) bool {
+						globalID := uint32(NewGlobalID(shardIdx, localID))
+						return userFilter(globalID)
+					},
+				}
+			}
+			results, err := sc.shards[shardIdx].KNNSearch(ctx, query, k, shardOpts)
+			resultsCh <- shardResult{shardIdx: shardIdx, results: results, err: err}
 		}(i)
 	}
 
-	// Collect results from all shards
+	// Collect results from all shards and convert to global IDs
 	allResults := make([]index.SearchResult, 0, k*sc.numShards)
 	for i := 0; i < sc.numShards; i++ {
 		res := <-resultsCh
 		if res.err != nil {
 			return nil, res.err
+		}
+		// Convert local IDs to global IDs
+		for j := range res.results {
+			res.results[j].ID = uint32(NewGlobalID(res.shardIdx, res.results[j].ID))
 		}
 		allResults = append(allResults, res.results...)
 	}
@@ -257,6 +327,7 @@ func (sc *ShardedCoordinator[T]) KNNSearch(ctx context.Context, query []float32,
 // BruteSearch performs a brute-force search across all shards in parallel.
 //
 // Similar to KNNSearch, this fans out to all shards and merges results.
+// Result IDs are GlobalIDs that encode shard routing information.
 func (sc *ShardedCoordinator[T]) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint32) bool) ([]index.SearchResult, error) {
 	if k <= 0 {
 		return nil, index.ErrInvalidK
@@ -264,24 +335,37 @@ func (sc *ShardedCoordinator[T]) BruteSearch(ctx context.Context, query []float3
 
 	// Fan out to all shards in parallel
 	type shardResult struct {
-		results []index.SearchResult
-		err     error
+		shardIdx int
+		results  []index.SearchResult
+		err      error
 	}
 	resultsCh := make(chan shardResult, sc.numShards)
 
 	for i := 0; i < sc.numShards; i++ {
 		go func(shardIdx int) {
-			results, err := sc.shards[shardIdx].BruteSearch(ctx, query, k, filter)
-			resultsCh <- shardResult{results: results, err: err}
+			// Wrap filter to translate global IDs to local IDs for filtering
+			var localFilter func(id uint32) bool
+			if filter != nil {
+				localFilter = func(localID uint32) bool {
+					globalID := uint32(NewGlobalID(shardIdx, localID))
+					return filter(globalID)
+				}
+			}
+			results, err := sc.shards[shardIdx].BruteSearch(ctx, query, k, localFilter)
+			resultsCh <- shardResult{shardIdx: shardIdx, results: results, err: err}
 		}(i)
 	}
 
-	// Collect results from all shards
+	// Collect results from all shards and convert to global IDs
 	allResults := make([]index.SearchResult, 0, k*sc.numShards)
 	for i := 0; i < sc.numShards; i++ {
 		res := <-resultsCh
 		if res.err != nil {
 			return nil, res.err
+		}
+		// Convert local IDs to global IDs
+		for j := range res.results {
+			res.results[j].ID = uint32(NewGlobalID(res.shardIdx, res.results[j].ID))
 		}
 		allResults = append(allResults, res.results...)
 	}

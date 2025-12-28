@@ -143,23 +143,12 @@ type Vecgo[T any] struct {
 	store        engine.Store[T]
 	metaStore    *metadata.UnifiedIndex
 	mmapCloser   io.Closer
-	coordinator  coordinator[T] // interface: *engine.Coordinator[T] or *engine.ShardedCoordinator[T]
+	coordinator  engine.Coordinator[T] // Single interface for both Tx and ShardedCoordinator
 	wal          *wal.WAL
 	codec        codec.Codec
 	metrics      MetricsCollector
 	logger       *Logger
 	snapshotPath string // Path for auto-checkpoint snapshots (if set, enables delta-based mmap)
-}
-
-// coordinator is an internal interface satisfied by both
-// engine.Coordinator[T] and engine.ShardedCoordinator[T].
-type coordinator[T any] interface {
-	Insert(ctx context.Context, vector []float32, data T, metadata metadata.Metadata) (uint32, error)
-	BatchInsert(ctx context.Context, vectors [][]float32, dataSlice []T, metadataSlice []metadata.Metadata) ([]uint32, error)
-	Update(ctx context.Context, id uint32, vector []float32, data T, metadata metadata.Metadata) error
-	Delete(ctx context.Context, id uint32) error
-	KNNSearch(ctx context.Context, query []float32, k int, opts *index.SearchOptions) ([]index.SearchResult, error)
-	BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint32) bool) ([]index.SearchResult, error)
 }
 
 // EnableProductQuantization enables Product Quantization (PQ) on the underlying index,
@@ -199,6 +188,8 @@ func newFlat[T any](dimension int, distanceType index.DistanceType, indexOptFns 
 	opts.Dimension = dimension
 	opts.DistanceType = distanceType
 
+	// Add dimension to vecgo options for validation
+	vecgoOptFns = append(vecgoOptFns, withDimension(dimension))
 	vecOpts := applyOptions(vecgoOptFns)
 
 	// Non-sharded mode (numShards <= 1)
@@ -247,6 +238,8 @@ func newHNSW[T any](dimension int, distanceType index.DistanceType, indexOptFns 
 	opts.Dimension = dimension
 	opts.DistanceType = distanceType
 
+	// Add dimension to vecgo options for validation
+	vecgoOptFns = append(vecgoOptFns, withDimension(dimension))
 	vecOpts := applyOptions(vecgoOptFns)
 
 	// Non-sharded mode (numShards <= 1)
@@ -298,6 +291,8 @@ func newDiskANN[T any](path string, dimension int, distanceType index.DistanceTy
 		return nil, translateError(err)
 	}
 
+	// Add dimension to vecgo options for validation
+	vecgoOptFns = append(vecgoOptFns, withDimension(dimension))
 	vg, err := new(i, engine.NewMapStore[T](), metadata.NewUnifiedIndex(), vecgoOptFns...)
 	return vg, translateError(err)
 }
@@ -357,6 +352,17 @@ func new[T any](i index.Index, s engine.Store[T], ms *metadata.UnifiedIndex, opt
 		}
 		return nil, translateError(err)
 	}
+
+	// Wrap coordinator with validation unless explicitly disabled
+	if !opts.disableValidation {
+		limits := opts.validationLimits
+		if limits == nil {
+			defaultLimits := engine.DefaultLimits()
+			limits = &defaultLimits
+		}
+		coord = engine.WithValidation(coord, opts.dimension, *limits)
+	}
+
 	vg.coordinator = coord
 
 	// Set auto-checkpoint callback if WAL is enabled
@@ -422,13 +428,24 @@ func newSharded[T any](indexes []index.Index, dataStores []engine.Store[T], meta
 		return nil, translateError(err)
 	}
 
+	// Wrap coordinator with validation unless explicitly disabled
+	var coord engine.Coordinator[T] = shardedCoord
+	if !opts.disableValidation {
+		limits := opts.validationLimits
+		if limits == nil {
+			defaultLimits := engine.DefaultLimits()
+			limits = &defaultLimits
+		}
+		coord = engine.WithValidation(coord, opts.dimension, *limits)
+	}
+
 	// Use first shard's index as primary (for Stats, etc.)
 	vg := &Vecgo[T]{
 		index:        indexes[0],
 		store:        dataStores[0],
 		metaStore:    metaStores[0],
 		mmapCloser:   nil,
-		coordinator:  shardedCoord,
+		coordinator:  coord,
 		wal:          w,
 		codec:        c,
 		metrics:      opts.metricsCollector,
@@ -559,7 +576,7 @@ func NewFromFile[T any](filename string, optFns ...Option) (*Vecgo[T], error) {
 
 // Get retrieves an item by ID.
 func (vg *Vecgo[T]) Get(id uint32) (T, error) {
-	data, ok := vg.store.Get(id)
+	data, ok := vg.coordinator.Get(id)
 	if !ok {
 		var zero T
 		return zero, ErrNotFound
@@ -985,14 +1002,14 @@ func (vg *Vecgo[T]) extractSearchResults(bestCandidates []index.SearchResult) []
 	result := make([]SearchResult[T], 0, len(bestCandidates))
 
 	for _, item := range bestCandidates {
-		data, ok := vg.store.Get(item.ID)
+		data, ok := vg.coordinator.Get(item.ID)
 		if !ok {
 			// Skip if data not found (index and store might be out of sync)
 			continue
 		}
 
 		// Get metadata if available
-		meta, _ := vg.metaStore.Get(item.ID)
+		meta, _ := vg.coordinator.GetMetadata(item.ID)
 
 		result = append(result, SearchResult[T]{
 			SearchResult: index.SearchResult{

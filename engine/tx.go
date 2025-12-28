@@ -305,6 +305,16 @@ func (tx *Tx[T]) Delete(ctx context.Context, id uint32) error {
 	return nil
 }
 
+// Get retrieves the data associated with an ID from the data store.
+func (tx *Tx[T]) Get(id uint32) (T, bool) {
+	return tx.dataStore.Get(id)
+}
+
+// GetMetadata retrieves the metadata associated with an ID from the metadata store.
+func (tx *Tx[T]) GetMetadata(id uint32) (metadata.Metadata, bool) {
+	return tx.metaStore.Get(id)
+}
+
 // KNNSearch performs a K-nearest neighbor search on the underlying index.
 // This method is added to satisfy the coordinator[T] interface.
 func (tx *Tx[T]) KNNSearch(ctx context.Context, query []float32, k int, opts *index.SearchOptions) ([]index.SearchResult, error) {

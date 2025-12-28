@@ -4,6 +4,7 @@ import (
 	"log/slog"
 
 	"github.com/hupe1980/vecgo/codec"
+	"github.com/hupe1980/vecgo/engine"
 	"github.com/hupe1980/vecgo/wal"
 )
 
@@ -14,7 +15,10 @@ type options struct {
 	logger           *Logger
 	walPath          string
 	walOptions       []func(*wal.Options)
-	snapshotPath     string // Path for auto-checkpoint snapshots
+	snapshotPath     string                   // Path for auto-checkpoint snapshots
+	validationLimits *engine.ValidationLimits // nil = use defaults, empty = disable validation
+	disableValidation bool                    // explicit disable flag
+	dimension        int                      // Vector dimension (set by builders)
 }
 
 // Option configures Vecgo constructor/load behavior.
@@ -146,6 +150,44 @@ func WithLogger(logger *Logger) Option {
 func WithLogLevel(level slog.Level) Option {
 	return func(o *options) {
 		o.logger = NewTextLogger(level)
+	}
+}
+
+// WithValidationLimits configures input validation with custom limits.
+// Validation prevents crashes from nil vectors, NaN/Inf values, oversized batches, etc.
+//
+// Example with custom limits:
+//
+//	limits := &engine.ValidationLimits{
+//	    MaxDimension:     1024,
+//	    MaxVectors:       1_000_000,
+//	    MaxK:             100,
+//	    MaxMetadataBytes: 4096,
+//	    MaxBatchSize:     1000,
+//	}
+//	vg, _ := vecgo.New(index, vecgo.WithValidationLimits(limits))
+//
+// Pass nil to use default limits (recommended for most use cases).
+func WithValidationLimits(limits *engine.ValidationLimits) Option {
+	return func(o *options) {
+		o.validationLimits = limits
+	}
+}
+
+// WithoutValidation disables input validation entirely.
+// Use only when you have pre-validated inputs and need maximum performance.
+// WARNING: Invalid inputs (nil, NaN, oversized) may cause panics or corruption.
+func WithoutValidation() Option {
+	return func(o *options) {
+		o.disableValidation = true
+	}
+}
+
+// withDimension is an internal option used by builders to set the vector dimension.
+// This is used by the validation layer to check vector dimensions.
+func withDimension(dim int) Option {
+	return func(o *options) {
+		o.dimension = dim
 	}
 }
 

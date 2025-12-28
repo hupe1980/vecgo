@@ -36,6 +36,10 @@ func main() {
 	// 3. SIMD distance kernels are automatically enabled on ARM64/x86_64
 	//    - 10-15x faster than naive Go loops
 	//    - Zero allocations (pooled buffers)
+	//
+	// 4. Validation is enabled by default with limits:
+	//    - MaxBatchSize: 10,000 vectors per BatchInsert
+	//    - For larger batches, split into chunks as shown below
 	vg, err := vecgo.HNSW[int](dim).
 		SquaredL2().
 		M(32). // Increase connections for better recall
@@ -63,17 +67,23 @@ func main() {
 	start := time.Now()
 
 	// Use batch insert for better performance
-	batchResult := vg.BatchInsert(context.Background(), items)
-
-	// Check for errors
-	errorCount := 0
-	for _, err := range batchResult.Errors {
-		if err != nil {
-			errorCount++
+	// Split into chunks to respect default validation limit (10,000 vectors per batch)
+	batchSize := 10000
+	for i := 0; i < len(items); i += batchSize {
+		end := i + batchSize
+		if end > len(items) {
+			end = len(items)
 		}
-	}
-	if errorCount > 0 {
-		log.Printf("Failed to insert %d vectors", errorCount)
+		batch := items[i:end]
+
+		batchResult := vg.BatchInsert(context.Background(), batch)
+
+		// Check for errors
+		for _, err := range batchResult.Errors {
+			if err != nil {
+				log.Fatalf("Failed to insert vector: %v", err)
+			}
+		}
 	}
 
 	end := time.Since(start)

@@ -193,6 +193,41 @@ db, _ := vecgo.NewFromFile[string]("vectors.bin",
 db.RecoverFromWAL(context.Background())
 ```
 
+### Input Validation (Production Safety)
+
+**Automatic validation** prevents crashes and DoS attacks:
+
+```go
+import "github.com/hupe1980/vecgo/engine"
+
+// Validation is enabled by default with safe limits
+db, _ := vecgo.HNSW[string](128).Build()
+
+// Customize validation limits
+db, _ := vecgo.HNSW[string](128).
+    Options(vecgo.WithValidationLimits(&engine.ValidationLimits{
+        MaxDimension:     1024,         // Max vector dimension
+        MaxVectors:       10_000_000,   // Max total vectors
+        MaxK:             1000,          // Max search results
+        MaxMetadataBytes: 16 * 1024,    // Max 16KB metadata per vector
+        MaxBatchSize:     5000,          // Max batch insert size
+    })).
+    Build()
+
+// Disable for pre-validated inputs (not recommended)
+db, _ := vecgo.HNSW[string](128).
+    Options(vecgo.WithoutValidation()).
+    Build()
+```
+
+**Protected operations**:
+- ✅ Nil vector detection
+- ✅ Dimension mismatch
+- ✅ NaN/Inf value checks
+- ✅ Metadata size limits
+- ✅ Batch size limits
+- ✅ Total vector count limits
+
 ## 🗜️ Quantization
 
 ### Binary Quantization (32x Compression)

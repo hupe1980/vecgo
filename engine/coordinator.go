@@ -1,6 +1,6 @@
 // Package engine provides the coordination layer for vecgo.
 //
-// Vecgo routes all mutations through a Coordinator/Tx to provide atomic
+// Vecgo routes all mutations through a Coordinator to provide atomic
 // multi-subsystem semantics:
 //   - (optional) durability prepare entry
 //   - apply index mutation by explicit ID (deterministic)
@@ -8,9 +8,19 @@
 //   - (optional) durability commit entry (durability boundary)
 //
 // Recovery ignores prepares without commits.
+//
+// # Architecture
+//
+// Coordinator is the single interface for mutation orchestration:
+//   - Tx[T]: Single-shard mode (simple, low-overhead)
+//   - ShardedCoordinator[T]: Multi-shard mode (parallel writes)
+//
+// Both implementations satisfy the Coordinator[T] interface, enabling
+// transparent switching between modes.
 package engine
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/hupe1980/vecgo/codec"
@@ -18,18 +28,56 @@ import (
 	"github.com/hupe1980/vecgo/metadata"
 )
 
-// Coordinator is the compatibility surface used by vecgo today.
+// Coordinator is the interface for all mutation orchestration in vecgo.
 //
-// The implementation lives in Tx and is exposed via a type alias so we can
-// incrementally split engine concerns (tx/recovery/snapshot/...) without
-// changing vecgo's wiring.
-type Coordinator[T any] = Tx[T]
+// Implementations:
+//   - Tx[T]: Single-shard coordinator for simple deployments
+//   - ShardedCoordinator[T]: Multi-shard coordinator for parallel write throughput
+//
+// All IDs returned by Insert/BatchInsert are global IDs that encode shard routing
+// information when using ShardedCoordinator. Single-shard Tx returns local IDs directly.
+type Coordinator[T any] interface {
+	// Insert adds a vector with associated data and metadata atomically.
+	// Returns the assigned ID (global ID in sharded mode).
+	Insert(ctx context.Context, vector []float32, data T, meta metadata.Metadata) (uint32, error)
 
-// New constructs a Coordinator.
+	// BatchInsert adds multiple vectors atomically.
+	// Returns assigned IDs in the same order as input vectors.
+	BatchInsert(ctx context.Context, vectors [][]float32, data []T, meta []metadata.Metadata) ([]uint32, error)
+
+	// Update modifies an existing vector, data, and optionally metadata.
+	// If meta is nil, existing metadata is preserved.
+	Update(ctx context.Context, id uint32, vector []float32, data T, meta metadata.Metadata) error
+
+	// Delete removes a vector and its associated data/metadata.
+	Delete(ctx context.Context, id uint32) error
+
+	// Get retrieves the data associated with an ID.
+	// Returns the data and true if found, or zero value and false if not found.
+	Get(id uint32) (T, bool)
+
+	// GetMetadata retrieves the metadata associated with an ID.
+	// Returns the metadata and true if found, or nil and false if not found.
+	GetMetadata(id uint32) (metadata.Metadata, bool)
+
+	// KNNSearch performs approximate K-nearest neighbor search.
+	KNNSearch(ctx context.Context, query []float32, k int, opts *index.SearchOptions) ([]index.SearchResult, error)
+
+	// BruteSearch performs exact brute-force search with optional filter.
+	BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint32) bool) ([]index.SearchResult, error)
+}
+
+// Compile-time interface checks
+var (
+	_ Coordinator[any] = (*Tx[any])(nil)
+	_ Coordinator[any] = (*ShardedCoordinator[any])(nil)
+)
+
+// New constructs a single-shard Coordinator (Tx).
 //
 // If d is nil, NoopDurability is used (same atomicity semantics, no persistence).
 // The index MUST implement index.TransactionalIndex.
-func New[T any](idx index.Index, dataStore Store[T], metaStore *metadata.UnifiedIndex, d Durability, c codec.Codec) (*Coordinator[T], error) {
+func New[T any](idx index.Index, dataStore Store[T], metaStore *metadata.UnifiedIndex, d Durability, c codec.Codec) (Coordinator[T], error) {
 	if idx == nil {
 		return nil, fmt.Errorf("coordinator: index is nil")
 	}
