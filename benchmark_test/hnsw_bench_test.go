@@ -114,14 +114,18 @@ func BenchmarkHNSWSearch(b *testing.B) {
 	}
 }
 
-// BenchmarkHNSWSearchEfTuning benchmarks search with different EF values
+// BenchmarkHNSWSearchEfTuning benchmarks search with different EF values and measures recall
 func BenchmarkHNSWSearchEfTuning(b *testing.B) {
 	efValues := []int{16, 32, 64, 128, 256}
 	dim := 384
 	size := 10000
+	k := 10
 
 	for _, ef := range efValues {
 		b.Run(formatCount(ef), func(b *testing.B) {
+			// Use fresh RNG per sub-benchmark for reproducibility
+			localRNG := testutil.NewRNG(42)
+
 			db, err := vecgo.HNSW[int](dim).SquaredL2().EF(ef).Build()
 			if err != nil {
 				b.Fatal(err)
@@ -129,36 +133,50 @@ func BenchmarkHNSWSearchEfTuning(b *testing.B) {
 			defer db.Close()
 
 			ctx := context.Background()
+			vectors := make([][]float32, size)
 			batch := make([]vecgo.VectorWithData[int], size)
 			for i := 0; i < size; i++ {
+				vectors[i] = localRNG.NormalizedVector(dim)
 				batch[i] = vecgo.VectorWithData[int]{
-					Vector: randomVector(dim),
+					Vector: vectors[i],
 					Data:   i,
 				}
 			}
 			db.BatchInsert(ctx, batch)
 
-			query := randomVector(dim)
+			query := localRNG.NormalizedVector(dim)
+
+			// Compute ground truth and recall
+			groundTruth := groundTruthSearch(ctx, vectors, query, k)
+			approxResults, _ := db.Search(query).KNN(k).Execute(ctx)
+			recall := computeRecall(groundTruth, approxResults)
+
 			b.ResetTimer()
 
 			for i := 0; b.Loop(); i++ {
-				_, err := db.Search(query).KNN(10).Execute(ctx)
+				_, err := db.Search(query).KNN(k).Execute(ctx)
 				if err != nil {
 					b.Fatal(err)
 				}
 			}
+
+			b.ReportMetric(recall*100, "recall%")
 		})
 	}
 }
 
-// BenchmarkHNSWSearchMTuning benchmarks search with different M values
+// BenchmarkHNSWSearchMTuning benchmarks search with different M values and measures recall
 func BenchmarkHNSWSearchMTuning(b *testing.B) {
 	mValues := []int{8, 16, 32, 48}
 	dim := 384
 	size := 10000
+	k := 10
 
 	for _, m := range mValues {
 		b.Run(formatCount(m), func(b *testing.B) {
+			// Use fresh RNG per sub-benchmark for reproducibility
+			localRNG := testutil.NewRNG(42)
+
 			db, err := vecgo.HNSW[int](dim).SquaredL2().M(m).Build()
 			if err != nil {
 				b.Fatal(err)
@@ -166,32 +184,43 @@ func BenchmarkHNSWSearchMTuning(b *testing.B) {
 			defer db.Close()
 
 			ctx := context.Background()
+			vectors := make([][]float32, size)
 			batch := make([]vecgo.VectorWithData[int], size)
 			for i := 0; i < size; i++ {
+				vectors[i] = localRNG.NormalizedVector(dim)
 				batch[i] = vecgo.VectorWithData[int]{
-					Vector: randomVector(dim),
+					Vector: vectors[i],
 					Data:   i,
 				}
 			}
 			db.BatchInsert(ctx, batch)
 
-			query := randomVector(dim)
+			query := localRNG.NormalizedVector(dim)
+
+			// Compute ground truth and recall
+			groundTruth := groundTruthSearch(ctx, vectors, query, k)
+			approxResults, _ := db.Search(query).KNN(k).Execute(ctx)
+			recall := computeRecall(groundTruth, approxResults)
+
 			b.ResetTimer()
 
 			for i := 0; b.Loop(); i++ {
-				_, err := db.Search(query).KNN(10).Execute(ctx)
+				_, err := db.Search(query).KNN(k).Execute(ctx)
 				if err != nil {
 					b.Fatal(err)
 				}
 			}
+
+			b.ReportMetric(recall*100, "recall%")
 		})
 	}
 }
 
-// BenchmarkHNSWDistanceMetrics benchmarks HNSW with different distance functions
+// BenchmarkHNSWDistanceMetrics benchmarks HNSW with different distance functions and measures recall
 func BenchmarkHNSWDistanceMetrics(b *testing.B) {
 	dim := 384
 	size := 10000
+	k := 10
 
 	metrics := []struct {
 		name     string
@@ -204,6 +233,9 @@ func BenchmarkHNSWDistanceMetrics(b *testing.B) {
 
 	for _, m := range metrics {
 		b.Run(m.name, func(b *testing.B) {
+			// Use fresh RNG per sub-benchmark for reproducibility
+			localRNG := testutil.NewRNG(42)
+
 			var builder *vecgo.HNSWBuilder[int]
 			switch m.distType {
 			case index.DistanceTypeSquaredL2:
@@ -222,54 +254,80 @@ func BenchmarkHNSWDistanceMetrics(b *testing.B) {
 			defer db.Close()
 
 			ctx := context.Background()
+			vectors := make([][]float32, size)
 			batch := make([]vecgo.VectorWithData[int], size)
 			for i := 0; i < size; i++ {
+				vectors[i] = localRNG.NormalizedVector(dim)
 				batch[i] = vecgo.VectorWithData[int]{
-					Vector: randomVector(dim),
+					Vector: vectors[i],
 					Data:   i,
 				}
 			}
 			db.BatchInsert(ctx, batch)
 
-			query := randomVector(dim)
+			query := localRNG.NormalizedVector(dim)
+
+			// Compute ground truth and recall
+			groundTruth := groundTruthSearchWithDistance(ctx, vectors, query, k, m.distType)
+			approxResults, _ := db.Search(query).KNN(k).Execute(ctx)
+			recall := computeRecall(groundTruth, approxResults)
+
 			b.ResetTimer()
 
 			for i := 0; b.Loop(); i++ {
-				_, err := db.Search(query).KNN(10).Execute(ctx)
+				_, err := db.Search(query).KNN(k).Execute(ctx)
 				if err != nil {
 					b.Fatal(err)
 				}
 			}
+
+			b.ReportMetric(recall*100, "recall%")
 		})
 	}
 }
 
-// BenchmarkHNSWConcurrentSearch benchmarks concurrent search
+// BenchmarkHNSWConcurrentSearch benchmarks concurrent search and measures recall
 func BenchmarkHNSWConcurrentSearch(b *testing.B) {
 	dim := 384
 	size := 10000
+	k := 10
 
-	db := setupHNSWIndex(b, dim, size)
+	// Use fresh RNG for reproducibility
+	localRNG := testutil.NewRNG(42)
+
+	db, vectors := setupHNSWIndexWithVectorsRNG(b, dim, size, localRNG)
 	defer db.Close()
 
-	query := randomVector(dim)
+	query := localRNG.NormalizedVector(dim)
 	ctx := context.Background()
+
+	// Compute ground truth and recall
+	groundTruth := groundTruthSearch(ctx, vectors, query, k)
+	approxResults, _ := db.Search(query).KNN(k).Execute(ctx)
+	recall := computeRecall(groundTruth, approxResults)
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			_, err := db.Search(query).KNN(10).Execute(ctx)
+			_, err := db.Search(query).KNN(k).Execute(ctx)
 			if err != nil {
 				b.Fatal(err)
 			}
 		}
 	})
+
+	b.ReportMetric(recall*100, "recall%")
 }
 
-// BenchmarkHNSWHybridSearch benchmarks search with metadata filters
+// BenchmarkHNSWHybridSearch benchmarks search with metadata filters and measures recall
+// NOTE: Currently uses post-filtering with insufficient oversampling - recall will be low
 func BenchmarkHNSWHybridSearch(b *testing.B) {
 	dim := 384
 	size := 10000
+	k := 10
+
+	// Use fresh RNG for reproducibility
+	localRNG := testutil.NewRNG(42)
 
 	db, err := vecgo.HNSW[int](dim).SquaredL2().Build()
 	if err != nil {
@@ -278,37 +336,55 @@ func BenchmarkHNSWHybridSearch(b *testing.B) {
 	defer db.Close()
 
 	ctx := context.Background()
+	vectors := make([][]float32, size)
+	filteredVectorsWithIDs := make(map[uint32][]float32)
+
 	for i := 0; i < size; i++ {
-		_, err := db.Insert(ctx, vecgo.VectorWithData[int]{
-			Vector: randomVector(dim),
+		vectors[i] = localRNG.NormalizedVector(dim)
+		category := categories[i%len(categories)]
+		id, err := db.Insert(ctx, vecgo.VectorWithData[int]{
+			Vector: vectors[i],
 			Data:   i,
 			Metadata: metadata.Metadata{
-				"category": metadata.String(categories[i%len(categories)]),
+				"category": metadata.String(category),
 				"score":    metadata.Int(int64(i % 100)),
 			},
 		})
 		if err != nil {
 			b.Fatal(err)
 		}
+		if category == "technology" {
+			filteredVectorsWithIDs[id] = vectors[i]
+		}
 	}
 
-	query := randomVector(dim)
+	query := localRNG.NormalizedVector(dim)
 	filter := &metadata.FilterSet{
 		Filters: []metadata.Filter{
 			{Key: "category", Operator: metadata.OpEqual, Value: metadata.String("technology")},
 		},
 	}
+
+	// Compute ground truth for filtered vectors with original IDs
+	groundTruth := groundTruthSearchFiltered(ctx, filteredVectorsWithIDs, query, k)
+
+	// Measure recall before benchmark
+	approxResults, _ := db.Search(query).KNN(k).WithMetadata(filter).Execute(ctx)
+	recall := computeRecall(groundTruth, approxResults)
+
 	b.ResetTimer()
 
 	for i := 0; b.Loop(); i++ {
 		_, err := db.Search(query).
-			KNN(10).
+			KNN(k).
 			WithMetadata(filter).
 			Execute(ctx)
 		if err != nil {
 			b.Fatal(err)
 		}
 	}
+
+	b.ReportMetric(recall*100, "recall%")
 }
 
 // BenchmarkHNSWUpdate benchmarks vector updates with HNSW
@@ -354,30 +430,53 @@ func BenchmarkHNSWDelete(b *testing.B) {
 	}
 }
 
-// BenchmarkHNSWStreamingSearch benchmarks streaming search
+// BenchmarkHNSWStreamingSearch benchmarks streaming search and measures recall
 func BenchmarkHNSWStreamingSearch(b *testing.B) {
 	dim := 384
 	size := 10000
+	k := 10
 
-	db := setupHNSWIndex(b, dim, size)
+	// Use fresh RNG for reproducibility
+	localRNG := testutil.NewRNG(42)
+
+	db, vectors := setupHNSWIndexWithVectorsRNG(b, dim, size, localRNG)
 	defer db.Close()
 
-	query := randomVector(dim)
+	query := localRNG.NormalizedVector(dim)
 	ctx := context.Background()
+
+	// Compute ground truth
+	groundTruth := groundTruthSearch(ctx, vectors, query, k)
+
+	// Collect streaming results for recall computation
+	streamResults := make([]vecgo.SearchResult[int], 0, k)
+	for result, err := range db.Search(query).KNN(k).Stream(ctx) {
+		if err != nil {
+			b.Fatal(err)
+		}
+		streamResults = append(streamResults, result)
+		if len(streamResults) >= k {
+			break
+		}
+	}
+	recall := computeRecall(groundTruth, streamResults)
+
 	b.ResetTimer()
 
 	for i := 0; b.Loop(); i++ {
 		count := 0
-		for _, err := range db.Search(query).KNN(10).Stream(ctx) {
+		for _, err := range db.Search(query).KNN(k).Stream(ctx) {
 			if err != nil {
 				b.Fatal(err)
 			}
 			count++
-			if count >= 10 {
+			if count >= k {
 				break
 			}
 		}
 	}
+
+	b.ReportMetric(recall*100, "recall%")
 }
 
 // setupHNSWIndex creates a HNSW index with random data for benchmarking

@@ -116,14 +116,18 @@ func BenchmarkDiskANNSearch(b *testing.B) {
 	}
 }
 
-// BenchmarkDiskANNBeamWidth benchmarks search with different beam widths
+// BenchmarkDiskANNBeamWidth benchmarks search with different beam widths and measures recall
 func BenchmarkDiskANNBeamWidth(b *testing.B) {
 	beamWidths := []int{2, 4, 8, 16}
 	dim := 384
 	size := 5000
+	k := 10
 
 	for _, bw := range beamWidths {
 		b.Run(formatCount(bw), func(b *testing.B) {
+			// Use fresh RNG per sub-benchmark for reproducibility
+			localRNG := testutil.NewRNG(42)
+
 			tmpDir := b.TempDir()
 			db, err := vecgo.DiskANN[int](tmpDir, dim).SquaredL2().BeamWidth(bw).Build()
 			if err != nil {
@@ -132,36 +136,50 @@ func BenchmarkDiskANNBeamWidth(b *testing.B) {
 			defer db.Close()
 
 			ctx := context.Background()
+			vectors := make([][]float32, size)
 			batch := make([]vecgo.VectorWithData[int], size)
 			for i := range size {
+				vectors[i] = localRNG.NormalizedVector(dim)
 				batch[i] = vecgo.VectorWithData[int]{
-					Vector: randomVector(dim),
+					Vector: vectors[i],
 					Data:   i,
 				}
 			}
 			db.BatchInsert(ctx, batch)
 
-			query := randomVector(dim)
+			query := localRNG.NormalizedVector(dim)
+
+			// Compute ground truth and recall
+			groundTruth := groundTruthSearch(ctx, vectors, query, k)
+			approxResults, _ := db.Search(query).KNN(k).Execute(ctx)
+			recall := computeRecall(groundTruth, approxResults)
+
 			b.ResetTimer()
 
 			for i := 0; b.Loop(); i++ {
-				_, err := db.Search(query).KNN(10).Execute(ctx)
+				_, err := db.Search(query).KNN(k).Execute(ctx)
 				if err != nil {
 					b.Fatal(err)
 				}
 			}
+
+			b.ReportMetric(recall*100, "recall%")
 		})
 	}
 }
 
-// BenchmarkDiskANNRTuning benchmarks search with different R values (max degree)
+// BenchmarkDiskANNRTuning benchmarks search with different R values (max degree) and measures recall
 func BenchmarkDiskANNRTuning(b *testing.B) {
 	rValues := []int{32, 64, 100}
 	dim := 384
 	size := 5000
+	k := 10
 
 	for _, r := range rValues {
 		b.Run(formatCount(r), func(b *testing.B) {
+			// Use fresh RNG per sub-benchmark for reproducibility
+			localRNG := testutil.NewRNG(42)
+
 			tmpDir := b.TempDir()
 			db, err := vecgo.DiskANN[int](tmpDir, dim).SquaredL2().R(r).Build()
 			if err != nil {
@@ -170,32 +188,43 @@ func BenchmarkDiskANNRTuning(b *testing.B) {
 			defer db.Close()
 
 			ctx := context.Background()
+			vectors := make([][]float32, size)
 			batch := make([]vecgo.VectorWithData[int], size)
 			for i := range size {
+				vectors[i] = localRNG.NormalizedVector(dim)
 				batch[i] = vecgo.VectorWithData[int]{
-					Vector: randomVector(dim),
+					Vector: vectors[i],
 					Data:   i,
 				}
 			}
 			db.BatchInsert(ctx, batch)
 
-			query := randomVector(dim)
+			query := localRNG.NormalizedVector(dim)
+
+			// Compute ground truth and recall
+			groundTruth := groundTruthSearch(ctx, vectors, query, k)
+			approxResults, _ := db.Search(query).KNN(k).Execute(ctx)
+			recall := computeRecall(groundTruth, approxResults)
+
 			b.ResetTimer()
 
 			for i := 0; b.Loop(); i++ {
-				_, err := db.Search(query).KNN(10).Execute(ctx)
+				_, err := db.Search(query).KNN(k).Execute(ctx)
 				if err != nil {
 					b.Fatal(err)
 				}
 			}
+
+			b.ReportMetric(recall*100, "recall%")
 		})
 	}
 }
 
-// BenchmarkDiskANNDistanceMetrics benchmarks DiskANN with different distance functions
+// BenchmarkDiskANNDistanceMetrics benchmarks DiskANN with different distance functions and measures recall
 func BenchmarkDiskANNDistanceMetrics(b *testing.B) {
 	dim := 384
 	size := 5000
+	k := 10
 
 	metrics := []struct {
 		name     string
@@ -208,6 +237,9 @@ func BenchmarkDiskANNDistanceMetrics(b *testing.B) {
 
 	for _, m := range metrics {
 		b.Run(m.name, func(b *testing.B) {
+			// Use fresh RNG per sub-benchmark for reproducibility
+			localRNG := testutil.NewRNG(42)
+
 			tmpDir := b.TempDir()
 			var db *vecgo.Vecgo[int]
 			var err error
@@ -226,24 +258,34 @@ func BenchmarkDiskANNDistanceMetrics(b *testing.B) {
 			defer db.Close()
 
 			ctx := context.Background()
+			vectors := make([][]float32, size)
 			batch := make([]vecgo.VectorWithData[int], size)
 			for i := range size {
+				vectors[i] = localRNG.NormalizedVector(dim)
 				batch[i] = vecgo.VectorWithData[int]{
-					Vector: randomVector(dim),
+					Vector: vectors[i],
 					Data:   i,
 				}
 			}
 			db.BatchInsert(ctx, batch)
 
-			query := randomVector(dim)
+			query := localRNG.NormalizedVector(dim)
+
+			// Compute ground truth and recall
+			groundTruth := groundTruthSearchWithDistance(ctx, vectors, query, k, m.distType)
+			approxResults, _ := db.Search(query).KNN(k).Execute(ctx)
+			recall := computeRecall(groundTruth, approxResults)
+
 			b.ResetTimer()
 
 			for i := 0; b.Loop(); i++ {
-				_, err := db.Search(query).KNN(10).Execute(ctx)
+				_, err := db.Search(query).KNN(k).Execute(ctx)
 				if err != nil {
 					b.Fatal(err)
 				}
 			}
+
+			b.ReportMetric(recall*100, "recall%")
 		})
 	}
 }
@@ -270,12 +312,17 @@ func BenchmarkDiskANNUpdate(b *testing.B) {
 	}
 }
 
-// BenchmarkDiskANNHybridSearch benchmarks search with metadata filters
+// BenchmarkDiskANNHybridSearch benchmarks search with metadata filters and measures recall
+// NOTE: Currently uses post-filtering with insufficient oversampling - recall will be low
 func BenchmarkDiskANNHybridSearch(b *testing.B) {
 	dim := 384
 	size := 5000
-	tmpDir := b.TempDir()
+	k := 10
 
+	// Use fresh RNG for reproducibility
+	localRNG := testutil.NewRNG(42)
+
+	tmpDir := b.TempDir()
 	db, err := vecgo.DiskANN[int](tmpDir, dim).SquaredL2().Build()
 	if err != nil {
 		b.Fatal(err)
@@ -283,37 +330,55 @@ func BenchmarkDiskANNHybridSearch(b *testing.B) {
 	defer db.Close()
 
 	ctx := context.Background()
+	vectors := make([][]float32, size)
+	filteredVectorsWithIDs := make(map[uint32][]float32)
+
 	for i := 0; i < size; i++ {
-		_, err := db.Insert(ctx, vecgo.VectorWithData[int]{
-			Vector: randomVector(dim),
+		vectors[i] = localRNG.NormalizedVector(dim)
+		category := categories[i%len(categories)]
+		id, err := db.Insert(ctx, vecgo.VectorWithData[int]{
+			Vector: vectors[i],
 			Data:   i,
 			Metadata: metadata.Metadata{
-				"category": metadata.String(categories[i%len(categories)]),
+				"category": metadata.String(category),
 				"score":    metadata.Int(int64(i % 100)),
 			},
 		})
 		if err != nil {
 			b.Fatal(err)
 		}
+		if category == "technology" {
+			filteredVectorsWithIDs[id] = vectors[i]
+		}
 	}
 
-	query := randomVector(dim)
+	query := localRNG.NormalizedVector(dim)
 	filter := &metadata.FilterSet{
 		Filters: []metadata.Filter{
 			{Key: "category", Operator: metadata.OpEqual, Value: metadata.String("technology")},
 		},
 	}
+
+	// Compute ground truth for filtered vectors with original IDs
+	groundTruth := groundTruthSearchFiltered(ctx, filteredVectorsWithIDs, query, k)
+
+	// Measure recall before benchmark
+	approxResults, _ := db.Search(query).KNN(k).WithMetadata(filter).Execute(ctx)
+	recall := computeRecall(groundTruth, approxResults)
+
 	b.ResetTimer()
 
 	for i := 0; b.Loop(); i++ {
 		_, err := db.Search(query).
-			KNN(10).
+			KNN(k).
 			WithMetadata(filter).
 			Execute(ctx)
 		if err != nil {
 			b.Fatal(err)
 		}
 	}
+
+	b.ReportMetric(recall*100, "recall%")
 }
 
 // setupDiskANNIndex creates a DiskANN index with random data for benchmarking
