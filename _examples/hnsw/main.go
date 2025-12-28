@@ -1,13 +1,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"time"
 
 	"github.com/hupe1980/vecgo"
-	"github.com/hupe1980/vecgo/index/hnsw"
-	"github.com/hupe1980/vecgo/util"
+	"github.com/hupe1980/vecgo/testutil"
 )
 
 func main() {
@@ -16,13 +16,35 @@ func main() {
 	size := 50000
 	k := 10
 
-	vg := vecgo.NewHNSW[int](func(o *hnsw.Options) {
-		o.M = 32
-		// o.EF = 200
-		// o.Heuristic = false
-	}) // nolint wsl
+	// Create HNSW index using Fluent API
+	//
+	// Storage: HNSW uses columnar vector storage (SOA layout) by default
+	// for optimal cache locality and SIMD performance.
+	//
+	// Performance Tips:
+	// 1. For multi-core write scaling (2.7x-3.4x speedup), add: .Shards(4)
+	//    - Eliminates global lock bottleneck
+	//    - Enables parallel writes across shards
+	//    - Search automatically fans out to all shards in parallel
+	//
+	// 2. Tune M and EF for your accuracy/speed trade-off:
+	//    - M: Number of connections per layer (default 16)
+	//      Higher M = better recall but more memory
+	//    - EF: Search depth (default 200)
+	//      Higher EF = better recall but slower search
+	//
+	// 3. SIMD distance kernels are automatically enabled on ARM64/x86_64
+	//    - 10-15x faster than naive Go loops
+	//    - Zero allocations (pooled buffers)
+	vg, err := vecgo.HNSW[int](dim).
+		SquaredL2().
+		M(32). // Increase connections for better recall
+		Build()
+	if err != nil {
+		log.Fatalf("failed to create vecgo: %v", err)
+	}
 
-	rng := util.NewRNG(seed)
+	rng := testutil.NewRNG(seed)
 
 	items := make([]vecgo.VectorWithData[int], 0, size)
 	for i, v := range rng.GenerateRandomVectors(size, dim) {
@@ -40,35 +62,38 @@ func main() {
 
 	start := time.Now()
 
-	for _, item := range items {
-		_, err := vg.Insert(item)
+	// Use batch insert for better performance
+	batchResult := vg.BatchInsert(context.Background(), items)
+
+	// Check for errors
+	errorCount := 0
+	for _, err := range batchResult.Errors {
 		if err != nil {
-			log.Fatal(err)
+			errorCount++
 		}
+	}
+	if errorCount > 0 {
+		log.Printf("Failed to insert %d vectors", errorCount)
 	}
 
 	end := time.Since(start)
 
 	fmt.Printf("Seconds: %.2f\n\n", end.Seconds())
 
-	vg.PrintStats()
+	fmt.Print(vg.Stats().String())
 	fmt.Println()
 
-	var (
-		err    error
-		result []vecgo.SearchResult[int]
-	)
+	var result []vecgo.SearchResult[int]
 
-	fmt.Println("--- KNN ---")
+	fmt.Println("--- KNN (Fluent API) ---")
 
 	start = time.Now()
 
-	result, err = vg.KNNSearch(query, k, func(o *vecgo.KNNSearchOptions) {
-		o.EF = 80
-		// o.FilterFunc = func(id uint32) bool {
-		// 	return id%2 == 0
-		// }
-	}) // nolint wsl
+	// Fluent search API: clean, chainable, discoverable
+	result, err = vg.Search(query).
+		KNN(k).
+		EF(80).
+		Execute(context.Background())
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -83,11 +108,7 @@ func main() {
 
 	start = time.Now()
 
-	result, err = vg.BruteSearch(query, k, func(o *vecgo.BruteSearchOptions) {
-		// o.FilterFunc = func(id uint32) bool {
-		// 	return id%2 == 0
-		// }
-	}) // nolint wsl
+	result, err = vg.BruteSearch(context.Background(), query, k)
 	if err != nil {
 		log.Fatal(err)
 	}

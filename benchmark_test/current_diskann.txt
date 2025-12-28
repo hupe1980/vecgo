@@ -1,0 +1,18 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/hupe1980/vecgo/benchmark_test
+cpu: Apple M4 Pro
+BenchmarkDiskANNInsert
+BenchmarkDiskANNInsert/dim128
+BenchmarkDiskANNInsert/dim128-14         	    4843	   1740226 ns/op	 2549223 B/op	     463 allocs/op
+BenchmarkDiskANNInsert/dim384
+BenchmarkDiskANNInsert/dim384-14         	    1018	   3651136 ns/op	 1636944 B/op	     445 allocs/op
+BenchmarkDiskANNInsert/dim768
+BenchmarkDiskANNInsert/dim768-14         	     326	   6868701 ns/op	 1067135 B/op	     381 allocs/op
+BenchmarkDiskANNSearch
+BenchmarkDiskANNSearch/1K
+BenchmarkDiskANNSearch/1K-14             	     186	   6432695 ns/op	       100.0 recall%	      1000 vectors	   30760 B/op	    1198 allocs/op
+BenchmarkDiskANNSearch/10K
+BenchmarkDiskANNSearch/10K-14            	      34	  34019882 ns/op	       100.0 recall%	     10000 vectors	  171944 B/op	    4691 allocs/op
+PASS
+ok  	github.com/hupe1980/vecgo/benchmark_test	65.793s

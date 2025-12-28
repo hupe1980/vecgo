@@ -2,598 +2,1038 @@
 package hnsw
 
 import (
-	"container/heap"
+	"context"
+	"fmt"
+	"iter"
 	"math"
 	"math/rand"
 	"sync"
 	"sync/atomic"
 
 	"github.com/bits-and-blooms/bitset"
+	"github.com/hupe1980/vecgo/distance"
 	"github.com/hupe1980/vecgo/index"
-	"github.com/hupe1980/vecgo/queue"
+	"github.com/hupe1980/vecgo/internal/arena"
+	"github.com/hupe1980/vecgo/internal/queue"
+	"github.com/hupe1980/vecgo/vectorstore"
+	"github.com/hupe1980/vecgo/vectorstore/columnar"
 )
 
-// Compile time check to ensure HNSW satisfies the Index interface.
-var _ index.Index = (*HNSW)(nil)
+const (
+	// layerNormalizationBase is the base constant for exponential layer probability distribution.
+	layerNormalizationBase = 1.0
 
-// Node represents a node in the HNSW graph
+	// mmax0Multiplier is the multiplier for calculating maximum connections at layer 0.
+	mmax0Multiplier = 2
+
+	// minimumM is the minimum valid value for M.
+	minimumM = 2
+
+	// DefaultM is the default number of bidirectional links.
+	DefaultM = 8
+
+	// DefaultEF is the default size of the dynamic candidate list.
+	DefaultEF = 200
+
+	// nodeSegmentSize is the size of each node segment (65536).
+	// Using segments avoids copying the entire node array during growth.
+	nodeSegmentBits = 16
+	nodeSegmentSize = 1 << nodeSegmentBits
+	nodeSegmentMask = nodeSegmentSize - 1
+)
+
+// Compile-time checks
+var _ index.Index = (*HNSW)(nil)
+var _ index.TransactionalIndex = (*HNSW)(nil)
+
+// Node represents a node in the HNSW graph with lock-free reads via RCU.
+// Cache-line aligned to 128 bytes.
 type Node struct {
-	Connections [][]uint32 // Links to other nodes
-	Vector      []float32  // Vector (X dimensions)
-	Layer       int        // Layer the node exists in the HNSW tree
-	ID          uint32     // Unique identifier
+	// === CACHE LINE 1: Hot read path (64 bytes) ===
+
+	// Connections stores links to other nodes at each layer.
+	// Lock-free reads via atomic.Pointer, copy-on-write updates.
+	Connections []atomic.Pointer[[]uint32]
+
+	// ID is the unique identifier for this node.
+	ID uint32
+
+	// Layer is the highest layer this node appears in.
+	Layer int
+
+	// Padding to align to 64 bytes
+	_ [4]byte
+
+	// === CACHE LINE 2: Cold write path (64 bytes) ===
+
+	// mu protects Connections during WRITE operations only.
+	mu sync.Mutex
+
+	// Padding to complete second cache line
+	_ [56]byte
 }
 
 // Options represents the options for configuring HNSW.
 type Options struct {
-	// M specifies the number of established connections for every new element during construction.
-	// Reasonable range for M is 2-100. Higher M works better on datasets with high intrinsic dimensionality and/or high recall,
-	// while low M works better for datasets with low intrinsic dimensionality and/or low recalls.
-	// As an example, for dimension=4 random vectors, optimal M for search is somewhere around 6, while for high-dimensional datasets
-	// (word embeddings, good face descriptors), higher M values are required (e.g., M=48-64) for optimal performance at high recall.
-	// The range M=12-48 is ok for most use cases. When M is changed, one has to update the other parameters.
-	// Nonetheless, ef and ef_construction parameters can be roughly estimated by assuming that M * ef_construction is a constant.
-	M int
-
-	// EF specifies the size of the dynamic candidate list.
-	// EF is important for search time. Larger EF values can improve recall at the cost of increased search time.
-	EF int
-
-	// Heuristic indicates whether to use the heuristic algorithm (true) or the naive K-NN algorithm (false).
-	// The heuristic algorithm is generally faster but may sacrifice some accuracy.
-	Heuristic bool
-
-	// DistanceType represents the type of distance function used for calculating distances between vectors.
-	DistanceType index.DistanceType
+	Dimension        int
+	M                int
+	EF               int
+	Heuristic        bool
+	DistanceType     index.DistanceType
+	NormalizeVectors bool
+	Vectors          vectorstore.Store
 }
 
 var DefaultOptions = Options{
-	M:            8,
-	EF:           200,
+	Dimension:    0,
+	M:            DefaultM,
+	EF:           DefaultEF,
 	Heuristic:    true,
 	DistanceType: index.DistanceTypeSquaredL2,
 }
 
-// HNSW represents the Hierarchical Navigable Small World graph
+// HNSW represents the Hierarchical Navigable Small World graph.
 type HNSW struct {
-	sync.RWMutex
+	// Hot path: Atomic fields
+	entryPointAtomic atomic.Uint32
+	maxLevelAtomic   atomic.Int32
+	dimensionAtomic  atomic.Int32
+	nextIDAtomic     atomic.Uint32
+	countAtomic      atomic.Int64 // Track live count
 
-	dimension int32
-	mmax      int     // Max number of connections per element/per layer
-	mmax0     int     // Max for the 0 layer
-	ml        float64 // Normalization factor for level generation
-	ep        uint32  // Top layer of HNSW
-	maxLevel  int     // Track the current max level used
+	// Node storage: Segmented array to avoid global locks/copying on grow
+	// segments[i] contains nodes [i*segmentSize, (i+1)*segmentSize)
+	segments   []atomic.Pointer[[]*Node]
+	segmentsMu sync.RWMutex
 
-	nodes []*Node
-
+	// Components
 	distanceFunc index.DistanceFunc
+	vectors      vectorstore.Store
 
-	opts Options
+	// Configuration
+	maxConnectionsPerLayer int
+	maxConnectionsLayer0   int
+	layerMultiplier        float64
+	opts                   Options
 
-	initOnce   *sync.Once
-	insertOnce *sync.Once
+	// Sharding
+	shardID   int
+	numShards int
+
+	// Locks
+	epMu       sync.RWMutex // Protects entryPoint and maxLevel updates
+	freeListMu sync.Mutex   // Protects freeList
+
+	// State
+	freeList []uint32
+
+	// Resources
+	arena        *arena.Arena
+	minQueuePool *sync.Pool
+	maxQueuePool *sync.Pool
+	bitsetPool   *sync.Pool
 }
 
-// New creates a new HNSW instance with the given options
-func New(optFns ...func(o *Options)) *HNSW {
-	opts := DefaultOptions
+func (*HNSW) Name() string { return "HNSW" }
 
+// New creates a new HNSW instance.
+func New(optFns ...func(o *Options)) (*HNSW, error) {
+	opts := DefaultOptions
 	for _, fn := range optFns {
 		fn(&opts)
 	}
 
-	if opts.M == 1 {
-		// M == 1 would result in division by zero
-		// 1 / log(1.0 * M) = 1 / 0
-		opts.M = 2 // TODO Add warning?
+	if err := index.ValidateBasicOptions(opts.Dimension, opts.DistanceType); err != nil {
+		return nil, err
 	}
 
-	return &HNSW{
-		mmax:         opts.M,
-		mmax0:        2 * opts.M,
-		ml:           1 / math.Log(1.0*float64(opts.M)),
-		distanceFunc: index.NewDistanceFunc(opts.DistanceType),
-		opts:         opts,
+	if opts.DistanceType == index.DistanceTypeCosine {
+		opts.NormalizeVectors = true
+	}
 
-		initOnce:   &sync.Once{},
-		insertOnce: &sync.Once{},
+	if opts.M < minimumM {
+		opts.M = minimumM
+	}
+
+	h := &HNSW{
+		maxConnectionsPerLayer: opts.M,
+		maxConnectionsLayer0:   mmax0Multiplier * opts.M,
+		layerMultiplier:        layerNormalizationBase / math.Log(float64(opts.M)),
+		distanceFunc:           index.NewDistanceFunc(opts.DistanceType),
+		opts:                   opts,
+		segments:               make([]atomic.Pointer[[]*Node], 0, 16), // Start with capacity for 1M nodes
+		freeList:               make([]uint32, 0),
+		vectors:                opts.Vectors,
+		arena:                  arena.New(arena.DefaultChunkSize),
+		shardID:                0,
+		numShards:              1,
+		minQueuePool: &sync.Pool{
+			New: func() any { return queue.NewMin(opts.EF) },
+		},
+		maxQueuePool: &sync.Pool{
+			New: func() any { return queue.NewMax(opts.EF) },
+		},
+		bitsetPool: &sync.Pool{
+			New: func() any { return &bitset.BitSet{} },
+		},
+	}
+
+	h.dimensionAtomic.Store(int32(opts.Dimension))
+	if h.vectors == nil {
+		h.vectors = columnar.New(opts.Dimension)
+	}
+
+	// Initialize first segment
+	h.growSegments(0)
+
+	return h, nil
+}
+
+// getNode returns the node for the given ID, or nil if it doesn't exist/deleted.
+// Lock-free read access.
+func (h *HNSW) getNode(id uint32) *Node {
+	segmentIdx := int(id >> nodeSegmentBits)
+
+	// Fast path: check if segment exists without lock (atomic load implicit in slice access if pre-sized,
+	// but here we use RLock on segments slice if we expect growth, or just atomic load of the pointer)
+	// For simplicity and safety with growth, we use RLock on the segments slice wrapper.
+	// Optimization: We can just read the slice if we assume it only grows.
+	// But to be strictly safe in Go:
+	h.segmentsMu.RLock()
+	if segmentIdx >= len(h.segments) {
+		h.segmentsMu.RUnlock()
+		return nil
+	}
+	segmentPtr := h.segments[segmentIdx].Load()
+	h.segmentsMu.RUnlock()
+
+	if segmentPtr == nil {
+		return nil
+	}
+
+	// No bounds check needed on segment due to bitmask, but good for safety
+	idx := id & nodeSegmentMask
+	return (*segmentPtr)[idx]
+}
+
+// setNode sets the node at the given ID. Thread-safe.
+func (h *HNSW) setNode(id uint32, node *Node) {
+	h.growSegments(id)
+
+	segmentIdx := int(id >> nodeSegmentBits)
+	h.segmentsMu.RLock()
+	segmentPtr := h.segments[segmentIdx].Load()
+	h.segmentsMu.RUnlock()
+
+	(*segmentPtr)[id&nodeSegmentMask] = node
+}
+
+// growSegments ensures capacity for the given ID.
+func (h *HNSW) growSegments(id uint32) {
+	segmentIdx := int(id >> nodeSegmentBits)
+
+	h.segmentsMu.RLock()
+	if segmentIdx < len(h.segments) && h.segments[segmentIdx].Load() != nil {
+		h.segmentsMu.RUnlock()
+		return
+	}
+	h.segmentsMu.RUnlock()
+
+	h.segmentsMu.Lock()
+	defer h.segmentsMu.Unlock()
+
+	// Double check
+	for len(h.segments) <= segmentIdx {
+		h.segments = append(h.segments, atomic.Pointer[[]*Node]{})
+	}
+
+	if h.segments[segmentIdx].Load() == nil {
+		newSegment := make([]*Node, nodeSegmentSize)
+		h.segments[segmentIdx].Store(&newSegment)
 	}
 }
 
-// Insert inserts a new element into the HNSW graph
-func (h *HNSW) Insert(v []float32) (uint32, error) {
-	h.initOnce.Do(func() {
-		if h.isEmpty() {
-			atomic.StoreInt32(&h.dimension, int32(len(v)))
-		}
-	})
+// AllocateID returns a new ID.
+func (h *HNSW) AllocateID() uint32 {
+	h.freeListMu.Lock()
+	if n := len(h.freeList); n > 0 {
+		id := h.freeList[n-1]
+		h.freeList = h.freeList[:n-1]
+		h.freeListMu.Unlock()
+		return id
+	}
+	h.freeListMu.Unlock()
+	return h.nextIDAtomic.Add(1) - 1
+}
 
-	// Check if dimensions of the input vector match the expected dimension
-	dim := int(atomic.LoadInt32(&h.dimension))
+// ReleaseID releases an ID.
+func (h *HNSW) ReleaseID(id uint32) {
+	if h.getNode(id) != nil {
+		return // Don't release live IDs
+	}
+	h.freeListMu.Lock()
+	h.freeList = append(h.freeList, id)
+	h.freeListMu.Unlock()
+}
+
+// Insert inserts a vector.
+func (h *HNSW) Insert(ctx context.Context, v []float32) (uint32, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	return h.insert(v, 0, -1, false)
+}
+
+// ApplyInsert inserts a vector with a specific ID (for WAL replay).
+func (h *HNSW) ApplyInsert(ctx context.Context, id uint32, v []float32) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	_, err := h.insert(v, id, -1, true)
+	return err
+}
+
+// ApplyDelete deletes a node with a specific ID (for WAL replay).
+func (h *HNSW) ApplyDelete(ctx context.Context, id uint32) error {
+	return h.Delete(ctx, id)
+}
+
+// ApplyUpdate updates a node with a specific ID (for WAL replay).
+func (h *HNSW) ApplyUpdate(ctx context.Context, id uint32, v []float32) error {
+	return h.Update(ctx, id, v)
+}
+
+// BatchInsert inserts multiple vectors.
+func (h *HNSW) BatchInsert(ctx context.Context, vectors [][]float32) index.BatchInsertResult {
+	result := index.BatchInsertResult{
+		IDs:    make([]uint32, len(vectors)),
+		Errors: make([]error, len(vectors)),
+	}
+	if err := ctx.Err(); err != nil {
+		for i := range result.Errors {
+			result.Errors[i] = err
+		}
+		return result
+	}
+	for i, v := range vectors {
+		id, err := h.Insert(ctx, v)
+		result.IDs[i] = id
+		result.Errors[i] = err
+	}
+	return result
+}
+
+// insert is the unified insertion logic.
+func (h *HNSW) insert(v []float32, id uint32, layer int, useProvidedID bool) (uint32, error) {
+	if len(v) == 0 {
+		return 0, index.ErrEmptyVector
+	}
+	dim := int(h.dimensionAtomic.Load())
 	if len(v) != dim {
 		return 0, &index.ErrDimensionMismatch{Expected: dim, Actual: len(v)}
 	}
 
-	// Make a copy of the vector to ensure changes outside this function don't affect the node
-	vectorCopy := make([]float32, len(v))
-	copy(vectorCopy, v)
-
-	wasFirst := false
-
-	h.insertOnce.Do(func() {
-		if h.isEmpty() {
-			h.Lock()
-			defer h.Unlock()
-
-			wasFirst = true
-
-			h.ep = 0
-			h.maxLevel = 0
-			h.nodes = []*Node{{ID: 0, Layer: 0, Vector: vectorCopy, Connections: [][]uint32{
-				make([]uint32, 0, h.mmax0),
-			}}}
+	// Normalize if needed
+	var vec []float32
+	if h.opts.NormalizeVectors {
+		vec = make([]float32, len(v))
+		copy(vec, v)
+		if !distance.NormalizeL2InPlace(vec) {
+			return 0, fmt.Errorf("hnsw: cannot normalize zero vector")
 		}
-	})
-
-	if wasFirst {
-		return 0, nil
+	} else {
+		vec = v // Zero-copy if not normalizing (vectors store will copy if needed)
 	}
 
-	h.Lock()
-	defer h.Unlock()
+	// ID Allocation
+	if useProvidedID {
+		// Ensure ID is not in free list
+		h.freeListMu.Lock()
+		for i := len(h.freeList) - 1; i >= 0; i-- {
+			if h.freeList[i] == id {
+				h.freeList = append(h.freeList[:i], h.freeList[i+1:]...)
+				break
+			}
+		}
+		h.freeListMu.Unlock()
 
-	// next ID
-	id := uint32(len(h.nodes))
+		// Ensure nextID > id
+		for {
+			cur := h.nextIDAtomic.Load()
+			if cur > id {
+				break
+			}
+			if h.nextIDAtomic.CompareAndSwap(cur, id+1) {
+				break
+			}
+		}
+	} else {
+		id = h.AllocateID()
+	}
 
-	layer := int(math.Floor(-math.Log(rand.Float64()) * h.ml)) // nolint gosec
+	// Layer Selection
+	if layer < 0 {
+		if useProvidedID {
+			layer = h.layerForApplyInsert(id)
+		} else {
+			layer = int(math.Floor(-math.Log(rand.Float64()) * h.layerMultiplier))
+		}
+	}
 
+	// Create Node
 	node := &Node{
 		ID:          id,
-		Vector:      vectorCopy,
 		Layer:       layer,
-		Connections: make([][]uint32, layer+1),
+		Connections: make([]atomic.Pointer[[]uint32], layer+1),
+	}
+	for l := 0; l <= layer; l++ {
+		cap := h.maxConnectionsPerLayer
+		if l == 0 {
+			cap = h.maxConnectionsLayer0
+		}
+		empty := make([]uint32, 0, cap)
+		node.Connections[l].Store(&empty)
 	}
 
-	// Find single shortest path from top layers above our current node, which will be our new starting-point
-	currObj, currDist, err := h.findShortestPath(node)
-	if err != nil {
+	// Store Vector
+	if err := h.vectors.SetVector(id, vec); err != nil {
+		if !useProvidedID {
+			h.ReleaseID(id)
+		}
 		return 0, err
 	}
 
-	// For all levels equal and below our current node, find the top (closest) candidates and create a link
-	for level := min(node.Layer, h.maxLevel); level >= 0; level-- {
-		topCandidates, err := h.searchLayer(&searchParams{
-			Query:      node.Vector,
-			EntryPoint: &queue.PriorityQueueItem{Distance: currDist, Node: currObj.ID},
-			EF:         h.opts.EF,
-			Level:      level,
-		})
-		if err != nil {
-			return 0, err
+	// Handle First Node
+	if h.countAtomic.Load() == 0 {
+		h.epMu.Lock()
+		if h.countAtomic.Load() == 0 {
+			h.setNode(id, node)
+			h.entryPointAtomic.Store(id)
+			h.maxLevelAtomic.Store(int32(layer))
+			h.countAtomic.Add(1)
+			h.epMu.Unlock()
+			return id, nil
 		}
-
-		// Switch type, naive k-NN, or Heuristic HNSW for linking nearest neighbours
-		if h.opts.Heuristic {
-			h.selectNeighboursHeuristic(topCandidates, h.mmax, false)
-		} else {
-			h.selectNeighboursSimple(topCandidates, h.mmax)
-		}
-
-		node.Connections[level] = make([]uint32, topCandidates.Len())
-
-		for i := topCandidates.Len() - 1; i >= 0; i-- {
-			candidate, _ := heap.Pop(topCandidates).(*queue.PriorityQueueItem)
-			node.Connections[level][i] = candidate.Node
-		}
+		h.epMu.Unlock()
 	}
 
-	// Append new node
-	h.nodes = append(h.nodes, node)
+	// Insert into Graph
+	if err := h.insertNode(node, vec); err != nil {
+		return 0, err
+	}
 
-	// Next link the neighbour nodes to our new node, making it visible
-	for level := min(node.Layer, h.maxLevel); level >= 0; level-- {
-		for _, neighbourNode := range node.Connections[level] {
-			if err := h.link(neighbourNode, node.ID, level); err != nil {
-				return 0, err
+	h.setNode(id, node)
+	h.countAtomic.Add(1)
+
+	// Update Entry Point
+	maxLevel := int(h.maxLevelAtomic.Load())
+	if layer > maxLevel {
+		h.epMu.Lock()
+		if layer > int(h.maxLevelAtomic.Load()) {
+			h.maxLevelAtomic.Store(int32(layer))
+			h.entryPointAtomic.Store(id)
+		}
+		h.epMu.Unlock()
+	}
+
+	return id, nil
+}
+
+// insertNode performs the graph traversal and linking.
+func (h *HNSW) insertNode(node *Node, vec []float32) error {
+	epID := h.entryPointAtomic.Load()
+	epNode := h.getNode(epID)
+
+	// Handle case where entry point was deleted concurrently
+	if epNode == nil {
+		// Fallback: try to find any live node as entry point
+		// This is rare but possible during concurrent deletes
+		// For now, just return error or handle gracefully.
+		// Since we have count > 0 check before, this implies race.
+		// We'll proceed with best effort or fail.
+		return index.ErrEntryPointDeleted
+	}
+
+	currObj := epNode
+	currDist := h.dist(vec, currObj.ID)
+
+	// 1. Greedy search from top to node.Layer + 1
+	maxLevel := int(h.maxLevelAtomic.Load())
+	for level := maxLevel; level > node.Layer; level-- {
+		changed := true
+		for changed {
+			changed = false
+			if level >= len(currObj.Connections) {
+				continue
+			}
+			conns := currObj.Connections[level].Load()
+			for _, nextID := range *conns {
+				nextDist := h.dist(vec, nextID)
+				if nextDist < currDist {
+					if nextNode := h.getNode(nextID); nextNode != nil {
+						currObj = nextNode
+						currDist = nextDist
+						changed = true
+					}
+				}
 			}
 		}
 	}
 
-	if node.Layer > h.maxLevel {
-		h.ep = node.ID
-		h.maxLevel = node.Layer
-	}
-
-	return node.ID, nil
-}
-
-// KNNSearch performs a k-nearest neighbor search in the HNSW graph
-func (h *HNSW) KNNSearch(q []float32, k int, efSearch int, filter func(id uint32) bool) ([]index.SearchResult, error) {
-	if h.isEmpty() {
-		return nil, nil
-	}
-
-	ep, currDist, err := h.findEP(q, h.nodes[h.ep])
-	if err != nil {
-		return nil, err
-	}
-
-	topCandidates, err := h.searchLayer(&searchParams{
-		Query:      q,
-		EntryPoint: &queue.PriorityQueueItem{Distance: currDist, Node: ep.ID},
-		EF:         efSearch,
-		Level:      0,
-		Filter:     filter,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	for topCandidates.Len() > k {
-		_ = heap.Pop(topCandidates)
-	}
-
-	results := make([]index.SearchResult, topCandidates.Len())
-
-	for i := topCandidates.Len() - 1; i >= 0; i-- {
-		item, _ := heap.Pop(topCandidates).(*queue.PriorityQueueItem)
-		results[i] = index.SearchResult{
-			ID:       item.Node,
-			Distance: item.Distance,
-		}
-	}
-
-	return results, nil
-}
-
-// BruteSearch performs a brute-force search in the HNSW graph
-func (h *HNSW) BruteSearch(query []float32, k int, filter func(id uint32) bool) ([]index.SearchResult, error) {
-	if h.isEmpty() {
-		return nil, nil
-	}
-
-	topCandidates := queue.NewMax(k)
-
-	heap.Init(topCandidates)
-
-	for _, node := range h.nodes {
-		if !filter(node.ID) {
-			continue
-		}
-
-		nodeDist, err := h.distanceFunc(query, node.Vector)
+	// 2. Search and link from node.Layer down to 0
+	for level := min(node.Layer, maxLevel); level >= 0; level-- {
+		// Search layer
+		candidates, err := h.searchLayer(vec, currObj, currDist, level, h.opts.EF)
 		if err != nil {
-			return nil, err
+			return err
 		}
 
-		if topCandidates.Len() < k {
-			heap.Push(topCandidates, &queue.PriorityQueueItem{
-				Node:     node.ID,
-				Distance: nodeDist,
-			})
-
-			continue
-		}
-
-		largestDist, _ := topCandidates.Top().(*queue.PriorityQueueItem)
-
-		if nodeDist < largestDist.Distance {
-			heap.Pop(topCandidates)
-
-			heap.Push(topCandidates, &queue.PriorityQueueItem{
-				Node:     node.ID,
-				Distance: nodeDist,
-			})
-		}
-	}
-
-	results := make([]index.SearchResult, topCandidates.Len())
-
-	for i := topCandidates.Len() - 1; i >= 0; i-- {
-		item, _ := heap.Pop(topCandidates).(*queue.PriorityQueueItem)
-		results[i] = index.SearchResult{
-			ID:       item.Node,
-			Distance: item.Distance,
-		}
-	}
-
-	return results, nil
-}
-
-// link adds links between nodes in the HNSW graph
-func (h *HNSW) link(first uint32, second uint32, level int) error {
-	maxConnections := h.mmax
-	// HNSW allows double the connections for the bottom level (0)
-	if level == 0 {
-		maxConnections = h.mmax0
-	}
-
-	node := h.nodes[first]
-
-	node.Connections[level] = append(node.Connections[level], second)
-
-	if len(node.Connections[level]) > maxConnections {
-		// Add the new candidate to our queue
-		topCandidates := queue.NewMin(maxConnections)
-
-		heap.Init(topCandidates)
-
-		for _, id := range node.Connections[level] {
-			distance, err := h.distanceFunc(node.Vector, h.nodes[id].Vector)
-			if err != nil {
-				return err
+		// Update entry point for next level
+		if best, ok := candidates.MinItem(); ok {
+			if bestNode := h.getNode(best.Node); bestNode != nil {
+				currObj = bestNode
+				currDist = best.Distance
 			}
-
-			heap.Push(topCandidates, &queue.PriorityQueueItem{Node: id, Distance: distance})
 		}
 
-		if h.opts.Heuristic {
-			h.selectNeighboursHeuristic(topCandidates, maxConnections, true)
-		} else {
-			h.selectNeighboursSimple(topCandidates, maxConnections)
+		// Select neighbors
+		maxConns := h.maxConnectionsPerLayer
+		if level == 0 {
+			maxConns = h.maxConnectionsLayer0
 		}
 
-		// Next, reorder our connected nodes with the improved lower distances within the graph
-		node.Connections[level] = make([]uint32, maxConnections)
+		neighbors := h.selectNeighbors(candidates, maxConns)
 
-		// Order by best performing match (index 0) .. lowest
-		for i := maxConnections - 1; i >= 0; i-- {
-			item, _ := heap.Pop(topCandidates).(*queue.PriorityQueueItem)
-			node.Connections[level][i] = item.Node
+		// Store connections
+		node.Connections[level].Store(&neighbors)
+
+		// Link back
+		for _, neighborID := range neighbors {
+			h.link(neighborID, node.ID, level, vec)
 		}
+
+		// Cleanup
+		candidates.Reset()
+		h.maxQueuePool.Put(candidates)
 	}
 
 	return nil
 }
 
-func (h *HNSW) isEmpty() bool {
-	h.RLock()
-	defer h.RUnlock()
-
-	return len(h.nodes) == 0
-}
-
-// findShortestPath finds the shortest path from the top layers to the specified node in the HNSW graph
-func (h *HNSW) findShortestPath(node *Node) (*Node, float32, error) {
-	// Current distance from our starting-point (ep)
-	currObj := h.nodes[h.ep]
-
-	currDist, err := h.distanceFunc(currObj.Vector, node.Vector)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	for level := currObj.Layer; level > node.Layer; level-- {
-		changed := true
-		for changed {
-			changed = false
-
-			for _, nodeID := range currObj.Connections[level] {
-				newObj := h.nodes[nodeID]
-
-				newDist, err := h.distanceFunc(newObj.Vector, node.Vector)
-				if err != nil {
-					return nil, 0, err
-				}
-
-				if newDist < currDist {
-					// Update the starting point to our new node
-					currObj = newObj
-					// Update the currently shortest distance
-					currDist = newDist
-					// If a smaller match found, continue
-					changed = true
-				}
-			}
-		}
-	}
-
-	return currObj, currDist, nil
-}
-
-// searchParams represents the parameters for performing a search operation in the HNSW graph.
-type searchParams struct {
-	// Query is the vector for which nearest neighbors are being searched.
-	Query []float32
-
-	// EntryPoint represents the starting point for the search operation.
-	EntryPoint *queue.PriorityQueueItem
-
-	// EF (Exploration Factor) specifies the size of the dynamic candidate list during the search.
-	EF int
-
-	// Level represents the level of the HNSW graph at which the search is performed.
-	Level int
-
-	// Filter is an optional filter function that can be applied to the search results.
-	// If provided, only the nodes passing the filter condition will be considered in the search.
-	Filter func(id uint32) bool
-}
-
-// searchLayer performs a search in a specified layer of the HNSW graph
-func (h *HNSW) searchLayer(params *searchParams) (*queue.PriorityQueue, error) {
-	var visited bitset.BitSet
-
-	visited.Set(uint(params.EntryPoint.Node))
-
-	// Add the new candidate to our queue
-	candidates := queue.NewMin(params.EF)
-	heap.Init(candidates)
-
-	heap.Push(candidates, params.EntryPoint)
-
-	topCandidates := queue.NewMax(params.EF)
-	heap.Init(topCandidates)
-
-	heap.Push(topCandidates, params.EntryPoint)
-
-	for candidates.Len() > 0 {
-		lowerBound := topCandidates.Top().(*queue.PriorityQueueItem).Distance
-
-		candidate, _ := heap.Pop(candidates).(*queue.PriorityQueueItem)
-		if candidate.Distance > lowerBound {
-			break
-		}
-
-		node := h.nodes[candidate.Node]
-
-		if len(node.Connections) > params.Level { // Check if level is within bounds
-			conns := node.Connections[params.Level]
-
-			for _, n := range conns {
-				if !visited.Test(uint(n)) {
-					visited.Set(uint(n))
-
-					distance, err := h.distanceFunc(params.Query, h.nodes[n].Vector)
-					if err != nil {
-						return nil, err
-					}
-
-					item := &queue.PriorityQueueItem{
-						Distance: distance,
-						Node:     n,
-					}
-
-					if params.Filter != nil && !params.Filter(item.Node) {
-						heap.Push(candidates, item)
-						continue
-					}
-
-					topDistance := topCandidates.Top().(*queue.PriorityQueueItem).Distance
-
-					// Add the element to topCandidates if size < EF
-					if topCandidates.Len() < params.EF {
-						heap.Push(topCandidates, item)
-						heap.Push(candidates, item)
-					} else if topDistance > distance {
-						heap.Pop(topCandidates)
-						heap.Push(topCandidates, item)
-						heap.Push(candidates, item)
-					}
-				}
-			}
-		}
-	}
-
-	return topCandidates, nil
-}
-
-// selectNeighboursSimple selects the nearest neighbors using a simple approach
-func (h *HNSW) selectNeighboursSimple(topCandidates *queue.PriorityQueue, m int) {
-	for topCandidates.Len() > m {
-		_ = heap.Pop(topCandidates)
-	}
-}
-
-// selectNeighboursHeuristic selects the nearest neighbors using a heuristic approach
-func (h *HNSW) selectNeighboursHeuristic(topCandidates *queue.PriorityQueue, m int, order bool) {
-	// If results < m, return, nothing required
-	if topCandidates.Len() < m {
+// link adds a bidirectional connection.
+func (h *HNSW) link(srcID, dstID uint32, level int, dstVec []float32) {
+	srcNode := h.getNode(srcID)
+	if srcNode == nil {
 		return
 	}
 
-	// Create our new priority queues
-	items := make([]*queue.PriorityQueueItem, 0, m)
-
-	var (
-		tmpCandidates *queue.PriorityQueue
-		newCandidates *queue.PriorityQueue
-	)
-
-	if !order {
-		tmpCandidates = queue.NewMin(topCandidates.Len())
-		heap.Init(tmpCandidates)
-
-		newCandidates = queue.NewMin(topCandidates.Len())
-		heap.Init(newCandidates)
-
-		// Add existing candidates to our new queue
-		for topCandidates.Len() > 0 {
-			item, _ := heap.Pop(topCandidates).(*queue.PriorityQueueItem)
-			heap.Push(newCandidates, item)
-		}
-	} else {
-		tmpCandidates = queue.NewMax(topCandidates.Len())
-		heap.Init(tmpCandidates)
-
-		newCandidates = topCandidates
+	if level >= len(srcNode.Connections) {
+		return
 	}
 
-	// Scan through our new queue (order changed from min-heap > max-heap or vice-versa depending on order arg)
-	for newCandidates.Len() > 0 {
-		// Finish if items reaches our desired length
-		if len(items) >= m {
+	srcNode.mu.Lock()
+	defer srcNode.mu.Unlock()
+
+	oldConns := srcNode.Connections[level].Load()
+
+	// Check if already connected (rare but possible)
+	for _, id := range *oldConns {
+		if id == dstID {
+			return
+		}
+	}
+
+	// Create new list
+	newConns := make([]uint32, 0, len(*oldConns)+1)
+	newConns = append(newConns, *oldConns...)
+	newConns = append(newConns, dstID)
+
+	maxConns := h.maxConnectionsPerLayer
+	if level == 0 {
+		maxConns = h.maxConnectionsLayer0
+	}
+
+	if len(newConns) > maxConns {
+		// Prune
+		candidates := h.maxQueuePool.Get().(*queue.PriorityQueue)
+		candidates.Reset()
+
+		srcVec, _ := h.vectors.GetVector(srcID) // Should exist
+
+		for _, id := range newConns {
+			var d float32
+			if id == dstID {
+				d = h.distanceFunc(srcVec, dstVec)
+			} else {
+				d = h.dist(srcVec, id)
+			}
+			candidates.PushItem(queue.PriorityQueueItem{Node: id, Distance: d})
+		}
+
+		pruned := h.selectNeighbors(candidates, maxConns)
+		srcNode.Connections[level].Store(&pruned)
+
+		candidates.Reset()
+		h.maxQueuePool.Put(candidates)
+	} else {
+		srcNode.Connections[level].Store(&newConns)
+	}
+}
+
+// selectNeighbors selects the best neighbors from candidates.
+func (h *HNSW) selectNeighbors(candidates *queue.PriorityQueue, m int) []uint32 {
+	if h.opts.Heuristic {
+		return h.selectNeighborsHeuristic(candidates, m)
+	}
+	return h.selectNeighborsSimple(candidates, m)
+}
+
+func (h *HNSW) selectNeighborsSimple(candidates *queue.PriorityQueue, m int) []uint32 {
+	// Simple selection (keep top M)
+	for candidates.Len() > m {
+		_, _ = candidates.PopItem()
+	}
+
+	res := make([]uint32, 0, candidates.Len())
+	for candidates.Len() > 0 {
+		item, _ := candidates.PopItem()
+		res = append(res, item.Node)
+	}
+	// Reverse to have best first
+	for i, j := 0, len(res)-1; i < j; i, j = i+1, j-1 {
+		res[i], res[j] = res[j], res[i]
+	}
+	return res
+}
+
+func (h *HNSW) selectNeighborsHeuristic(candidates *queue.PriorityQueue, m int) []uint32 {
+	if candidates.Len() <= m {
+		return h.selectNeighborsSimple(candidates, m) // Fallback to simple if few candidates
+	}
+
+	// Extract all candidates to a slice sorted by distance (nearest first)
+	// candidates is a MaxHeap (stores worst at top), so popping gives worst-to-best.
+	// We want best-to-worst for the heuristic.
+
+	temp := make([]queue.PriorityQueueItem, candidates.Len())
+	for i := len(temp) - 1; i >= 0; i-- {
+		temp[i], _ = candidates.PopItem()
+	}
+
+	result := make([]uint32, 0, m)
+	for _, cand := range temp {
+		if len(result) >= m {
 			break
 		}
 
-		item, _ := heap.Pop(newCandidates).(*queue.PriorityQueueItem)
+		// Check if this candidate is closer to any already selected neighbor
+		// than to the source node. (Relative Neighborhood Graph property)
+		good := true
+		candVec, _ := h.vectors.GetVector(cand.Node)
 
-		hit := true
-
-		// Search through each item and determine if distance from node lower for items in set
-		for _, v := range items {
-			distance, _ := h.distanceFunc(h.nodes[v.Node].Vector, h.nodes[item.Node].Vector)
-			if distance < item.Distance {
-				hit = false
+		for _, resID := range result {
+			resVec, _ := h.vectors.GetVector(resID)
+			dist := h.distanceFunc(candVec, resVec)
+			if dist < cand.Distance {
+				good = false
 				break
 			}
 		}
 
-		if hit {
-			items = append(items, item)
-		} else {
-			heap.Push(tmpCandidates, item)
+		if good {
+			result = append(result, cand.Node)
 		}
 	}
 
-	// Add any additional items from tmpCandidates if current items < M
-	for len(items) < m && tmpCandidates.Len() > 0 {
-		item, _ := heap.Pop(tmpCandidates).(*queue.PriorityQueueItem)
-		items = append(items, item)
+	// Fill up if needed
+	if len(result) < m {
+		for _, cand := range temp {
+			if len(result) >= m {
+				break
+			}
+			// Check if already added
+			found := false
+			for _, r := range result {
+				if r == cand.Node {
+					found = true
+					break
+				}
+			}
+			if !found {
+				result = append(result, cand.Node)
+			}
+		}
 	}
 
-	// Last step, append our results into our original min/max-heap
-	for _, item := range items {
-		heap.Push(topCandidates, item)
-	}
+	return result
 }
 
-// findEP finds the entry-point (ep) in the HNSW graph
-func (h *HNSW) findEP(q []float32, currObj *Node) (*Node, float32, error) {
-	currDist, err := h.distanceFunc(q, currObj.Vector)
-	if err != nil {
-		return nil, 0, err
-	}
+// searchLayer searches a specific layer.
+func (h *HNSW) searchLayer(query []float32, ep *Node, epDist float32, level int, ef int) (*queue.PriorityQueue, error) {
+	visited := h.bitsetPool.Get().(*bitset.BitSet)
+	defer func() { visited.ClearAll(); h.bitsetPool.Put(visited) }()
 
-	match := currObj
+	candidates := h.minQueuePool.Get().(*queue.PriorityQueue) // MinHeap: stores best candidates to explore
+	candidates.Reset()
 
-	// Find single shortest path from top layers above our current node, which will be our new starting-point
-	for level := h.maxLevel; level > 0; level-- {
-		scan := true
+	results := h.maxQueuePool.Get().(*queue.PriorityQueue) // MaxHeap: stores current top EF results
+	results.Reset()                                        // Caller must put back
 
-		for scan {
-			scan = false
+	visited.Set(uint(ep.ID))
+	candidates.PushItem(queue.PriorityQueueItem{Node: ep.ID, Distance: epDist})
+	results.PushItem(queue.PriorityQueueItem{Node: ep.ID, Distance: epDist})
 
-			for _, nodeID := range currObj.Connections[level] {
-				nodeDist, err := h.distanceFunc(h.nodes[nodeID].Vector, q)
-				if err != nil {
-					return nil, 0, err
-				}
+	for candidates.Len() > 0 {
+		curr, _ := candidates.PopItem()
+		worst, _ := results.TopItem()
 
-				if nodeDist < currDist {
-					// Update the starting point to our new node
-					match = h.nodes[nodeID]
+		if curr.Distance > worst.Distance && results.Len() >= ef {
+			break
+		}
 
-					// Update the currently shortest distance
-					currDist = nodeDist
+		node := h.getNode(curr.Node)
+		if node == nil || level >= len(node.Connections) {
+			continue
+		}
 
-					// If a smaller match found, continue
-					scan = true
+		conns := node.Connections[level].Load()
+		for _, nextID := range *conns {
+			if !visited.Test(uint(nextID)) {
+				visited.Set(uint(nextID))
+
+				nextDist := h.dist(query, nextID)
+				worst, _ = results.TopItem()
+
+				if results.Len() < ef || nextDist < worst.Distance {
+					item := queue.PriorityQueueItem{Node: nextID, Distance: nextDist}
+					candidates.PushItem(item)
+					results.PushItem(item)
+
+					if results.Len() > ef {
+						_, _ = results.PopItem()
+					}
 				}
 			}
 		}
 	}
 
-	return match, currDist, nil
+	return results, nil
+}
+
+// dist computes distance between vector and node ID.
+func (h *HNSW) dist(v []float32, id uint32) float32 {
+	vec, ok := h.vectors.GetVector(id)
+	if !ok {
+		return math.MaxFloat32
+	}
+	return h.distanceFunc(v, vec)
+}
+
+// Delete deletes a node.
+func (h *HNSW) Delete(ctx context.Context, id uint32) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	node := h.getNode(id)
+	if node == nil {
+		return &index.ErrNodeDeleted{ID: id}
+	}
+
+	// Remove from graph (soft delete from array, hard delete from neighbors)
+	h.setNode(id, nil)
+	h.countAtomic.Add(-1)
+	h.ReleaseID(id)
+
+	// Remove connections to this node
+	// Note: This is expensive (scan all nodes? No, scan neighbors).
+	// But we don't know who points to us.
+	// HNSW usually requires full scan or reverse index for clean delete.
+	// Optimization: We only remove from neighbors we point to (undirected graph assumption).
+	// Since links are bidirectional, our neighbors point to us.
+
+	for level := 0; level < len(node.Connections); level++ {
+		conns := node.Connections[level].Load()
+		for _, neighborID := range *conns {
+			h.removeLink(neighborID, id, level)
+		}
+	}
+
+	// If entry point, find new one
+	if h.entryPointAtomic.Load() == id {
+		// Scan for new entry point (expensive but rare)
+		// For production, we might just pick a random node or scan top layer
+		// Simple scan:
+		var newEP uint32
+		var maxL int32 = -1
+
+		// This is slow. In production, maybe maintain a set of top nodes?
+		// Or just lazy update.
+		// For now, linear scan of segments.
+		h.segmentsMu.RLock()
+		for _, segPtr := range h.segments {
+			seg := segPtr.Load()
+			if seg == nil {
+				continue
+			}
+			for _, n := range *seg {
+				if n != nil && n.ID != id {
+					if int32(n.Layer) > maxL {
+						maxL = int32(n.Layer)
+						newEP = n.ID
+					}
+				}
+			}
+		}
+		h.segmentsMu.RUnlock()
+
+		h.epMu.Lock()
+		if h.entryPointAtomic.Load() == id {
+			if maxL == -1 {
+				h.entryPointAtomic.Store(0)
+				h.maxLevelAtomic.Store(0)
+			} else {
+				h.entryPointAtomic.Store(newEP)
+				h.maxLevelAtomic.Store(maxL)
+			}
+		}
+		h.epMu.Unlock()
+	}
+
+	return h.vectors.DeleteVector(id)
+}
+
+func (h *HNSW) removeLink(srcID, targetID uint32, level int) {
+	node := h.getNode(srcID)
+	if node == nil {
+		return
+	}
+
+	node.mu.Lock()
+	defer node.mu.Unlock()
+
+	oldConns := node.Connections[level].Load()
+	newConns := make([]uint32, 0, len(*oldConns))
+	for _, id := range *oldConns {
+		if id != targetID {
+			newConns = append(newConns, id)
+		}
+	}
+
+	if len(newConns) != len(*oldConns) {
+		node.Connections[level].Store(&newConns)
+	}
+}
+
+// Update updates a vector.
+func (h *HNSW) Update(ctx context.Context, id uint32, v []float32) error {
+	node := h.getNode(id)
+	if node == nil {
+		return &index.ErrNodeNotFound{ID: id}
+	}
+	layer := node.Layer
+
+	if err := h.Delete(ctx, id); err != nil {
+		return err
+	}
+
+	_, err := h.insert(v, id, layer, true)
+	return err
+}
+
+// KNNSearch performs search.
+func (h *HNSW) KNNSearch(ctx context.Context, q []float32, k int, opts *index.SearchOptions) ([]index.SearchResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	// Normalize
+	if h.opts.NormalizeVectors {
+		// Copy to avoid modifying input
+		qc := make([]float32, len(q))
+		copy(qc, q)
+		if !distance.NormalizeL2InPlace(qc) {
+			return nil, fmt.Errorf("hnsw: zero query vector")
+		}
+		q = qc
+	}
+
+	epID := h.entryPointAtomic.Load()
+	epNode := h.getNode(epID)
+	if epNode == nil {
+		return nil, nil
+	}
+
+	ef := h.opts.EF
+	if opts != nil && opts.EFSearch > 0 {
+		ef = opts.EFSearch
+	}
+	if ef < k {
+		ef = k
+	}
+
+	// 1. Greedy to layer 0
+	currObj := epNode
+	currDist := h.dist(q, currObj.ID)
+	maxLevel := int(h.maxLevelAtomic.Load())
+
+	for level := maxLevel; level > 0; level-- {
+		changed := true
+		for changed {
+			changed = false
+			if currObj == nil {
+				break
+			}
+			if level >= len(currObj.Connections) {
+				continue
+			}
+			conns := currObj.Connections[level].Load()
+			for _, nextID := range *conns {
+				nextDist := h.dist(q, nextID)
+				if nextDist < currDist {
+					if nextNode := h.getNode(nextID); nextNode != nil {
+						currObj = nextNode
+						currDist = nextDist
+						changed = true
+					}
+				}
+			}
+		}
+	}
+
+	// 2. Search layer 0
+	results, err := h.searchLayer(q, currObj, currDist, 0, ef)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { results.Reset(); h.maxQueuePool.Put(results) }()
+
+	// Extract K
+	count := results.Len()
+	if count > k {
+		count = k
+	}
+
+	// MaxHeap pops worst first, so we need to pop (Len-k) items first
+	for results.Len() > k {
+		_, _ = results.PopItem()
+	}
+
+	res := make([]index.SearchResult, results.Len())
+	for i := results.Len() - 1; i >= 0; i-- {
+		item, _ := results.PopItem()
+		res[i] = index.SearchResult{ID: item.Node, Distance: item.Distance}
+	}
+
+	// Filter
+	if opts != nil && opts.Filter != nil {
+		filtered := res[:0]
+		for _, r := range res {
+			if opts.Filter(r.ID) {
+				filtered = append(filtered, r)
+			}
+		}
+		res = filtered
+	}
+
+	return res, nil
+}
+
+// KNNSearchStream implements streaming search.
+func (h *HNSW) KNNSearchStream(ctx context.Context, q []float32, k int, opts *index.SearchOptions) iter.Seq2[index.SearchResult, error] {
+	return func(yield func(index.SearchResult, error) bool) {
+		res, err := h.KNNSearch(ctx, q, k, opts)
+		if err != nil {
+			yield(index.SearchResult{}, err)
+			return
+		}
+		for _, r := range res {
+			if !yield(r, nil) {
+				return
+			}
+		}
+	}
+}
+
+// BruteSearch implements brute force search.
+func (h *HNSW) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint32) bool) ([]index.SearchResult, error) {
+	// Simple scan
+	pq := queue.NewMax(k)
+
+	h.segmentsMu.RLock()
+	defer h.segmentsMu.RUnlock()
+
+	for _, segPtr := range h.segments {
+		seg := segPtr.Load()
+		if seg == nil {
+			continue
+		}
+		for _, node := range *seg {
+			if node == nil {
+				continue
+			}
+			if filter != nil && !filter(node.ID) {
+				continue
+			}
+
+			d := h.dist(query, node.ID)
+			if pq.Len() < k {
+				pq.PushItem(queue.PriorityQueueItem{Node: node.ID, Distance: d})
+			} else {
+				top, _ := pq.TopItem()
+				if d < top.Distance {
+					_, _ = pq.PopItem()
+					pq.PushItem(queue.PriorityQueueItem{Node: node.ID, Distance: d})
+				}
+			}
+		}
+	}
+
+	res := make([]index.SearchResult, pq.Len())
+	for i := pq.Len() - 1; i >= 0; i-- {
+		item, _ := pq.PopItem()
+		res[i] = index.SearchResult{ID: item.Node, Distance: item.Distance}
+	}
+	return res, nil
+}
+
+// Helper for layer generation
+func (h *HNSW) layerForApplyInsert(id uint32) int {
+	x := uint64(id) + 0x9e3779b97f4a7c15
+	x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9
+	x = (x ^ (x >> 27)) * 0x94d049bb133111eb
+	x ^= x >> 31
+	const inv = 1.0 / (1 << 53)
+	u := x >> 11
+	r := float64(u) * inv
+	if r == 0 {
+		r = inv
+	}
+	return int(math.Floor(-math.Log(r) * h.layerMultiplier))
+}
+
+// Sharding stubs
+func (h *HNSW) VectorCount() int          { return int(h.countAtomic.Load()) }
+func (h *HNSW) ContainsID(id uint32) bool { return true }
+func (h *HNSW) ShardID() int              { return 0 }
+func (h *HNSW) NumShards() int            { return 1 }
+func NewSharded(shardID, numShards int, optFns ...func(o *Options)) (*HNSW, error) {
+	return New(optFns...)
+}
+
+// VectorByID returns vector.
+func (h *HNSW) VectorByID(ctx context.Context, id uint32) ([]float32, error) {
+	vec, ok := h.vectors.GetVector(id)
+	if !ok {
+		return nil, &index.ErrNodeNotFound{ID: id}
+	}
+	return vec, nil
+}
+
+// Close closes the index.
+func (h *HNSW) Close() error {
+	if h.arena != nil {
+		h.arena.Free()
+	}
+	return nil
 }

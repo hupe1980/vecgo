@@ -1,0 +1,36 @@
+{
+	"name": "Vecgo Development",
+	"image": "mcr.microsoft.com/devcontainers/go:2-1.25-trixie",
+	
+	"features": {
+		"ghcr.io/devcontainers/features/common-utils:2": {
+			"installZsh": true,
+			"configureZshAsDefaultShell": true,
+			"installOhMyZsh": true,
+			"upgradePackages": true
+		}
+	},
+	
+	"postCreateCommand": "bash .devcontainer/setup.sh",
+	
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"golang.go",
+				"ms-vscode.cpptools",
+				"13xforever.language-x86-64-assembly"
+			],
+			"settings": {
+				"go.toolsManagement.autoUpdate": true,
+				"go.useLanguageServer": true,
+				"go.buildOnSave": "workspace",
+				"go.lintOnSave": "workspace",
+				"go.vetOnSave": "workspace",
+				"go.formatTool": "gofmt",
+				"go.lintTool": "golangci-lint"
+			}
+		}
+	},
+	
+	"remoteUser": "vscode"
+}

@@ -1,51 +1,108 @@
 package hnsw
 
-import "fmt"
+import (
+	"fmt"
 
-// Stats prints statistics about the HNSW graph
-func (h *HNSW) Stats() {
-	fmt.Println("Options:")
-	fmt.Printf("\tDistanceType = %s\n", h.opts.DistanceType)
-	fmt.Printf("\tM = %d\n", h.opts.M)
-	fmt.Printf("\tEF = %d\n", h.opts.EF)
-	fmt.Printf("\tHeuristic = %v\n\n", h.opts.Heuristic)
+	"github.com/hupe1980/vecgo/index"
+)
 
-	fmt.Println("Parameters:")
-	fmt.Printf("\tdimension = %d\n", h.dimension)
-	fmt.Printf("\tmmax = %d\n", h.mmax)
-	fmt.Printf("\tmmax0 = %d\n", h.mmax0)
-	fmt.Printf("\tep = %d\n", h.ep)
-	fmt.Printf("\tmaxLevel = %d\n", h.maxLevel)
-	fmt.Printf("\tml = %f\n\n", h.ml)
+// Stats returns statistics about the HNSW graph.
+func (h *HNSW) Stats() index.Stats {
+	h.segmentsMu.RLock()
+	defer h.segmentsMu.RUnlock()
 
-	fmt.Printf("Number of nodes = %d\n\n", len(h.nodes))
+	// Count active vs deleted nodes
+	activeNodes := 0
+	deletedNodes := 0
 
-	levelStats := make([]int, h.maxLevel+1)
-	connectionStats := make([]int, h.maxLevel+1)
-	connectionNodeStats := make([]int, h.maxLevel+1)
-
-	for i := 0; i < len(h.nodes)-1; i++ {
-		levelStats[h.nodes[i].Layer]++
-
-		// Loop through each connection
-		for i2 := h.nodes[i].Layer; i2 >= 0; i2-- {
-			if len(h.nodes[i].Connections[i2]) > i2 {
-				total := len(h.nodes[i].Connections[i2])
-				connectionStats[i2] += total
-				connectionNodeStats[i2]++
+	// Iterate all segments
+	for _, segPtr := range h.segments {
+		seg := segPtr.Load()
+		if seg == nil {
+			continue
+		}
+		for _, node := range *seg {
+			if node == nil {
+				deletedNodes++
+			} else {
+				activeNodes++
 			}
 		}
 	}
 
-	fmt.Println("Node Levels:")
+	h.freeListMu.Lock()
+	freeListSize := len(h.freeList)
+	h.freeListMu.Unlock()
 
-	for k, v := range levelStats {
-		avg := connectionStats[k] / max(1, connectionNodeStats[k])
-		fmt.Printf("\tLevel %d:\n", k)
-		fmt.Printf("\t\tNumber of nodes: %d\n", v)
-		fmt.Printf("\t\tNumber of connections: %d\n", connectionStats[k])
-		fmt.Printf("\t\tAverage connections per node: %d\n", avg)
+	maxLevel := int(h.maxLevelAtomic.Load())
+	levelStats := make([]int, maxLevel+1)
+	connectionStats := make([]int, maxLevel+1)
+	connectionNodeStats := make([]int, maxLevel+1)
+
+	// Iterate all segments again for detailed stats
+	for _, segPtr := range h.segments {
+		seg := segPtr.Load()
+		if seg == nil {
+			continue
+		}
+		for _, node := range *seg {
+			if node == nil {
+				continue
+			}
+
+			levelStats[node.Layer]++
+
+			// Loop through each connection
+			for i2 := node.Layer; i2 >= 0; i2-- {
+				// Lock-free read using atomic pointer
+				connections := node.Connections[i2].Load()
+				if connections != nil && len(*connections) > i2 {
+					total := len(*connections)
+					connectionStats[i2] += total
+					connectionNodeStats[i2]++
+				}
+			}
+		}
 	}
 
-	fmt.Printf("\nTotal number of node levels = %d\n", len(levelStats))
+	levelStatsStructs := make([]index.LevelStats, maxLevel+1)
+	for i := 0; i <= maxLevel; i++ {
+		avg := 0
+		if connectionNodeStats[i] > 0 {
+			avg = connectionStats[i] / connectionNodeStats[i]
+		}
+		levelStatsStructs[i] = index.LevelStats{
+			Level:          i,
+			Nodes:          levelStats[i],
+			Connections:    connectionStats[i],
+			AvgConnections: avg,
+		}
+	}
+
+	return index.Stats{
+		Options: map[string]string{
+			"Type":         "HNSW",
+			"DistanceType": h.opts.DistanceType.String(),
+			"Heuristic":    fmt.Sprintf("%v", h.opts.Heuristic),
+		},
+		Parameters: map[string]string{
+			"M":  fmt.Sprintf("%d", h.maxConnectionsPerLayer),
+			"M0": fmt.Sprintf("%d", h.maxConnectionsLayer0),
+			"EF": fmt.Sprintf("%d", h.opts.EF),
+		},
+		Storage: map[string]string{
+			"VectorCount":  fmt.Sprintf("%d", activeNodes),
+			"Deleted":      fmt.Sprintf("%d", deletedNodes),
+			"FreeListSize": fmt.Sprintf("%d", freeListSize),
+			"Segments":     fmt.Sprintf("%d", len(h.segments)),
+		},
+		Levels: levelStatsStructs,
+	}
+}
+
+// String returns a string representation of the HNSW index.
+func (h *HNSW) String() string {
+	stats := h.Stats()
+	return fmt.Sprintf("HNSW(M=%s, EF=%s, Count=%s, Deleted=%s, MaxLevel=%d)",
+		stats.Parameters["M"], stats.Parameters["EF"], stats.Storage["VectorCount"], stats.Storage["Deleted"], h.maxLevelAtomic.Load())
 }

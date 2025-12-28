@@ -9,3 +9,7 @@ func dot(a, b []float32) float32 {
 func squaredL2(a, b []float32) float32 {
 	return squaredL2Generic(a, b)
 }
+
+func scaleInPlace(a []float32, scalar float32) {
+	scaleGeneric(a, scalar)
+}
