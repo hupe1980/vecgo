@@ -11,17 +11,16 @@ import (
 )
 
 // UnifiedIndex combines metadata storage with inverted indexing using Roaring Bitmaps.
-// This eliminates duplicate storage and provides faster filtering compared to the
-// legacy separated metadataStore + InvertedIndex approach.
+// This provides efficient hybrid vector + metadata search with minimal memory overhead.
 //
 // Architecture:
 //   - Primary storage: map[uint32]Document (metadata by ID)
 //   - Inverted index: map[key]map[valueKey]*roaring.Bitmap (efficient posting lists)
 //
-// Benefits over legacy approach:
-//   - 50% less memory (no duplicate storage)
-//   - Faster filter compilation (Roaring Bitmap AND/OR operations)
-//   - Simpler API (single type instead of two)
+// Benefits:
+//   - Memory efficient (Roaring Bitmap compression)
+//   - Fast filter compilation (Roaring Bitmap AND/OR operations)
+//   - Simple API (single unified type)
 type UnifiedIndex struct {
 	mu sync.RWMutex
 
