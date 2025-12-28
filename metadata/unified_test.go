@@ -315,27 +315,6 @@ func TestUnifiedIndex_Len(t *testing.T) {
 	assert.Equal(t, 1, ui.Len())
 }
 
-func TestUnifiedIndex_Nil(t *testing.T) {
-	var ui *UnifiedIndex
-
-	// All operations should be safe on nil
-	ui.Set(1, Document{"key": String("value")})
-	_, ok := ui.Get(1)
-	assert.False(t, ok)
-
-	ui.Delete(1)
-	assert.Equal(t, 0, ui.Len())
-
-	bitmap := ui.CompileFilter(&FilterSet{})
-	assert.Nil(t, bitmap)
-
-	filterFn := ui.CreateFilterFunc(&FilterSet{})
-	assert.Nil(t, filterFn)
-
-	stats := ui.GetStats()
-	assert.Equal(t, 0, stats.DocumentCount)
-}
-
 // Benchmark CompileFilter vs ScanFilter
 func BenchmarkUnifiedIndex_CompileFilter(b *testing.B) {
 	ui := NewUnifiedIndex()

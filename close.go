@@ -5,9 +5,6 @@ package vecgo
 // This is primarily useful for mmap-backed loads (vecgo_mmap build tag), but it
 // also closes WAL if it is enabled.
 func (vg *Vecgo[T]) Close() error {
-	if vg == nil {
-		return nil
-	}
 	var firstErr error
 	if vg.wal != nil {
 		if err := vg.wal.Close(); err != nil && firstErr == nil {

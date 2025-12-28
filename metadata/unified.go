@@ -45,7 +45,7 @@ func NewUnifiedIndex() *UnifiedIndex {
 // Set stores metadata for an ID and updates the inverted index.
 // This replaces any existing metadata for the ID.
 func (ui *UnifiedIndex) Set(id uint32, doc Document) {
-	if ui == nil || doc == nil {
+	if doc == nil {
 		return
 	}
 
@@ -67,10 +67,6 @@ func (ui *UnifiedIndex) Set(id uint32, doc Document) {
 // Get retrieves metadata for an ID.
 // Returns nil if the ID doesn't exist.
 func (ui *UnifiedIndex) Get(id uint32) (Document, bool) {
-	if ui == nil {
-		return nil, false
-	}
-
 	ui.mu.RLock()
 	defer ui.mu.RUnlock()
 
@@ -80,10 +76,6 @@ func (ui *UnifiedIndex) Get(id uint32) (Document, bool) {
 
 // Delete removes metadata for an ID and updates the inverted index.
 func (ui *UnifiedIndex) Delete(id uint32) {
-	if ui == nil {
-		return
-	}
-
 	ui.mu.Lock()
 	defer ui.mu.Unlock()
 
@@ -98,10 +90,6 @@ func (ui *UnifiedIndex) Delete(id uint32) {
 
 // Len returns the number of documents in the index.
 func (ui *UnifiedIndex) Len() int {
-	if ui == nil {
-		return 0
-	}
-
 	ui.mu.RLock()
 	defer ui.mu.RUnlock()
 
@@ -111,10 +99,6 @@ func (ui *UnifiedIndex) Len() int {
 // ToMap returns a copy of all documents as a map.
 // This is useful for serialization and snapshot creation.
 func (ui *UnifiedIndex) ToMap() map[uint32]Document {
-	if ui == nil {
-		return nil
-	}
-
 	ui.mu.RLock()
 	defer ui.mu.RUnlock()
 
@@ -185,7 +169,7 @@ func (ui *UnifiedIndex) removeFromIndexLocked(id uint32, doc Document) {
 //   - OpIn: field IN (value1, value2, ...)
 //   - OpNotEqual, OpGreaterThan, etc.: Falls back to scanning
 func (ui *UnifiedIndex) CompileFilter(fs *FilterSet) *roaring.Bitmap {
-	if ui == nil || fs == nil || len(fs.Filters) == 0 {
+	if fs == nil || len(fs.Filters) == 0 {
 		return nil
 	}
 
@@ -272,7 +256,7 @@ func (ui *UnifiedIndex) getBitmapLocked(key string, value Value) *roaring.Bitmap
 // This is slower than CompileFilter but supports all operators.
 // Use this as a fallback when CompileFilter returns nil.
 func (ui *UnifiedIndex) ScanFilter(fs *FilterSet) []uint32 {
-	if ui == nil || fs == nil {
+	if fs == nil {
 		return nil
 	}
 
@@ -297,7 +281,7 @@ func (ui *UnifiedIndex) ScanFilter(fs *FilterSet) []uint32 {
 //   - Fast path: If compilation succeeds, returns bitmap-based O(1) lookup
 //   - Slow path: Falls back to scanning + evaluating each document
 func (ui *UnifiedIndex) CreateFilterFunc(fs *FilterSet) func(uint32) bool {
-	if ui == nil || fs == nil || len(fs.Filters) == 0 {
+	if fs == nil || len(fs.Filters) == 0 {
 		return nil
 	}
 
@@ -334,10 +318,6 @@ type Stats struct {
 
 // GetStats returns statistics about the index.
 func (ui *UnifiedIndex) GetStats() Stats {
-	if ui == nil {
-		return Stats{}
-	}
-
 	ui.mu.RLock()
 	defer ui.mu.RUnlock()
 
@@ -370,10 +350,6 @@ type SerializableState struct {
 // ToSerializable converts the UnifiedIndex to a serializable form.
 // Roaring Bitmaps are converted to sorted uint32 slices for JSON compatibility.
 func (ui *UnifiedIndex) ToSerializable() *SerializableState {
-	if ui == nil {
-		return nil
-	}
-
 	ui.mu.RLock()
 	defer ui.mu.RUnlock()
 
@@ -401,9 +377,6 @@ func (ui *UnifiedIndex) ToSerializable() *SerializableState {
 // FromSerializable restores UnifiedIndex from serialized state.
 // This rebuilds Roaring Bitmaps from ID slices.
 func (ui *UnifiedIndex) FromSerializable(state *SerializableState) error {
-	if ui == nil {
-		return fmt.Errorf("unified: nil receiver")
-	}
 	if state == nil {
 		return fmt.Errorf("unified: nil state")
 	}

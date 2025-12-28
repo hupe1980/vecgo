@@ -25,7 +25,7 @@ func New() *InvertedIndex {
 }
 
 func (ix *InvertedIndex) Add(id uint32, doc metadata.Document) {
-	if ix == nil || doc == nil {
+	if doc == nil {
 		return
 	}
 	ix.mu.Lock()
@@ -34,7 +34,7 @@ func (ix *InvertedIndex) Add(id uint32, doc metadata.Document) {
 }
 
 func (ix *InvertedIndex) Remove(id uint32, doc metadata.Document) {
-	if ix == nil || doc == nil {
+	if doc == nil {
 		return
 	}
 	ix.mu.Lock()
@@ -43,9 +43,6 @@ func (ix *InvertedIndex) Remove(id uint32, doc metadata.Document) {
 }
 
 func (ix *InvertedIndex) Update(id uint32, oldDoc, newDoc metadata.Document) {
-	if ix == nil {
-		return
-	}
 	ix.mu.Lock()
 	defer ix.mu.Unlock()
 	if oldDoc != nil {
@@ -97,7 +94,7 @@ func (ix *InvertedIndex) removeLocked(id uint32, doc metadata.Document) {
 // Compile attempts to compile a FilterSet into a fast membership test using the
 // inverted index. If compilation is not possible, ok=false.
 func (ix *InvertedIndex) Compile(fs *metadata.FilterSet) (fn func(id uint32) bool, ok bool) {
-	if ix == nil || fs == nil || len(fs.Filters) == 0 {
+	if fs == nil || len(fs.Filters) == 0 {
 		return nil, false
 	}
 
