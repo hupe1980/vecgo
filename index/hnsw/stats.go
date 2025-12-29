@@ -21,7 +21,8 @@ func (h *HNSW) Stats() index.Stats {
 		if seg == nil {
 			continue
 		}
-		for _, node := range *seg {
+		for j := range *seg {
+			node := (*seg)[j].Load()
 			if node == nil {
 				deletedNodes++
 			} else {
@@ -45,7 +46,8 @@ func (h *HNSW) Stats() index.Stats {
 		if seg == nil {
 			continue
 		}
-		for _, node := range *seg {
+		for j := range *seg {
+			node := (*seg)[j].Load()
 			if node == nil {
 				continue
 			}

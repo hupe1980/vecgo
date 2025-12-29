@@ -63,6 +63,7 @@ type WorkerPool[T any] struct {
 	stopCh     chan struct{}
 	wg         sync.WaitGroup
 	closed     atomic.Bool // Tracks if pool is closed
+	submitMu   sync.RWMutex
 }
 
 // NewWorkerPool creates a worker pool with numWorkers goroutines.
@@ -146,6 +147,9 @@ func (wp *WorkerPool[T]) worker() {
 //
 // Thread-safety: Safe for concurrent calls from multiple goroutines.
 func (wp *WorkerPool[T]) Submit(ctx context.Context, req WorkRequest[T]) error {
+	wp.submitMu.RLock()
+	defer wp.submitMu.RUnlock()
+
 	// Check if closed first
 	if wp.closed.Load() {
 		return ErrCoordinatorClosed
@@ -189,6 +193,9 @@ func (wp *WorkerPool[T]) Submit(ctx context.Context, req WorkRequest[T]) error {
 //
 // Thread-safety: Safe for concurrent calls from multiple goroutines.
 func (wp *WorkerPool[T]) SubmitBrute(ctx context.Context, req WorkRequest[T], filter func(id uint32) bool) error {
+	wp.submitMu.RLock()
+	defer wp.submitMu.RUnlock()
+
 	// Check if closed first
 	if wp.closed.Load() {
 		return ErrCoordinatorClosed
@@ -243,11 +250,15 @@ func (wp *WorkerPool[T]) Close() {
 		return
 	}
 
+	wp.submitMu.Lock()
+
 	// Close stopCh to signal workers
 	close(wp.stopCh)
 
 	// Close work channel so workers can drain and exit
 	close(wp.workCh)
+
+	wp.submitMu.Unlock()
 
 	// Wait for all workers to finish in-flight work
 	wp.wg.Wait()

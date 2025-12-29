@@ -7,7 +7,6 @@ require (
 	github.com/goccy/go-json v0.10.5
 	github.com/klauspost/compress v1.18.2
 	github.com/stretchr/testify v1.11.1
-	golang.org/x/exp v0.0.0-20251219203646-944ab1f22d93
 	golang.org/x/sys v0.39.0
 )
 

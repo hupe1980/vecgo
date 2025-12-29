@@ -6,7 +6,7 @@ import (
 	"io"
 	"unsafe"
 
-	"golang.org/x/exp/mmap"
+	"github.com/hupe1980/vecgo/internal/mmap"
 )
 
 // MmapStore is a read-only columnar store backed by memory-mapped file.
@@ -22,7 +22,7 @@ type MmapStore struct {
 	live    uint32
 	data    []float32 // vector data (copied from mmap)
 	deleted []uint64  // deletion bitmap (copied from mmap)
-	reader  *mmap.ReaderAt
+	reader  *mmap.File
 }
 
 // OpenMmap opens a columnar file and returns a read-only mmap'd store.
@@ -45,7 +45,7 @@ func OpenMmap(filename string) (*MmapStore, io.Closer, error) {
 		return nil, nil, fmt.Errorf("columnar: open mmap: %w", err)
 	}
 
-	size := reader.Len()
+	size := len(reader.Data)
 	if size < HeaderSize {
 		reader.Close()
 		return nil, nil, fmt.Errorf("columnar: file too small")
@@ -83,28 +83,49 @@ func OpenMmap(filename string) (*MmapStore, io.Closer, error) {
 	// Read vector data
 	vecDataSize := int(header.Count) * int(header.Dimension) * 4
 	if vecDataSize > 0 {
-		vecBytes := make([]byte, vecDataSize)
-		if _, err := reader.ReadAt(vecBytes, int64(header.DataOffset)); err != nil {
+		offset := int(header.DataOffset)
+		if offset+vecDataSize > len(reader.Data) {
 			reader.Close()
-			return nil, nil, fmt.Errorf("columnar: read vectors: %w", err)
+			return nil, nil, fmt.Errorf("columnar: file too small for vectors")
 		}
-		store.data = make([]float32, int(header.Count)*int(header.Dimension))
-		for i := range store.data {
-			store.data[i] = *(*float32)(unsafe.Pointer(&vecBytes[i*4]))
+
+		// Ensure alignment for float32 (4 bytes)
+		if offset%4 != 0 {
+			// Fallback to copy if not aligned
+			vecBytes := make([]byte, vecDataSize)
+			copy(vecBytes, reader.Data[offset:offset+vecDataSize])
+			store.data = make([]float32, int(header.Count)*int(header.Dimension))
+			for i := range store.data {
+				store.data[i] = *(*float32)(unsafe.Pointer(&vecBytes[i*4]))
+			}
+		} else {
+			// Zero-copy access
+			store.data = unsafe.Slice((*float32)(unsafe.Pointer(&reader.Data[offset])), int(header.Count)*int(header.Dimension))
 		}
 	}
 
 	// Read deletion bitmap
 	bitmapLen := (int(header.Count) + 63) / 64
 	if bitmapLen > 0 {
-		bitmapBytes := make([]byte, bitmapLen*8)
-		if _, err := reader.ReadAt(bitmapBytes, int64(header.BitmapOff)); err != nil {
+		offset := int(header.BitmapOff)
+		size := bitmapLen * 8
+		if offset+size > len(reader.Data) {
 			reader.Close()
-			return nil, nil, fmt.Errorf("columnar: read bitmap: %w", err)
+			return nil, nil, fmt.Errorf("columnar: file too small for bitmap")
 		}
-		store.deleted = make([]uint64, bitmapLen)
-		for i := range store.deleted {
-			store.deleted[i] = binary.LittleEndian.Uint64(bitmapBytes[i*8:])
+
+		// Ensure alignment for uint64 (8 bytes)
+		if offset%8 != 0 {
+			// Fallback to copy
+			bitmapBytes := make([]byte, size)
+			copy(bitmapBytes, reader.Data[offset:offset+size])
+			store.deleted = make([]uint64, bitmapLen)
+			for i := range store.deleted {
+				store.deleted[i] = binary.LittleEndian.Uint64(bitmapBytes[i*8:])
+			}
+		} else {
+			// Zero-copy access
+			store.deleted = unsafe.Slice((*uint64)(unsafe.Pointer(&reader.Data[offset])), bitmapLen)
 		}
 	}
 

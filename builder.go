@@ -348,6 +348,8 @@ func DiskANN[T any](path string, dimension int) DiskANNBuilder[T] {
 		pqCentroids:        defaults.PQCentroids,
 		beamWidth:          defaults.BeamWidth,
 		rerankK:            defaults.RerankK,
+		binaryPrefilter:    defaults.EnableBinaryPrefilter,
+		binaryPrefilterMax: defaults.BinaryPrefilterMaxNormalizedDistance,
 		autoCompaction:     defaults.EnableAutoCompaction,
 		compactionThresh:   defaults.CompactionThreshold,
 		compactionInterval: defaults.CompactionInterval,
@@ -368,6 +370,8 @@ type DiskANNBuilder[T any] struct {
 	pqCentroids        int
 	beamWidth          int
 	rerankK            int
+	binaryPrefilter    bool
+	binaryPrefilterMax float32
 	autoCompaction     bool
 	compactionThresh   float32
 	compactionInterval int
@@ -379,6 +383,16 @@ type DiskANNBuilder[T any] struct {
 	walPath            string
 	walOptions         []func(*wal.Options)
 	snapshotPath       string
+}
+
+// BinaryPrefilter enables an optional Binary Quantization (BQ) prefilter during DiskANN search.
+// This is a coarse, search-only filter; it is NOT used for graph construction or final reranking.
+//
+// maxNormalizedHamming must be in [0, 1]. Smaller values filter more aggressively (higher recall risk).
+func (b DiskANNBuilder[T]) BinaryPrefilter(maxNormalizedHamming float32) DiskANNBuilder[T] {
+	b.binaryPrefilter = true
+	b.binaryPrefilterMax = maxNormalizedHamming
+	return b
 }
 
 // SquaredL2 sets the distance metric to Squared Euclidean distance.
@@ -529,6 +543,8 @@ func (b DiskANNBuilder[T]) Build() (*Vecgo[T], error) {
 		o.PQCentroids = b.pqCentroids
 		o.BeamWidth = b.beamWidth
 		o.RerankK = b.rerankK
+		o.EnableBinaryPrefilter = b.binaryPrefilter
+		o.BinaryPrefilterMaxNormalizedDistance = b.binaryPrefilterMax
 		o.EnableAutoCompaction = b.autoCompaction
 		o.CompactionThreshold = b.compactionThresh
 		o.CompactionInterval = b.compactionInterval

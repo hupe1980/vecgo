@@ -65,6 +65,74 @@ func TestBuilder(t *testing.T) {
 	}
 }
 
+func TestBuilder_WithBinaryPrefilter_WritesAndLoadsBQCodes(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "diskann-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	indexPath := filepath.Join(tmpDir, "test-index")
+
+	// Build index with BQ codes enabled (threshold 1.0 = no filtering, but exercises code path)
+	builder, err := NewBuilder(64, index.DistanceTypeSquaredL2, indexPath, &Options{
+		R:                                    32,
+		L:                                    50,
+		Alpha:                                1.2,
+		PQSubvectors:                         8,
+		PQCentroids:                          256,
+		EnableBinaryPrefilter:                true,
+		BinaryPrefilterMaxNormalizedDistance: 1.0,
+	})
+	if err != nil {
+		t.Fatalf("NewBuilder: %v", err)
+	}
+
+	rng := rand.New(rand.NewSource(42))
+	n := 200
+	vectors := make([][]float32, n)
+	for i := 0; i < n; i++ {
+		vectors[i] = make([]float32, 64)
+		for j := range vectors[i] {
+			vectors[i][j] = rng.Float32()
+		}
+	}
+
+	if _, err := builder.AddBatch(vectors); err != nil {
+		t.Fatalf("AddBatch: %v", err)
+	}
+
+	ctx := context.Background()
+	if err := builder.Build(ctx); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	// Verify BQ file exists
+	if _, err := os.Stat(filepath.Join(indexPath, BQCodesFilename)); os.IsNotExist(err) {
+		t.Fatalf("Expected file %s to exist", BQCodesFilename)
+	}
+
+	// Open with binary prefilter enabled
+	idx, err := Open(indexPath, &Options{
+		BeamWidth:                            4,
+		RerankK:                              50,
+		EnableBinaryPrefilter:                true,
+		BinaryPrefilterMaxNormalizedDistance: 1.0,
+	})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer idx.Close()
+
+	res, err := idx.KNNSearch(ctx, vectors[0], 10, nil)
+	if err != nil {
+		t.Fatalf("KNNSearch: %v", err)
+	}
+	if len(res) == 0 {
+		t.Fatalf("expected non-empty results")
+	}
+}
+
 func TestOpenAndSearch(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "diskann-test-*")
 	if err != nil {

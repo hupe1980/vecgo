@@ -103,7 +103,7 @@ type HNSW struct {
 
 	// Node storage: Segmented array to avoid global locks/copying on grow
 	// segments[i] contains nodes [i*segmentSize, (i+1)*segmentSize)
-	segments   []atomic.Pointer[[]*Node]
+	segments   []atomic.Pointer[[]atomic.Pointer[Node]]
 	segmentsMu sync.RWMutex
 
 	// Components
@@ -161,7 +161,7 @@ func New(optFns ...func(o *Options)) (*HNSW, error) {
 		layerMultiplier:        layerNormalizationBase / math.Log(float64(opts.M)),
 		distanceFunc:           index.NewDistanceFunc(opts.DistanceType),
 		opts:                   opts,
-		segments:               make([]atomic.Pointer[[]*Node], 0, 16), // Start with capacity for 1M nodes
+		segments:               make([]atomic.Pointer[[]atomic.Pointer[Node]], 0, 16), // Start with capacity for 1M nodes
 		freeList:               make([]uint32, 0),
 		vectors:                opts.Vectors,
 		arena:                  arena.New(arena.DefaultChunkSize),
@@ -213,7 +213,7 @@ func (h *HNSW) getNode(id uint32) *Node {
 
 	// No bounds check needed on segment due to bitmask, but good for safety
 	idx := id & nodeSegmentMask
-	return (*segmentPtr)[idx]
+	return (*segmentPtr)[idx].Load()
 }
 
 // setNode sets the node at the given ID. Thread-safe.
@@ -224,8 +224,7 @@ func (h *HNSW) setNode(id uint32, node *Node) {
 	h.segmentsMu.RLock()
 	segmentPtr := h.segments[segmentIdx].Load()
 	h.segmentsMu.RUnlock()
-
-	(*segmentPtr)[id&nodeSegmentMask] = node
+	(*segmentPtr)[id&nodeSegmentMask].Store(node)
 }
 
 // growSegments ensures capacity for the given ID.
@@ -244,11 +243,11 @@ func (h *HNSW) growSegments(id uint32) {
 
 	// Double check
 	for len(h.segments) <= segmentIdx {
-		h.segments = append(h.segments, atomic.Pointer[[]*Node]{})
+		h.segments = append(h.segments, atomic.Pointer[[]atomic.Pointer[Node]]{})
 	}
 
 	if h.segments[segmentIdx].Load() == nil {
-		newSegment := make([]*Node, nodeSegmentSize)
+		newSegment := make([]atomic.Pointer[Node], nodeSegmentSize)
 		h.segments[segmentIdx].Store(&newSegment)
 	}
 }
@@ -718,14 +717,27 @@ func (h *HNSW) searchLayer(query []float32, ep *Node, epDist float32, level int,
 
 				nextDist := h.dist(query, nextID)
 
-				// Always add to candidates for navigation
-				candidates.PushItem(queue.PriorityQueueItem{Node: nextID, Distance: nextDist})
+				// Classic HNSW pruning: avoid pushing obviously-bad candidates once we already
+				// have ef results. This substantially reduces heap churn.
+				//
+				// IMPORTANT: we only apply this optimization when there is no filter.
+				// With filtering enabled, we intentionally keep traversal more permissive to
+				// avoid getting trapped in filtered-out regions.
+				shouldExplore := true
+				if filter == nil && results.Len() > 0 && results.Len() >= ef {
+					worst, _ := results.TopItem()
+					if nextDist > worst.Distance {
+						shouldExplore = false
+					}
+				}
+				if shouldExplore {
+					candidates.PushItem(queue.PriorityQueueItem{Node: nextID, Distance: nextDist})
+				}
 
 				// PRE-FILTER: Only add to results if passes filter
 				if filter == nil || filter(nextID) {
 					// Check if we should add to results
 					if results.Len() == 0 {
-						// No results yet, add it
 						results.PushItem(queue.PriorityQueueItem{Node: nextID, Distance: nextDist})
 					} else {
 						worst, _ := results.TopItem()
@@ -801,7 +813,8 @@ func (h *HNSW) Delete(ctx context.Context, id uint32) error {
 			if seg == nil {
 				continue
 			}
-			for _, n := range *seg {
+			for j := range *seg {
+				n := (*seg)[j].Load()
 				if n != nil && n.ID != id {
 					if int32(n.Layer) > maxL {
 						maxL = int32(n.Layer)
@@ -988,7 +1001,8 @@ func (h *HNSW) BruteSearch(ctx context.Context, query []float32, k int, filter f
 		if seg == nil {
 			continue
 		}
-		for _, node := range *seg {
+		for j := range *seg {
+			node := (*seg)[j].Load()
 			if node == nil {
 				continue
 			}

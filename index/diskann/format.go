@@ -30,15 +30,20 @@ const (
 	// PQCodesFilename is the name of the PQ codes file
 	PQCodesFilename = "index.pqcodes"
 
+	// BQCodesFilename is the name of the Binary Quantization codes file (optional).
+	// It is only used as a coarse prefilter during search and is never used for graph construction.
+	BQCodesFilename = "index.bqcodes"
+
 	// VectorsFilename is the name of the vectors file
 	VectorsFilename = "index.vectors"
 )
 
 // Flags for index configuration
 const (
-	FlagPQEnabled uint32 = 1 << iota
-	FlagMmapEnabled
-	FlagCompressed
+	FlagPQEnabled   uint32 = 1 << 0
+	FlagMmapEnabled uint32 = 1 << 1
+	FlagCompressed  uint32 = 1 << 2
+	FlagBQEnabled   uint32 = 1 << 3
 )
 
 // FileHeader represents the DiskANN index metadata header.

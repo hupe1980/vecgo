@@ -147,6 +147,7 @@ type Coordinator[T any] interface {
 **DiskANN** (`index/diskann/`):
 - Vamana graph with disk-resident vectors
 - Product Quantization (PQ) for memory compression
+- Optional Binary Quantization (BQ) traversal prefilter (search-only)
 - Beam search for approximate neighbors
 - Background compaction for deleted vectors
 - Best for: 10M+ vectors, disk-constrained environments
@@ -383,19 +384,26 @@ func AtomicSaveToDir(dir string, files map[string]func(io.Writer) error) error
 
 ### DiskANN Crash Safety
 
-DiskANN writes all 4 index files atomically:
+DiskANN writes its index files atomically (and may include additional optional files depending on enabled features):
 
 ```go
 // Builder writes all files atomically
 func (b *Builder) writeIndexFiles() error {
-    return persistence.AtomicSaveToDir(b.indexPath, map[string]func(io.Writer) error{
+    files := map[string]func(io.Writer) error{
         "index.meta":    b.writeMetaToWriter,
         "index.graph":   b.writeGraphToWriter,
         "index.pqcodes": b.writePQCodesToWriter,
         "index.vectors": b.writeVectorsToWriter,
-    })
+    }
+    // Optional: present only if enabled at build time.
+    if b.enableBinaryPrefilter {
+        files["index.bqcodes"] = b.writeBQCodesToWriter
+    }
+    return persistence.AtomicSaveToDir(b.indexPath, files)
 }
 ```
+
+`index.meta` includes header flags that indicate which optional files are present (for example, whether Binary Quantization codes were written for DiskANN search-time prefiltering).
 
 **Benefits**:
 - No corrupt indexes on power failure

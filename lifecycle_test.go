@@ -136,15 +136,22 @@ func TestNoGoroutineLeaks(t *testing.T) {
 			err = db.Close()
 			require.NoError(t, err)
 
-			// Give workers time to shut down
-			time.Sleep(200 * time.Millisecond)
+			// Wait for background workers to fully shut down.
+			// This reduces flakiness from asynchronous shutdown timing without weakening
+			// leak detection semantics: we still fail if the goroutines don't go away.
+			deadline := time.Now().Add(2 * time.Second)
+			var final int
+			var leaked int
+			for {
+				runtime.GC()
+				time.Sleep(50 * time.Millisecond)
 
-			// Force GC to clean up closed resources
-			runtime.GC()
-			time.Sleep(50 * time.Millisecond)
-
-			final := runtime.NumGoroutine()
-			leaked := final - initial
+				final = runtime.NumGoroutine()
+				leaked = final - initial
+				if leaked <= tt.maxLeaks || time.Now().After(deadline) {
+					break
+				}
+			}
 
 			t.Logf("Final goroutines: %d (leaked: %d)", final, leaked)
 

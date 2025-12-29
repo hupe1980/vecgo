@@ -293,6 +293,29 @@ db := vecgo.Flat[string](128).
 - Distance: 0.68ns for 128-dim Hamming distance (ultra-fast)
 - Recall: 70-85% (suitable for filtering)
 
+#### DiskANN: Binary Prefilter (Search-Only)
+
+DiskANN can optionally use Binary Quantization as a **coarse traversal-time prefilter** during search. This is intentionally **not** used for graph construction, updates, or final reranking.
+
+**What it does**:
+- Encodes the query and candidate nodes into binary codes
+- Skips expanding candidates whose normalized Hamming distance is above a threshold
+- Preserves the primary DiskANN scoring pipeline (PQ traversal + float32 rerank)
+
+```go
+// DiskANN with optional BQ traversal prefilter.
+// The threshold is a normalized Hamming distance in [0, 1].
+db := vecgo.DiskANN[string]("./data", 128).
+    SquaredL2().
+    PQSubvectors(8).
+    BinaryPrefilter(0.25).
+    Build()
+```
+
+**Notes**:
+- Enabling this writes an additional on-disk file (`index.bqcodes`).
+- You must enable it at build time; opening an existing index without BQ codes cannot enable it later.
+
 ### Product Quantization (PQ)
 
 **Compression**: 8-32x (configurable)  
@@ -424,6 +447,23 @@ db := vecgo.DiskANN[string]("./data", 128).
     PQSubvectors(8).  // Compress to 8 bytes
     Build()
 ```
+
+### Binary Prefilter (Traversal Prefilter)
+
+**What it does**: Optional, **search-only** traversal prefilter using normalized Hamming distance on Binary Quantization codes.
+
+**When it helps**: Reduce disk I/O / candidate expansions by cheaply ruling out obviously-wrong nodes.
+
+```go
+db := vecgo.DiskANN[string]("./data", 128).
+    SquaredL2().
+    PQSubvectors(8).
+    BinaryPrefilter(0.25).
+    Build()
+```
+
+**Parameter**:
+- `BinaryPrefilter(maxNormalizedHamming float32)` where $0 \le maxNormalizedHamming \le 1$.
 
 ### Compaction (Reclaim Deleted Space)
 

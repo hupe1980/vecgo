@@ -3,6 +3,7 @@ package diskann
 import (
 	"container/heap"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -20,18 +21,20 @@ import (
 // DefaultOptions returns sensible defaults for DiskANN.
 func DefaultOptions() *Options {
 	return &Options{
-		R:                    64,   // Max edges per node
-		L:                    100,  // Build list size
-		Alpha:                1.2,  // Pruning factor
-		PQSubvectors:         32,   // Number of PQ subvectors
-		PQCentroids:          256,  // Centroids per subspace
-		NumBuildShards:       1,    // Sequential build by default
-		BeamWidth:            4,    // Parallel disk reads
-		RerankK:              100,  // Candidates to rerank
-		EnableAutoCompaction: true, // Auto compaction enabled
-		CompactionThreshold:  0.2,  // Compact when 20% deleted
-		CompactionInterval:   300,  // Check every 5 minutes
-		CompactionMinVectors: 1000, // Don't compact if fewer than 1000 vectors
+		R:                                    64,  // Max edges per node
+		L:                                    100, // Build list size
+		Alpha:                                1.2, // Pruning factor
+		PQSubvectors:                         32,  // Number of PQ subvectors
+		PQCentroids:                          256, // Centroids per subspace
+		NumBuildShards:                       1,   // Sequential build by default
+		BeamWidth:                            4,   // Parallel disk reads
+		RerankK:                              100, // Candidates to rerank
+		EnableBinaryPrefilter:                false,
+		BinaryPrefilterMaxNormalizedDistance: 1.0,
+		EnableAutoCompaction:                 true, // Auto compaction enabled
+		CompactionThreshold:                  0.2,  // Compact when 20% deleted
+		CompactionInterval:                   300,  // Check every 5 minutes
+		CompactionMinVectors:                 1000, // Don't compact if fewer than 1000 vectors
 	}
 }
 
@@ -69,6 +72,21 @@ type Options struct {
 	// Must be >= k in search. Typical: 50-200.
 	RerankK int
 
+	// EnableBinaryPrefilter enables an optional Binary Quantization (BQ) prefilter
+	// during graph traversal in search.
+	//
+	// IMPORTANT:
+	// - This is NOT a drop-in replacement for PQ.
+	// - It is never used for graph construction, pruning, repair, or final reranking.
+	// - Misconfigured thresholds can silently degrade recall.
+	EnableBinaryPrefilter bool
+
+	// BinaryPrefilterMaxNormalizedDistance is the maximum normalized Hamming distance
+	// (in [0, 1]) allowed for a candidate to be considered during traversal.
+	// Lower values filter more aggressively (higher risk of recall loss).
+	// Only used when EnableBinaryPrefilter is true.
+	BinaryPrefilterMaxNormalizedDistance float32
+
 	// EnableAutoCompaction enables background compaction to remove deleted vectors.
 	// Compaction rebuilds the graph and re-trains PQ for optimal performance.
 	EnableAutoCompaction bool
@@ -99,7 +117,9 @@ type Builder struct {
 	graph      [][]uint32  // Adjacency lists
 	pq         *quantization.ProductQuantizer
 	pqCodes    [][]byte // PQ codes for all vectors
-	entryPoint uint32   // Entry point for search
+	bq         *quantization.BinaryQuantizer
+	bqCodes    [][]uint64 // BQ codes (uint64 words) for all vectors (optional)
+	entryPoint uint32     // Entry point for search
 
 	mu sync.Mutex
 }
@@ -120,6 +140,12 @@ func NewBuilder(dim int, distType index.DistanceType, indexPath string, opts *Op
 
 	if opts.R <= 0 || opts.L <= 0 || opts.Alpha < 1.0 {
 		return nil, errors.New("diskann: invalid graph parameters")
+	}
+
+	if opts.EnableBinaryPrefilter {
+		if opts.BinaryPrefilterMaxNormalizedDistance < 0 || opts.BinaryPrefilterMaxNormalizedDistance > 1 {
+			return nil, fmt.Errorf("diskann: BinaryPrefilterMaxNormalizedDistance must be in [0, 1], got %f", opts.BinaryPrefilterMaxNormalizedDistance)
+		}
 	}
 
 	// Ensure directory exists
@@ -192,6 +218,15 @@ func (b *Builder) Build(ctx context.Context) error {
 	b.pqCodes = make([][]byte, n)
 	for i, vec := range b.vectors {
 		b.pqCodes[i] = b.pq.Encode(vec)
+	}
+
+	// Step 2b: Optionally encode all vectors to BQ codes for search-only prefiltering
+	if b.opts.EnableBinaryPrefilter {
+		b.bq = quantization.NewBinaryQuantizer(b.dim)
+		b.bqCodes = make([][]uint64, n)
+		for i, vec := range b.vectors {
+			b.bqCodes[i] = b.bq.EncodeUint64(vec)
+		}
 	}
 
 	// Step 3: Build Vamana graph
@@ -449,20 +484,28 @@ func (b *Builder) addEdge(src, dst uint32, R int, alpha float32) {
 // writeIndexFiles writes all index files to disk atomically.
 // Uses atomic writes (temp file + rename) to prevent corruption on crash.
 func (b *Builder) writeIndexFiles() error {
-	return persistence.AtomicSaveToDir(b.indexPath, map[string]func(io.Writer) error{
+	writers := map[string]func(io.Writer) error{
 		MetaFilename:    b.writeMetaToWriter,
 		GraphFilename:   b.writeGraphToWriter,
 		PQCodesFilename: b.writePQCodesToWriter,
 		VectorsFilename: b.writeVectorsToWriter,
-	})
+	}
+	if b.opts.EnableBinaryPrefilter {
+		writers[BQCodesFilename] = b.writeBQCodesToWriter
+	}
+	return persistence.AtomicSaveToDir(b.indexPath, writers)
 }
 
 // writeMetaToWriter writes metadata to an io.Writer (for atomic saves).
 func (b *Builder) writeMetaToWriter(w io.Writer) error {
+	flags := FlagPQEnabled
+	if b.opts.EnableBinaryPrefilter {
+		flags |= FlagBQEnabled
+	}
 	header := FileHeader{
 		Magic:        FormatMagic,
 		Version:      FormatVersion,
-		Flags:        FlagPQEnabled,
+		Flags:        flags,
 		Dimension:    uint32(b.dim),
 		Count:        uint64(len(b.vectors)),
 		DistanceType: uint32(b.distType),
@@ -542,6 +585,25 @@ func (b *Builder) writePQCodesToWriter(w io.Writer) error {
 	for _, codes := range b.pqCodes {
 		if _, err := w.Write(codes); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// writeBQCodesToWriter writes BQ codes (uint64 words) to an io.Writer.
+// File layout: for each vector, write ceil(dim/64) uint64 values (little endian).
+func (b *Builder) writeBQCodesToWriter(w io.Writer) error {
+	words := (b.dim + 63) / 64
+	var buf [8]byte
+	for _, codes := range b.bqCodes {
+		if len(codes) != words {
+			return fmt.Errorf("diskann: invalid BQ code size: got %d words, want %d", len(codes), words)
+		}
+		for _, word := range codes {
+			binary.LittleEndian.PutUint64(buf[:], word)
+			if _, err := w.Write(buf[:]); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

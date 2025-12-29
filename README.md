@@ -41,6 +41,8 @@
 - **Product Quantization**: Learned codebooks for 8-64x compression
 - **Optimized PQ (OPQ)**: 20-30% better reconstruction vs standard PQ
 
+> Note: DiskANN can optionally use Binary Quantization as a **search-only traversal prefilter** via `BinaryPrefilter(...)` (it does not replace PQ traversal or float32 reranking).
+
 ### 📊 Observability
 - **Structured Logging**: `log/slog` integration with contextual attributes
 - **Metrics**: Prometheus-compatible instrumentation
@@ -111,8 +113,11 @@ db, err := vecgo.DiskANN[string]("./data", 128).
     R(64).               // Graph degree
     L(100).              // Build list size
     BeamWidth(4).        // Search width
+    BinaryPrefilter(0.25).// Optional: search-only traversal prefilter (normalized Hamming distance in [0,1])
     Build()
 ```
+
+`BinaryPrefilter(...)` is enabled at build time and writes an additional on-disk file (`index.bqcodes`). Opening an existing DiskANN index without BQ codes cannot enable it later.
 
 ## 🔍 Advanced Features
 

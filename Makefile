@@ -19,6 +19,11 @@ lint:
 test: 
 	@go test -v ./...
 
+.PHONY: test-race
+## test-race: Runs go test with the race detector
+test-race:
+	@go test -race -v ./...
+
 .PHONY: help
 ## help: Prints this help message
 help: Makefile

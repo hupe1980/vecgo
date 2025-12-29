@@ -746,7 +746,7 @@ func (vg *Vecgo[T]) KNNSearch(ctx context.Context, query []float32, k int, optFn
 	start := time.Now()
 	opts := KNNSearchOptions{
 		EF:         0, // 0 means use index default (HNSW.EF)
-		FilterFunc: func(id uint32) bool { return true },
+		FilterFunc: nil,
 	}
 
 	for _, fn := range optFns {
@@ -762,11 +762,9 @@ func (vg *Vecgo[T]) KNNSearch(ctx context.Context, query []float32, k int, optFn
 	}
 
 	// Create SearchOptions for the coordinator
-	searchOpts := &index.SearchOptions{
-		EFSearch: opts.EF,
-		Filter: func(id uint32) bool {
-			return opts.FilterFunc(id)
-		},
+	searchOpts := &index.SearchOptions{EFSearch: opts.EF}
+	if opts.FilterFunc != nil {
+		searchOpts.Filter = opts.FilterFunc
 	}
 
 	bestCandidates, err := vg.coordinator.KNNSearch(ctx, query, k, searchOpts)
@@ -807,7 +805,7 @@ func (vg *Vecgo[T]) KNNSearchStream(ctx context.Context, query []float32, k int,
 		start := time.Now()
 		opts := KNNSearchOptions{
 			EF:         0, // 0 means use index default (HNSW.EF)
-			FilterFunc: func(id uint32) bool { return true },
+			FilterFunc: nil,
 		}
 
 		for _, fn := range optFns {
@@ -823,11 +821,9 @@ func (vg *Vecgo[T]) KNNSearchStream(ctx context.Context, query []float32, k int,
 		}
 
 		// Create SearchOptions for the coordinator
-		searchOpts := &index.SearchOptions{
-			EFSearch: opts.EF,
-			Filter: func(id uint32) bool {
-				return opts.FilterFunc(id)
-			},
+		searchOpts := &index.SearchOptions{EFSearch: opts.EF}
+		if opts.FilterFunc != nil {
+			searchOpts.Filter = opts.FilterFunc
 		}
 
 		// Use the streaming interface from the index
@@ -877,16 +873,14 @@ type BruteSearchOptions struct {
 // BruteSearch performs a brute-force search.
 func (vg *Vecgo[T]) BruteSearch(ctx context.Context, query []float32, k int, optFns ...func(o *BruteSearchOptions)) ([]SearchResult[T], error) {
 	opts := BruteSearchOptions{
-		FilterFunc: func(id uint32) bool { return true },
+		FilterFunc: nil,
 	}
 
 	for _, fn := range optFns {
 		fn(&opts)
 	}
 
-	bestCandidates, err := vg.coordinator.BruteSearch(ctx, query, k, func(id uint32) bool {
-		return opts.FilterFunc(id)
-	})
+	bestCandidates, err := vg.coordinator.BruteSearch(ctx, query, k, opts.FilterFunc)
 	if err != nil {
 		return nil, translateError(err)
 	}

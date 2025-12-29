@@ -13,13 +13,14 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unsafe"
 
 	"github.com/bits-and-blooms/bitset"
 	"github.com/hupe1980/vecgo/index"
+	"github.com/hupe1980/vecgo/internal/mmap"
 	"github.com/hupe1980/vecgo/quantization"
 	"github.com/hupe1980/vecgo/vectorstore"
 	"github.com/hupe1980/vecgo/vectorstore/columnar"
-	"golang.org/x/exp/mmap"
 )
 
 // Compile-time interface checks
@@ -54,9 +55,15 @@ type Index struct {
 	pq      *quantization.ProductQuantizer
 	pqCodes [][]byte // PQ codes per vector
 
+	// Optional BQ codes for search-only prefiltering (in RAM)
+	bq      *quantization.BinaryQuantizer
+	bqCodes [][]uint64
+
+	fileFlags uint32 // persisted flags from meta header (read-only indexes)
+
 	// Vectors - mutable columnar storage (for New()) or mmap (for Open())
 	vectors    vectorstore.Store // Used in mutable mode
-	mmapReader *mmap.ReaderAt    // Used in read-only mode
+	mmapReader *mmap.File        // Used in read-only mode
 
 	// ID management (for TransactionalIndex)
 	nextIDAtomic atomic.Uint32
@@ -110,6 +117,11 @@ func New(dim int, distType index.DistanceType, indexPath string, opts *Options) 
 	if dim%opts.PQSubvectors != 0 {
 		return nil, fmt.Errorf("diskann: dimension %d not divisible by PQSubvectors %d", dim, opts.PQSubvectors)
 	}
+	if opts.EnableBinaryPrefilter {
+		if opts.BinaryPrefilterMaxNormalizedDistance < 0 || opts.BinaryPrefilterMaxNormalizedDistance > 1 {
+			return nil, fmt.Errorf("diskann: BinaryPrefilterMaxNormalizedDistance must be in [0, 1], got %f", opts.BinaryPrefilterMaxNormalizedDistance)
+		}
+	}
 
 	// Create PQ quantizer (will be trained incrementally or from samples)
 	pq, err := quantization.NewProductQuantizer(dim, opts.PQSubvectors, opts.PQCentroids)
@@ -126,12 +138,19 @@ func New(dim int, distType index.DistanceType, indexPath string, opts *Options) 
 		graph:          make([][]uint32, 0, 1024),
 		incomingEdges:  make(map[uint32][]uint32),
 		pqCodes:        make([][]byte, 0, 1024),
+		bq:             nil,
+		bqCodes:        nil,
 		vectors:        columnar.New(dim),
 		deleted:        bitset.New(1024),
 		freeList:       make([]uint32, 0),
 		indexPath:      indexPath,
 		isReadOnly:     false,
 		stopCompaction: make(chan struct{}),
+	}
+
+	if opts.EnableBinaryPrefilter {
+		idx.bq = quantization.NewBinaryQuantizer(dim)
+		idx.bqCodes = make([][]uint64, 0, 1024)
 	}
 
 	idx.nextIDAtomic.Store(0)
@@ -182,6 +201,17 @@ func Open(indexPath string, opts *Options) (*Index, error) {
 	// Load PQ codes
 	if err := idx.loadPQCodes(indexPath); err != nil {
 		return nil, fmt.Errorf("diskann: load pq codes: %w", err)
+	}
+
+	// Optional: Load BQ codes for search-only prefiltering
+	if opts.EnableBinaryPrefilter {
+		if idx.fileFlags&FlagBQEnabled == 0 {
+			return nil, fmt.Errorf("diskann: binary prefilter enabled but index has no %s (rebuild with EnableBinaryPrefilter)", BQCodesFilename)
+		}
+		if err := idx.loadBQCodes(indexPath); err != nil {
+			return nil, fmt.Errorf("diskann: load bq codes: %w", err)
+		}
+		idx.bq = quantization.NewBinaryQuantizer(idx.dim)
 	}
 
 	// Mmap vectors file
@@ -251,6 +281,8 @@ func (idx *Index) loadMeta(indexPath string) error {
 		return err
 	}
 
+	idx.fileFlags = header.Flags
+
 	idx.dim = int(header.Dimension)
 	idx.count = int(header.Count)
 	idx.distType = header.DistType()
@@ -272,6 +304,30 @@ func (idx *Index) loadMeta(indexPath string) error {
 
 	// Load PQ codebooks
 	return idx.loadPQCodebooks(f, &header)
+}
+
+func (idx *Index) loadBQCodes(indexPath string) error {
+	path := filepath.Join(indexPath, BQCodesFilename)
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	words := (idx.dim + 63) / 64
+	idx.bqCodes = make([][]uint64, idx.count)
+	buf := make([]byte, 8)
+	for i := 0; i < idx.count; i++ {
+		codes := make([]uint64, words)
+		for w := 0; w < words; w++ {
+			if _, err := io.ReadFull(f, buf); err != nil {
+				return err
+			}
+			codes[w] = binary.LittleEndian.Uint64(buf)
+		}
+		idx.bqCodes[i] = codes
+	}
+	return nil
 }
 
 func (idx *Index) loadPQCodebooks(r io.Reader, header *FileHeader) error {
@@ -436,6 +492,14 @@ func (idx *Index) ApplyInsert(ctx context.Context, id uint32, v []float32) error
 	}
 	for uint32(len(idx.pqCodes)) <= id {
 		idx.pqCodes = append(idx.pqCodes, nil)
+	}
+	if idx.opts.EnableBinaryPrefilter {
+		for uint32(len(idx.bqCodes)) <= id {
+			idx.bqCodes = append(idx.bqCodes, nil)
+		}
+		if idx.bq != nil {
+			idx.bqCodes[id] = idx.bq.EncodeUint64(v)
+		}
 	}
 
 	// Compute PQ code
@@ -842,20 +906,26 @@ func (idx *Index) readVectorMmap(id uint32) []float32 {
 		return nil
 	}
 
-	offset := int64(id) * int64(idx.dim) * 4
-	buf := make([]byte, idx.dim*4)
-
-	if _, err := idx.mmapReader.ReadAt(buf, offset); err != nil {
+	offset := int(id) * int(idx.dim) * 4
+	if offset < 0 || offset+int(idx.dim)*4 > len(idx.mmapReader.Data) {
 		return nil
 	}
 
-	vec := make([]float32, idx.dim)
-	for i := 0; i < idx.dim; i++ {
-		bits := binary.LittleEndian.Uint32(buf[i*4:])
-		vec[i] = math.Float32frombits(bits)
+	// Zero-copy access
+	// Note: This assumes LittleEndian architecture and 4-byte alignment.
+	// mmap data is usually page-aligned.
+	// If offset is not aligned, we must copy.
+	if offset%4 != 0 {
+		vec := make([]float32, idx.dim)
+		buf := idx.mmapReader.Data[offset : offset+int(idx.dim)*4]
+		for i := 0; i < idx.dim; i++ {
+			bits := binary.LittleEndian.Uint32(buf[i*4:])
+			vec[i] = math.Float32frombits(bits)
+		}
+		return vec
 	}
 
-	return vec
+	return unsafe.Slice((*float32)(unsafe.Pointer(&idx.mmapReader.Data[offset])), idx.dim)
 }
 
 // ============================================================================
@@ -892,12 +962,18 @@ func (idx *Index) KNNSearch(ctx context.Context, query []float32, k int, opts *i
 		filter = opts.Filter
 	}
 
+	// Optional BQ query encoding (search-only prefilter)
+	var queryBQ []uint64
+	if idx.opts.EnableBinaryPrefilter && idx.bq != nil && len(idx.bqCodes) > 0 {
+		queryBQ = idx.bq.EncodeUint64(query)
+	}
+
 	// Phase 1: Graph search using PQ distances WITH PRE-FILTERING
 	rerankK := idx.opts.RerankK
 	if rerankK < k {
 		rerankK = k * 2
 	}
-	candidates := idx.beamSearch(query, distTable, rerankK, filter)
+	candidates := idx.beamSearch(query, distTable, queryBQ, rerankK, filter)
 
 	// Phase 2: Rerank using exact distances (no post-filtering needed)
 	results := idx.rerank(query, candidates, k, nil) // Filter already applied in beamSearch
@@ -909,7 +985,7 @@ func (idx *Index) KNNSearch(ctx context.Context, query []float32, k int, opts *i
 // filter: if not nil, nodes are filtered DURING graph traversal (not after).
 // This ensures correct recall and reduces wasted distance computations.
 // Uses proper DiskANN termination: stop when current candidate is worse than worst in beam.
-func (idx *Index) beamSearch(query []float32, distTable [][]float32, topK int, filter func(uint32) bool) []distNode {
+func (idx *Index) beamSearch(query []float32, distTable [][]float32, queryBQ []uint64, topK int, filter func(uint32) bool) []distNode {
 	idx.graphMu.RLock()
 	defer idx.graphMu.RUnlock()
 
@@ -982,6 +1058,14 @@ func (idx *Index) beamSearch(query []float32, distTable [][]float32, topK int, f
 				// PRE-FILTER: Skip filtered nodes BEFORE computing distance
 				if filter != nil && !filter(neighbor) {
 					continue
+				}
+
+				// Optional BQ prefilter: skip nodes that are too far in Hamming space
+				if queryBQ != nil && neighbor < uint32(len(idx.bqCodes)) && idx.bqCodes[neighbor] != nil {
+					norm := quantization.NormalizedHammingDistance(queryBQ, idx.bqCodes[neighbor], idx.dim)
+					if norm > idx.opts.BinaryPrefilterMaxNormalizedDistance {
+						continue
+					}
 				}
 
 				dist := idx.computeDistance(query, neighbor, distTable)
@@ -1279,11 +1363,18 @@ func (idx *Index) Compact(ctx context.Context) error {
 	// Rebuild vectors and PQ codes
 	newVectors := columnar.New(idx.dim)
 	newPQCodes := make([][]byte, len(liveVectors))
+	var newBQCodes [][]uint64
+	if idx.opts.EnableBinaryPrefilter && idx.bq != nil {
+		newBQCodes = make([][]uint64, len(liveVectors))
+	}
 	for i, vec := range liveVectors {
 		if err := newVectors.SetVector(uint32(i), vec); err != nil {
 			return fmt.Errorf("diskann: set vector %d: %w", i, err)
 		}
 		newPQCodes[i] = idx.pq.Encode(vec)
+		if newBQCodes != nil {
+			newBQCodes[i] = idx.bq.EncodeUint64(vec)
+		}
 	}
 
 	// Rebuild graph with remapped IDs
@@ -1325,11 +1416,15 @@ func (idx *Index) Compact(ctx context.Context) error {
 		}
 	}
 
-	idx.graphMu.Unlock()
-
+	// Replace other search-critical structures under graphMu to avoid races with concurrent searches.
 	idx.pqCodes = newPQCodes
+	if newBQCodes != nil {
+		idx.bqCodes = newBQCodes
+	}
 	idx.vectors = newVectors
 	idx.count = len(liveVectors)
+
+	idx.graphMu.Unlock()
 
 	// Reset deletion tracking
 	idx.deletedMu.Lock()

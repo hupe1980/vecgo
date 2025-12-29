@@ -285,7 +285,7 @@ func (h *HNSW) ReadFromWithOptions(r io.Reader, opts Options) error {
 	nodeCount := nodeCountSlice[0]
 
 	// Initialize segments
-	h.segments = make([]atomic.Pointer[[]*Node], 0)
+	h.segments = make([]atomic.Pointer[[]atomic.Pointer[Node]], 0)
 	h.arena = arena.New(arena.DefaultChunkSize)
 
 	// Read nodes

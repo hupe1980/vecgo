@@ -87,7 +87,7 @@ func loadHNSWMmap(data []byte) (index.Index, int, error) {
 	h.vectors = zerocopy.New(int(hdr.Dimension))
 
 	// Initialize segments
-	h.segments = make([]atomic.Pointer[[]*Node], 0)
+	h.segments = make([]atomic.Pointer[[]atomic.Pointer[Node]], 0)
 	h.arena = arena.New(arena.DefaultChunkSize)
 
 	for i := 0; i < int(nodeCount); i++ {
