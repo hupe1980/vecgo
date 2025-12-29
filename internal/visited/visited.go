@@ -1,4 +1,4 @@
-package hnsw
+package visited
 
 // VisitedSet tracks visited nodes using generation tokens for O(1) reset.
 type VisitedSet struct {
@@ -6,8 +6,8 @@ type VisitedSet struct {
 	token   uint32
 }
 
-// NewVisitedSet creates a new visited set.
-func NewVisitedSet(capacity int) *VisitedSet {
+// New creates a new visited set.
+func New(capacity int) *VisitedSet {
 	return &VisitedSet{
 		visited: make([]uint32, capacity),
 		token:   1,

@@ -13,6 +13,7 @@ import (
 	"github.com/hupe1980/vecgo/distance"
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/internal/queue"
+	"github.com/hupe1980/vecgo/internal/visited"
 	"github.com/hupe1980/vecgo/vectorstore"
 	"github.com/hupe1980/vecgo/vectorstore/columnar"
 )
@@ -174,7 +175,7 @@ func New(optFns ...func(o *Options)) (*HNSW, error) {
 			New: func() any { return queue.NewMax(opts.EF) },
 		},
 		visitedPool: &sync.Pool{
-			New: func() any { return NewVisitedSet(1024) },
+			New: func() any { return visited.New(1024) },
 		},
 	}
 
@@ -761,7 +762,7 @@ func (h *HNSW) selectNeighborsHeuristic(candidates *queue.PriorityQueue, m int) 
 // 2. Less wasted computation (skips filtered regions)
 // 3. Matches exact search behavior
 func (h *HNSW) searchLayer(query []float32, ep *Node, epDist float32, level int, ef int, filter func(uint32) bool) (*queue.PriorityQueue, error) {
-	visited := h.visitedPool.Get().(*VisitedSet)
+	visited := h.visitedPool.Get().(*visited.VisitedSet)
 	visited.Reset()
 	defer h.visitedPool.Put(visited)
 

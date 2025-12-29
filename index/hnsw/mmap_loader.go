@@ -9,6 +9,7 @@ import (
 
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/internal/queue"
+	"github.com/hupe1980/vecgo/internal/visited"
 	"github.com/hupe1980/vecgo/persistence"
 	"github.com/hupe1980/vecgo/vectorstore/zerocopy"
 )
@@ -146,7 +147,7 @@ func loadHNSWMmap(data []byte) (index.Index, int, error) {
 	h.distanceFunc = index.NewDistanceFunc(h.opts.DistanceType)
 	h.minQueuePool = &sync.Pool{New: func() any { return queue.NewMin(h.opts.EF) }}
 	h.maxQueuePool = &sync.Pool{New: func() any { return queue.NewMax(h.opts.EF) }}
-	h.visitedPool = &sync.Pool{New: func() any { return NewVisitedSet(1024) }}
+	h.visitedPool = &sync.Pool{New: func() any { return visited.New(1024) }}
 
 	return h, r.Offset(), nil
 }

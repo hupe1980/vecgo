@@ -10,6 +10,7 @@ import (
 
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/internal/queue"
+	"github.com/hupe1980/vecgo/internal/visited"
 	"github.com/hupe1980/vecgo/persistence"
 	"github.com/hupe1980/vecgo/vectorstore/columnar"
 )
@@ -356,7 +357,7 @@ func (h *HNSW) ReadFromWithOptions(r io.Reader, opts Options) error {
 	}
 	h.visitedPool = &sync.Pool{
 		New: func() any {
-			return NewVisitedSet(1024)
+			return visited.New(1024)
 		},
 	}
 
