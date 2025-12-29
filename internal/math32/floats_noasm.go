@@ -13,3 +13,7 @@ func squaredL2(a, b []float32) float32 {
 func scaleInPlace(a []float32, scalar float32) {
 	scaleGeneric(a, scalar)
 }
+
+func pqAdcLookup(table []float32, codes []byte, m int) float32 {
+	return pqAdcLookupGeneric(table, codes, m)
+}

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"math"
 	"math/rand"
+
+	"github.com/hupe1980/vecgo/internal/math32"
 )
 
 // ProductQuantizer implements Product Quantization (PQ) for 8-32x compression.
@@ -196,7 +198,7 @@ func (pq *ProductQuantizer) kmeans(vectors [][]float32, k, maxIters int) [][]flo
 	minDistSq := make([]float32, len(vectors))
 	var sum float32
 	for i, vec := range vectors {
-		d := pq.l2Distance(vec, centroids[0])
+		d := math32.SquaredL2(vec, centroids[0])
 		minDistSq[i] = d
 		sum += d
 	}
@@ -224,7 +226,7 @@ func (pq *ProductQuantizer) kmeans(vectors [][]float32, k, maxIters int) [][]flo
 		// Update minDistSq incrementally (O(n) per centroid).
 		sum = 0
 		for i, vec := range vectors {
-			d := pq.l2Distance(vec, centroids[c])
+			d := math32.SquaredL2(vec, centroids[c])
 			if d < minDistSq[i] {
 				minDistSq[i] = d
 			}
@@ -284,7 +286,7 @@ func (pq *ProductQuantizer) findNearestCentroid(vec []float32, centroids [][]flo
 	nearestIdx := 0
 
 	for i, centroid := range centroids {
-		dist := pq.l2Distance(vec, centroid)
+		dist := math32.SquaredL2(vec, centroid)
 		if dist < minDist {
 			minDist = dist
 			nearestIdx = i
@@ -292,16 +294,6 @@ func (pq *ProductQuantizer) findNearestCentroid(vec []float32, centroids [][]flo
 	}
 
 	return nearestIdx
-}
-
-// l2Distance computes squared L2 distance between two vectors.
-func (pq *ProductQuantizer) l2Distance(a, b []float32) float32 {
-	var sum float32
-	for i := range a {
-		diff := a[i] - b[i]
-		sum += diff * diff
-	}
-	return sum
 }
 
 // NumSubvectors returns the number of subvectors (M).
@@ -333,25 +325,34 @@ func (pq *ProductQuantizer) SetCodebooks(codebooks [][][]float32) {
 }
 
 // BuildDistanceTable precomputes distances from a query to all centroids.
-// Returns a table of shape [M][K] where table[m][k] is the squared distance
+// Returns a flattened table of size M * K where table[m*K + k] is the squared distance
 // from query subvector m to centroid k.
-// This enables fast ADC computation: sum(table[m][code[m]] for m in 0..M)
-func (pq *ProductQuantizer) BuildDistanceTable(query []float32) [][]float32 {
+// This enables fast ADC computation using SIMD.
+func (pq *ProductQuantizer) BuildDistanceTable(query []float32) []float32 {
 	if len(query) != pq.dimension {
 		panic("query dimension mismatch")
 	}
 
-	table := make([][]float32, pq.numSubvectors)
+	table := make([]float32, pq.numSubvectors*pq.numCentroids)
 	for m := 0; m < pq.numSubvectors; m++ {
 		start := m * pq.subvectorDim
 		end := start + pq.subvectorDim
 		querySubvec := query[start:end]
 
-		table[m] = make([]float32, pq.numCentroids)
 		for k := 0; k < pq.numCentroids; k++ {
-			table[m][k] = pq.l2Distance(querySubvec, pq.codebooks[m][k])
+			dist := math32.SquaredL2(querySubvec, pq.codebooks[m][k])
+			table[m*pq.numCentroids+k] = dist
 		}
 	}
 
 	return table
+}
+
+// AdcDistance computes the approximate distance between a query (represented by the distance table)
+// and a quantized vector (represented by codes).
+func (pq *ProductQuantizer) AdcDistance(table []float32, codes []byte) float32 {
+	if len(codes) != pq.numSubvectors {
+		panic("codes length mismatch")
+	}
+	return math32.PqAdcLookup(table, codes, pq.numSubvectors)
 }

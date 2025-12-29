@@ -536,7 +536,7 @@ func (idx *Index) findNeighborsForInsertWithGraph(v []float32, excludeID uint32,
 	// CRITICAL: Use exact distances for graph construction, not PQ
 	// PQ distances drift as vectors are added, corrupting neighbor selection.
 	// PQ is only used during search (after graph is built).
-	var distTable [][]float32 = nil // Force exact distance computation
+	var distTable []float32 = nil // Force exact distance computation
 
 	// BFS/greedy search to find L nearest candidates
 	// Use bitset for visited tracking (memory efficient, faster than map at scale)
@@ -716,7 +716,7 @@ func (idx *Index) repairReverseEdges(id uint32, v []float32, neighbors []uint32)
 }
 
 // computeDistance computes distance using PQ (if trained) or exact distance.
-func (idx *Index) computeDistance(v []float32, id uint32, distTable [][]float32) float32 {
+func (idx *Index) computeDistance(v []float32, id uint32, distTable []float32) float32 {
 	M := idx.opts.PQSubvectors
 	offset := int(id) * M
 	if distTable != nil && offset+M <= len(idx.pqCodes) {
@@ -978,7 +978,7 @@ func (idx *Index) KNNSearch(ctx context.Context, query []float32, k int, opts *i
 
 	if hasGraph {
 		// Build PQ distance table for query
-		var distTable [][]float32
+		var distTable []float32
 		if idx.pq.IsTrained() {
 			distTable = idx.pq.BuildDistanceTable(query)
 		}
@@ -1052,7 +1052,7 @@ func (idx *Index) mergeResults(r1, r2 []index.SearchResult, k int) []index.Searc
 // filter: if not nil, nodes are filtered DURING graph traversal (not after).
 // This ensures correct recall and reduces wasted distance computations.
 // Uses proper DiskANN termination: stop when current candidate is worse than worst in beam.
-func (idx *Index) beamSearch(query []float32, distTable [][]float32, queryBQ []uint64, topK int, filter func(uint32) bool) []distNode {
+func (idx *Index) beamSearch(query []float32, distTable []float32, queryBQ []uint64, topK int, filter func(uint32) bool) []distNode {
 	idx.graphMu.RLock()
 	defer idx.graphMu.RUnlock()
 
@@ -1164,12 +1164,8 @@ func (idx *Index) beamSearch(query []float32, distTable [][]float32, queryBQ []u
 }
 
 // pqDistance computes approximate distance using PQ codes.
-func (idx *Index) pqDistance(distTable [][]float32, codes []byte) float32 {
-	var dist float32
-	for m, code := range codes {
-		dist += distTable[m][code]
-	}
-	return dist
+func (idx *Index) pqDistance(distTable []float32, codes []byte) float32 {
+	return idx.pq.AdcDistance(distTable, codes)
 }
 
 // rerank fetches vectors and computes exact distances.

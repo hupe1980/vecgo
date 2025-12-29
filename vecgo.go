@@ -117,6 +117,7 @@ import (
 	"fmt"
 	"io"
 	"iter"
+	"path/filepath"
 	"time"
 
 	"github.com/hupe1980/vecgo/codec"
@@ -139,12 +140,8 @@ var (
 
 // Vecgo is a vector store database with support for metadata filtering and write-ahead logging.
 type Vecgo[T any] struct {
-	index        index.Index
-	store        engine.Store[T]
-	metaStore    *metadata.UnifiedIndex
 	mmapCloser   io.Closer
 	coordinator  engine.Coordinator[T] // Single interface for both Tx and ShardedCoordinator
-	wal          *wal.WAL
 	codec        codec.Codec
 	metrics      MetricsCollector
 	logger       *Logger
@@ -157,24 +154,18 @@ type Vecgo[T any] struct {
 // PQ is optional/explicit and can accelerate distance computations by using compact
 // codes for query->vector distance approximations.
 func (vg *Vecgo[T]) EnableProductQuantization(cfg index.ProductQuantizationConfig) error {
-	if vg.index == nil {
-		return fmt.Errorf("vecgo: index not initialized")
+	if vg.coordinator == nil {
+		return fmt.Errorf("vecgo: coordinator not initialized")
 	}
-	cap, ok := vg.index.(index.ProductQuantizationEnabler)
-	if !ok {
-		return fmt.Errorf("vecgo: index type %T does not support product quantization", vg.index)
-	}
-	return cap.EnableProductQuantization(cfg)
+	return vg.coordinator.EnableProductQuantization(cfg)
 }
 
 // DisableProductQuantization disables Product Quantization (PQ) on the underlying index.
 func (vg *Vecgo[T]) DisableProductQuantization() {
-	if vg.index == nil {
+	if vg.coordinator == nil {
 		return
 	}
-	if cap, ok := vg.index.(index.ProductQuantizationEnabler); ok {
-		cap.DisableProductQuantization()
-	}
+	vg.coordinator.DisableProductQuantization()
 }
 
 // newFlat is an internal constructor used by the Flat builder.
@@ -327,12 +318,8 @@ func new[T any](i index.Index, s engine.Store[T], ms *metadata.UnifiedIndex, opt
 	}
 
 	vg := &Vecgo[T]{
-		index:        i,
-		store:        s,
-		metaStore:    ms,
 		mmapCloser:   nil,
 		coordinator:  nil, // set below
-		wal:          w,
 		codec:        c,
 		metrics:      opts.metricsCollector,
 		logger:       opts.logger,
@@ -392,37 +379,49 @@ func newSharded[T any](indexes []index.Index, dataStores []engine.Store[T], meta
 		c = codec.Default
 	}
 
-	// Create WAL if path is specified
-	var w *wal.WAL
+	// Create WALs if path is specified (one per shard)
+	var wals []*wal.WAL
 	if opts.walPath != "" {
-		// Prepare WAL options with codec
-		walOptFns := append([]func(*wal.Options){
-			func(o *wal.Options) {
-				o.Path = opts.walPath
-				o.MetadataCodec = c // Use unified codec
-			},
-		}, opts.walOptions...)
+		wals = make([]*wal.WAL, len(indexes))
+		for i := range indexes {
+			shardPath := filepath.Join(opts.walPath, fmt.Sprintf("shard-%d", i))
 
-		var err error
-		w, err = wal.New(walOptFns...)
-		if err != nil {
-			return nil, fmt.Errorf("vecgo: failed to create WAL: %w", err)
+			// Prepare WAL options with codec
+			walOptFns := append([]func(*wal.Options){
+				func(o *wal.Options) {
+					o.Path = shardPath
+					o.MetadataCodec = c // Use unified codec
+				},
+			}, opts.walOptions...)
+
+			var err error
+			wals[i], err = wal.New(walOptFns...)
+			if err != nil {
+				// Close already created WALs
+				for j := 0; j < i; j++ {
+					_ = wals[j].Close()
+				}
+				return nil, fmt.Errorf("vecgo: failed to create WAL for shard %d: %w", i, err)
+			}
 		}
 	}
 
-	// Create durability slice (all shards share the same WAL)
-	var durabilities []engine.Durability
-	if w != nil {
-		durabilities = make([]engine.Durability, len(indexes))
-		for i := range durabilities {
+	// Create durability slice
+	durabilities := make([]engine.Durability, len(indexes))
+	if len(wals) > 0 {
+		for i, w := range wals {
 			durabilities[i] = w
+		}
+	} else {
+		for i := range durabilities {
+			durabilities[i] = engine.NoopDurability{}
 		}
 	}
 
 	// Create sharded coordinator
 	shardedCoord, err := engine.NewSharded(indexes, dataStores, metaStores, durabilities, c)
 	if err != nil {
-		if w != nil {
+		for _, w := range wals {
 			_ = w.Close()
 		}
 		return nil, translateError(err)
@@ -439,14 +438,9 @@ func newSharded[T any](indexes []index.Index, dataStores []engine.Store[T], meta
 		coord = engine.WithValidation(coord, opts.dimension, *limits)
 	}
 
-	// Use first shard's index as primary (for Stats, etc.)
 	vg := &Vecgo[T]{
-		index:        indexes[0],
-		store:        dataStores[0],
-		metaStore:    metaStores[0],
 		mmapCloser:   nil,
 		coordinator:  coord,
-		wal:          w,
 		codec:        c,
 		metrics:      opts.metricsCollector,
 		logger:       opts.logger,
@@ -454,8 +448,10 @@ func newSharded[T any](indexes []index.Index, dataStores []engine.Store[T], meta
 	}
 
 	// Set auto-checkpoint callback if WAL is enabled
-	if w != nil {
-		w.SetCheckpointCallback(vg.autoCheckpoint)
+	if len(wals) > 0 {
+		for _, w := range wals {
+			w.SetCheckpointCallback(vg.autoCheckpoint)
+		}
 	}
 
 	return vg, nil
@@ -482,10 +478,10 @@ func (vg *Vecgo[T]) autoCheckpoint() error {
 // Checkpoint creates a checkpoint in the WAL and truncates the log.
 // This should be called after saving the index to disk.
 func (vg *Vecgo[T]) Checkpoint() error {
-	if vg.wal != nil {
-		return vg.wal.Checkpoint()
+	if vg.coordinator == nil {
+		return nil
 	}
-	return nil
+	return vg.coordinator.Checkpoint()
 }
 
 // NewFromFile loads a snapshot using zero-copy mmap.
@@ -545,12 +541,8 @@ func NewFromFile[T any](filename string, optFns ...Option) (*Vecgo[T], error) {
 	}
 
 	vg := &Vecgo[T]{
-		index:        snap.Index,
-		store:        snap.DataStore,
-		metaStore:    metaStore,
 		mmapCloser:   snap.MappedFile,
 		coordinator:  nil, // set below
-		wal:          w,
 		codec:        c,
 		logger:       opts.logger,
 		metrics:      opts.metricsCollector,
@@ -833,9 +825,9 @@ func (vg *Vecgo[T]) KNNSearchStream(ctx context.Context, query []float32, k int,
 			searchOpts.Filter = opts.FilterFunc
 		}
 
-		// Use the streaming interface from the index
+		// Use the streaming interface from the coordinator
 		var count int
-		for indexResult, err := range vg.index.KNNSearchStream(ctx, query, k, searchOpts) {
+		for indexResult, err := range vg.coordinator.KNNSearchStream(ctx, query, k, searchOpts) {
 			if err != nil {
 				err = translateError(err)
 				vg.metrics.RecordSearch(k, time.Since(start), err)
@@ -849,11 +841,11 @@ func (vg *Vecgo[T]) KNNSearchStream(ctx context.Context, query []float32, k int,
 				SearchResult: indexResult,
 			}
 
-			if data, ok := vg.store.Get(indexResult.ID); ok {
+			if data, ok := vg.coordinator.Get(indexResult.ID); ok {
 				result.Data = data
 			}
 
-			if meta, ok := vg.metaStore.Get(indexResult.ID); ok {
+			if meta, ok := vg.coordinator.GetMetadata(indexResult.ID); ok {
 				result.Metadata = meta
 			}
 
@@ -925,77 +917,18 @@ func (vg *Vecgo[T]) HybridSearch(ctx context.Context, query []float32, k int, op
 		return nil, ErrInvalidEFValue
 	}
 
-	// If no metadata filters, fall back to regular KNN search
-	if opts.MetadataFilters == nil || len(opts.MetadataFilters.Filters) == 0 {
-		return vg.KNNSearch(ctx, query, k, func(o *KNNSearchOptions) {
-			o.EF = opts.EF
-		})
+	engineOpts := &engine.HybridSearchOptions{
+		EF:              opts.EF,
+		MetadataFilters: opts.MetadataFilters,
+		PreFilter:       opts.PreFilter,
 	}
 
-	// Create metadata filter function (may be accelerated by the inverted index).
-	metadataFilter := func(id uint32) bool {
-		meta, ok := vg.metaStore.Get(id)
-		if !ok {
-			return false // No metadata = doesn't match
-		}
-		return opts.MetadataFilters.Matches(meta)
-	}
-	if vg.metaStore != nil {
-		// Try to compile filter for fast bitmap-based filtering
-		metadataFilter = vg.metaStore.CreateFilterFunc(opts.MetadataFilters)
-	}
-
-	if opts.PreFilter {
-		// Pre-filtering: apply metadata filter during vector search
-		searchOpts := &index.SearchOptions{EFSearch: opts.EF, Filter: metadataFilter}
-		bestCandidates, err := vg.index.KNNSearch(ctx, query, k, searchOpts)
-		if err != nil {
-			return nil, translateError(err)
-		}
-		return vg.extractSearchResults(bestCandidates), nil
-	}
-
-	// Post-filtering: get more results, then filter
-	// Request more results to account for filtering
-	oversampleK := min(k*3, 1000)
-
-	searchOpts := &index.SearchOptions{EFSearch: opts.EF, Filter: func(id uint32) bool {
-		return true // No pre-filtering
-	}}
-	bestCandidates, err := vg.index.KNNSearch(ctx, query, oversampleK, searchOpts)
+	bestCandidates, err := vg.coordinator.HybridSearch(ctx, query, k, engineOpts)
 	if err != nil {
 		return nil, translateError(err)
 	}
 
-	// Apply metadata filtering and take top k
-	results := make([]SearchResult[T], 0, k)
-	for _, item := range bestCandidates {
-		if len(results) >= k {
-			break
-		}
-
-		data, ok := vg.store.Get(item.ID)
-		if !ok {
-			continue
-		}
-
-		// Apply metadata filter
-		if metadataFilter(item.ID) {
-			// Get metadata
-			meta, _ := vg.metaStore.Get(item.ID)
-
-			results = append(results, SearchResult[T]{
-				SearchResult: index.SearchResult{
-					ID:       item.ID,
-					Distance: item.Distance,
-				},
-				Data:     data,
-				Metadata: meta,
-			})
-		}
-	}
-
-	return results, nil
+	return vg.extractSearchResults(bestCandidates), nil
 }
 
 // extractSearchResults extracts search results from a priority queue.
@@ -1028,28 +961,27 @@ func (vg *Vecgo[T]) extractSearchResults(bestCandidates []index.SearchResult) []
 // SaveToWriter saves the Vecgo database to an io.Writer.
 // Uses a sectioned snapshot container: header + sections + directory + footer.
 func (vg *Vecgo[T]) SaveToWriter(w io.Writer) error {
-	// Convert UnifiedIndex to map store for snapshot saving
-	metadataStore := engine.NewMapStore[metadata.Metadata]()
-	for id, doc := range vg.metaStore.ToMap() {
-		_ = metadataStore.Set(id, doc)
+	if vg.coordinator == nil {
+		return fmt.Errorf("vecgo: coordinator not initialized")
 	}
-	return translateError(engine.SaveToWriter(w, vg.index, vg.store, metadataStore, vg.codecOrDefault()))
+	return translateError(vg.coordinator.SaveToWriter(w))
 }
 
 // SaveToFile saves the Vecgo database to a file.
 // If WAL is enabled, this will also create a checkpoint.
 func (vg *Vecgo[T]) SaveToFile(filename string) error {
-	// Convert UnifiedIndex to map store for snapshot saving
-	metadataStore := engine.NewMapStore[metadata.Metadata]()
-	for id, doc := range vg.metaStore.ToMap() {
-		_ = metadataStore.Set(id, doc)
+	if vg.coordinator == nil {
+		return fmt.Errorf("vecgo: coordinator not initialized")
 	}
-	return translateError(engine.SaveToFile(filename, vg.index, vg.store, metadataStore, vg.wal, vg.codecOrDefault()))
+	return translateError(vg.coordinator.SaveToFile(filename))
 }
 
 // Stats returns statistics about the underlying index.
 func (vg *Vecgo[T]) Stats() index.Stats {
-	return vg.index.Stats()
+	if vg.coordinator == nil {
+		return index.Stats{}
+	}
+	return vg.coordinator.Stats()
 }
 
 func (vg *Vecgo[T]) codecOrDefault() codec.Codec {
@@ -1063,8 +995,8 @@ func (vg *Vecgo[T]) codecOrDefault() codec.Codec {
 // This should be called after creating a Vecgo instance and enabling WAL
 // but before any other operations.
 func (vg *Vecgo[T]) RecoverFromWAL(ctx context.Context) error {
-	if vg.wal == nil {
-		return fmt.Errorf("vecgo: WAL not enabled (use WithWAL option)")
+	if vg.coordinator == nil {
+		return fmt.Errorf("vecgo: coordinator not initialized")
 	}
-	return engine.RecoverFromWAL(ctx, vg.index, vg.store, vg.metaStore, vg.wal, vg.codecOrDefault())
+	return vg.coordinator.RecoverFromWAL(ctx)
 }

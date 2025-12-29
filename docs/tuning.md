@@ -207,7 +207,7 @@ db := vecgo.HNSW[string](128).
 
 ## Sharding for Multi-Core
 
-Sharding eliminates the global lock bottleneck, enabling parallel writes.
+Sharding eliminates the global lock bottleneck, enabling parallel writes. Vecgo uses a **Shared-Nothing** architecture where each shard manages its own Index, Store, and Write-Ahead Log (WAL).
 
 ### When to Use Sharding
 
@@ -232,6 +232,8 @@ Sharding eliminates the global lock bottleneck, enabling parallel writes.
 | 8 | 8 | 3.4-3.8x | Best scaling |
 
 **Search performance**: Sharding has **no negative impact** on search (fan-out is parallel).
+
+**Durability**: Each shard has its own dedicated WAL. This means recovery is also parallelized, significantly reducing startup time after a crash.
 
 ### Configuration
 
@@ -618,21 +620,24 @@ vectors = [1, 2, 3, 4, ...]  // Sequential access
 
 ### Memory-Mapped Snapshots
 
-Load snapshots without deserialization:
+Load snapshots without deserialization using zero-copy mmap:
 
 ```go
-db, err := vecgo.LoadHNSWFromSnapshot[string](
-    "snapshot.bin",
-    func(o *hnsw.LoadOptions) {
-        o.UseMmap = true  // Zero-copy loading
-    },
-)
+// Load from snapshot (zero-copy mmap)
+db, err := vecgo.NewFromFile[string]("snapshot.bin")
+if err != nil {
+    log.Fatal(err)
+}
+defer db.Close()
+
+// Use normally
+results, _ := db.Search(query).KNN(10).Execute(ctx)
 ```
 
 **Benefits**:
-- Instant startup (no deserialization)
-- OS page cache handles hot data
-- Lazy loading (only read what you need)
+- **Instant startup** (<10ms): No deserialization, just pointer arithmetic.
+- **OS page cache**: Hot parts of the graph stay in RAM; cold parts are swapped out.
+- **Zero GC overhead**: The graph structure is off-heap.
 
 ### Soft Deletes + Compaction
 

@@ -95,6 +95,10 @@ func (f *failingCoordinator[T]) Stats() index.Stats {
 	return index.Stats{}
 }
 
+func (f *failingCoordinator[T]) Checkpoint() error {
+	return f.err
+}
+
 func (f *failingCoordinator[T]) Close() error {
 	return f.err
 }
@@ -200,6 +204,11 @@ func (s *slowCoordinator[T]) RecoverFromWAL(ctx context.Context) error {
 
 func (s *slowCoordinator[T]) Stats() index.Stats {
 	return index.Stats{}
+}
+
+func (s *slowCoordinator[T]) Checkpoint() error {
+	time.Sleep(s.delay)
+	return nil
 }
 
 func (s *slowCoordinator[T]) Close() error {

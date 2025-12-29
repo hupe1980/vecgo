@@ -1,10 +1,11 @@
 // Optimized AVX-512 kernels with 4 accumulators + FMA + horizontal reduction intrinsic
 #include <immintrin.h>
+#include <stdint.h>
 
 // _dot_product_avx512 computes dot product with 4-way accumulator unrolling + FMA.
 // Processes 64 floats per iteration (4 accumulators × 16-wide AVX-512).
 // Uses _mm512_reduce_add_ps() for efficient horizontal reduction.
-void _dot_product_avx512(float* vec1, float* vec2, long n, float* result)
+void _dot_product_avx512(float* __restrict vec1, float* __restrict vec2, int64_t n, float* __restrict result)
 {
     // Four accumulators for better instruction-level parallelism
     __m512 sum1 = _mm512_setzero_ps();
@@ -12,12 +13,12 @@ void _dot_product_avx512(float* vec1, float* vec2, long n, float* result)
     __m512 sum3 = _mm512_setzero_ps();
     __m512 sum4 = _mm512_setzero_ps();
     
-    long epoch = n / 64;  // Process 64 elements per iteration
-    long i;
+    int64_t epoch = n / 64;  // Process 64 elements per iteration
+    int64_t i;
     
     for (i = 0; i < epoch; i++)
     {
-        long offset = i * 64;
+        int64_t offset = i * 64;
         
         // Load 64 floats (4 × 16-wide vectors)
         __m512 v1_1 = _mm512_loadu_ps(vec1 + offset);
@@ -46,7 +47,7 @@ void _dot_product_avx512(float* vec1, float* vec2, long n, float* result)
     float total = _mm512_reduce_add_ps(sum1);
     
     // Scalar cleanup for remaining elements
-    long remainder = n % 64;
+    int64_t remainder = n % 64;
     for (i = n - remainder; i < n; i++)
     {
         total += vec1[i] * vec2[i];
@@ -57,7 +58,7 @@ void _dot_product_avx512(float* vec1, float* vec2, long n, float* result)
 
 // _squared_l2_avx512 computes squared L2 distance with 4-way accumulator unrolling + FMA.
 // Processes 64 floats per iteration (4 accumulators × 16-wide AVX-512).
-void _squared_l2_avx512(float* vec1, float* vec2, long n, float* result)
+void _squared_l2_avx512(float* __restrict vec1, float* __restrict vec2, int64_t n, float* __restrict result)
 {
     // Four accumulators for better instruction-level parallelism
     __m512 sum1 = _mm512_setzero_ps();
@@ -65,12 +66,12 @@ void _squared_l2_avx512(float* vec1, float* vec2, long n, float* result)
     __m512 sum3 = _mm512_setzero_ps();
     __m512 sum4 = _mm512_setzero_ps();
     
-    long epoch = n / 64;
-    long i;
+    int64_t epoch = n / 64;
+    int64_t i;
     
     for (i = 0; i < epoch; i++)
     {
-        long offset = i * 64;
+        int64_t offset = i * 64;
         
         // Load vectors
         __m512 v1_1 = _mm512_loadu_ps(vec1 + offset);
@@ -105,11 +106,52 @@ void _squared_l2_avx512(float* vec1, float* vec2, long n, float* result)
     float total = _mm512_reduce_add_ps(sum1);
     
     // Scalar cleanup for remaining elements
-    long remainder = n % 64;
+    int64_t remainder = n % 64;
     for (i = n - remainder; i < n; i++)
     {
         float diff = vec1[i] - vec2[i];
         total += diff * diff;
+    }
+    
+    *result = total;
+}
+// _pq_adc_lookup_avx512 computes the sum of distances from a precomputed table.
+// table: M x 256 floats (flattened)
+// codes: M bytes
+// m: number of subvectors
+// result: pointer to float result
+void _pq_adc_lookup_avx512(float *__restrict table, uint8_t *__restrict codes, int64_t m, float *__restrict result)
+{
+    __m512 sum_vec = _mm512_setzero_ps();
+    
+    // Offsets 0..15 * 256
+    __m512i offsets = _mm512_setr_epi32(
+        0, 256, 512, 768, 1024, 1280, 1536, 1792,
+        2048, 2304, 2560, 2816, 3072, 3328, 3584, 3840
+    );
+    
+    int64_t i;
+    for (i = 0; i <= m - 16; i += 16)
+    {
+        // Load 16 codes
+        __m128i c_vec = _mm_loadu_si128((__m128i*)(codes + i));
+        __m512i c_ints = _mm512_cvtepu8_epi32(c_vec);
+        
+        __m512i indices = _mm512_add_epi32(offsets, c_ints);
+        
+        __m512 vals = _mm512_i32gather_ps(indices, table, 4);
+        
+        sum_vec = _mm512_add_ps(sum_vec, vals);
+        
+        table += 4096; // 16 * 256
+    }
+    
+    float total = _mm512_reduce_add_ps(sum_vec);
+    
+    for (; i < m; i++)
+    {
+        total += table[codes[i]];
+        table += 256;
     }
     
     *result = total;

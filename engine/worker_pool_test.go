@@ -116,6 +116,10 @@ func (m *mockShard[T]) Stats() index.Stats {
 	return index.Stats{}
 }
 
+func (m *mockShard[T]) Checkpoint() error {
+	return nil
+}
+
 func (m *mockShard[T]) Close() error {
 	return nil
 }

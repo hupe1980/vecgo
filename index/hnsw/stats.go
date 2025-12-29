@@ -23,7 +23,7 @@ func (h *HNSW) Stats() index.Stats {
 			}
 			for j := range seg {
 				node := seg[j].Load()
-				if node == nil {
+				if node == 0 {
 					deletedNodes++
 				} else {
 					activeNodes++
@@ -43,24 +43,28 @@ func (h *HNSW) Stats() index.Stats {
 
 	// Iterate all segments again for detailed stats
 	if segments != nil {
+		buf := h.arena.Buffer()
 		for _, seg := range *segments {
 			if seg == nil {
 				continue
 			}
 			for j := range seg {
-				node := seg[j].Load()
-				if node == nil {
+				offset := seg[j].Load()
+				if offset == 0 {
 					continue
 				}
 
-				levelStats[node.Layer]++
+				level := int(h.layout.getLevel(buf[offset:]))
+				if level < len(levelStats) {
+					levelStats[level]++
+				}
 
 				// Loop through each connection
-				for i2 := node.Layer; i2 >= 0; i2-- {
-					// Lock-free read using atomic pointer
-					connections := node.Connections[i2].Load()
-					if connections != nil && len(*connections) > i2 {
-						total := len(*connections)
+				for i2 := level; i2 >= 0; i2-- {
+					// Read connections
+					connections := h.layout.getNeighbors(buf[offset:], level, int(i2))
+					if len(connections) > 0 {
+						total := len(connections)
 						connectionStats[i2] += total
 						connectionNodeStats[i2]++
 					}

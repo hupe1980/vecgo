@@ -5,9 +5,10 @@ import (
 	"fmt"
 	"math"
 	"sync"
-	"sync/atomic"
+	"unsafe"
 
 	"github.com/hupe1980/vecgo/index"
+	"github.com/hupe1980/vecgo/internal/arena"
 	"github.com/hupe1980/vecgo/internal/queue"
 	"github.com/hupe1980/vecgo/internal/visited"
 	"github.com/hupe1980/vecgo/persistence"
@@ -61,10 +62,10 @@ func loadHNSWMmap(data []byte) (index.Index, int, error) {
 	}
 
 	// node count
-	nodeCount, err := r.ReadUint32()
-	if err != nil {
-		return nil, 0, err
-	}
+	// nodeCount, err := r.ReadUint32()
+	// if err != nil {
+	// 	return nil, 0, err
+	// }
 
 	h := &HNSW{}
 	h.opts = DefaultOptions
@@ -85,64 +86,59 @@ func loadHNSWMmap(data []byte) (index.Index, int, error) {
 	h.freeList = freeList
 	h.vectors = zerocopy.New(int(hdr.Dimension))
 
-	// Initialize segments
-	// h.segments is atomic.Pointer, zero value is nil, which is correct.
+	// Set countAtomic
+	h.countAtomic.Store(int64(nextID) - int64(len(freeList)))
 
-	for i := 0; i < int(nodeCount); i++ {
-		marker, err := r.ReadUint32()
-		if err != nil {
-			return nil, 0, err
-		}
-		if marker == 0 {
-			h.growSegments(uint32(i))
-			continue
-		}
-
-		nodeID, err := r.ReadUint32()
-		if err != nil {
-			return nil, 0, err
-		}
-		packed, err := r.ReadUint32()
-		if err != nil {
-			return nil, 0, err
-		}
-		layer := int(packed >> 16)
-		vecLen := int(packed & 0xFFFF)
-
-		vec, err := r.ReadFloat32SliceView(vecLen)
-		if err != nil {
-			return nil, 0, err
-		}
-		if err := h.vectors.SetVector(nodeID, vec); err != nil {
-			return nil, 0, err
-		}
-
-		node := &Node{
-			ID:          nodeID,
-			Layer:       layer,
-			Connections: make([]atomic.Pointer[[]uint32], layer+1),
-		}
-
-		// Read connections (copy ids; connection slices are mutable during updates).
-		for j := 0; j <= layer; j++ {
-			cnt, err := r.ReadUint32()
-			if err != nil {
-				return nil, 0, err
-			}
-			if cnt == 0 {
-				var empty []uint32
-				node.Connections[j].Store(&empty)
-				continue
-			}
-			ids, err := r.ReadUint32SliceCopy(int(cnt))
-			if err != nil {
-				return nil, 0, err
-			}
-			node.Connections[j].Store(&ids)
-		}
-
-		h.setNode(uint32(i), node)
+	// Read Arena Size
+	arenaSize, err := r.ReadUint32()
+	if err != nil {
+		return nil, 0, err
 	}
+
+	// Initialize Arena (Zero-Copy)
+	arenaData, err := r.ReadBytes(int(arenaSize))
+	if err != nil {
+		return nil, 0, err
+	}
+	h.arena = arena.NewFlatFromBytes(arenaData)
+	h.arena.SetSize(arenaSize)
+
+	// Skip padding
+	padding := (4 - (arenaSize % 4)) % 4
+	if padding > 0 {
+		if _, err := r.ReadBytes(int(padding)); err != nil {
+			return nil, 0, err
+		}
+	}
+
+	// Read Offsets (Zero-Copy)
+	offsetsData, err := r.ReadBytes(int(nextID) * 4)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	if len(offsetsData) > 0 {
+		h.mmapOffsets = unsafe.Slice((*uint32)(unsafe.Pointer(&offsetsData[0])), int(nextID))
+	}
+
+	// Read Vectors
+	for id := uint32(0); id < nextID; id++ {
+		vecLen, err := r.ReadUint32()
+		if err != nil {
+			return nil, 0, err
+		}
+		if vecLen > 0 {
+			vec, err := r.ReadFloat32SliceView(int(vecLen))
+			if err != nil {
+				return nil, 0, err
+			}
+			h.vectors.SetVector(id, vec)
+		}
+	}
+
+	// Initialize layout
+	h.layout = newNodeLayout(h.opts.M)
+	h.shardedLocks = make([]sync.RWMutex, 1024)
 
 	h.distanceFunc = index.NewDistanceFunc(h.opts.DistanceType)
 	h.minQueuePool = &sync.Pool{New: func() any { return queue.NewMin(h.opts.EF) }}

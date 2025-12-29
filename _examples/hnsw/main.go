@@ -37,7 +37,11 @@ func main() {
 	//    - 10-15x faster than naive Go loops
 	//    - Zero allocations (pooled buffers)
 	//
-	// 4. Validation is enabled by default with limits:
+	// 4. Instant Startup with Mmap:
+	//    - Use vg.SaveToFile() to save the full snapshot
+	//    - Use vecgo.NewFromFile() for <10ms zero-copy load
+	//
+	// 5. Validation is enabled by default with limits:
 	//    - MaxBatchSize: 10,000 vectors per BatchInsert
 	//    - For larger batches, split into chunks as shown below
 	vg, err := vecgo.HNSW[int](dim).

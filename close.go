@@ -38,17 +38,8 @@ func (vg *Vecgo[T]) closeInternal() error {
 
 	// Close coordinator first (may have background workers)
 	if vg.coordinator != nil {
-		if closeable, ok := vg.coordinator.(interface{ Close() error }); ok {
-			if err := closeable.Close(); err != nil {
-				errs = append(errs, fmt.Errorf("coordinator: %w", err))
-			}
-		}
-	}
-
-	// Close WAL (may have group commit worker)
-	if vg.wal != nil {
-		if err := vg.wal.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("wal: %w", err))
+		if err := vg.coordinator.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("coordinator: %w", err))
 		}
 	}
 

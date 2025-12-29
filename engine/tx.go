@@ -485,6 +485,14 @@ func (tx *Tx[T]) Stats() index.Stats {
 	return tx.txIndex.Stats()
 }
 
+// Checkpoint creates a checkpoint in the durability layer (WAL).
+func (tx *Tx[T]) Checkpoint() error {
+	if w, ok := tx.durability.(*wal.WAL); ok {
+		return w.Checkpoint()
+	}
+	return nil
+}
+
 // autoCheckpoint is called by WAL when auto-checkpoint thresholds are exceeded.
 func (tx *Tx[T]) autoCheckpoint() error {
 	if tx.snapshotPath == "" {

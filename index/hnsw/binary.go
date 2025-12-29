@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"io"
 	"sync"
-	"sync/atomic"
 
 	"github.com/hupe1980/vecgo/index"
+	"github.com/hupe1980/vecgo/internal/arena"
 	"github.com/hupe1980/vecgo/internal/queue"
 	"github.com/hupe1980/vecgo/internal/visited"
 	"github.com/hupe1980/vecgo/persistence"
@@ -76,7 +76,6 @@ func (h *HNSW) WriteTo(w io.Writer) (int64, error) {
 	writer := persistence.NewBinaryIndexWriter(cw)
 
 	// Calculate actual node count (max ID + 1)
-	// We use nextID as the upper bound for iteration
 	nextID := h.nextIDAtomic.Load()
 
 	// Write file header
@@ -108,19 +107,14 @@ func (h *HNSW) WriteTo(w io.Writer) (int64, error) {
 		return cw.n, err
 	}
 
-	// Pre-allocate buffer for small writes (reduces allocations)
-	buf := make([]byte, 4)
-
 	// Write nextID
-	binary.LittleEndian.PutUint32(buf, nextID)
-	if _, err := cw.Write(buf); err != nil {
+	if err := binary.Write(cw, binary.LittleEndian, nextID); err != nil {
 		return cw.n, err
 	}
 
-	// Write freeList length and data
+	// Write freeList
 	freeListLen := uint32(len(h.freeList))
-	binary.LittleEndian.PutUint32(buf, freeListLen)
-	if _, err := cw.Write(buf); err != nil {
+	if err := binary.Write(cw, binary.LittleEndian, freeListLen); err != nil {
 		return cw.n, err
 	}
 	if freeListLen > 0 {
@@ -129,66 +123,42 @@ func (h *HNSW) WriteTo(w io.Writer) (int64, error) {
 		}
 	}
 
-	// Write node count (capacity)
-	// The reader expects to read this many nodes.
-	// We write nextID as the count, so we iterate 0..nextID-1
-	binary.LittleEndian.PutUint32(buf, nextID)
-	if _, err := cw.Write(buf); err != nil {
+	// Write Arena Size
+	arenaSize := h.arena.Size()
+	if err := binary.Write(cw, binary.LittleEndian, arenaSize); err != nil {
 		return cw.n, err
 	}
 
-	// Write each node
-	for id := uint32(0); id < nextID; id++ {
-		node := h.getNode(id) // Lock-free read
+	// Write Arena Data
+	if _, err := cw.Write(h.arena.Buffer()[:arenaSize]); err != nil {
+		return cw.n, err
+	}
 
-		if node == nil {
-			// Write nil marker (0)
-			binary.LittleEndian.PutUint32(buf, 0)
-			if _, err := cw.Write(buf); err != nil {
-				return cw.n, err
-			}
+	// Padding for 4-byte alignment of Offsets
+	padding := (4 - (arenaSize % 4)) % 4
+	if padding > 0 {
+		if _, err := cw.Write(make([]byte, padding)); err != nil {
+			return cw.n, err
+		}
+	}
+
+	// Write Offsets
+	for id := uint32(0); id < nextID; id++ {
+		offset := h.getNodeOffset(id)
+		if err := binary.Write(cw, binary.LittleEndian, offset); err != nil {
+			return cw.n, err
+		}
+	}
+
+	// Write Vectors
+	for id := uint32(0); id < nextID; id++ {
+		vec, ok := h.vectors.GetVector(id)
+		if !ok {
+			binary.Write(cw, binary.LittleEndian, uint32(0))
 			continue
 		}
-
-		vec, ok := h.vectors.GetVector(node.ID)
-		if !ok {
-			return cw.n, fmt.Errorf("hnsw: missing vector for node id=%d", node.ID)
-		}
-
-		// Write non-nil marker (1), ID, and packed layer/veclen in one go (12 bytes)
-		nodeHdr := make([]byte, 12)
-		binary.LittleEndian.PutUint32(nodeHdr[0:4], 1) // non-nil marker
-		binary.LittleEndian.PutUint32(nodeHdr[4:8], node.ID)
-		binary.LittleEndian.PutUint32(nodeHdr[8:12], uint32(node.Layer)<<16|uint32(len(vec)))
-		if _, err := cw.Write(nodeHdr); err != nil {
-			return cw.n, err
-		}
-
-		// Write vector
-		if err := writer.WriteFloat32Slice(vec); err != nil {
-			return cw.n, err
-		}
-
-		// Write connections directly (avoid allocation)
-		for i := 0; i <= node.Layer; i++ {
-			conns := node.Connections[i].Load()
-			if conns == nil {
-				binary.LittleEndian.PutUint32(buf, 0)
-				if _, err := cw.Write(buf); err != nil {
-					return cw.n, err
-				}
-			} else {
-				binary.LittleEndian.PutUint32(buf, uint32(len(*conns)))
-				if _, err := cw.Write(buf); err != nil {
-					return cw.n, err
-				}
-				if len(*conns) > 0 {
-					if err := writer.WriteUint32Slice(*conns); err != nil {
-						return cw.n, err
-					}
-				}
-			}
-		}
+		binary.Write(cw, binary.LittleEndian, uint32(len(vec)))
+		writer.WriteFloat32Slice(vec)
 	}
 
 	return cw.n, nil
@@ -274,72 +244,58 @@ func (h *HNSW) ReadFromWithOptions(r io.Reader, opts Options) error {
 	// Set countAtomic
 	h.countAtomic.Store(int64(h.nextIDAtomic.Load()) - int64(len(h.freeList)))
 
-	// Read node count
-	nodeCountSlice, err := reader.ReadUint32Slice(1)
-	if err != nil {
+	// Read Arena Size
+	var arenaSize uint32
+	if err := binary.Read(r, binary.LittleEndian, &arenaSize); err != nil {
 		return err
 	}
-	nodeCount := nodeCountSlice[0]
 
-	// Initialize segments
-	// h.segments is atomic.Pointer, zero value is nil, which is correct.
-
-	// Read nodes
-	for i := uint32(0); i < nodeCount; i++ {
-		// Read nil marker
-		marker, err := reader.ReadUint32Slice(1)
-		if err != nil {
-			return err
-		}
-
-		if marker[0] == 0 {
-			h.growSegments(i)
-			continue
-		}
-
-		// Read node header
-		headerData, err := reader.ReadUint32Slice(2)
-		if err != nil {
-			return err
-		}
-
-		nodeID := headerData[0]
-		layer := int(headerData[1] >> 16)
-		vecLen := int(headerData[1] & 0xFFFF)
-
-		// Read vector
-		vector, err := reader.ReadFloat32Slice(vecLen)
-		if err != nil {
-			return err
-		}
-
-		// Store vector
-		if err := h.vectors.SetVector(nodeID, vector); err != nil {
-			return err
-		}
-
-		// Create node (topology-only)
-		node := &Node{
-			ID:          nodeID,
-			Layer:       layer,
-			Connections: make([]atomic.Pointer[[]uint32], layer+1),
-		}
-
-		// Read connections
-		connections, err := persistence.ReadConnections(r, layer+1)
-		if err != nil {
-			return err
-		}
-
-		// Initialize atomic pointers
-		for j := 0; j <= layer; j++ {
-			connsCopy := make([]uint32, len(connections[j]))
-			copy(connsCopy, connections[j])
-			node.Connections[j].Store(&connsCopy)
-		}
-
-		h.setNode(i, node)
+	// Initialize Arena
+	h.arena = arena.NewFlat(int(arenaSize))
+	// Read Arena Data
+	if _, err := io.ReadFull(r, h.arena.Buffer()[:arenaSize]); err != nil {
+		return err
 	}
+	h.arena.SetSize(arenaSize)
+
+	// Skip padding
+	padding := (4 - (arenaSize % 4)) % 4
+	if padding > 0 {
+		if _, err := io.ReadFull(r, make([]byte, padding)); err != nil {
+			return err
+		}
+	}
+
+	// Read Offsets
+	nextID := h.nextIDAtomic.Load()
+	for id := uint32(0); id < nextID; id++ {
+		var offset uint32
+		if err := binary.Read(r, binary.LittleEndian, &offset); err != nil {
+			return err
+		}
+		if offset != 0 {
+			h.setNodeOffset(id, offset)
+		}
+	}
+
+	// Read Vectors
+	for id := uint32(0); id < nextID; id++ {
+		var vecLen uint32
+		if err := binary.Read(r, binary.LittleEndian, &vecLen); err != nil {
+			return err
+		}
+		if vecLen > 0 {
+			vec := make([]float32, vecLen)
+			if err := binary.Read(r, binary.LittleEndian, vec); err != nil {
+				return err
+			}
+			h.vectors.SetVector(id, vec)
+		}
+	}
+
+	// Initialize layout
+	h.layout = newNodeLayout(h.opts.M)
+	h.shardedLocks = make([]sync.RWMutex, 1024)
 
 	// Initialize distance function
 	h.distanceFunc = index.NewDistanceFunc(h.opts.DistanceType)

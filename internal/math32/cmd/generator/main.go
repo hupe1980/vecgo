@@ -86,7 +86,7 @@ type Parameter struct {
 type AsmLine struct {
 	Labels   []string
 	Assembly string
-	Binary   string
+	Binary   []string
 }
 
 func (g *Generator) Generate() error {
@@ -161,7 +161,7 @@ func (g *Generator) compileToAssembly() (string, error) {
 	}
 	if g.Arch == "amd64" {
 		args = append(args, "-mno-red-zone", "-mstackrealign")
-		
+
 		// Detect SIMD instruction set from filename and add appropriate flags
 		baseName := strings.ToLower(filepath.Base(g.SourcePath))
 		if strings.Contains(baseName, "avx512") {
@@ -314,7 +314,6 @@ func (g *Generator) extractBinary(objPath string, functions map[string]*Function
 	}
 
 	sym := regexp.MustCompile(`^[0-9a-f]+ <(\w+)>:`)
-	data := regexp.MustCompile(`^\s*[0-9a-f]+:\s+([0-9a-f]+)`)
 
 	var fn *Function
 	idx := 0
@@ -322,6 +321,9 @@ func (g *Generator) extractBinary(objPath string, functions map[string]*Function
 	sc := bufio.NewScanner(&out)
 	for sc.Scan() {
 		line := sc.Text()
+		if g.Verbose {
+			fmt.Printf("Scanning line: %q\n", line)
+		}
 
 		if m := sym.FindStringSubmatch(line); m != nil {
 			fn = functions[m[1]]
@@ -333,17 +335,56 @@ func (g *Generator) extractBinary(objPath string, functions map[string]*Function
 			continue
 		}
 
-		if m := data.FindStringSubmatch(line); m != nil {
-			for idx < len(fn.Lines) && fn.Lines[idx].Binary != "" {
-				idx++
+		// Parse instruction lines: "   offset: bytes..."
+		// We look for lines starting with whitespace and containing a colon
+		if (strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t")) && strings.Contains(line, ":") {
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) == 2 {
+				content := parts[1]
+
+				// If there is a tab, the bytes are before the tab
+				if tabIdx := strings.Index(content, "\t"); tabIdx != -1 {
+					content = content[:tabIdx]
+				}
+
+				// Parse hex bytes or words
+				fields := strings.Fields(content)
+				var bytes []string
+				for _, p := range fields {
+					if (len(p) == 2 || len(p) == 8) && isHex(p) {
+						bytes = append(bytes, p)
+					}
+				}
+
+				if len(bytes) > 0 {
+					if g.Verbose {
+						fmt.Printf("Matched binary: %v for line idx %d\n", bytes, idx)
+					}
+					for idx < len(fn.Lines) && (len(fn.Lines[idx].Binary) > 0 || fn.Lines[idx].Assembly == "") {
+						idx++
+					}
+					if idx < len(fn.Lines) {
+						fn.Lines[idx].Binary = bytes
+						idx++
+					}
+				}
 			}
-			if idx < len(fn.Lines) {
-				fn.Lines[idx].Binary = m[1]
-				idx++
+		} else {
+			if g.Verbose {
+				fmt.Printf("No match for line: %s\n", line)
 			}
 		}
 	}
 	return sc.Err()
+}
+
+func isHex(s string) bool {
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
 }
 
 // ------------------------------------------------------------
@@ -369,13 +410,25 @@ func (g *Generator) generateGoAsm(functions map[string]*Function) error {
 
 		fmt.Fprintf(&buf, "TEXT ·%s(SB), NOSPLIT, $0-%d\n", fn.Name, frameSize)
 
-		if g.Arch == "arm64" {
+		switch g.Arch {
+		case "arm64":
 			// Generate parameter loads based on actual parameters
 			registers := []string{"R0", "R1", "R2", "R3", "R4", "R5", "R6", "R7"}
 			for i, param := range fn.Parameters {
 				if i < len(registers) {
 					offset := i * 8
 					fmt.Fprintf(&buf, "\tMOVD %s+%d(FP), %s\n", param.Name, offset, registers[i])
+				}
+			}
+			buf.WriteString("\n")
+		case "amd64":
+			// Generate parameter loads for AMD64 (System V ABI)
+			// Pointers and integers go to DI, SI, DX, CX, R8, R9
+			registers := []string{"DI", "SI", "DX", "CX", "R8", "R9"}
+			for i, param := range fn.Parameters {
+				if i < len(registers) {
+					offset := i * 8
+					fmt.Fprintf(&buf, "\tMOVQ %s+%d(FP), %s\n", param.Name, offset, registers[i])
 				}
 			}
 			buf.WriteString("\n")
@@ -391,8 +444,14 @@ func (g *Generator) generateGoAsm(functions map[string]*Function) error {
 				continue
 			}
 
-			if l.Binary != "" {
-				fmt.Fprintf(&buf, "\tWORD $0x%s\n", l.Binary)
+			if len(l.Binary) > 0 {
+				for _, b := range l.Binary {
+					if len(b) == 8 {
+						fmt.Fprintf(&buf, "\tWORD $0x%s\n", b)
+					} else {
+						fmt.Fprintf(&buf, "\tBYTE $0x%s\n", b)
+					}
+				}
 			}
 		}
 		buf.WriteString("\n")

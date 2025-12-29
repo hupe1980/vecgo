@@ -93,6 +93,10 @@ func (m *mockCoordinator[T]) Stats() index.Stats {
 	return index.Stats{}
 }
 
+func (m *mockCoordinator[T]) Checkpoint() error {
+	return nil
+}
+
 func (m *mockCoordinator[T]) Close() error {
 	return nil
 }

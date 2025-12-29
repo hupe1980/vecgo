@@ -11,7 +11,7 @@ go build -o generator
 ## Usage
 
 ```bash
-./generator [options] <source.c>
+./generator -arch <arch> -goos <os> [options] <source.c>
 ```
 
 ### Options
@@ -20,18 +20,20 @@ go build -o generator
 - `-O level` - Optimization level (default: "3")
 - `-o dir` - Output directory (default: auto-detected from source path)
 - `-pkg name` - Package name (default: "math32")
+- `-arch name` - Target architecture (required, e.g., "amd64", "arm64")
+- `-goos name` - Target OS (required, e.g., "linux", "darwin")
 
 ### Examples
 
 ```bash
-# Generate with defaults
-./generator ../src/floats_neon.c
+# Generate for AVX (AMD64/Linux)
+./generator -arch amd64 -goos linux ../src/floats_avx.c
+
+# Generate for NEON (ARM64/Darwin)
+./generator -arch arm64 -goos darwin ../src/floats_neon.c
 
 # Verbose mode
-./generator -v ../src/floats_neon.c
-
-# Custom output directory
-./generator -o /path/to/output ../src/floats_neon.c
+./generator -v -arch amd64 -goos linux ../src/floats_avx.c
 ```
 
 ## How It Works

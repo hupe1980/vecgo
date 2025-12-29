@@ -98,6 +98,23 @@ type Coordinator[T any] interface {
     SaveToFile(path string) error
     RecoverFromWAL(ctx context.Context) error
     Stats() index.Stats
+    Checkpoint() error
+    Close() error
+}
+```
+
+### 3. Shared-Nothing Architecture
+
+Vecgo uses a **Shared-Nothing** architecture for scalability.
+
+*   **Single-Shard (`Tx[T]`)**: For simple deployments, a single coordinator manages all resources (Index, Store, Metadata, WAL).
+*   **Multi-Shard (`ShardedCoordinator[T]`)**: For high throughput, data is partitioned across multiple shards.
+    *   Each shard is an independent `Tx[T]` with its own **dedicated WAL**, Index, and Store.
+    *   Writes are routed to shards based on ID (round-robin or deterministic).
+    *   This eliminates global locks and allows write throughput to scale linearly with cores.
+    *   Search operations fan out to all shards in parallel and merge results.
+
+---
     Close() error
 }
 ```
@@ -153,7 +170,7 @@ type Coordinator[T any] interface {
 **Flat** (`index/flat/`):
 - Brute-force exact search
 - Columnar vector storage (SOA layout)
-- SIMD-optimized distance computations
+- SIMD-optimized distance computations (AVX2/AVX-512/NEON via `internal/math32`)
 - Best for: <100K vectors, 100% recall required
 
 **HNSW** (`index/hnsw/`):
@@ -213,15 +230,16 @@ func (f *Flat) Search(query []float32, k int) []Result {
 ```go
 type HNSW[T any] struct {
     store   vectorstore.VectorStore  // Columnar vectors
-    nodes   []*Node                   // Graph nodes
-    arena   *arena.Arena              // Connection allocator
+    // Node storage: Segmented array of offsets (mutable) or flat offsets (mmap)
+    segments atomic.Pointer[[]*OffsetSegment]
+    mmapOffsets []uint32
+    
+    arena   *arena.FlatArena         // Contiguous node data (mmap-able)
 }
 
-type Node struct {
-    level       int
-    connections [][]uint64  // Per-level connection lists
-    mu          sync.RWMutex
-}
+// Node layout is position-independent (offsets instead of pointers)
+// Stored in FlatArena:
+// [Header: ID(4) Level(4)] [L0_Count(4) L0_Neighbors...] [L1_Count(4) L1_Neighbors...] ...
 ```
 
 **Search Algorithm** (Greedy Best-First):

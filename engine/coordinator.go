@@ -106,6 +106,9 @@ type Coordinator[T any] interface {
 	// Stats returns statistics about the underlying index(es).
 	Stats() index.Stats
 
+	// Checkpoint creates a checkpoint in the durability layer (WAL).
+	Checkpoint() error
+
 	// Close releases all resources held by the coordinator (indexes, stores, WALs).
 	Close() error
 }

@@ -1,9 +1,10 @@
 #include <arm_neon.h>
+#include <stdint.h>
 
-void _dot_product_neon(float *a, float *b, long n, float* result)
+void _dot_product_neon(float *__restrict a, float *__restrict b, int64_t n, float *__restrict result)
 {
-    int epoch = n / 16; // Process 16 elements per iteration (4 accumulators)
-    int remain = n % 16;
+    int64_t epoch = n / 16; // Process 16 elements per iteration (4 accumulators)
+    int64_t remain = n % 16;
     
     // Four accumulators for better instruction-level parallelism
     float32x4_t sum1 = vdupq_n_f32(0.0f);
@@ -12,23 +13,27 @@ void _dot_product_neon(float *a, float *b, long n, float* result)
     float32x4_t sum4 = vdupq_n_f32(0.0f);
     
     // Main vectorized loop: 16 floats per iteration
-    for (int i = 0; i < epoch; ++i)
+    for (int64_t i = 0; i < epoch; ++i)
     {
+        // Software prefetch to hide memory latency
+        __builtin_prefetch(a + 64);
+        __builtin_prefetch(b + 64);
+
         float32x4_t v1 = vld1q_f32(a);
         float32x4_t v2 = vld1q_f32(b);
-        sum1 = vmlaq_f32(sum1, v1, v2);
+        sum1 = vfmaq_f32(sum1, v1, v2);
         
         v1 = vld1q_f32(a + 4);
         v2 = vld1q_f32(b + 4);
-        sum2 = vmlaq_f32(sum2, v1, v2);
+        sum2 = vfmaq_f32(sum2, v1, v2);
         
         v1 = vld1q_f32(a + 8);
         v2 = vld1q_f32(b + 8);
-        sum3 = vmlaq_f32(sum3, v1, v2);
+        sum3 = vfmaq_f32(sum3, v1, v2);
         
         v1 = vld1q_f32(a + 12);
         v2 = vld1q_f32(b + 12);
-        sum4 = vmlaq_f32(sum4, v1, v2);
+        sum4 = vfmaq_f32(sum4, v1, v2);
         
         a += 16;
         b += 16;
@@ -36,7 +41,7 @@ void _dot_product_neon(float *a, float *b, long n, float* result)
 
     // Process remaining elements
     float remain_sum = 0.0f;
-    for (int i = 0; i < remain; ++i)
+    for (int64_t i = 0; i < remain; ++i)
     {
         remain_sum += a[i] * b[i];
     }
@@ -46,14 +51,41 @@ void _dot_product_neon(float *a, float *b, long n, float* result)
     sum3 = vaddq_f32(sum3, sum4);
     sum1 = vaddq_f32(sum1, sum3);
     
-    // Horizontal reduction
-    sum1 = vpaddq_f32(sum1, sum1);
-    sum1 = vpaddq_f32(sum1, sum1);
+    // Portable horizontal reduction (compatible with all ARMv8-A)
+    float32x2_t low = vget_low_f32(sum1);
+    float32x2_t high = vget_high_f32(sum1);
+    float32x2_t sum_pair = vadd_f32(low, high);
+    sum_pair = vpadd_f32(sum_pair, sum_pair);
     
-    *result = vgetq_lane_f32(sum1, 0) + remain_sum;
+    *result = vget_lane_f32(sum_pair, 0) + remain_sum;
 }
 
-void _squared_l2_neon(float *a, float *b, long n, float *result)
+void _pq_adc_lookup_neon(float *__restrict table, uint8_t *__restrict codes, int64_t m, float *__restrict result)
+{
+    float sum = 0.0f;
+    int64_t i;
+    // Unroll 4 times
+    for (i = 0; i <= m - 4; i += 4)
+    {
+        sum += table[codes[i]];
+        table += 256;
+        sum += table[codes[i+1]];
+        table += 256;
+        sum += table[codes[i+2]];
+        table += 256;
+        sum += table[codes[i+3]];
+        table += 256;
+    }
+    
+    for (; i < m; i++)
+    {
+        sum += table[codes[i]];
+        table += 256;
+    }
+    *result = sum;
+}
+
+void _squared_l2_neon(float *__restrict a, float *__restrict b, int64_t n, float *__restrict result)
 {
     // Four accumulators for better throughput
     float32x4_t sum1 = vdupq_n_f32(0.0f);
@@ -61,22 +93,26 @@ void _squared_l2_neon(float *a, float *b, long n, float *result)
     float32x4_t sum3 = vdupq_n_f32(0.0f);
     float32x4_t sum4 = vdupq_n_f32(0.0f);
     
-    long epoch = n / 16;  // Process 16 elements per iteration
-    long remainder = n % 16;
+    int64_t epoch = n / 16;  // Process 16 elements per iteration
+    int64_t remainder = n % 16;
 
-    for (long i = 0; i < epoch; ++i)
+    for (int64_t i = 0; i < epoch; ++i)
     {
+        // Software prefetch
+        __builtin_prefetch(a + 64);
+        __builtin_prefetch(b + 64);
+
         float32x4_t diff1 = vsubq_f32(vld1q_f32(a), vld1q_f32(b));
-        sum1 = vmlaq_f32(sum1, diff1, diff1);
+        sum1 = vfmaq_f32(sum1, diff1, diff1);
         
         float32x4_t diff2 = vsubq_f32(vld1q_f32(a + 4), vld1q_f32(b + 4));
-        sum2 = vmlaq_f32(sum2, diff2, diff2);
+        sum2 = vfmaq_f32(sum2, diff2, diff2);
         
         float32x4_t diff3 = vsubq_f32(vld1q_f32(a + 8), vld1q_f32(b + 8));
-        sum3 = vmlaq_f32(sum3, diff3, diff3);
+        sum3 = vfmaq_f32(sum3, diff3, diff3);
         
         float32x4_t diff4 = vsubq_f32(vld1q_f32(a + 12), vld1q_f32(b + 12));
-        sum4 = vmlaq_f32(sum4, diff4, diff4);
+        sum4 = vfmaq_f32(sum4, diff4, diff4);
         
         a += 16;
         b += 16;
@@ -87,14 +123,16 @@ void _squared_l2_neon(float *a, float *b, long n, float *result)
     sum3 = vaddq_f32(sum3, sum4);
     sum1 = vaddq_f32(sum1, sum3);
     
-    // Horizontal reduction
-    sum1 = vpaddq_f32(sum1, sum1);
-    sum1 = vpaddq_f32(sum1, sum1);
+    // Portable horizontal reduction
+    float32x2_t low = vget_low_f32(sum1);
+    float32x2_t high = vget_high_f32(sum1);
+    float32x2_t sum_pair = vadd_f32(low, high);
+    sum_pair = vpadd_f32(sum_pair, sum_pair);
     
-    float sum = vgetq_lane_f32(sum1, 0);
+    float sum = vget_lane_f32(sum_pair, 0);
 
     // Scalar cleanup for remaining elements
-    for (long i = 0; i < remainder; ++i) 
+    for (int64_t i = 0; i < remainder; ++i) 
     {
         float diff = *a++ - *b++;
         sum += diff * diff;
@@ -107,7 +145,7 @@ void _squared_l2_neon(float *a, float *b, long n, float *result)
 //
 // Note: scalar is passed by pointer to avoid ABI differences for float arguments
 // in the Go assembly generator pipeline.
-void _scale_neon(float *a, long n, float *scalar)
+void _scale_neon(float *__restrict a, int64_t n, float *__restrict scalar)
 {
     if (n <= 0) {
         return;
@@ -116,11 +154,13 @@ void _scale_neon(float *a, long n, float *scalar)
     float s = *scalar;
     float32x4_t sv = vdupq_n_f32(s);
 
-    long epoch = n / 16;
-    long remainder = n % 16;
+    int64_t epoch = n / 16;
+    int64_t remainder = n % 16;
 
-    for (long i = 0; i < epoch; ++i)
+    for (int64_t i = 0; i < epoch; ++i)
     {
+        __builtin_prefetch(a + 64);
+
         float32x4_t v1 = vld1q_f32(a);
         float32x4_t v2 = vld1q_f32(a + 4);
         float32x4_t v3 = vld1q_f32(a + 8);
@@ -139,7 +179,7 @@ void _scale_neon(float *a, long n, float *scalar)
         a += 16;
     }
 
-    for (long i = 0; i < remainder; ++i)
+    for (int64_t i = 0; i < remainder; ++i)
     {
         a[i] *= s;
     }

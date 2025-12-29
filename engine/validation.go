@@ -294,11 +294,12 @@ func (v *ValidatedCoordinator[T]) Stats() index.Stats {
 	return v.inner.Stats()
 }
 
-// Close closes the wrapped coordinator if it implements io.Closer.
-// This ensures proper cleanup of resources like worker pools and background workers.
+// Checkpoint delegates to the inner coordinator.
+func (v *ValidatedCoordinator[T]) Checkpoint() error {
+	return v.inner.Checkpoint()
+}
+
+// Close closes the wrapped coordinator.
 func (v *ValidatedCoordinator[T]) Close() error {
-	if closeable, ok := v.inner.(io.Closer); ok {
-		return closeable.Close()
-	}
-	return nil
+	return v.inner.Close()
 }

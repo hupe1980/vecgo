@@ -65,8 +65,8 @@ func TestValidateInsertSearch(t *testing.T) {
 		{
 			VectorSize: 1000,
 			VectorDim:  1024,
-			M:          12,
-			EF:         200,
+			M:          16,
+			EF:         300,
 			Heuristic:  true,
 			Precision:  0.98,
 			K:          10,

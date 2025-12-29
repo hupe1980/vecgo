@@ -711,3 +711,13 @@ func (sc *ShardedCoordinator[T]) Stats() index.Stats {
 	}
 	return index.Stats{}
 }
+
+// Checkpoint creates a checkpoint in all shards.
+func (sc *ShardedCoordinator[T]) Checkpoint() error {
+	for i, shard := range sc.shards {
+		if err := shard.Checkpoint(); err != nil {
+			return fmt.Errorf("shard %d checkpoint: %w", i, err)
+		}
+	}
+	return nil
+}

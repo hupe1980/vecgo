@@ -89,3 +89,72 @@ func BenchmarkSquaredL2(b *testing.B) {
 		_ = SquaredL2(va, vb)
 	}
 }
+
+func TestPqAdcLookup(t *testing.T) {
+	// M=2 sub-vectors, 256 centroids each.
+	// Distance table size = 2 * 256 = 512
+	m := 2
+	k := 256
+	table := make([]float32, m*k)
+
+	// Fill table with known values
+	// Sub-vector 0: distances 0..255
+	// Sub-vector 1: distances 0..255
+	for i := 0; i < m*k; i++ {
+		table[i] = float32(i % k)
+	}
+
+	tests := []struct {
+		name     string
+		codes    []byte
+		expected float32
+	}{
+		{
+			name:     "First centroids",
+			codes:    []byte{0, 0},
+			expected: 0.0 + 0.0, // table[0] + table[256] -> 0 + 0
+		},
+		{
+			name:     "Last centroids",
+			codes:    []byte{255, 255},
+			expected: 255.0 + 255.0, // table[255] + table[511] -> 255 + 255
+		},
+		{
+			name:     "Mixed centroids",
+			codes:    []byte{10, 20},
+			expected: 10.0 + 20.0, // table[10] + table[256+20] -> 10 + 20
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := PqAdcLookup(table, tc.codes, m)
+			assert.Equal(t, tc.expected, result)
+		})
+	}
+}
+
+func TestScaleInPlace(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    []float32
+		scalar   float32
+		expected []float32
+	}{
+		{"Scale by 2", []float32{1, 2, 3}, 2.0, []float32{2, 4, 6}},
+		{"Scale by 0", []float32{1, 2, 3}, 0.0, []float32{0, 0, 0}},
+		{"Scale by -1", []float32{1, -2, 3}, -1.0, []float32{-1, 2, -3}},
+		{"Empty", []float32{}, 2.0, []float32{}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Copy input because it's modified in place
+			arr := make([]float32, len(tc.input))
+			copy(arr, tc.input)
+
+			ScaleInPlace(arr, tc.scalar)
+			assert.Equal(t, tc.expected, arr)
+		})
+	}
+}

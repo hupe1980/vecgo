@@ -4,6 +4,8 @@ package quantization
 import (
 	"errors"
 	"math"
+
+	"github.com/hupe1980/vecgo/internal/math32"
 )
 
 // OptimizedProductQuantizer implements Optimized Product Quantization (OPQ).
@@ -312,9 +314,6 @@ func (opq *OptimizedProductQuantizer) transpose(matrix [][]float32) [][]float32 
 // matrixVectorMultiply computes result = matrix * vec.
 func (opq *OptimizedProductQuantizer) matrixVectorMultiply(matrix [][]float32, vec []float32, result []float32) {
 	for i := range matrix {
-		result[i] = 0
-		for j, val := range vec {
-			result[i] += matrix[i][j] * val
-		}
+		result[i] = math32.Dot(matrix[i], vec)
 	}
 }

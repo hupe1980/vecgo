@@ -62,31 +62,27 @@ func TestBinaryPersistence_SaveLoad(t *testing.T) {
 	// Verify each vector
 	nextID := h.nextIDAtomic.Load()
 	for i := uint32(0); i < nextID; i++ {
-		originalNode := h.getNode(i)
-		if originalNode == nil {
-			if loaded.getNode(i) != nil {
+		originalOffset := h.getNodeOffset(i)
+		if originalOffset == 0 {
+			if loaded.getNodeOffset(i) != 0 {
 				t.Errorf("Node %d should be nil", i)
 			}
 			continue
 		}
 
-		loadedNode := loaded.getNode(i)
-		if loadedNode == nil {
+		loadedOffset := loaded.getNodeOffset(i)
+		if loadedOffset == 0 {
 			t.Errorf("Node %d should not be nil", i)
 			continue
 		}
 
-		if loadedNode.ID != originalNode.ID {
-			t.Errorf("Node %d ID mismatch: got %d, want %d", i, loadedNode.ID, originalNode.ID)
-		}
-
-		origVec, ok := h.vectors.GetVector(originalNode.ID)
+		origVec, ok := h.vectors.GetVector(i)
 		if !ok {
-			t.Fatalf("missing original vector for id=%d", originalNode.ID)
+			t.Fatalf("missing original vector for id=%d", i)
 		}
-		loadedVec, ok := loaded.vectors.GetVector(loadedNode.ID)
+		loadedVec, ok := loaded.vectors.GetVector(i)
 		if !ok {
-			t.Fatalf("missing loaded vector for id=%d", loadedNode.ID)
+			t.Fatalf("missing loaded vector for id=%d", i)
 		}
 		if len(loadedVec) != len(origVec) {
 			t.Errorf("Node %d vector length mismatch: got %d, want %d", i, len(loadedVec), len(origVec))
@@ -148,7 +144,110 @@ func TestBinaryPersistence_WithDeletions(t *testing.T) {
 		t.Errorf("Expected 2 vectors, got %d", loaded.VectorCount())
 	}
 
-	if loaded.getNode(id2) != nil {
+	if loaded.getNodeOffset(id2) != 0 {
 		t.Errorf("Deleted node %d should be nil in loaded index", id2)
+	}
+}
+
+func TestBinaryPersistence_MmapLoad(t *testing.T) {
+	tmpfile := "test_hnsw_mmap.bin"
+	defer os.Remove(tmpfile)
+
+	// Create and populate index
+	h, err := New(func(o *Options) {
+		o.Dimension = 4
+		o.M = 8
+		o.EF = 32
+		o.DistanceType = index.DistanceTypeSquaredL2
+	})
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	// Insert test vectors
+	vectors := [][]float32{
+		{1.0, 2.0, 3.0, 4.0},
+		{5.0, 6.0, 7.0, 8.0},
+		{9.0, 10.0, 11.0, 12.0},
+		{13.0, 14.0, 15.0, 16.0},
+	}
+
+	ctx := context.Background()
+	for _, vec := range vectors {
+		if _, err := h.Insert(ctx, vec); err != nil {
+			t.Fatalf("Insert failed: %v", err)
+		}
+	}
+
+	// Save to file
+	if err := h.SaveToFile(tmpfile); err != nil {
+		t.Fatalf("SaveToFile failed: %v", err)
+	}
+
+	// Read file into memory (simulate mmap)
+	data, err := os.ReadFile(tmpfile)
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+
+	// Load using Mmap loader
+	loadedIdx, _, err := index.LoadBinaryIndexMmap(data)
+	if err != nil {
+		t.Fatalf("LoadBinaryIndexMmap failed: %v", err)
+	}
+
+	loaded, ok := loadedIdx.(*HNSW)
+	if !ok {
+		t.Fatalf("Loaded index is not HNSW")
+	}
+
+	// Verify loaded index
+	if loaded.VectorCount() != h.VectorCount() {
+		t.Errorf("Vector count mismatch: got %d, want %d", loaded.VectorCount(), h.VectorCount())
+	}
+
+	// Verify mmapOffsets are used
+	if loaded.mmapOffsets == nil {
+		t.Error("mmapOffsets should not be nil for mmap loaded index")
+	}
+
+	// Verify each vector
+	nextID := h.nextIDAtomic.Load()
+	for i := uint32(0); i < nextID; i++ {
+		originalOffset := h.getNodeOffset(i)
+		if originalOffset == 0 {
+			if loaded.getNodeOffset(i) != 0 {
+				t.Errorf("Node %d should be nil", i)
+			}
+			continue
+		}
+
+		loadedOffset := loaded.getNodeOffset(i)
+		if loadedOffset == 0 {
+			t.Errorf("Node %d should not be nil", i)
+			continue
+		}
+
+		if loadedOffset != originalOffset {
+			t.Errorf("Node %d offset mismatch: got %d, want %d", i, loadedOffset, originalOffset)
+		}
+
+		origVec, ok := h.vectors.GetVector(i)
+		if !ok {
+			t.Fatalf("missing original vector for id=%d", i)
+		}
+		loadedVec, ok := loaded.vectors.GetVector(i)
+		if !ok {
+			t.Fatalf("missing loaded vector for id=%d", i)
+		}
+		if len(loadedVec) != len(origVec) {
+			t.Errorf("Node %d vector length mismatch: got %d, want %d", i, len(loadedVec), len(origVec))
+			continue
+		}
+		for j, v := range origVec {
+			if loadedVec[j] != v {
+				t.Errorf("Node %d vector[%d] mismatch: got %f, want %f", i, j, loadedVec[j], v)
+			}
+		}
 	}
 }

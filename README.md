@@ -28,9 +28,10 @@
 
 ### 🚀 Performance
 - **SIMD Kernels**: AVX/AVX512 (x86_64) and NEON (ARM64) acceleration
-- **Zero-Allocation Search**: Pooled buffers eliminate GC pressure
+- **Instant Startup**: Mmap-able HNSW and DiskANN for <10ms load times
+- **Zero-Allocation Search**: Generation-based visited sets and pooled buffers eliminate GC pressure
 - **Columnar Storage**: SOA layout for optimal cache locality
-- **Sharded Writes**: 2.7-3.4x speedup with parallel write coordinators
+- **Shared-Nothing Architecture**: Linear write scaling with independent shards and WALs
 - **Worker Pool**: Fixed goroutine pool for sharded searches (0 goroutines created per search)
 - **Lock-Free Reads**: Concurrent search without contention
 - **Smart Filtering**: Pre-filtering reduces distance computations by ~40% for filtered searches

@@ -8,6 +8,7 @@ import (
 
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/index/hnsw"
+	"github.com/hupe1980/vecgo/persistence"
 )
 
 func main() {
@@ -45,7 +46,7 @@ func main() {
 	}
 	defer os.Remove(filename)
 
-	fmt.Println("Loading from file...")
+	fmt.Println("Loading from file (Standard Load)...")
 	loaded, err := hnsw.LoadFromFile(filename, hnsw.Options{
 		M:            16,
 		EF:           64,
@@ -60,8 +61,35 @@ func main() {
 		log.Fatalf("Search failed: %v", err)
 	}
 
-	fmt.Printf("\nSearch results:\n")
+	fmt.Printf("\nSearch results (Standard Load):\n")
 	for i, result := range results {
+		fmt.Printf("  %d. ID=%d, Distance=%.4f\n", i+1, result.ID, result.Distance)
+	}
+
+	// Demonstrate Mmap Load (Zero-Copy)
+	fmt.Println("\nLoading from file (Mmap Zero-Copy)...")
+	// 1. Mmap the file
+	mf, err := persistence.MmapReadOnly(filename)
+	if err != nil {
+		log.Fatalf("Mmap failed: %v", err)
+	}
+	defer mf.Close() // Keep mapping alive while using the index
+
+	// 2. Load index from mapped bytes
+	// Note: LoadBinaryIndexMmap automatically detects the index type (HNSW) from the header
+	mmapIdx, _, err := index.LoadBinaryIndexMmap(mf.Bytes())
+	if err != nil {
+		log.Fatalf("Mmap load failed: %v", err)
+	}
+
+	// 3. Search using mmap'd index
+	mmapResults, err := mmapIdx.KNNSearch(ctx, vectors[0], 2, nil)
+	if err != nil {
+		log.Fatalf("Mmap search failed: %v", err)
+	}
+
+	fmt.Printf("\nSearch results (Mmap Load):\n")
+	for i, result := range mmapResults {
 		fmt.Printf("  %d. ID=%d, Distance=%.4f\n", i+1, result.ID, result.Distance)
 	}
 
