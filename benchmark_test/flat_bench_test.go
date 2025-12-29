@@ -172,7 +172,7 @@ func BenchmarkFlatDistanceMetrics(b *testing.B) {
 			// Use fresh RNG per sub-benchmark for reproducibility
 			localRNG := testutil.NewRNG(42)
 
-			var builder *vecgo.FlatBuilder[int]
+			var builder vecgo.FlatBuilder[int]
 			switch m.distType {
 			case index.DistanceTypeSquaredL2:
 				builder = vecgo.Flat[int](dim).SquaredL2()

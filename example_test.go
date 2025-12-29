@@ -16,10 +16,10 @@ import (
 func Example_hnswBuilder() {
 	// Create HNSW index with fluent builder
 	db, err := vecgo.HNSW[string](128). // 128-dimensional vectors
-						SquaredL2(). // Distance function
-						M(32).       // Graph connectivity
-						EF(200).     // Search quality
-						Shards(4).   // Multi-core scaling
+						SquaredL2().         // Distance function
+						M(32).               // Graph connectivity
+						EFConstruction(200). // Build-time search quality
+						Shards(4).           // Multi-core scaling
 						Build()
 	if err != nil {
 		log.Fatal(err)

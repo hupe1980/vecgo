@@ -57,7 +57,7 @@ import "github.com/hupe1980/vecgo"
 db, err := vecgo.HNSW[string](128).  // 128-dimensional vectors
     SquaredL2().                      // Distance function
     M(16).                            // Graph connectivity
-    EF(200).                          // Search quality
+    EFConstruction(200).              // Build-time search quality
     Build()
 if err != nil {
     log.Fatal(err)
@@ -99,7 +99,7 @@ db, err := vecgo.Flat[string](128).
 db, err := vecgo.HNSW[string](128).
     SquaredL2().
     M(32).               // Graph degree (16-64)
-    EF(200).             // Build quality (100-400)
+    EFConstruction(200). // Build quality (100-400)
     Shards(4).           // Parallel writes (2-8 cores)
     Build()
 ```

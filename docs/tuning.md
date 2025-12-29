@@ -126,7 +126,7 @@ db := vecgo.HNSW[string](128).M(64).Build()
 
 **Dynamic EF**: You can override EF at search time:
 ```go
-db := vecgo.HNSW[string](128).EF(200).Build()  // Default EF
+db := vecgo.HNSW[string](128).EFConstruction(200).Build()  // Build-time EF
 
 // Override at search time
 results := db.Search(query).
@@ -135,23 +135,23 @@ results := db.Search(query).
     Execute(ctx)
 ```
 
-### efConstruction (Build-Time Exploration)
+### EFConstruction (Build-Time Exploration)
 
-**What it does**: Controls exploration during graph construction. Higher efConstruction = better graph quality.
+**What it does**: Controls exploration during graph construction. Higher EFConstruction = better graph quality.
 
 **Trade-offs**:
-- ↑ efConstruction → ↑ Build time, ↑ Index quality, ↑ Search recall
-- ↓ efConstruction → ↓ Build time, ↓ Index quality, ↓ Search recall
+- ↑ EFConstruction → ↑ Build time, ↑ Index quality, ↑ Search recall
+- ↓ EFConstruction → ↓ Build time, ↓ Index quality, ↓ Search recall
 
 **Recommended values**:
 
-| Use Case | efConstruction | Build Time | Index Quality |
+| Use Case | EFConstruction | Build Time | Index Quality |
 |----------|----------------|------------|---------------|
 | **Fast build** | 100-200 | Fastest | Good |
 | **Balanced** (default) | 200-400 | Fast | Better |
 | **High quality** | 400-800 | Slow | Best |
 
-**Note**: efConstruction is set during index creation and cannot be changed later.
+**Note**: EFConstruction is set during index creation via `EFConstruction()` and cannot be changed later.
 
 ### Heuristic (Neighbor Selection)
 
@@ -166,7 +166,7 @@ results := db.Search(query).
 ```go
 db := vecgo.HNSW[string](128).
     M(32).
-    EF(200).
+    EFConstruction(200).
     Heuristic(true).  // Default, recommended
     Build()
 ```

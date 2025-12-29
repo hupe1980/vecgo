@@ -72,7 +72,7 @@ func groundTruthSearch(ctx context.Context, vectors [][]float32, query []float32
 // groundTruthSearchWithDistance performs exact search using Flat index with specified distance type.
 func groundTruthSearchWithDistance(ctx context.Context, vectors [][]float32, query []float32, k int, distType index.DistanceType) []vecgo.SearchResult[int] {
 	dim := len(query)
-	var builder *vecgo.FlatBuilder[int]
+	var builder vecgo.FlatBuilder[int]
 	switch distType {
 	case index.DistanceTypeSquaredL2:
 		builder = vecgo.Flat[int](dim).SquaredL2()

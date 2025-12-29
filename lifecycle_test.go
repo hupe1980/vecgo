@@ -44,7 +44,7 @@ func TestNoGoroutineLeaks(t *testing.T) {
 				db, err := vecgo.HNSW[string](128).
 					SquaredL2().
 					M(16).
-					EF(100).
+					EFConstruction(100).
 					WAL(tmpDir, func(o *wal.Options) {
 						o.DurabilityMode = wal.DurabilityGroupCommit
 						o.GroupCommitInterval = 10 * time.Millisecond
@@ -63,7 +63,7 @@ func TestNoGoroutineLeaks(t *testing.T) {
 				db, err := vecgo.HNSW[string](128).
 					SquaredL2().
 					M(16).
-					EF(100).
+					EFConstruction(100).
 					Shards(4).
 					WAL(tmpDir, func(o *wal.Options) {
 						o.DurabilityMode = wal.DurabilityGroupCommit

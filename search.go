@@ -6,6 +6,7 @@ package vecgo
 import (
 	"context"
 	"iter"
+	"math"
 
 	"github.com/hupe1980/vecgo/metadata"
 )
@@ -25,12 +26,19 @@ import (
 //	    if result.Distance > threshold { break }
 //	    process(result)
 //	}
+//
+//	// Range query (all vectors within distance):
+//	results, err := db.Search(query).
+//	    WithinDistance(0.5).
+//	    MaxResults(1000).
+//	    Execute(ctx)
 func (vg *Vecgo[T]) Search(query []float32) *SearchBuilder[T] {
 	return &SearchBuilder[T]{
-		vg:    vg,
-		query: query,
-		k:     10, // Default k
-		ef:    0,  // Use index default
+		vg:         vg,
+		query:      query,
+		k:          10,    // Default k
+		ef:         0,     // Use index default
+		maxResults: 10000, // Default max for range queries
 	}
 }
 
@@ -41,6 +49,10 @@ type SearchBuilder[T any] struct {
 	k     int
 	ef    int
 
+	// Range query support
+	withinDistance *float32 // nil = disabled (use KNN), value = distance threshold
+	maxResults     int      // Maximum results for range queries
+
 	// Filters
 	filterFunc      func(id uint32) bool
 	metadataFilters *metadata.FilterSet
@@ -50,8 +62,39 @@ type SearchBuilder[T any] struct {
 }
 
 // KNN sets the number of nearest neighbors to return.
+// This is mutually exclusive with WithinDistance - the last one called wins.
 func (sb *SearchBuilder[T]) KNN(k int) *SearchBuilder[T] {
 	sb.k = k
+	sb.withinDistance = nil // Disable range query mode
+	return sb
+}
+
+// WithinDistance sets a distance threshold for range queries.
+// Returns all vectors with distance <= threshold (up to MaxResults).
+// This is mutually exclusive with KNN - the last one called wins.
+//
+// Use cases:
+//   - Deduplication: Find all vectors within distance 0.1
+//   - Clustering: Retrieve all neighbors within radius
+//   - Threshold alerts: Detect if any similar vectors exist
+//
+// Example:
+//
+//	// Find all similar vectors within distance 0.5
+//	results, _ := db.Search(query).
+//	    WithinDistance(0.5).
+//	    MaxResults(100).
+//	    Execute(ctx)
+func (sb *SearchBuilder[T]) WithinDistance(threshold float32) *SearchBuilder[T] {
+	sb.withinDistance = &threshold
+	return sb
+}
+
+// MaxResults sets the maximum number of results for range queries.
+// Only applies when using WithinDistance. Default: 10000.
+// For KNN queries, use KNN(k) instead.
+func (sb *SearchBuilder[T]) MaxResults(n int) *SearchBuilder[T] {
+	sb.maxResults = n
 	return sb
 }
 
@@ -85,6 +128,12 @@ func (sb *SearchBuilder[T]) WithMetadata(filters *metadata.FilterSet) *SearchBui
 
 // Execute runs the search and returns the results.
 func (sb *SearchBuilder[T]) Execute(ctx context.Context) ([]SearchResult[T], error) {
+	// Range query mode
+	if sb.withinDistance != nil {
+		return sb.executeRangeQuery(ctx)
+	}
+
+	// Standard KNN mode
 	if sb.hybrid || sb.metadataFilters != nil {
 		// Hybrid search doesn't support FilterFunc directly,
 		// only metadata filters. If user wants ID-based filtering
@@ -107,6 +156,46 @@ func (sb *SearchBuilder[T]) Execute(ctx context.Context) ([]SearchResult[T], err
 	})
 }
 
+// executeRangeQuery performs a range query returning all vectors within the distance threshold.
+func (sb *SearchBuilder[T]) executeRangeQuery(ctx context.Context) ([]SearchResult[T], error) {
+	threshold := *sb.withinDistance
+
+	// Use maxResults as the search k to get enough candidates
+	// We'll filter by distance threshold after
+	searchK := sb.maxResults
+
+	// For range queries with filters, we need to over-fetch to account for filtered results
+	if sb.filterFunc != nil {
+		searchK = min(searchK*2, 100000) // Over-fetch but cap at reasonable limit
+	}
+
+	// Perform KNN search with expanded k
+	results, err := sb.vg.KNNSearch(ctx, sb.query, searchK, func(o *KNNSearchOptions) {
+		if sb.ef > 0 {
+			o.EF = sb.ef
+		}
+		if sb.filterFunc != nil {
+			o.FilterFunc = sb.filterFunc
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Filter by distance threshold
+	filtered := make([]SearchResult[T], 0, len(results))
+	for _, r := range results {
+		if r.Distance <= threshold {
+			filtered = append(filtered, r)
+			if len(filtered) >= sb.maxResults {
+				break
+			}
+		}
+	}
+
+	return filtered, nil
+}
+
 // MustExecute runs the search, panicking on error.
 // Use this only in tests or when you're certain the query is valid.
 func (sb *SearchBuilder[T]) MustExecute(ctx context.Context) []SearchResult[T] {
@@ -121,6 +210,8 @@ func (sb *SearchBuilder[T]) MustExecute(ctx context.Context) []SearchResult[T] {
 // Results are yielded in order from nearest to farthest.
 // The iterator supports early termination by breaking from the loop.
 //
+// For range queries (WithinDistance), only results within the threshold are yielded.
+//
 // Example:
 //
 //	for result, err := range db.Search(query).KNN(100).Stream(ctx) {
@@ -129,6 +220,38 @@ func (sb *SearchBuilder[T]) MustExecute(ctx context.Context) []SearchResult[T] {
 //	    process(result)
 //	}
 func (sb *SearchBuilder[T]) Stream(ctx context.Context) iter.Seq2[SearchResult[T], error] {
+	// For range queries, wrap the standard stream with distance filtering
+	if sb.withinDistance != nil {
+		threshold := *sb.withinDistance
+		return func(yield func(SearchResult[T], error) bool) {
+			count := 0
+			for result, err := range sb.vg.KNNSearchStream(ctx, sb.query, sb.maxResults, func(o *KNNSearchOptions) {
+				if sb.ef > 0 {
+					o.EF = sb.ef
+				}
+				if sb.filterFunc != nil {
+					o.FilterFunc = sb.filterFunc
+				}
+			}) {
+				if err != nil {
+					yield(SearchResult[T]{}, err)
+					return
+				}
+				// Stop if beyond distance threshold
+				if result.Distance > threshold {
+					return
+				}
+				count++
+				if count > sb.maxResults {
+					return
+				}
+				if !yield(result, nil) {
+					return
+				}
+			}
+		}
+	}
+
 	return sb.vg.KNNSearchStream(ctx, sb.query, sb.k, func(o *KNNSearchOptions) {
 		if sb.ef > 0 {
 			o.EF = sb.ef
@@ -152,7 +275,13 @@ func (sb *SearchBuilder[T]) First(ctx context.Context) (SearchResult[T], error) 
 	return results[0], nil
 }
 
+// Nearest is an alias for First - returns the single nearest result.
+func (sb *SearchBuilder[T]) Nearest(ctx context.Context) (SearchResult[T], error) {
+	return sb.First(ctx)
+}
+
 // Count executes the search and returns the number of results.
+// For range queries, returns the count of vectors within the distance threshold.
 func (sb *SearchBuilder[T]) Count(ctx context.Context) (int, error) {
 	results, err := sb.Execute(ctx)
 	if err != nil {
@@ -162,11 +291,42 @@ func (sb *SearchBuilder[T]) Count(ctx context.Context) (int, error) {
 }
 
 // Exists checks if at least one result matches the search.
+// For range queries, checks if any vector exists within the distance threshold.
 func (sb *SearchBuilder[T]) Exists(ctx context.Context) (bool, error) {
-	sb.k = 1
+	if sb.withinDistance != nil {
+		// For range queries, check if any result is within threshold
+		sb.maxResults = 1
+	} else {
+		sb.k = 1
+	}
 	results, err := sb.Execute(ctx)
 	if err != nil {
 		return false, err
 	}
 	return len(results) > 0, nil
+}
+
+// ExistsWithin checks if any vector exists within the specified distance.
+// This is a convenience method equivalent to WithinDistance(threshold).Exists(ctx).
+func (sb *SearchBuilder[T]) ExistsWithin(ctx context.Context, threshold float32) (bool, error) {
+	return sb.WithinDistance(threshold).MaxResults(1).Exists(ctx)
+}
+
+// CountWithin returns the count of vectors within the specified distance.
+// This is a convenience method equivalent to WithinDistance(threshold).Count(ctx).
+func (sb *SearchBuilder[T]) CountWithin(ctx context.Context, threshold float32) (int, error) {
+	return sb.WithinDistance(threshold).Count(ctx)
+}
+
+// min returns the smaller of two integers.
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// isRangeQuery returns true if this is a range query (WithinDistance was called).
+func (sb *SearchBuilder[T]) isRangeQuery() bool {
+	return sb.withinDistance != nil && *sb.withinDistance < math.MaxFloat32
 }

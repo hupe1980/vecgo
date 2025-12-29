@@ -34,7 +34,7 @@ func TestBuilder_HNSW_FullOptions(t *testing.T) {
 	db, err := vecgo.HNSW[string](4).
 		SquaredL2().
 		M(32).
-		EF(100).
+		EFConstruction(100).
 		Heuristic(false).
 		Shards(2).
 		Build()
@@ -334,22 +334,22 @@ func TestSearchBuilder_WithMetadata(t *testing.T) {
 func TestBuilder_DistanceShortcuts(t *testing.T) {
 	tests := []struct {
 		name     string
-		builder  func() *vecgo.HNSWBuilder[string]
+		builder  func() vecgo.HNSWBuilder[string]
 		expected string // Check via Options map in Stats
 	}{
 		{
 			name:     "SquaredL2",
-			builder:  func() *vecgo.HNSWBuilder[string] { return vecgo.HNSW[string](4).SquaredL2() },
+			builder:  func() vecgo.HNSWBuilder[string] { return vecgo.HNSW[string](4).SquaredL2() },
 			expected: "SquaredL2",
 		},
 		{
 			name:     "Cosine",
-			builder:  func() *vecgo.HNSWBuilder[string] { return vecgo.HNSW[string](4).Cosine() },
+			builder:  func() vecgo.HNSWBuilder[string] { return vecgo.HNSW[string](4).Cosine() },
 			expected: "CosineDistance", // Internal name uses CosineDistance
 		},
 		{
 			name:     "DotProduct",
-			builder:  func() *vecgo.HNSWBuilder[string] { return vecgo.HNSW[string](4).DotProduct() },
+			builder:  func() vecgo.HNSWBuilder[string] { return vecgo.HNSW[string](4).DotProduct() },
 			expected: "DotProduct",
 		},
 	}

@@ -126,7 +126,7 @@ func BenchmarkHNSWSearchEfTuning(b *testing.B) {
 			// Use fresh RNG per sub-benchmark for reproducibility
 			localRNG := testutil.NewRNG(42)
 
-			db, err := vecgo.HNSW[int](dim).SquaredL2().EF(ef).Build()
+			db, err := vecgo.HNSW[int](dim).SquaredL2().EFConstruction(ef).Build()
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -236,7 +236,7 @@ func BenchmarkHNSWDistanceMetrics(b *testing.B) {
 			// Use fresh RNG per sub-benchmark for reproducibility
 			localRNG := testutil.NewRNG(42)
 
-			var builder *vecgo.HNSWBuilder[int]
+			var builder vecgo.HNSWBuilder[int]
 			switch m.distType {
 			case index.DistanceTypeSquaredL2:
 				builder = vecgo.HNSW[int](dim).SquaredL2()
