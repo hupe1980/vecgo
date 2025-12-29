@@ -19,16 +19,19 @@
 - **Native Pre-Filtering**: Filter during graph traversal for 100% recall (vs ~50% post-filtering)
 - **Hybrid Search**: Combine vector similarity with attribute filters
 - **Streaming Results**: Iterator-based search with early termination
-- **Persistence**: Binary snapshots with zero-copy mmap loading
+- **Atomic Persistence**: Binary snapshots with atomic writes (temp file + rename)
 - **Write-Ahead Log**: Crash recovery with group commit (83x faster than sync)
 - **Auto-Compaction**: Background cleanup of deleted vectors
 - **Production-Ready**: Zero goroutine leaks, comprehensive error propagation, idempotent Close()
+- **Metadata Safety**: Deep copy on insert prevents silent mutation bugs
+- **DiskANN Crash Safety**: All index files written atomically
 
 ### 🚀 Performance
 - **SIMD Kernels**: AVX/AVX512 (x86_64) and NEON (ARM64) acceleration
 - **Zero-Allocation Search**: Pooled buffers eliminate GC pressure
 - **Columnar Storage**: SOA layout for optimal cache locality
 - **Sharded Writes**: 2.7-3.4x speedup with parallel write coordinators
+- **Worker Pool**: Fixed goroutine pool for sharded searches (0 goroutines created per search)
 - **Lock-Free Reads**: Concurrent search without contention
 - **Smart Filtering**: Pre-filtering reduces distance computations by ~40% for filtered searches
 

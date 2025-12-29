@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"math/rand"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"sync"
 
 	"github.com/hupe1980/vecgo/index"
+	"github.com/hupe1980/vecgo/persistence"
 	"github.com/hupe1980/vecgo/quantization"
 )
 
@@ -444,39 +446,19 @@ func (b *Builder) addEdge(src, dst uint32, R int, alpha float32) {
 	}
 }
 
-// writeIndexFiles writes all index files to disk.
+// writeIndexFiles writes all index files to disk atomically.
+// Uses atomic writes (temp file + rename) to prevent corruption on crash.
 func (b *Builder) writeIndexFiles() error {
-	// Write metadata file
-	if err := b.writeMetaFile(); err != nil {
-		return err
-	}
-
-	// Write graph file
-	if err := b.writeGraphFile(); err != nil {
-		return err
-	}
-
-	// Write PQ codes file
-	if err := b.writePQCodesFile(); err != nil {
-		return err
-	}
-
-	// Write vectors file
-	if err := b.writeVectorsFile(); err != nil {
-		return err
-	}
-
-	return nil
+	return persistence.AtomicSaveToDir(b.indexPath, map[string]func(io.Writer) error{
+		MetaFilename:    b.writeMetaToWriter,
+		GraphFilename:   b.writeGraphToWriter,
+		PQCodesFilename: b.writePQCodesToWriter,
+		VectorsFilename: b.writeVectorsToWriter,
+	})
 }
 
-func (b *Builder) writeMetaFile() error {
-	path := filepath.Join(b.indexPath, MetaFilename)
-	f, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
+// writeMetaToWriter writes metadata to an io.Writer (for atomic saves).
+func (b *Builder) writeMetaToWriter(w io.Writer) error {
 	header := FileHeader{
 		Magic:        FormatMagic,
 		Version:      FormatVersion,
@@ -491,28 +473,34 @@ func (b *Builder) writeMetaFile() error {
 		PQCentroids:  uint32(b.opts.PQCentroids),
 	}
 
-	_, err = header.WriteTo(f)
-	if err != nil {
+	if _, err := header.WriteTo(w); err != nil {
 		return err
 	}
 
 	// Write entry point
-	if err := writeUint32(f, b.entryPoint); err != nil {
+	if err := writeUint32ToWriter(w, b.entryPoint); err != nil {
 		return err
 	}
 
 	// Write PQ codebooks
-	return b.writePQCodebooks(f)
+	return b.writePQCodebooksToWriter(w)
 }
 
-func (b *Builder) writePQCodebooks(w *os.File) error {
+// writeMetaFile writes the metadata file (legacy, kept for compatibility).
+func (b *Builder) writeMetaFile() error {
+	path := filepath.Join(b.indexPath, MetaFilename)
+	return persistence.SaveToFile(path, b.writeMetaToWriter)
+}
+
+// writePQCodebooksToWriter writes PQ codebooks to an io.Writer.
+func (b *Builder) writePQCodebooksToWriter(w io.Writer) error {
 	// Get codebooks from PQ
 	codebooks := b.pq.Codebooks()
 
 	for m := 0; m < b.opts.PQSubvectors; m++ {
 		for k := 0; k < b.opts.PQCentroids; k++ {
 			for _, v := range codebooks[m][k] {
-				if err := writeFloat32(w, v); err != nil {
+				if err := writeFloat32ToWriter(w, v); err != nil {
 					return err
 				}
 			}
@@ -521,22 +509,21 @@ func (b *Builder) writePQCodebooks(w *os.File) error {
 	return nil
 }
 
-func (b *Builder) writeGraphFile() error {
-	path := filepath.Join(b.indexPath, GraphFilename)
-	f, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
+// writePQCodebooks writes PQ codebooks to a file (legacy).
+func (b *Builder) writePQCodebooks(w *os.File) error {
+	return b.writePQCodebooksToWriter(w)
+}
 
+// writeGraphToWriter writes the graph to an io.Writer (for atomic saves).
+func (b *Builder) writeGraphToWriter(w io.Writer) error {
 	for _, neighbors := range b.graph {
 		// Write degree
-		if err := writeUint32(f, uint32(len(neighbors))); err != nil {
+		if err := writeUint32ToWriter(w, uint32(len(neighbors))); err != nil {
 			return err
 		}
 		// Write neighbors
 		for _, neighbor := range neighbors {
-			if err := writeUint32(f, neighbor); err != nil {
+			if err := writeUint32ToWriter(w, neighbor); err != nil {
 				return err
 			}
 		}
@@ -544,38 +531,44 @@ func (b *Builder) writeGraphFile() error {
 	return nil
 }
 
-func (b *Builder) writePQCodesFile() error {
-	path := filepath.Join(b.indexPath, PQCodesFilename)
-	f, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
+// writeGraphFile writes the graph file (legacy, kept for compatibility).
+func (b *Builder) writeGraphFile() error {
+	path := filepath.Join(b.indexPath, GraphFilename)
+	return persistence.SaveToFile(path, b.writeGraphToWriter)
+}
 
+// writePQCodesToWriter writes PQ codes to an io.Writer (for atomic saves).
+func (b *Builder) writePQCodesToWriter(w io.Writer) error {
 	for _, codes := range b.pqCodes {
-		if _, err := f.Write(codes); err != nil {
+		if _, err := w.Write(codes); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (b *Builder) writeVectorsFile() error {
-	path := filepath.Join(b.indexPath, VectorsFilename)
-	f, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
+// writePQCodesFile writes the PQ codes file (legacy, kept for compatibility).
+func (b *Builder) writePQCodesFile() error {
+	path := filepath.Join(b.indexPath, PQCodesFilename)
+	return persistence.SaveToFile(path, b.writePQCodesToWriter)
+}
 
+// writeVectorsToWriter writes vectors to an io.Writer (for atomic saves).
+func (b *Builder) writeVectorsToWriter(w io.Writer) error {
 	for _, vec := range b.vectors {
 		for _, v := range vec {
-			if err := writeFloat32(f, v); err != nil {
+			if err := writeFloat32ToWriter(w, v); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+// writeVectorsFile writes the vectors file (legacy, kept for compatibility).
+func (b *Builder) writeVectorsFile() error {
+	path := filepath.Join(b.indexPath, VectorsFilename)
+	return persistence.SaveToFile(path, b.writeVectorsToWriter)
 }
 
 // distNode is a node with distance for heap operations.
@@ -615,17 +608,25 @@ func sortDistNodes(nodes []distNode) {
 }
 
 // Helper functions for binary I/O.
-func writeUint32(f *os.File, v uint32) error {
-	buf := make([]byte, 4)
-	buf[0] = byte(v)
-	buf[1] = byte(v >> 8)
-	buf[2] = byte(v >> 16)
-	buf[3] = byte(v >> 24)
-	_, err := f.Write(buf)
+
+// writeUint32ToWriter writes a uint32 to an io.Writer in little-endian format.
+func writeUint32ToWriter(w io.Writer, v uint32) error {
+	buf := []byte{byte(v), byte(v >> 8), byte(v >> 16), byte(v >> 24)}
+	_, err := w.Write(buf)
 	return err
 }
 
+// writeFloat32ToWriter writes a float32 to an io.Writer in little-endian format.
+func writeFloat32ToWriter(w io.Writer, v float32) error {
+	return writeUint32ToWriter(w, math.Float32bits(v))
+}
+
+// writeUint32 writes a uint32 to a file (legacy, for backward compatibility).
+func writeUint32(f *os.File, v uint32) error {
+	return writeUint32ToWriter(f, v)
+}
+
+// writeFloat32 writes a float32 to a file (legacy, for backward compatibility).
 func writeFloat32(f *os.File, v float32) error {
-	bits := math.Float32bits(v)
-	return writeUint32(f, bits)
+	return writeFloat32ToWriter(f, v)
 }

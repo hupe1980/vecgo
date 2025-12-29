@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"io"
 	"math"
 	"sync/atomic"
 
@@ -225,4 +226,13 @@ func (v *ValidatedCoordinator[T]) Count() int64 {
 // SetCount sets the vector count, useful when restoring from snapshot.
 func (v *ValidatedCoordinator[T]) SetCount(n int64) {
 	v.count.Store(n)
+}
+
+// Close closes the wrapped coordinator if it implements io.Closer.
+// This ensures proper cleanup of resources like worker pools and background workers.
+func (v *ValidatedCoordinator[T]) Close() error {
+	if closeable, ok := v.inner.(io.Closer); ok {
+		return closeable.Close()
+	}
+	return nil
 }

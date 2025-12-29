@@ -28,12 +28,14 @@ import (
 // # Performance
 //
 //   - Target: 3-8x write speedup on multi-core systems
-//   - Search: Parallel fan-out maintains low latency
+//   - Search: Parallel fan-out via worker pool (zero goroutine creation)
 //   - Update/Delete: O(1) shard lookup from ID
+//   - Worker pool: Constant goroutine count, reduced GC pressure
 type ShardedCoordinator[T any] struct {
-	shards    []*Tx[T]
-	numShards int
-	nextShard int // round-robin counter for insert distribution
+	shards     []*Tx[T]
+	numShards  int
+	nextShard  int            // round-robin counter for insert distribution
+	workerPool *WorkerPool[T] // Fixed-size pool for parallel searches
 }
 
 // NewSharded creates a new sharded coordinator with independent shards.
@@ -97,10 +99,15 @@ func NewSharded[T any](
 		shards[i] = coord.(*Tx[T])
 	}
 
+	// Create worker pool with one worker per shard (optimal CPU affinity)
+	// This eliminates goroutine spam: 0 goroutines created per search vs N*QPS
+	workerPool := NewWorkerPool[T](numShards)
+
 	return &ShardedCoordinator[T]{
-		shards:    shards,
-		numShards: numShards,
-		nextShard: 0,
+		shards:     shards,
+		numShards:  numShards,
+		nextShard:  0,
+		workerPool: workerPool,
 	}, nil
 }
 
@@ -284,37 +291,38 @@ func (sc *ShardedCoordinator[T]) KNNSearch(ctx context.Context, query []float32,
 		return nil, index.ErrInvalidK
 	}
 
-	// Fan out to all shards in parallel
-	type shardResult struct {
-		shardIdx int
-		results  []index.SearchResult
-		err      error
-	}
-	resultsCh := make(chan shardResult, sc.numShards)
+	// Fan out to all shards via worker pool (zero goroutine creation)
+	resultsCh := make(chan shardResult[T], sc.numShards)
 
 	for i := 0; i < sc.numShards; i++ {
-		go func(shardIdx int) {
-			// Wrap filter to convert local IDs to global IDs before checking
-			shardOpts := opts
-			if opts != nil && opts.Filter != nil {
-				userFilter := opts.Filter
-				shardOpts = &index.SearchOptions{
-					EFSearch: opts.EFSearch,
-					Filter: func(localID uint32) bool {
-						globalID := uint32(NewGlobalID(shardIdx, localID))
-						return userFilter(globalID)
-					},
-				}
+		// Wrap filter to convert local IDs to global IDs before checking
+		shardOpts := opts
+		if opts != nil && opts.Filter != nil {
+			userFilter := opts.Filter
+			shardIdx := i // capture for closure
+			shardOpts = &index.SearchOptions{
+				EFSearch: opts.EFSearch,
+				Filter: func(localID uint32) bool {
+					globalID := uint32(NewGlobalID(shardIdx, localID))
+					return userFilter(globalID)
+				},
 			}
-			results, err := sc.shards[shardIdx].KNNSearch(ctx, query, k, shardOpts)
+		}
 
-			// Send result to channel, but respect context cancellation
-			select {
-			case resultsCh <- shardResult{shardIdx: shardIdx, results: results, err: err}:
-			case <-ctx.Done():
-				// Context cancelled, don't block on send
-			}
-		}(i)
+		// Submit to worker pool instead of spawning goroutine
+		req := WorkRequest[T]{
+			shardIdx: i,
+			shard:    sc.shards[i],
+			query:    query,
+			k:        k,
+			opts:     shardOpts,
+			resultCh: resultsCh,
+		}
+
+		if err := sc.workerPool.Submit(ctx, req); err != nil {
+			// Pool closed or context cancelled
+			return nil, fmt.Errorf("worker pool submit failed: %w", err)
+		}
 	}
 
 	// Collect results from all shards and convert to global IDs
@@ -362,33 +370,33 @@ func (sc *ShardedCoordinator[T]) BruteSearch(ctx context.Context, query []float3
 		return nil, index.ErrInvalidK
 	}
 
-	// Fan out to all shards in parallel
-	type shardResult struct {
-		shardIdx int
-		results  []index.SearchResult
-		err      error
-	}
-	resultsCh := make(chan shardResult, sc.numShards)
+	// Fan out to all shards via worker pool (zero goroutine creation)
+	resultsCh := make(chan shardResult[T], sc.numShards)
 
 	for i := 0; i < sc.numShards; i++ {
-		go func(shardIdx int) {
-			// Wrap filter to translate global IDs to local IDs for filtering
-			var localFilter func(id uint32) bool
-			if filter != nil {
-				localFilter = func(localID uint32) bool {
-					globalID := uint32(NewGlobalID(shardIdx, localID))
-					return filter(globalID)
-				}
+		// Wrap filter to translate global IDs to local IDs for filtering
+		var localFilter func(id uint32) bool
+		if filter != nil {
+			shardIdx := i // capture for closure
+			localFilter = func(localID uint32) bool {
+				globalID := uint32(NewGlobalID(shardIdx, localID))
+				return filter(globalID)
 			}
-			results, err := sc.shards[shardIdx].BruteSearch(ctx, query, k, localFilter)
+		}
 
-			// Send result to channel, but respect context cancellation
-			select {
-			case resultsCh <- shardResult{shardIdx: shardIdx, results: results, err: err}:
-			case <-ctx.Done():
-				// Context cancelled, don't block on send
-			}
-		}(i)
+		// Submit to worker pool instead of spawning goroutine
+		req := WorkRequest[T]{
+			shardIdx: i,
+			shard:    sc.shards[i],
+			query:    query,
+			k:        k,
+			resultCh: resultsCh,
+		}
+
+		if err := sc.workerPool.SubmitBrute(ctx, req, localFilter); err != nil {
+			// Pool closed or context cancelled
+			return nil, fmt.Errorf("worker pool submit failed: %w", err)
+		}
 	}
 
 	// Collect results from all shards and convert to global IDs
@@ -506,8 +514,20 @@ func heapifyDown(arr []index.SearchResult, i int) {
 
 // Close closes all shards and releases their resources.
 // This method ensures proper cleanup of all shard resources, including
-// any background workers that may be running in the underlying indexes.
+// the worker pool and any background workers in the underlying indexes.
+//
+// Shutdown order:
+//  1. Close worker pool (waits for in-flight searches to complete)
+//  2. Close all shard indexes (background workers, caches, etc.)
+//
+// This ensures graceful shutdown with no work interruption.
 func (sc *ShardedCoordinator[T]) Close() error {
+	// First, close worker pool to stop accepting new work
+	if sc.workerPool != nil {
+		sc.workerPool.Close()
+	}
+
+	// Then close all shards
 	var errs []error
 	for i, shard := range sc.shards {
 		// Each shard's txIndex may have background workers (e.g., DiskANN compaction)

@@ -92,8 +92,10 @@ func (tx *Tx[T]) Insert(ctx context.Context, vector []float32, data T, meta meta
 		return 0, err
 	}
 
+	// Safe-by-default: clone metadata to prevent external mutation
 	if meta != nil {
-		tx.metaStore.Set(id, meta)
+		safeMeta := metadata.CloneIfNeeded(meta)
+		tx.metaStore.Set(id, safeMeta)
 	}
 
 	if err := tx.durability.LogCommitInsert(id); err != nil {
@@ -167,10 +169,12 @@ func (tx *Tx[T]) BatchInsert(ctx context.Context, vectors [][]float32, dataSlice
 		return nil, err
 	}
 
+	// Safe-by-default: clone metadata to prevent external mutation
 	metaItems := make(map[uint32]metadata.Metadata)
 	for i := range ids {
 		if metadataSlice[i] != nil {
-			metaItems[ids[i]] = metadataSlice[i]
+			safeMeta := metadata.CloneIfNeeded(metadataSlice[i])
+			metaItems[ids[i]] = safeMeta
 		}
 	}
 	if len(metaItems) > 0 {
@@ -238,8 +242,10 @@ func (tx *Tx[T]) Update(ctx context.Context, id uint32, vector []float32, data T
 		return err
 	}
 
+	// Safe-by-default: clone metadata to prevent external mutation
 	if meta != nil {
-		tx.metaStore.Set(id, meta)
+		safeMeta := metadata.CloneIfNeeded(meta)
+		tx.metaStore.Set(id, safeMeta)
 	}
 
 	if err := tx.durability.LogCommitUpdate(id); err != nil {

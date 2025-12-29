@@ -112,6 +112,59 @@ func Array(v []Value) Value { return Value{Kind: KindArray, A: v} }
 // Document is a typed metadata document.
 type Document map[string]Value
 
+// Clone creates a deep copy of the metadata document.
+//
+// This is the safe default to prevent external mutation after Insert().
+// Values are deep copied, including arrays, ensuring the clone is completely
+// independent from the original.
+//
+// Performance: Typically <1% overhead since metadata is small (2-10 fields).
+func (d Document) Clone() Document {
+	if d == nil {
+		return nil
+	}
+
+	clone := make(Document, len(d))
+	for k, v := range d {
+		clone[k] = v.clone()
+	}
+	return clone
+}
+
+// clone creates a deep copy of a Value, including nested arrays.
+func (v Value) clone() Value {
+	if v.Kind != KindArray || len(v.A) == 0 {
+		// Simple values are copied by value semantics
+		return v
+	}
+
+	// Deep copy array
+	arrayCopy := make([]Value, len(v.A))
+	for i := range v.A {
+		arrayCopy[i] = v.A[i].clone()
+	}
+
+	return Value{
+		Kind: v.Kind,
+		I64:  v.I64,
+		F64:  v.F64,
+		S:    v.S,
+		B:    v.B,
+		A:    arrayCopy,
+	}
+}
+
+// CloneIfNeeded clones metadata only if it's non-nil and non-empty.
+//
+// This helper avoids allocation for empty metadata, which is common.
+// Returns nil if the input is nil or empty.
+func CloneIfNeeded(m Metadata) Metadata {
+	if len(m) == 0 {
+		return nil
+	}
+	return m.Clone()
+}
+
 // Metadata is the default metadata document type used by vecgo.
 //
 // It is intentionally a typed model (map[string]Value) to keep filtering fast.
