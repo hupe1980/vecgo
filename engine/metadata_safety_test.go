@@ -76,7 +76,7 @@ func TestMetadataMutationProtection(t *testing.T) {
 		require.True(t, ok, "metadata should exist")
 
 		// Verify stored metadata is unchanged
-		assert.Equal(t, "production", meta["tag"].S, "tag should not be mutated")
+		assert.Equal(t, "production", meta["tag"].StringValue(), "tag should not be mutated")
 		assert.Equal(t, int64(42), meta["count"].I64, "count should not be mutated")
 		assert.NotContains(t, meta, "extra", "extra field should not appear")
 
@@ -133,15 +133,15 @@ func TestMetadataMutationProtection(t *testing.T) {
 		meta1, ok := coord.GetMetadata(ids[0])
 		require.True(t, ok)
 		assert.Equal(t, int64(1), meta1["batch"].I64, "batch 1 should not be mutated")
-		assert.Equal(t, "a", meta1["nested"].A[0].S, "nested array should not be mutated")
-		assert.Equal(t, "b", meta1["nested"].A[1].S)
+		assert.Equal(t, "a", meta1["nested"].A[0].StringValue(), "nested array should not be mutated")
+		assert.Equal(t, "b", meta1["nested"].A[1].StringValue())
 
 		// Verify second document
 		meta2, ok := coord.GetMetadata(ids[1])
 		require.True(t, ok)
 		assert.Equal(t, int64(2), meta2["batch"].I64, "batch 2 should not be mutated")
-		assert.Equal(t, "c", meta2["nested"].A[0].S)
-		assert.Equal(t, "d", meta2["nested"].A[1].S, "nested array should not be mutated")
+		assert.Equal(t, "c", meta2["nested"].A[0].StringValue())
+		assert.Equal(t, "d", meta2["nested"].A[1].StringValue(), "nested array should not be mutated")
 	})
 
 	t.Run("Update metadata mutation", func(t *testing.T) {
@@ -176,9 +176,9 @@ func TestMetadataMutationProtection(t *testing.T) {
 		meta, ok := coord.GetMetadata(id)
 		require.True(t, ok)
 		assert.Equal(t, int64(2), meta["version"].I64, "version should not be mutated")
-		assert.Equal(t, "active", meta["status"].S, "status should not be mutated")
-		assert.Equal(t, "tag1", meta["tags"].A[0].S, "tags array should not be mutated")
-		assert.Equal(t, "tag2", meta["tags"].A[1].S)
+		assert.Equal(t, "active", meta["status"].StringValue(), "status should not be mutated")
+		assert.Equal(t, "tag1", meta["tags"].A[0].StringValue(), "tags array should not be mutated")
+		assert.Equal(t, "tag2", meta["tags"].A[1].StringValue())
 	})
 }
 
@@ -246,7 +246,7 @@ func TestMetadataCloneDeep(t *testing.T) {
 	level3 := level2.A[0]
 	require.Equal(t, metadata.KindArray, level3.Kind)
 
-	assert.Equal(t, "deep", level3.A[0].S, "deeply nested string should not be mutated")
+	assert.Equal(t, "deep", level3.A[0].StringValue(), "deeply nested string should not be mutated")
 	assert.Equal(t, int64(123), level3.A[1].I64, "deeply nested int should not be mutated")
 }
 
@@ -284,11 +284,11 @@ func TestMetadataCloneAllTypes(t *testing.T) {
 	meta, ok := coord.GetMetadata(id)
 	require.True(t, ok)
 
-	assert.Equal(t, "test", meta["string"].S)
+	assert.Equal(t, "test", meta["string"].StringValue())
 	assert.Equal(t, int64(42), meta["int64"].I64)
 	assert.Equal(t, 3.14, meta["float64"].F64)
 	assert.Equal(t, true, meta["bool"].B)
-	assert.Equal(t, "a", meta["array"].A[0].S)
+	assert.Equal(t, "a", meta["array"].A[0].StringValue())
 	assert.Equal(t, int64(1), meta["array"].A[1].I64)
 	assert.Equal(t, 2.5, meta["array"].A[2].F64)
 	assert.Equal(t, false, meta["array"].A[3].B)

@@ -696,10 +696,25 @@ func (sc *ShardedCoordinator[T]) SaveToFile(path string) error {
 
 // RecoverFromWAL recovers each shard from its WAL.
 func (sc *ShardedCoordinator[T]) RecoverFromWAL(ctx context.Context) error {
+	var wg sync.WaitGroup
+	errCh := make(chan error, len(sc.shards))
+
 	for i, shard := range sc.shards {
-		if err := shard.RecoverFromWAL(ctx); err != nil {
-			return fmt.Errorf("shard %d recovery: %w", i, err)
-		}
+		wg.Add(1)
+		go func(idx int, s Coordinator[T]) {
+			defer wg.Done()
+			if err := s.RecoverFromWAL(ctx); err != nil {
+				errCh <- fmt.Errorf("shard %d recovery: %w", idx, err)
+			}
+		}(i, shard)
+	}
+
+	wg.Wait()
+	close(errCh)
+
+	// Return the first error encountered
+	if err := <-errCh; err != nil {
+		return err
 	}
 	return nil
 }
@@ -714,10 +729,25 @@ func (sc *ShardedCoordinator[T]) Stats() index.Stats {
 
 // Checkpoint creates a checkpoint in all shards.
 func (sc *ShardedCoordinator[T]) Checkpoint() error {
+	var wg sync.WaitGroup
+	errCh := make(chan error, len(sc.shards))
+
 	for i, shard := range sc.shards {
-		if err := shard.Checkpoint(); err != nil {
-			return fmt.Errorf("shard %d checkpoint: %w", i, err)
-		}
+		wg.Add(1)
+		go func(idx int, s Coordinator[T]) {
+			defer wg.Done()
+			if err := s.Checkpoint(); err != nil {
+				errCh <- fmt.Errorf("shard %d checkpoint: %w", idx, err)
+			}
+		}(i, shard)
+	}
+
+	wg.Wait()
+	close(errCh)
+
+	// Return the first error encountered
+	if err := <-errCh; err != nil {
+		return err
 	}
 	return nil
 }

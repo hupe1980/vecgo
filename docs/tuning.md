@@ -658,6 +658,19 @@ db := vecgo.HNSW[string](128).
 db.Compact(ctx)
 ```
 
+### Metadata Interning
+
+Vecgo automatically uses **string interning** (via Go 1.24's `unique` package) for metadata keys and values. This significantly reduces memory usage when storing repetitive metadata (e.g., "category": "news", "status": "active").
+
+**Benefits**:
+- **Reduced Heap Usage**: Identical strings share the same underlying memory.
+- **Zero Configuration**: Enabled automatically for all metadata.
+- **Performance**: ~40% memory reduction for highly repetitive datasets.
+
+**Benchmark Results (100k docs, 5 keys/doc)**:
+- Naive Storage: 111 MB
+- Vecgo Interning: 68 MB (**38% reduction**)
+
 ---
 
 ## Search Performance

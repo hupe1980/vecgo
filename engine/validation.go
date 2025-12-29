@@ -204,7 +204,7 @@ func (v *ValidatedCoordinator[T]) validateMetadata(meta metadata.Metadata) error
 		size += len(k)
 		switch val.Kind {
 		case metadata.KindString:
-			size += len(val.S)
+			size += len(val.StringValue())
 		case metadata.KindArray:
 			// Rough estimate for arrays
 			size += len(val.A) * 16

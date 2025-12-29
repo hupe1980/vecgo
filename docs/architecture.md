@@ -316,7 +316,7 @@ Used by Flat and HNSW for in-memory vectors:
 **Layout** (Structure-of-Arrays):
 ```go
 type ColumnarStore struct {
-    vectors    []float32  // Flat array: [v0_d0, v0_d1, ..., v1_d0, v1_d1, ...]
+    vectors    []float32  // Flat array, 64-byte aligned for AVX-512
     dimension  int
     count      int
     tombstones map[uint64]struct{}  // Soft deletes
@@ -324,7 +324,8 @@ type ColumnarStore struct {
 ```
 
 **Benefits**:
-- **Cache-friendly**: Sequential access for SIMD
+- **SIMD-Optimized**: 64-byte alignment enables AVX-512 aligned loads
+- **Cache-friendly**: Sequential access
 - **Zero-copy mmap**: Load snapshots without deserialization
 - **Soft deletes**: No reallocation on delete
 - **Compaction**: Reclaim space from deleted vectors
@@ -537,7 +538,7 @@ func (c *Coordinator) Recover(walPath string) error {
 
 ### Safe-by-Default Metadata
 
-Vecgo uses **deep copy on insert** to prevent silent data corruption from external mutation:
+Vecgo uses **deep copy on insert** to prevent silent data corruption from external mutation. It also leverages Go 1.24's `unique` package for efficient string interning, significantly reducing memory usage for repetitive keys and string values.
 
 ```go
 // User code - metadata is safe after Insert()
@@ -557,11 +558,23 @@ meta["category"] = metadata.String("science")  // ✅ Safe - no corruption
 
 // Stored metadata is unchanged
 stored, _ := db.GetMetadata(ctx, id)
-// stored["category"] == "tech" (not "science")
+// stored["category"].S.Value() == "tech" (not "science")
 ```
 
 **Implementation** (`metadata/types.go`):
 ```go
+// Document uses interned strings for keys
+type Document map[unique.Handle[string]]Value
+
+type Value struct {
+    Kind Kind
+    S    unique.Handle[string] // Interned string value
+    I64  int64
+    F64  float64
+    B    bool
+    A    []Value
+}
+
 // Clone creates a deep copy of metadata (recursive for arrays)
 func (d Document) Clone() Document {
     clone := make(Document, len(d))
@@ -586,10 +599,10 @@ Vecgo uses a **Roaring Bitmap-based inverted index** for efficient metadata filt
 ```go
 type MetadataIndex struct {
     // String fields: value -> roaring bitmap of IDs
-    stringIndex map[string]map[string]*roaring.Bitmap
+    stringIndex map[unique.Handle[string]]map[unique.Handle[string]]*roaring.Bitmap
     
     // Numeric fields: sorted list of (value, ID) pairs
-    numericIndex map[string]*BTreeIndex
+    numericIndex map[unique.Handle[string]]*BTreeIndex
     
     // ID -> full metadata
     documents map[uint64]metadata.Metadata

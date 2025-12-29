@@ -1,9 +1,11 @@
 package metadata
 
 import (
+	"encoding/json"
 	"math"
 	"strconv"
 	"strings"
+	"unique"
 )
 
 // Kind identifies the concrete type stored in a Value.
@@ -26,12 +28,53 @@ const (
 //
 // NOTE: This is also used for persistence; keep it stable.
 type Value struct {
-	Kind Kind    `json:"k"`
-	I64  int64   `json:"i,omitempty"`
-	F64  float64 `json:"f,omitempty"`
-	S    string  `json:"s,omitempty"`
-	B    bool    `json:"b,omitempty"`
-	A    []Value `json:"a,omitempty"`
+	Kind Kind                  `json:"k"`
+	I64  int64                 `json:"i,omitempty"`
+	F64  float64               `json:"f,omitempty"`
+	s    unique.Handle[string] `json:"-"` // Private interned string
+	B    bool                  `json:"b,omitempty"`
+	A    []Value               `json:"a,omitempty"`
+}
+
+// StringValue returns the string value if Kind is KindString, otherwise empty string.
+func (v Value) StringValue() string {
+	if v.Kind == KindString {
+		return v.s.Value()
+	}
+	return ""
+}
+
+// MarshalJSON implements json.Marshaler.
+func (v Value) MarshalJSON() ([]byte, error) {
+	type Alias Value
+	aux := &struct {
+		S string `json:"s,omitempty"`
+		*Alias
+	}{
+		Alias: (*Alias)(&v),
+	}
+	if v.Kind == KindString {
+		aux.S = v.s.Value()
+	}
+	return json.Marshal(aux)
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (v *Value) UnmarshalJSON(data []byte) error {
+	type Alias Value
+	aux := &struct {
+		S string `json:"s,omitempty"`
+		*Alias
+	}{
+		Alias: (*Alias)(v),
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	if v.Kind == KindString {
+		v.s = unique.Make(aux.S)
+	}
+	return nil
 }
 
 // Key returns a stable string representation for use in maps.
@@ -47,7 +90,7 @@ func (v Value) Key() string {
 	case KindFloat:
 		return "f:" + strconv.FormatUint(math.Float64bits(v.F64), 16)
 	case KindString:
-		return "s:" + v.S
+		return "s:" + v.s.Value()
 	case KindBool:
 		if v.B {
 			return "b:1"
@@ -85,7 +128,7 @@ func (v Value) AsString() (string, bool) {
 	if v.Kind != KindString {
 		return "", false
 	}
-	return v.S, true
+	return v.s.Value(), true
 }
 
 func (v Value) AsBool() (bool, bool) {
@@ -105,12 +148,16 @@ func (v Value) AsArray() ([]Value, bool) {
 func Null() Value           { return Value{Kind: KindNull} }
 func Int(v int64) Value     { return Value{Kind: KindInt, I64: v} }
 func Float(v float64) Value { return Value{Kind: KindFloat, F64: v} }
-func String(v string) Value { return Value{Kind: KindString, S: v} }
+func String(v string) Value { return Value{Kind: KindString, s: unique.Make(v)} }
 func Bool(v bool) Value     { return Value{Kind: KindBool, B: v} }
 func Array(v []Value) Value { return Value{Kind: KindArray, A: v} }
 
 // Document is a typed metadata document.
 type Document map[string]Value
+
+// InternedDocument is the internal representation of a document using interned keys.
+// It is used by the engine for memory efficiency.
+type InternedDocument map[unique.Handle[string]]Value
 
 // Clone creates a deep copy of the metadata document.
 //
@@ -148,7 +195,7 @@ func (v Value) clone() Value {
 		Kind: v.Kind,
 		I64:  v.I64,
 		F64:  v.F64,
-		S:    v.S,
+		s:    v.s,
 		B:    v.B,
 		A:    arrayCopy,
 	}

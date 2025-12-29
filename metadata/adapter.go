@@ -1,6 +1,8 @@
 package metadata
 
-import "fmt"
+import (
+	"fmt"
+)
 
 // FromAny converts a Go value into a typed Value.
 //

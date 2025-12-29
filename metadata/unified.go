@@ -6,6 +6,7 @@ package metadata
 import (
 	"fmt"
 	"sync"
+	"unique"
 
 	"github.com/RoaringBitmap/roaring"
 )
@@ -14,30 +15,30 @@ import (
 // This provides efficient hybrid vector + metadata search with minimal memory overhead.
 //
 // Architecture:
-//   - Primary storage: map[uint32]Document (metadata by ID)
+//   - Primary storage: map[uint32]InternedDocument (metadata by ID, interned keys)
 //   - Inverted index: map[key]map[valueKey]*roaring.Bitmap (efficient posting lists)
 //
 // Benefits:
-//   - Memory efficient (Roaring Bitmap compression)
+//   - Memory efficient (Roaring Bitmap compression + String Interning)
 //   - Fast filter compilation (Roaring Bitmap AND/OR operations)
 //   - Simple API (single unified type)
 type UnifiedIndex struct {
 	mu sync.RWMutex
 
 	// Primary metadata storage (id -> metadata document)
-	documents map[uint32]Document
+	documents map[uint32]InternedDocument
 
 	// Inverted index for fast filtering
 	// Structure: field -> valueKey -> bitmap of IDs
 	// Roaring Bitmaps are compressed and support fast set operations
-	inverted map[string]map[string]*roaring.Bitmap
+	inverted map[unique.Handle[string]]map[unique.Handle[string]]*roaring.Bitmap
 }
 
 // NewUnifiedIndex creates a new unified metadata index.
 func NewUnifiedIndex() *UnifiedIndex {
 	return &UnifiedIndex{
-		documents: make(map[uint32]Document),
-		inverted:  make(map[string]map[string]*roaring.Bitmap),
+		documents: make(map[uint32]InternedDocument),
+		inverted:  make(map[unique.Handle[string]]map[unique.Handle[string]]*roaring.Bitmap),
 	}
 }
 
@@ -46,6 +47,12 @@ func NewUnifiedIndex() *UnifiedIndex {
 func (ui *UnifiedIndex) Set(id uint32, doc Document) {
 	if doc == nil {
 		return
+	}
+
+	// Convert to interned format
+	iDoc := make(InternedDocument, len(doc))
+	for k, v := range doc {
+		iDoc[unique.Make(k)] = v
 	}
 
 	ui.mu.Lock()
@@ -57,10 +64,10 @@ func (ui *UnifiedIndex) Set(id uint32, doc Document) {
 	}
 
 	// Store new document
-	ui.documents[id] = doc
+	ui.documents[id] = iDoc
 
 	// Add to inverted index
-	ui.addToIndexLocked(id, doc)
+	ui.addToIndexLocked(id, iDoc)
 }
 
 // Get retrieves metadata for an ID.
@@ -69,8 +76,17 @@ func (ui *UnifiedIndex) Get(id uint32) (Document, bool) {
 	ui.mu.RLock()
 	defer ui.mu.RUnlock()
 
-	doc, ok := ui.documents[id]
-	return doc, ok
+	iDoc, ok := ui.documents[id]
+	if !ok {
+		return nil, false
+	}
+
+	// Convert to public format
+	doc := make(Document, len(iDoc))
+	for k, v := range iDoc {
+		doc[k.Value()] = v
+	}
+	return doc, true
 }
 
 // Delete removes metadata for an ID and updates the inverted index.
@@ -102,7 +118,11 @@ func (ui *UnifiedIndex) ToMap() map[uint32]Document {
 	defer ui.mu.RUnlock()
 
 	result := make(map[uint32]Document, len(ui.documents))
-	for id, doc := range ui.documents {
+	for id, iDoc := range ui.documents {
+		doc := make(Document, len(iDoc))
+		for k, v := range iDoc {
+			doc[k.Value()] = v
+		}
 		result[id] = doc
 	}
 	return result
@@ -110,17 +130,17 @@ func (ui *UnifiedIndex) ToMap() map[uint32]Document {
 
 // addToIndexLocked adds a document to the inverted index.
 // Caller must hold ui.mu.Lock().
-func (ui *UnifiedIndex) addToIndexLocked(id uint32, doc Document) {
+func (ui *UnifiedIndex) addToIndexLocked(id uint32, doc InternedDocument) {
 	for key, value := range doc {
 		// Get or create value map for this field
 		valueMap, ok := ui.inverted[key]
 		if !ok {
-			valueMap = make(map[string]*roaring.Bitmap)
+			valueMap = make(map[unique.Handle[string]]*roaring.Bitmap)
 			ui.inverted[key] = valueMap
 		}
 
 		// Get or create bitmap for this value
-		valueKey := value.Key()
+		valueKey := unique.Make(value.Key())
 		bitmap, ok := valueMap[valueKey]
 		if !ok {
 			bitmap = roaring.New()
@@ -134,14 +154,14 @@ func (ui *UnifiedIndex) addToIndexLocked(id uint32, doc Document) {
 
 // removeFromIndexLocked removes a document from the inverted index.
 // Caller must hold ui.mu.Lock().
-func (ui *UnifiedIndex) removeFromIndexLocked(id uint32, doc Document) {
+func (ui *UnifiedIndex) removeFromIndexLocked(id uint32, doc InternedDocument) {
 	for key, value := range doc {
 		valueMap, ok := ui.inverted[key]
 		if !ok {
 			continue
 		}
 
-		valueKey := value.Key()
+		valueKey := unique.Make(value.Key())
 		bitmap, ok := valueMap[valueKey]
 		if !ok {
 			continue
@@ -238,12 +258,12 @@ func (ui *UnifiedIndex) CompileFilter(fs *FilterSet) *roaring.Bitmap {
 // getBitmapLocked retrieves the bitmap for a specific field=value combination.
 // Returns nil if no matches exist. Caller must hold ui.mu.RLock().
 func (ui *UnifiedIndex) getBitmapLocked(key string, value Value) *roaring.Bitmap {
-	valueMap, ok := ui.inverted[key]
+	valueMap, ok := ui.inverted[unique.Make(key)]
 	if !ok {
 		return nil
 	}
 
-	bitmap, ok := valueMap[value.Key()]
+	bitmap, ok := valueMap[unique.Make(value.Key())]
 	if !ok {
 		return nil
 	}
@@ -265,7 +285,7 @@ func (ui *UnifiedIndex) ScanFilter(fs *FilterSet) []uint32 {
 	result := make([]uint32, 0, len(ui.documents))
 
 	for id, doc := range ui.documents {
-		if fs.Matches(doc) {
+		if fs.MatchesInterned(doc) {
 			result = append(result, id)
 		}
 	}
@@ -302,7 +322,7 @@ func (ui *UnifiedIndex) CreateFilterFunc(fs *FilterSet) func(uint32) bool {
 		if !ok {
 			return false
 		}
-		return fs.Matches(doc)
+		return fs.MatchesInterned(doc)
 	}
 }
 
@@ -358,15 +378,20 @@ func (ui *UnifiedIndex) ToSerializable() *SerializableState {
 	}
 
 	// Copy documents
-	for id, doc := range ui.documents {
+	for id, iDoc := range ui.documents {
+		doc := make(Document, len(iDoc))
+		for k, v := range iDoc {
+			doc[k.Value()] = v
+		}
 		state.Documents[id] = doc
 	}
 
 	// Convert bitmaps to ID slices
 	for field, valueMap := range ui.inverted {
-		state.Inverted[field] = make(map[string][]uint32, len(valueMap))
+		fieldStr := field.Value()
+		state.Inverted[fieldStr] = make(map[string][]uint32, len(valueMap))
 		for value, bitmap := range valueMap {
-			state.Inverted[field][value] = bitmap.ToArray()
+			state.Inverted[fieldStr][value.Value()] = bitmap.ToArray()
 		}
 	}
 
@@ -384,19 +409,24 @@ func (ui *UnifiedIndex) FromSerializable(state *SerializableState) error {
 	defer ui.mu.Unlock()
 
 	// Restore documents
-	ui.documents = make(map[uint32]Document, len(state.Documents))
+	ui.documents = make(map[uint32]InternedDocument, len(state.Documents))
 	for id, doc := range state.Documents {
-		ui.documents[id] = doc
+		iDoc := make(InternedDocument, len(doc))
+		for k, v := range doc {
+			iDoc[unique.Make(k)] = v
+		}
+		ui.documents[id] = iDoc
 	}
 
 	// Rebuild inverted index from ID slices
-	ui.inverted = make(map[string]map[string]*roaring.Bitmap, len(state.Inverted))
+	ui.inverted = make(map[unique.Handle[string]]map[unique.Handle[string]]*roaring.Bitmap, len(state.Inverted))
 	for field, valueMap := range state.Inverted {
-		ui.inverted[field] = make(map[string]*roaring.Bitmap, len(valueMap))
+		fieldHandle := unique.Make(field)
+		ui.inverted[fieldHandle] = make(map[unique.Handle[string]]*roaring.Bitmap, len(valueMap))
 		for value, ids := range valueMap {
 			bitmap := roaring.New()
 			bitmap.AddMany(ids)
-			ui.inverted[field][value] = bitmap
+			ui.inverted[fieldHandle][unique.Make(value)] = bitmap
 		}
 	}
 

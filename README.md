@@ -23,7 +23,7 @@
 - **Write-Ahead Log**: Crash recovery with group commit (83x faster than sync)
 - **Auto-Compaction**: Background cleanup of deleted vectors
 - **Production-Ready**: Zero goroutine leaks, comprehensive error propagation, idempotent Close()
-- **Metadata Safety**: Deep copy on insert prevents silent mutation bugs
+- **Metadata Safety**: Deep copy on insert prevents silent mutation bugs. Uses Go 1.24 `unique` package for efficient string interning.
 - **DiskANN Crash Safety**: All index files written atomically
 
 ### 🚀 Performance

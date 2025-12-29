@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"math"
+	"unique"
 )
 
 // MarshalBinary implements encoding.BinaryMarshaler.
@@ -43,7 +44,7 @@ func (m *Metadata) UnmarshalBinary(data []byte) error {
 		*m = make(Metadata, count)
 	}
 
-	for i := uint64(0); i < count; i++ {
+	for range count {
 		// Read Key
 		kLen, n := binary.Uvarint(data)
 		if n <= 0 {
@@ -100,7 +101,7 @@ func UnmarshalMetadataMap(data []byte) (map[uint32]Metadata, error) {
 
 	m := make(map[uint32]Metadata, count)
 
-	for i := uint64(0); i < count; i++ {
+	for range count {
 		// Read ID
 		if len(data) < 4 {
 			return nil, errors.New("short buffer for ID")
@@ -141,8 +142,9 @@ func appendValue(buf []byte, v Value) ([]byte, error) {
 		bits := math.Float64bits(v.F64)
 		buf = binary.LittleEndian.AppendUint64(buf, bits)
 	case KindString:
-		buf = binary.AppendUvarint(buf, uint64(len(v.S)))
-		buf = append(buf, v.S...)
+		s := v.s.Value()
+		buf = binary.AppendUvarint(buf, uint64(len(s)))
+		buf = append(buf, s...)
 	case KindBool:
 		if v.B {
 			buf = append(buf, 1)
@@ -200,7 +202,7 @@ func parseValue(data []byte) (Value, []byte, error) {
 		if uint64(len(data)) < sLen {
 			return v, nil, errors.New("short buffer for string")
 		}
-		v.S = string(data[:sLen])
+		v.s = unique.Make(string(data[:sLen]))
 		data = data[sLen:]
 	case KindBool:
 		if len(data) == 0 {

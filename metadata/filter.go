@@ -2,10 +2,10 @@ package metadata
 
 import (
 	"strings"
+	"unique"
 )
 
 // Matches checks if the provided metadata matches this filter.
-
 func (f *Filter) Matches(doc Document) bool {
 	value, exists := doc[f.Key]
 	if !exists {
@@ -34,11 +34,49 @@ func (f *Filter) Matches(doc Document) bool {
 	}
 }
 
-// Matches checks if the provided metadata matches all filters in the set.
+// MatchesInterned checks if the provided interned metadata matches this filter.
+func (f *Filter) MatchesInterned(doc InternedDocument) bool {
+	value, exists := doc[unique.Make(f.Key)]
+	if !exists {
+		return false
+	}
 
+	switch f.Operator {
+	case OpEqual:
+		return compareEqual(value, f.Value)
+	case OpNotEqual:
+		return !compareEqual(value, f.Value)
+	case OpGreaterThan:
+		return compareGreater(value, f.Value)
+	case OpGreaterEqual:
+		return compareGreater(value, f.Value) || compareEqual(value, f.Value)
+	case OpLessThan:
+		return compareLess(value, f.Value)
+	case OpLessEqual:
+		return compareLess(value, f.Value) || compareEqual(value, f.Value)
+	case OpIn:
+		return compareIn(value, f.Value)
+	case OpContains:
+		return compareContains(value, f.Value)
+	default:
+		return false
+	}
+}
+
+// Matches checks if the provided metadata matches all filters in the set.
 func (fs *FilterSet) Matches(doc Document) bool {
 	for _, filter := range fs.Filters {
 		if !filter.Matches(doc) {
+			return false
+		}
+	}
+	return true
+}
+
+// MatchesInterned checks if the provided interned metadata matches all filters in the set.
+func (fs *FilterSet) MatchesInterned(doc InternedDocument) bool {
+	for _, filter := range fs.Filters {
+		if !filter.MatchesInterned(doc) {
 			return false
 		}
 	}
@@ -69,7 +107,7 @@ func compareEqual(a, b Value) bool {
 
 	switch a.Kind {
 	case KindString:
-		return a.S == b.S
+		return a.s == b.s
 	case KindBool:
 		return a.B == b.B
 	case KindArray:
@@ -117,7 +155,7 @@ func compareContains(a, b Value) bool {
 	if a.Kind != KindString || b.Kind != KindString {
 		return false
 	}
-	return strings.Contains(a.S, b.S)
+	return strings.Contains(a.s.Value(), b.s.Value())
 }
 
 func isNumber(v Value) bool {

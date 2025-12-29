@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"unsafe"
 
+	"github.com/hupe1980/vecgo/internal/mem"
 	"github.com/hupe1980/vecgo/vectorstore"
 )
 
@@ -45,7 +46,10 @@ func New(dim int) *Store {
 	if dim <= 0 {
 		dim = 1
 	}
-	data := make([]float32, 0, 1024*dim) // Pre-allocate for ~1K vectors
+	// Pre-allocate for ~1K vectors using aligned memory
+	data := mem.AllocAlignedFloat32(1024 * dim)
+	data = data[:0] // Reset length to 0
+
 	s := &Store{
 		dim:     uint32(dim),
 		deleted: make([]uint64, 0, 16), // ~1K vectors per uint64 block
@@ -62,7 +66,10 @@ func NewWithCapacity(dim, capacity int) *Store {
 	if capacity < 0 {
 		capacity = 0
 	}
-	data := make([]float32, 0, capacity*dim)
+	// Use aligned memory
+	data := mem.AllocAlignedFloat32(capacity * dim)
+	data = data[:0] // Reset length to 0
+
 	bitmapCap := (capacity + 63) / 64
 	s := &Store{
 		dim:     uint32(dim),
@@ -160,7 +167,9 @@ func (s *Store) SetVector(id uint32, v []float32) error {
 
 	if requiredLen > len(currentData) {
 		// Extend the data slice
-		newData := make([]float32, requiredLen, max(requiredLen*2, len(currentData)*2))
+		newCap := max(requiredLen*2, len(currentData)*2)
+		newData := mem.AllocAlignedFloat32(newCap)
+		newData = newData[:requiredLen]
 		copy(newData, currentData)
 		s.data.Store(&newData)
 		currentData = newData
@@ -212,7 +221,9 @@ func (s *Store) Append(v []float32) (uint32, error) {
 	requiredLen := int(id+1) * dim
 	if requiredLen > cap(currentData) {
 		newCap := max(requiredLen*2, len(currentData)*2)
-		newData := make([]float32, requiredLen, newCap)
+		// Use aligned allocator
+		newData := mem.AllocAlignedFloat32(newCap)
+		newData = newData[:requiredLen] // Set length
 		copy(newData, currentData)
 		s.data.Store(&newData)
 		currentData = newData
@@ -299,7 +310,8 @@ func (s *Store) Compact() map[uint32]uint32 {
 
 	dim := int(s.dim)
 	oldData := *s.data.Load()
-	newData := make([]float32, 0, int(s.live)*dim)
+	newData := mem.AllocAlignedFloat32(int(s.live) * dim)
+	newData = newData[:0]
 	idMap := make(map[uint32]uint32, s.live)
 
 	var newID uint32
@@ -459,18 +471,19 @@ func (s *Store) ReadFrom(r io.Reader) (int64, error) {
 
 	// Read vector data
 	vecSize := int(header.VectorDataSize())
-	vecBytes := make([]byte, vecSize)
+
+	// Allocate aligned memory for vectors
+	vecData := mem.AllocAlignedFloat32(vecSize / 4)
+
+	// Create a byte slice view of the aligned memory
+	vecBytes := unsafe.Slice((*byte)(unsafe.Pointer(&vecData[0])), vecSize)
+
 	n2, err := io.ReadFull(tr, vecBytes)
 	read += int64(n2)
 	if err != nil {
 		return read, err
 	}
 
-	// Convert bytes to float32 (zero-copy view if aligned)
-	vecData := make([]float32, vecSize/4)
-	for i := range vecData {
-		vecData[i] = *(*float32)(unsafe.Pointer(&vecBytes[i*4]))
-	}
 	s.data.Store(&vecData)
 
 	// Read deletion bitmap

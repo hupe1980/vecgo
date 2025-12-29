@@ -1,6 +1,8 @@
 package metadata
 
-import "testing"
+import (
+	"testing"
+)
 
 func TestFilterMatches(t *testing.T) {
 	tests := []struct {

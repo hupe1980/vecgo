@@ -118,6 +118,7 @@ import (
 	"io"
 	"iter"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/hupe1980/vecgo/codec"
@@ -140,6 +141,7 @@ var (
 
 // Vecgo is a vector store database with support for metadata filtering and write-ahead logging.
 type Vecgo[T any] struct {
+	mu           sync.Mutex // Protects autoCheckpoint
 	mmapCloser   io.Closer
 	coordinator  engine.Coordinator[T] // Single interface for both Tx and ShardedCoordinator
 	codec        codec.Codec
@@ -460,6 +462,9 @@ func newSharded[T any](indexes []index.Index, dataStores []engine.Store[T], meta
 // This implements the "delta-based mmap" architecture: in-memory delta is flushed
 // to a new mmap base periodically.
 func (vg *Vecgo[T]) autoCheckpoint() error {
+	vg.mu.Lock()
+	defer vg.mu.Unlock()
+
 	if vg.snapshotPath == "" {
 		// No snapshot path configured - user must handle checkpointing manually
 		return nil
@@ -468,6 +473,11 @@ func (vg *Vecgo[T]) autoCheckpoint() error {
 	// Save snapshot to disk (flushes in-memory delta to mmap base)
 	if err := vg.SaveToFile(vg.snapshotPath); err != nil {
 		return fmt.Errorf("auto-checkpoint: failed to save snapshot: %w", err)
+	}
+
+	// Truncate WALs
+	if err := vg.Checkpoint(); err != nil {
+		return fmt.Errorf("auto-checkpoint: failed to truncate WAL: %w", err)
 	}
 
 	return nil
