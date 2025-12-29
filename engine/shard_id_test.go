@@ -53,14 +53,16 @@ func TestGlobalID_BitLayout(t *testing.T) {
 }
 
 func BenchmarkGlobalID_Encode(b *testing.B) {
-	for i := 0; i < b.N; i++ {
+	var i int
+	for b.Loop() {
 		_ = NewGlobalID(i%256, uint32(i))
+		i++
 	}
 }
 
 func BenchmarkGlobalID_Decode(b *testing.B) {
 	gid := NewGlobalID(127, 1000000)
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = gid.ShardIndex()
 		_ = gid.LocalID()
 	}

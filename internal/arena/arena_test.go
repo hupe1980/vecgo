@@ -326,7 +326,7 @@ func BenchmarkArena_AllocBytes(b *testing.B) {
 			b.ResetTimer()
 			b.ReportAllocs()
 
-			for i := 0; i < b.N; i++ {
+			for b.Loop() {
 				_ = a.AllocBytes(size)
 			}
 		})
@@ -344,7 +344,7 @@ func BenchmarkArena_AllocUint32Slice(b *testing.B) {
 			b.ResetTimer()
 			b.ReportAllocs()
 
-			for i := 0; i < b.N; i++ {
+			for b.Loop() {
 				_ = a.AllocUint32Slice(cap)
 			}
 		})
@@ -359,7 +359,7 @@ func BenchmarkArena_vs_Make(b *testing.B) {
 		b.ResetTimer()
 		b.ReportAllocs()
 
-		for i := 0; i < b.N; i++ {
+		for b.Loop() {
 			_ = a.AllocUint32Slice(16)
 		}
 	})
@@ -368,7 +368,7 @@ func BenchmarkArena_vs_Make(b *testing.B) {
 		b.ResetTimer()
 		b.ReportAllocs()
 
-		for i := 0; i < b.N; i++ {
+		for b.Loop() {
 			_ = make([]uint32, 0, 16)
 		}
 	})

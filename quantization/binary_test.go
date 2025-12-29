@@ -188,7 +188,7 @@ func BenchmarkHammingDistance_128dim(b *testing.B) {
 	c[1] = 0x5555555555555555
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = HammingDistance(a, c)
 	}
 }
@@ -203,7 +203,7 @@ func BenchmarkHammingDistance_768dim(b *testing.B) {
 	}
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = HammingDistance(a, c)
 	}
 }
@@ -218,7 +218,7 @@ func BenchmarkBinaryEncode_128dim(b *testing.B) {
 	}
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = bq.EncodeUint64(vec)
 	}
 }
@@ -233,7 +233,7 @@ func BenchmarkBinaryEncode_768dim(b *testing.B) {
 	}
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = bq.EncodeUint64(vec)
 	}
 }

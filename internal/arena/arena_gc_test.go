@@ -17,8 +17,7 @@ func BenchmarkArenaReuse(b *testing.B) {
 
 	b.ResetTimer()
 	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		for j := 0; j < 1000; j++ {
 			_ = a.AllocUint32Slice(16)
 		}
@@ -42,8 +41,7 @@ func BenchmarkStandardHeap(b *testing.B) {
 
 	b.ResetTimer()
 	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		for j := 0; j < 1000; j++ {
 			s := make([]uint32, 16)
 			runtime.KeepAlive(s) // Force heap allocation
@@ -67,8 +65,7 @@ func BenchmarkArenaOneShotBuild(b *testing.B) {
 
 	b.ResetTimer()
 	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		a := New(DefaultChunkSize)
 		for j := 0; j < 1000; j++ {
 			_ = a.AllocUint32Slice(16)
@@ -92,8 +89,7 @@ func BenchmarkStandardOneShotBuild(b *testing.B) {
 
 	b.ResetTimer()
 	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		for j := 0; j < 1000; j++ {
 			s := make([]uint32, 16)
 			runtime.KeepAlive(s)

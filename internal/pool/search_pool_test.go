@@ -123,8 +123,7 @@ func TestSearchContext_Concurrent(t *testing.T) {
 
 func BenchmarkSearchContext_Get(b *testing.B) {
 	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		ctx := Get()
 		Put(ctx)
 	}
@@ -136,9 +135,10 @@ func BenchmarkSearchContext_MarkVisited(b *testing.B) {
 
 	b.ResetTimer()
 	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
+	var i int
+	for b.Loop() {
 		ctx.MarkVisited(uint32(i % 10000))
+		i++
 	}
 }
 
@@ -148,9 +148,10 @@ func BenchmarkSearchContext_MarkVisited_Map(b *testing.B) {
 
 	b.ResetTimer()
 	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
+	var i int
+	for b.Loop() {
 		visited[uint32(i%10000)] = true
+		i++
 	}
 }
 
@@ -165,8 +166,9 @@ func BenchmarkSearchContext_IsVisited(b *testing.B) {
 
 	b.ResetTimer()
 	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
+	var i int
+	for b.Loop() {
 		_ = ctx.IsVisited(uint32(i % 10000))
+		i++
 	}
 }

@@ -494,7 +494,7 @@ func BenchmarkAppend(b *testing.B) {
 				vec[i] = float32(i)
 			}
 			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
+			for b.Loop() {
 				s.Append(vec)
 			}
 		})
@@ -510,8 +510,10 @@ func BenchmarkGetVector(b *testing.B) {
 	}
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	var i int
+	for b.Loop() {
 		s.GetVector(uint32(i % 10000))
+		i++
 	}
 }
 
@@ -524,7 +526,7 @@ func BenchmarkIterate(b *testing.B) {
 	}
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		s.Iterate(func(id uint32, vec []float32) bool {
 			return true
 		})

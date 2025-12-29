@@ -189,7 +189,7 @@ func BenchmarkWriteFloat32Slice(b *testing.B) {
 	writer := NewBinaryIndexWriter(&buf)
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		buf.Reset()
 		writer.WriteFloat32Slice(vec)
 	}
@@ -208,7 +208,7 @@ func BenchmarkReadFloat32Slice(b *testing.B) {
 	data := buf.Bytes()
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		reader := NewBinaryIndexReader(bytes.NewReader(data))
 		reader.ReadFloat32Slice(128)
 	}

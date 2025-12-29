@@ -335,7 +335,7 @@ func BenchmarkUnifiedIndex_CompileFilter(b *testing.B) {
 	}
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		bitmap := ui.CompileFilter(fs)
 		_ = bitmap.GetCardinality()
 	}
@@ -357,7 +357,7 @@ func BenchmarkUnifiedIndex_ScanFilter(b *testing.B) {
 	}
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		ids := ui.ScanFilter(fs)
 		_ = len(ids)
 	}

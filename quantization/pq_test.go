@@ -146,7 +146,7 @@ func BenchmarkProductQuantizerEncode(b *testing.B) {
 	testVec := generateRandomVector(dimension)
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = pq.Encode(testVec)
 	}
 }
@@ -170,7 +170,7 @@ func BenchmarkProductQuantizerAsymmetricDistance(b *testing.B) {
 	codes := pq.Encode(generateRandomVector(dimension))
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = pq.ComputeAsymmetricDistance(query, codes)
 	}
 }

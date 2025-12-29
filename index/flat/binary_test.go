@@ -255,7 +255,7 @@ func BenchmarkBinarySave(b *testing.B) {
 	}
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		var buf bytes.Buffer
 		if _, err := f.WriteTo(&buf); err != nil {
 			b.Fatalf("WriteTo failed: %v", err)
@@ -288,7 +288,7 @@ func BenchmarkBinaryLoad(b *testing.B) {
 	data := buf.Bytes()
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		loaded, err := New(func(o *Options) {
 			o.Dimension = 128
 			o.DistanceType = index.DistanceTypeSquaredL2

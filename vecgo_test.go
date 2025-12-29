@@ -210,7 +210,7 @@ func BenchmarkInsertAndBatchInsert(b *testing.B) {
 		vectors := rng.GenerateRandomVectors(b.N, dim)
 		vectorWithData := make([]VectorWithData[int], b.N)
 
-		for i := 0; i < b.N; i++ {
+		for i := range vectorWithData {
 			vectorWithData[i] = VectorWithData[int]{
 				Vector: vectors[i],
 				Data:   i,
@@ -218,12 +218,13 @@ func BenchmarkInsertAndBatchInsert(b *testing.B) {
 		}
 
 		b.ResetTimer()
-
-		for i := 0; i < b.N; i++ {
+		var i int
+		for b.Loop() {
 			_, err := vg.Insert(context.Background(), vectorWithData[i])
 			if err != nil {
 				b.Fatalf("Insert failed: %v", err)
 			}
+			i++
 		}
 	})
 
@@ -238,7 +239,7 @@ func BenchmarkInsertAndBatchInsert(b *testing.B) {
 		vectors := rng.GenerateRandomVectors(b.N, dim)
 		vectorWithData := make([]VectorWithData[int], b.N)
 
-		for i := 0; i < b.N; i++ {
+		for i := range vectorWithData {
 			vectorWithData[i] = VectorWithData[int]{
 				Vector: vectors[i],
 				Data:   i,
@@ -247,13 +248,13 @@ func BenchmarkInsertAndBatchInsert(b *testing.B) {
 
 		b.ResetTimer()
 
-		errCh := make(chan error, b.N) // Error channel to receive errors from goroutines
+		errCh := make(chan error, len(vectorWithData)) // Error channel to receive errors from goroutines
 
 		var wg sync.WaitGroup
 
-		wg.Add(b.N)
+		wg.Add(len(vectorWithData))
 
-		for i := 0; i < b.N; i++ {
+		for i := range vectorWithData {
 			go func(i int) {
 				defer wg.Done()
 

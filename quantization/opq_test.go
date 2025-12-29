@@ -220,7 +220,7 @@ func BenchmarkOPQ_Train(b *testing.B) {
 	vectors := generateRandomVectors(numVectors, dim)
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		opq, _ := NewOptimizedProductQuantizer(dim, 8, 256, 10)
 		_ = opq.Train(vectors)
 	}
@@ -238,7 +238,7 @@ func BenchmarkOPQ_Encode(b *testing.B) {
 	testVec := vectors[0]
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = opq.Encode(testVec)
 	}
 }
@@ -255,7 +255,7 @@ func BenchmarkOPQ_Decode(b *testing.B) {
 	codes := opq.Encode(vectors[0])
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = opq.Decode(codes)
 	}
 }
@@ -273,7 +273,7 @@ func BenchmarkOPQ_AsymmetricDistance(b *testing.B) {
 	codes := opq.Encode(vectors[1])
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = opq.ComputeAsymmetricDistance(query, codes)
 	}
 }
@@ -292,7 +292,7 @@ func BenchmarkOPQ_vs_PQ_ReconstructionQuality(b *testing.B) {
 		totalError := float32(0)
 
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for b.Loop() {
 			for _, vec := range testVectors {
 				codes := opq.Encode(vec)
 				recon := opq.Decode(codes)
@@ -310,7 +310,7 @@ func BenchmarkOPQ_vs_PQ_ReconstructionQuality(b *testing.B) {
 		totalError := float32(0)
 
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for b.Loop() {
 			for _, vec := range testVectors {
 				codes := pq.Encode(vec)
 				recon := pq.Decode(codes)

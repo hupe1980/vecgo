@@ -145,7 +145,7 @@ func BenchmarkScalarQuantizer_Encode(b *testing.B) {
 	}
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = sq.Encode(vec)
 	}
 }
@@ -163,7 +163,7 @@ func BenchmarkScalarQuantizer_Decode(b *testing.B) {
 	quantized := sq.Encode(vec)
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = sq.Decode(quantized)
 	}
 }

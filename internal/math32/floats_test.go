@@ -45,8 +45,7 @@ func BenchmarkDot(b *testing.B) {
 
 	// Run the Dot function b.N times and measure the time taken.
 	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = Dot(va, vb)
 	}
 }
@@ -86,8 +85,7 @@ func BenchmarkSquaredL2(b *testing.B) {
 
 	// Run the Dot function b.N times and measure the time taken.
 	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = SquaredL2(va, vb)
 	}
 }

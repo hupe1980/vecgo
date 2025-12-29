@@ -899,7 +899,7 @@ func BenchmarkGroundTruthComputation(b *testing.B) {
 	queries := rng.GenerateRandomVectors(100, 128)
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = computeGroundTruth(vectors, queries, 10, distance.SquaredL2)
 	}
 }
