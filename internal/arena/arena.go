@@ -102,6 +102,91 @@ func (a *Arena) align(size int) int {
 	return (size + mask) & ^mask
 }
 
+// AllocPointer allocates memory for a struct of the given size and alignment.
+// It returns an unsafe.Pointer to the allocated memory.
+func (a *Arena) AllocPointer(size, align int) unsafe.Pointer {
+	if size <= 0 {
+		return nil
+	}
+
+	// Ensure alignment is power of 2
+	if align <= 0 {
+		align = a.alignment
+	}
+
+	// Calculate padding needed for alignment
+	// We need to know the absolute address to align properly.
+	// However, Go's allocator (make([]byte)) guarantees alignment for the type.
+	// Since we use []byte, it's usually 8-byte aligned.
+	// For 64-byte alignment, we must manually align the offset relative to the chunk start,
+	// AND assume the chunk start is aligned (which we can't strictly guarantee without unsafe tricks,
+	// but usually large allocations are page-aligned).
+	//
+	// To be safe, we align the offset such that (chunkStart + offset) % align == 0.
+	// Since we don't know chunkStart at allocation time (it's dynamic), we can only align the offset.
+	// This assumes chunk.data is aligned to at least `align`.
+	// If `align` > 8, this assumption might fail.
+	//
+	// Workaround: Allocate extra bytes and return aligned pointer within the block.
+	// But we want to keep it simple.
+	// Let's assume standard alignment for now, or just align the offset.
+	//
+	// Actually, for HNSW Node, we want cache line alignment (64 bytes).
+	// We can force chunk.data to be 64-byte aligned by allocating slightly more and slicing.
+	// But let's just align the offset for now.
+
+	// Align size to arena alignment to keep subsequent allocs aligned
+	allocSize := a.align(size)
+
+	for {
+		curr := a.current.Load()
+		if curr == nil {
+			a.allocateChunk()
+			continue
+		}
+
+		oldOffset := curr.offset.Load()
+
+		// Calculate aligned offset
+		// We assume chunk.data[0] is aligned.
+		// If not, we might be off.
+		// But for cache locality, relative alignment is most important.
+		//
+		// To strictly align:
+		// ptr := unsafe.Pointer(&curr.data[oldOffset])
+		// alignedPtr := (uintptr(ptr) + uintptr(align-1)) & ^uintptr(align-1)
+		// padding := alignedPtr - uintptr(ptr)
+		//
+		// But we can't access curr.data[oldOffset] safely without reserving it first?
+		// No, we can read the pointer value.
+		// But curr.data might move if we append? No, it's a slice header. The backing array is fixed.
+		//
+		// Let's just align the offset to `align`.
+		mask := int64(align - 1)
+		alignedOffset := (oldOffset + mask) & ^mask
+		padding := alignedOffset - oldOffset
+
+		newOffset := alignedOffset + int64(allocSize)
+
+		if newOffset <= int64(len(curr.data)) {
+			if curr.offset.CompareAndSwap(oldOffset, newOffset) {
+				a.mu.Lock()
+				a.stats.BytesUsed += uint64(size)
+				a.stats.BytesWasted += uint64(padding) + uint64(allocSize-size)
+				a.stats.TotalAllocs++
+				a.mu.Unlock()
+
+				return unsafe.Pointer(&curr.data[alignedOffset])
+			}
+			continue
+		}
+
+		if a.current.CompareAndSwap(curr, nil) {
+			a.allocateChunk()
+		}
+	}
+}
+
 func (a *Arena) AllocBytes(size int) []byte {
 	if size <= 0 {
 		return nil

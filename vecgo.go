@@ -556,7 +556,14 @@ func NewFromFile[T any](filename string, optFns ...Option) (*Vecgo[T], error) {
 		metrics:      opts.metricsCollector,
 		snapshotPath: snapshotPath,
 	}
-	coord, err := engine.New(snap.Index, snap.DataStore, metaStore, w, c)
+
+	// Convert typed nil to untyped nil for interface
+	var durability engine.Durability
+	if w != nil {
+		durability = w
+	}
+
+	coord, err := engine.New(snap.Index, snap.DataStore, metaStore, durability, c)
 	if err != nil {
 		if w != nil {
 			_ = w.Close()

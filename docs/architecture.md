@@ -76,14 +76,29 @@ The coordinator is a **proper interface** that orchestrates all mutation operati
 **Coordinator Interface**:
 ```go
 type Coordinator[T any] interface {
-    Insert(ctx context.Context, vector []float32, data T) (uint64, error)
-    BatchInsert(ctx context.Context, vectors [][]float32, data []T) ([]uint64, error)
-    Update(ctx context.Context, id uint64, vector []float32, data T) error
-    Delete(ctx context.Context, id uint64) error
-    Get(ctx context.Context, id uint64) ([]float32, T, error)
-    GetMetadata(ctx context.Context, id uint64) (T, error)
-    KNNSearch(ctx context.Context, query []float32, k int, filter metadata.Filter) ([]search.Result[T], error)
-    BruteSearch(ctx context.Context, query []float32, k int, filter metadata.Filter) ([]search.Result[T], error)
+    // Mutations
+    Insert(ctx context.Context, vector []float32, data T, meta metadata.Metadata) (uint32, error)
+    BatchInsert(ctx context.Context, vectors [][]float32, data []T, meta []metadata.Metadata) ([]uint32, error)
+    Update(ctx context.Context, id uint32, vector []float32, data T, meta metadata.Metadata) error
+    Delete(ctx context.Context, id uint32) error
+
+    // Retrieval
+    Get(id uint32) (T, bool)
+    GetMetadata(id uint32) (metadata.Metadata, bool)
+
+    // Search
+    KNNSearch(ctx context.Context, query []float32, k int, opts *index.SearchOptions) ([]index.SearchResult, error)
+    BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint32) bool) ([]index.SearchResult, error)
+    HybridSearch(ctx context.Context, query []float32, k int, opts *HybridSearchOptions) ([]index.SearchResult, error)
+    KNNSearchStream(ctx context.Context, query []float32, k int, opts *index.SearchOptions) iter.Seq2[index.SearchResult, error]
+
+    // Management
+    EnableProductQuantization(cfg index.ProductQuantizationConfig) error
+    DisableProductQuantization()
+    SaveToFile(path string) error
+    RecoverFromWAL(ctx context.Context) error
+    Stats() index.Stats
+    Close() error
 }
 ```
 
@@ -91,13 +106,17 @@ type Coordinator[T any] interface {
 
 1. **Tx[T]** (Single-Shard Coordinator):
    - Direct pass-through to index
-   - Single lock for all writes
+   - Single lock for all writes (per shard)
    - Metadata updates inline with index operations
    - O(1) Get/GetMetadata by ID
    - Safe-by-default metadata: Deep copy on insert/update prevents external mutation
 
 2. **ShardedCoordinator[T]** (Multi-Shard Coordinator):
-   - Hash-based vector distribution across N shards
+   - Round-robin vector distribution across N shards
+   - **Shared-Nothing Architecture**: Each shard is an independent `Tx[T]` with its own lock, index, and store.
+   - Parallel search fan-out with result merging
+   - Zero-allocation worker pool for search execution
+   - Linear write scaling with number of shards
    - Independent locks per shard (parallel writes)
    - Context-aware error propagation: All shard errors surfaced with indices
    - Graceful shutdown: Close() waits for all shard workers to terminate

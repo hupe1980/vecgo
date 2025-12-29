@@ -8,25 +8,26 @@ import (
 
 // Stats returns statistics about the HNSW graph.
 func (h *HNSW) Stats() index.Stats {
-	h.segmentsMu.RLock()
-	defer h.segmentsMu.RUnlock()
-
 	// Count active vs deleted nodes
 	activeNodes := 0
 	deletedNodes := 0
 
-	// Iterate all segments
-	for i := range h.segments {
-		seg := h.segments[i].Load()
-		if seg == nil {
-			continue
-		}
-		for j := range *seg {
-			node := (*seg)[j].Load()
-			if node == nil {
-				deletedNodes++
-			} else {
-				activeNodes++
+	segments := h.segments.Load()
+	numSegments := 0
+	if segments != nil {
+		numSegments = len(*segments)
+		// Iterate all segments
+		for _, seg := range *segments {
+			if seg == nil {
+				continue
+			}
+			for j := range seg {
+				node := seg[j].Load()
+				if node == nil {
+					deletedNodes++
+				} else {
+					activeNodes++
+				}
 			}
 		}
 	}
@@ -41,27 +42,28 @@ func (h *HNSW) Stats() index.Stats {
 	connectionNodeStats := make([]int, maxLevel+1)
 
 	// Iterate all segments again for detailed stats
-	for i := range h.segments {
-		seg := h.segments[i].Load()
-		if seg == nil {
-			continue
-		}
-		for j := range *seg {
-			node := (*seg)[j].Load()
-			if node == nil {
+	if segments != nil {
+		for _, seg := range *segments {
+			if seg == nil {
 				continue
 			}
+			for j := range seg {
+				node := seg[j].Load()
+				if node == nil {
+					continue
+				}
 
-			levelStats[node.Layer]++
+				levelStats[node.Layer]++
 
-			// Loop through each connection
-			for i2 := node.Layer; i2 >= 0; i2-- {
-				// Lock-free read using atomic pointer
-				connections := node.Connections[i2].Load()
-				if connections != nil && len(*connections) > i2 {
-					total := len(*connections)
-					connectionStats[i2] += total
-					connectionNodeStats[i2]++
+				// Loop through each connection
+				for i2 := node.Layer; i2 >= 0; i2-- {
+					// Lock-free read using atomic pointer
+					connections := node.Connections[i2].Load()
+					if connections != nil && len(*connections) > i2 {
+						total := len(*connections)
+						connectionStats[i2] += total
+						connectionNodeStats[i2]++
+					}
 				}
 			}
 		}
@@ -96,7 +98,7 @@ func (h *HNSW) Stats() index.Stats {
 			"VectorCount":  fmt.Sprintf("%d", activeNodes),
 			"Deleted":      fmt.Sprintf("%d", deletedNodes),
 			"FreeListSize": fmt.Sprintf("%d", freeListSize),
-			"Segments":     fmt.Sprintf("%d", len(h.segments)),
+			"Segments":     fmt.Sprintf("%d", numSegments),
 		},
 		Levels: levelStatsStructs,
 	}

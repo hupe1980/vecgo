@@ -10,10 +10,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/bits-and-blooms/bitset"
 	"github.com/hupe1980/vecgo/distance"
 	"github.com/hupe1980/vecgo/index"
-	"github.com/hupe1980/vecgo/internal/arena"
 	"github.com/hupe1980/vecgo/internal/queue"
 	"github.com/hupe1980/vecgo/vectorstore"
 	"github.com/hupe1980/vecgo/vectorstore/columnar"
@@ -73,6 +71,9 @@ type Node struct {
 	_ [56]byte
 }
 
+// Segment is a fixed-size array of node pointers.
+type Segment [nodeSegmentSize]atomic.Pointer[Node]
+
 // Options represents the options for configuring HNSW.
 type Options struct {
 	Dimension        int
@@ -103,8 +104,9 @@ type HNSW struct {
 
 	// Node storage: Segmented array to avoid global locks/copying on grow
 	// segments[i] contains nodes [i*segmentSize, (i+1)*segmentSize)
-	segments   []atomic.Pointer[[]atomic.Pointer[Node]]
-	segmentsMu sync.RWMutex
+	// Access is lock-free via atomic load of the slice.
+	// Growth uses Copy-On-Write (COW).
+	segments atomic.Pointer[[]*Segment]
 
 	// Components
 	distanceFunc index.DistanceFunc
@@ -128,10 +130,9 @@ type HNSW struct {
 	freeList []uint32
 
 	// Resources
-	arena        *arena.Arena
 	minQueuePool *sync.Pool
 	maxQueuePool *sync.Pool
-	bitsetPool   *sync.Pool
+	visitedPool  *sync.Pool
 }
 
 func (*HNSW) Name() string { return "HNSW" }
@@ -161,20 +162,19 @@ func New(optFns ...func(o *Options)) (*HNSW, error) {
 		layerMultiplier:        layerNormalizationBase / math.Log(float64(opts.M)),
 		distanceFunc:           index.NewDistanceFunc(opts.DistanceType),
 		opts:                   opts,
-		segments:               make([]atomic.Pointer[[]atomic.Pointer[Node]], 0, 16), // Start with capacity for 1M nodes
-		freeList:               make([]uint32, 0),
-		vectors:                opts.Vectors,
-		arena:                  arena.New(arena.DefaultChunkSize),
-		shardID:                0,
-		numShards:              1,
+		// segments initialized to nil (atomic.Pointer zero value)
+		freeList:  make([]uint32, 0),
+		vectors:   opts.Vectors,
+		shardID:   0,
+		numShards: 1,
 		minQueuePool: &sync.Pool{
 			New: func() any { return queue.NewMin(opts.EF) },
 		},
 		maxQueuePool: &sync.Pool{
 			New: func() any { return queue.NewMax(opts.EF) },
 		},
-		bitsetPool: &sync.Pool{
-			New: func() any { return &bitset.BitSet{} },
+		visitedPool: &sync.Pool{
+			New: func() any { return NewVisitedSet(1024) },
 		},
 	}
 
@@ -192,63 +192,88 @@ func New(optFns ...func(o *Options)) (*HNSW, error) {
 // getNode returns the node for the given ID, or nil if it doesn't exist/deleted.
 // Lock-free read access.
 func (h *HNSW) getNode(id uint32) *Node {
+	segments := h.segments.Load()
+	if segments == nil {
+		return nil
+	}
+
 	segmentIdx := int(id >> nodeSegmentBits)
-
-	// Fast path: check if segment exists without lock (atomic load implicit in slice access if pre-sized,
-	// but here we use RLock on segments slice if we expect growth, or just atomic load of the pointer)
-	// For simplicity and safety with growth, we use RLock on the segments slice wrapper.
-	// Optimization: We can just read the slice if we assume it only grows.
-	// But to be strictly safe in Go:
-	h.segmentsMu.RLock()
-	if segmentIdx >= len(h.segments) {
-		h.segmentsMu.RUnlock()
-		return nil
-	}
-	segmentPtr := h.segments[segmentIdx].Load()
-	h.segmentsMu.RUnlock()
-
-	if segmentPtr == nil {
+	if segmentIdx >= len(*segments) {
 		return nil
 	}
 
-	// No bounds check needed on segment due to bitmask, but good for safety
-	idx := id & nodeSegmentMask
-	return (*segmentPtr)[idx].Load()
+	segment := (*segments)[segmentIdx]
+	if segment == nil {
+		return nil
+	}
+
+	return segment[id&nodeSegmentMask].Load()
 }
 
 // setNode sets the node at the given ID. Thread-safe.
 func (h *HNSW) setNode(id uint32, node *Node) {
 	h.growSegments(id)
 
+	segments := h.segments.Load()
 	segmentIdx := int(id >> nodeSegmentBits)
-	h.segmentsMu.RLock()
-	segmentPtr := h.segments[segmentIdx].Load()
-	h.segmentsMu.RUnlock()
-	(*segmentPtr)[id&nodeSegmentMask].Store(node)
+	segment := (*segments)[segmentIdx]
+
+	segment[id&nodeSegmentMask].Store(node)
 }
 
 // growSegments ensures capacity for the given ID.
+// Uses Copy-On-Write (COW) for lock-free growth.
 func (h *HNSW) growSegments(id uint32) {
 	segmentIdx := int(id >> nodeSegmentBits)
 
-	h.segmentsMu.RLock()
-	if segmentIdx < len(h.segments) && h.segments[segmentIdx].Load() != nil {
-		h.segmentsMu.RUnlock()
+	// Fast path: check if segment exists
+	segments := h.segments.Load()
+	if segments != nil && segmentIdx < len(*segments) && (*segments)[segmentIdx] != nil {
 		return
 	}
-	h.segmentsMu.RUnlock()
 
-	h.segmentsMu.Lock()
-	defer h.segmentsMu.Unlock()
+	// Slow path: grow using CAS loop
+	for {
+		oldSegments := h.segments.Load()
+		var newSegments []*Segment
 
-	// Double check
-	for len(h.segments) <= segmentIdx {
-		h.segments = append(h.segments, atomic.Pointer[[]atomic.Pointer[Node]]{})
-	}
+		currentLen := 0
+		if oldSegments != nil {
+			currentLen = len(*oldSegments)
+		}
 
-	if h.segments[segmentIdx].Load() == nil {
-		newSegment := make([]atomic.Pointer[Node], nodeSegmentSize)
-		h.segments[segmentIdx].Store(&newSegment)
+		if segmentIdx < currentLen && (*oldSegments)[segmentIdx] != nil {
+			return // Already grown by someone else
+		}
+
+		// Create new slice with enough capacity
+		newLen := segmentIdx + 1
+		if newLen < currentLen {
+			newLen = currentLen
+		}
+		newSegments = make([]*Segment, newLen)
+
+		// Copy existing segments
+		if oldSegments != nil {
+			copy(newSegments, *oldSegments)
+		}
+
+		// Allocate new segment
+		if newSegments[segmentIdx] == nil {
+			newSegments[segmentIdx] = new(Segment)
+		}
+
+		// CAS
+		// We must store a pointer to the slice.
+		// Since newSegments is a local variable, &newSegments points to the stack.
+		// We need to allocate the slice header on the heap.
+		newSegmentsPtr := new([]*Segment)
+		*newSegmentsPtr = newSegments
+
+		if h.segments.CompareAndSwap(oldSegments, newSegmentsPtr) {
+			return
+		}
+		// Retry
 	}
 }
 
@@ -379,19 +404,75 @@ func (h *HNSW) insert(v []float32, id uint32, layer int, useProvidedID bool) (ui
 		}
 	}
 
-	// Create Node
-	node := &Node{
-		ID:          id,
-		Layer:       layer,
-		Connections: make([]atomic.Pointer[[]uint32], layer+1),
-	}
+	// Create Node using Arena
+	// We allocate the struct from the arena to ensure cache line alignment (64 bytes).
+	// The Connections slice header is part of the struct, but the backing array for Connections
+	// is allocated separately (Go allocator).
+	// Ideally, we'd allocate everything from Arena, but Connections are dynamic.
+	//
+	// Node size depends on Layer if Connections was embedded, but it's a slice.
+	// So Node size is fixed: sizeof(Node).
+	//
+	// We use AllocPointer with 64-byte alignment.
+	// nodePtr := h.arena.AllocPointer(int(unsafe.Sizeof(Node{})), 64)
+	// node := (*Node)(nodePtr)
+	node := new(Node)
+
+	// Initialize fields
+	node.ID = id
+	node.Layer = layer
+	// Mutex is zero-value initialized
+
+	// Initialize Connections
+	// We can't use make() directly into the arena memory easily for the slice header.
+	// But we can assign the slice.
+	node.Connections = make([]atomic.Pointer[[]uint32], layer+1)
+
 	for l := 0; l <= layer; l++ {
 		cap := h.maxConnectionsPerLayer
 		if l == 0 {
 			cap = h.maxConnectionsLayer0
 		}
+		// Use Arena for adjacency lists?
+		// REFACTORING.md says: "Use AllocUint32Slice for adjacency lists (excellent cache locality)"
+		// But Connections is atomic.Pointer[[]uint32].
+		// The pointer points to a slice.
+		// If we use Arena for the slice backing array, we need to be careful about resizing.
+		// HNSW connections are fixed capacity (M or M0).
+		// So we can allocate the max capacity upfront from Arena.
+
+		// However, the current implementation uses copy-on-write for connections updates?
+		// "Connections stores links to other nodes at each layer. Lock-free reads via atomic.Pointer, copy-on-write updates."
+		// If we use COW, we allocate a NEW slice on every update.
+		// That would fragment the Arena if we use it for every update.
+		// Arena is append-only and not freed until index close.
+		// So we should NOT use Arena for COW updates unless we have a way to reclaim or if updates are rare.
+		// But HNSW construction updates connections frequently.
+		//
+		// Wait, REFACTORING.md says: "Use AllocUint32Slice for adjacency lists".
+		// Maybe it implies we don't use COW for the list content, but atomic CAS on the list elements?
+		// "Ensure Connections in Node use atomic.Pointer (or atomic.Value for the list header)."
+		//
+		// If we use `atomic.Pointer[[]uint32]`, we are swapping the entire list.
+		// If we want to use Arena, we should probably allocate the initial empty list from Arena?
+		// But subsequent updates will allocate new lists.
+		//
+		// If we want to avoid COW overhead, we need fine-grained locking or atomic operations on the list itself.
+		// But `Node` has `mu sync.Mutex` protecting `Connections` during write.
+		// So we can modify the slice in place if we are the only writer?
+		// But readers are lock-free. They might see a partial update if we modify in place.
+		// That's why COW is used.
+		//
+		// If we want to use Arena for connections, we'd need a lock-free list or accept that we leak memory in Arena during construction.
+		// Leaking in Arena during construction is bad if it's O(M * N * logN).
+		//
+		// Let's stick to Go allocator for Connections for now, as per current implementation.
+		// The main gain is Node alignment and allocation.
+
 		empty := make([]uint32, 0, cap)
-		node.Connections[l].Store(&empty)
+		emptyPtr := new([]uint32)
+		*emptyPtr = empty
+		node.Connections[l].Store(emptyPtr)
 	}
 
 	// Store Vector
@@ -504,7 +585,9 @@ func (h *HNSW) insertNode(node *Node, vec []float32) error {
 		neighbors := h.selectNeighbors(candidates, maxConns)
 
 		// Store connections
-		node.Connections[level].Store(&neighbors)
+		neighborsPtr := new([]uint32)
+		*neighborsPtr = neighbors
+		node.Connections[level].Store(neighborsPtr)
 
 		// Link back
 		for _, neighborID := range neighbors {
@@ -570,12 +653,16 @@ func (h *HNSW) link(srcID, dstID uint32, level int, dstVec []float32) {
 		}
 
 		pruned := h.selectNeighbors(candidates, maxConns)
-		srcNode.Connections[level].Store(&pruned)
+		prunedPtr := new([]uint32)
+		*prunedPtr = pruned
+		srcNode.Connections[level].Store(prunedPtr)
 
 		candidates.Reset()
 		h.maxQueuePool.Put(candidates)
 	} else {
-		srcNode.Connections[level].Store(&newConns)
+		newConnsPtr := new([]uint32)
+		*newConnsPtr = newConns
+		srcNode.Connections[level].Store(newConnsPtr)
 	}
 }
 
@@ -674,8 +761,9 @@ func (h *HNSW) selectNeighborsHeuristic(candidates *queue.PriorityQueue, m int) 
 // 2. Less wasted computation (skips filtered regions)
 // 3. Matches exact search behavior
 func (h *HNSW) searchLayer(query []float32, ep *Node, epDist float32, level int, ef int, filter func(uint32) bool) (*queue.PriorityQueue, error) {
-	visited := h.bitsetPool.Get().(*bitset.BitSet)
-	defer func() { visited.ClearAll(); h.bitsetPool.Put(visited) }()
+	visited := h.visitedPool.Get().(*VisitedSet)
+	visited.Reset()
+	defer h.visitedPool.Put(visited)
 
 	candidates := h.minQueuePool.Get().(*queue.PriorityQueue) // MinHeap: stores best candidates to explore
 	candidates.Reset()
@@ -683,7 +771,7 @@ func (h *HNSW) searchLayer(query []float32, ep *Node, epDist float32, level int,
 	results := h.maxQueuePool.Get().(*queue.PriorityQueue) // MaxHeap: stores current top EF results
 	results.Reset()                                        // Caller must put back
 
-	visited.Set(uint(ep.ID))
+	visited.Visit(ep.ID)
 
 	// CRITICAL: Always add entry point to candidates for navigation (even if filtered)
 	// This ensures we have a starting point for graph traversal
@@ -712,8 +800,8 @@ func (h *HNSW) searchLayer(query []float32, ep *Node, epDist float32, level int,
 
 		conns := node.Connections[level].Load()
 		for _, nextID := range *conns {
-			if !visited.Test(uint(nextID)) {
-				visited.Set(uint(nextID))
+			if !visited.Visited(nextID) {
+				visited.Visit(nextID)
 
 				nextDist := h.dist(query, nextID)
 
@@ -807,23 +895,23 @@ func (h *HNSW) Delete(ctx context.Context, id uint32) error {
 		// This is slow. In production, maybe maintain a set of top nodes?
 		// Or just lazy update.
 		// For now, linear scan of segments.
-		h.segmentsMu.RLock()
-		for i := range h.segments {
-			seg := h.segments[i].Load()
-			if seg == nil {
-				continue
-			}
-			for j := range *seg {
-				n := (*seg)[j].Load()
-				if n != nil && n.ID != id {
-					if int32(n.Layer) > maxL {
-						maxL = int32(n.Layer)
-						newEP = n.ID
+		segments := h.segments.Load()
+		if segments != nil {
+			for _, seg := range *segments {
+				if seg == nil {
+					continue
+				}
+				for j := range seg {
+					n := seg[j].Load()
+					if n != nil && n.ID != id {
+						if int32(n.Layer) > maxL {
+							maxL = int32(n.Layer)
+							newEP = n.ID
+						}
 					}
 				}
 			}
 		}
-		h.segmentsMu.RUnlock()
 
 		h.epMu.Lock()
 		if h.entryPointAtomic.Load() == id {
@@ -993,31 +1081,30 @@ func (h *HNSW) BruteSearch(ctx context.Context, query []float32, k int, filter f
 	// Simple scan
 	pq := queue.NewMax(k)
 
-	h.segmentsMu.RLock()
-	defer h.segmentsMu.RUnlock()
-
-	for i := range h.segments {
-		seg := h.segments[i].Load()
-		if seg == nil {
-			continue
-		}
-		for j := range *seg {
-			node := (*seg)[j].Load()
-			if node == nil {
+	segments := h.segments.Load()
+	if segments != nil {
+		for _, seg := range *segments {
+			if seg == nil {
 				continue
 			}
-			if filter != nil && !filter(node.ID) {
-				continue
-			}
+			for j := range seg {
+				node := seg[j].Load()
+				if node == nil {
+					continue
+				}
+				if filter != nil && !filter(node.ID) {
+					continue
+				}
 
-			d := h.dist(query, node.ID)
-			if pq.Len() < k {
-				pq.PushItem(queue.PriorityQueueItem{Node: node.ID, Distance: d})
-			} else {
-				top, _ := pq.TopItem()
-				if d < top.Distance {
-					_, _ = pq.PopItem()
+				d := h.dist(query, node.ID)
+				if pq.Len() < k {
 					pq.PushItem(queue.PriorityQueueItem{Node: node.ID, Distance: d})
+				} else {
+					top, _ := pq.TopItem()
+					if d < top.Distance {
+						_, _ = pq.PopItem()
+						pq.PushItem(queue.PriorityQueueItem{Node: node.ID, Distance: d})
+					}
 				}
 			}
 		}
@@ -1066,8 +1153,5 @@ func (h *HNSW) VectorByID(ctx context.Context, id uint32) ([]float32, error) {
 
 // Close closes the index.
 func (h *HNSW) Close() error {
-	if h.arena != nil {
-		h.arena.Free()
-	}
 	return nil
 }

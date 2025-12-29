@@ -3,6 +3,8 @@ package engine
 import (
 	"context"
 	"errors"
+	"io"
+	"iter"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -71,6 +73,47 @@ func (m *mockShard[T]) Get(id uint32) (T, bool) {
 
 func (m *mockShard[T]) GetMetadata(id uint32) (metadata.Metadata, bool) {
 	return nil, false
+}
+
+func (m *mockShard[T]) HybridSearch(ctx context.Context, query []float32, k int, opts *HybridSearchOptions) ([]index.SearchResult, error) {
+	return m.KNNSearch(ctx, query, k, nil)
+}
+
+func (m *mockShard[T]) KNNSearchStream(ctx context.Context, query []float32, k int, opts *index.SearchOptions) iter.Seq2[index.SearchResult, error] {
+	return func(yield func(index.SearchResult, error) bool) {
+		res, err := m.KNNSearch(ctx, query, k, opts)
+		if err != nil {
+			yield(index.SearchResult{}, err)
+			return
+		}
+		for _, r := range res {
+			if !yield(r, nil) {
+				return
+			}
+		}
+	}
+}
+
+func (m *mockShard[T]) EnableProductQuantization(cfg index.ProductQuantizationConfig) error {
+	return nil
+}
+
+func (m *mockShard[T]) DisableProductQuantization() {}
+
+func (m *mockShard[T]) SaveToWriter(w io.Writer) error {
+	return nil
+}
+
+func (m *mockShard[T]) SaveToFile(path string) error {
+	return nil
+}
+
+func (m *mockShard[T]) RecoverFromWAL(ctx context.Context) error {
+	return nil
+}
+
+func (m *mockShard[T]) Stats() index.Stats {
+	return index.Stats{}
 }
 
 func (m *mockShard[T]) Close() error {

@@ -7,9 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/bits-and-blooms/bitset"
 	"github.com/hupe1980/vecgo/index"
-	"github.com/hupe1980/vecgo/internal/arena"
 	"github.com/hupe1980/vecgo/internal/queue"
 	"github.com/hupe1980/vecgo/persistence"
 	"github.com/hupe1980/vecgo/vectorstore/zerocopy"
@@ -87,8 +85,7 @@ func loadHNSWMmap(data []byte) (index.Index, int, error) {
 	h.vectors = zerocopy.New(int(hdr.Dimension))
 
 	// Initialize segments
-	h.segments = make([]atomic.Pointer[[]atomic.Pointer[Node]], 0)
-	h.arena = arena.New(arena.DefaultChunkSize)
+	// h.segments is atomic.Pointer, zero value is nil, which is correct.
 
 	for i := 0; i < int(nodeCount); i++ {
 		marker, err := r.ReadUint32()
@@ -149,7 +146,7 @@ func loadHNSWMmap(data []byte) (index.Index, int, error) {
 	h.distanceFunc = index.NewDistanceFunc(h.opts.DistanceType)
 	h.minQueuePool = &sync.Pool{New: func() any { return queue.NewMin(h.opts.EF) }}
 	h.maxQueuePool = &sync.Pool{New: func() any { return queue.NewMax(h.opts.EF) }}
-	h.bitsetPool = &sync.Pool{New: func() any { return &bitset.BitSet{} }}
+	h.visitedPool = &sync.Pool{New: func() any { return NewVisitedSet(1024) }}
 
 	return h, r.Offset(), nil
 }

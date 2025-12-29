@@ -8,9 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/bits-and-blooms/bitset"
 	"github.com/hupe1980/vecgo/index"
-	"github.com/hupe1980/vecgo/internal/arena"
 	"github.com/hupe1980/vecgo/internal/queue"
 	"github.com/hupe1980/vecgo/persistence"
 	"github.com/hupe1980/vecgo/vectorstore/columnar"
@@ -70,9 +68,7 @@ func LoadFromFile(filename string, opts Options) (*HNSW, error) {
 
 // WriteTo writes the HNSW index to a writer in binary format.
 func (h *HNSW) WriteTo(w io.Writer) (int64, error) {
-	h.segmentsMu.RLock()
 	h.freeListMu.Lock()
-	defer h.segmentsMu.RUnlock()
 	defer h.freeListMu.Unlock()
 
 	cw := &countingWriter{w: w}
@@ -285,8 +281,7 @@ func (h *HNSW) ReadFromWithOptions(r io.Reader, opts Options) error {
 	nodeCount := nodeCountSlice[0]
 
 	// Initialize segments
-	h.segments = make([]atomic.Pointer[[]atomic.Pointer[Node]], 0)
-	h.arena = arena.New(arena.DefaultChunkSize)
+	// h.segments is atomic.Pointer, zero value is nil, which is correct.
 
 	// Read nodes
 	for i := uint32(0); i < nodeCount; i++ {
@@ -359,9 +354,9 @@ func (h *HNSW) ReadFromWithOptions(r io.Reader, opts Options) error {
 			return queue.NewMax(h.opts.EF)
 		},
 	}
-	h.bitsetPool = &sync.Pool{
+	h.visitedPool = &sync.Pool{
 		New: func() any {
-			return &bitset.BitSet{}
+			return NewVisitedSet(1024)
 		},
 	}
 

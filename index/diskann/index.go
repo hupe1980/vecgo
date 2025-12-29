@@ -17,6 +17,7 @@ import (
 
 	"github.com/bits-and-blooms/bitset"
 	"github.com/hupe1980/vecgo/index"
+	"github.com/hupe1980/vecgo/index/hnsw"
 	"github.com/hupe1980/vecgo/internal/mmap"
 	"github.com/hupe1980/vecgo/quantization"
 	"github.com/hupe1980/vecgo/vectorstore"
@@ -53,17 +54,20 @@ type Index struct {
 
 	// PQ for approximate distances (in RAM)
 	pq      *quantization.ProductQuantizer
-	pqCodes [][]byte // PQ codes per vector
+	pqCodes []byte // PQ codes per vector (flat array: count * M)
 
 	// Optional BQ codes for search-only prefiltering (in RAM)
 	bq      *quantization.BinaryQuantizer
-	bqCodes [][]uint64
+	bqCodes []uint64 // BQ codes per vector (flat array: count * numUint64)
 
 	fileFlags uint32 // persisted flags from meta header (read-only indexes)
 
 	// Vectors - mutable columnar storage (for New()) or mmap (for Open())
 	vectors    vectorstore.Store // Used in mutable mode
 	mmapReader *mmap.File        // Used in read-only mode
+
+	// MemTable for fast writes (LSM-tree style)
+	memTable *hnsw.HNSW
 
 	// ID management (for TransactionalIndex)
 	nextIDAtomic atomic.Uint32
@@ -137,7 +141,7 @@ func New(dim int, distType index.DistanceType, indexPath string, opts *Options) 
 		pq:             pq,
 		graph:          make([][]uint32, 0, 1024),
 		incomingEdges:  make(map[uint32][]uint32),
-		pqCodes:        make([][]byte, 0, 1024),
+		pqCodes:        make([]byte, 0, 1024*opts.PQSubvectors),
 		bq:             nil,
 		bqCodes:        nil,
 		vectors:        columnar.New(dim),
@@ -150,8 +154,23 @@ func New(dim int, distType index.DistanceType, indexPath string, opts *Options) 
 
 	if opts.EnableBinaryPrefilter {
 		idx.bq = quantization.NewBinaryQuantizer(dim)
-		idx.bqCodes = make([][]uint64, 0, 1024)
+		words := (dim + 63) / 64
+		idx.bqCodes = make([]uint64, 0, 1024*words)
 	}
+
+	// Initialize MemTable (HNSW)
+	memTable, err := hnsw.New(func(o *hnsw.Options) {
+		o.Dimension = dim
+		o.M = 32
+		o.EF = 100
+		o.Heuristic = true
+		o.DistanceType = distType
+		o.Vectors = idx.vectors
+	})
+	if err != nil {
+		return nil, fmt.Errorf("diskann: create memtable: %w", err)
+	}
+	idx.memTable = memTable
 
 	idx.nextIDAtomic.Store(0)
 	idx.entryPointAtomic.Store(0) // Will be set on first insert
@@ -315,17 +334,13 @@ func (idx *Index) loadBQCodes(indexPath string) error {
 	defer f.Close()
 
 	words := (idx.dim + 63) / 64
-	idx.bqCodes = make([][]uint64, idx.count)
+	idx.bqCodes = make([]uint64, idx.count*words)
 	buf := make([]byte, 8)
-	for i := 0; i < idx.count; i++ {
-		codes := make([]uint64, words)
-		for w := 0; w < words; w++ {
-			if _, err := io.ReadFull(f, buf); err != nil {
-				return err
-			}
-			codes[w] = binary.LittleEndian.Uint64(buf)
+	for i := 0; i < len(idx.bqCodes); i++ {
+		if _, err := io.ReadFull(f, buf); err != nil {
+			return err
 		}
-		idx.bqCodes[i] = codes
+		idx.bqCodes[i] = binary.LittleEndian.Uint64(buf)
 	}
 	return nil
 }
@@ -411,13 +426,10 @@ func (idx *Index) loadPQCodes(indexPath string) error {
 	defer f.Close()
 
 	M := idx.opts.PQSubvectors
-	idx.pqCodes = make([][]byte, idx.count)
+	idx.pqCodes = make([]byte, idx.count*M)
 
-	for i := 0; i < idx.count; i++ {
-		idx.pqCodes[i] = make([]byte, M)
-		if _, err := io.ReadFull(f, idx.pqCodes[i]); err != nil {
-			return err
-		}
+	if _, err := io.ReadFull(f, idx.pqCodes); err != nil {
+		return err
 	}
 
 	return nil
@@ -480,59 +492,18 @@ func (idx *Index) ApplyInsert(ctx context.Context, id uint32, v []float32) error
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
-	// Store vector
+	// Store vector (shared with MemTable)
 	if err := idx.vectors.SetVector(id, v); err != nil {
 		return fmt.Errorf("diskann: store vector: %w", err)
 	}
 
-	// Extend graph and pqCodes if needed
-	idx.graphMu.Lock()
-	for uint32(len(idx.graph)) <= id {
-		idx.graph = append(idx.graph, nil)
-	}
-	for uint32(len(idx.pqCodes)) <= id {
-		idx.pqCodes = append(idx.pqCodes, nil)
-	}
-	if idx.opts.EnableBinaryPrefilter {
-		for uint32(len(idx.bqCodes)) <= id {
-			idx.bqCodes = append(idx.bqCodes, nil)
-		}
-		if idx.bq != nil {
-			idx.bqCodes[id] = idx.bq.EncodeUint64(v)
-		}
+	// Insert into MemTable (HNSW)
+	// This provides immediate durability and searchability.
+	// The on-disk graph (Vamana) is NOT updated here; it is updated during background compaction.
+	if err := idx.memTable.ApplyInsert(ctx, id, v); err != nil {
+		return fmt.Errorf("diskann: memtable insert: %w", err)
 	}
 
-	// Compute PQ code
-	// NOTE: During early inserts (before PQ training), distances are exact.
-	// After compaction, PQ is retrained on live data and distances become approximate.
-	// This causes search behavior to shift after compaction, which is expected.
-	if idx.pq.IsTrained() {
-		idx.pqCodes[id] = idx.pq.Encode(v)
-	} else {
-		// PQ not trained yet - use empty code (will be rebuilt later)
-		idx.pqCodes[id] = make([]byte, idx.opts.PQSubvectors)
-	}
-
-	// Connect to graph using greedy search + robust pruning
-	neighbors := idx.findNeighborsForInsert(v, id, idx.opts.R, idx.opts.L)
-	idx.graph[id] = neighbors
-
-	// Reverse edge repair with re-pruning (MANDATORY for Vamana correctness)
-	idx.repairReverseEdges(id, v, neighbors)
-	idx.graphMu.Unlock()
-
-	// Update entry point: prefer high-degree nodes for better search starting point
-	// This is important for incremental Vamana to maintain good recall
-	entryPoint := idx.entryPointAtomic.Load()
-	if idx.count == 0 {
-		// First insert - set as entry point
-		idx.entryPointAtomic.Store(id)
-	} else if entryPoint < uint32(len(idx.graph)) {
-		// Periodically update entry point to high-degree node
-		if len(neighbors) > len(idx.graph[entryPoint]) {
-			idx.entryPointAtomic.Store(id)
-		}
-	}
 	idx.count++
 
 	// Clear deletion bit
@@ -746,8 +717,10 @@ func (idx *Index) repairReverseEdges(id uint32, v []float32, neighbors []uint32)
 
 // computeDistance computes distance using PQ (if trained) or exact distance.
 func (idx *Index) computeDistance(v []float32, id uint32, distTable [][]float32) float32 {
-	if distTable != nil && id < uint32(len(idx.pqCodes)) && idx.pqCodes[id] != nil {
-		return idx.pqDistance(distTable, idx.pqCodes[id])
+	M := idx.opts.PQSubvectors
+	offset := int(id) * M
+	if distTable != nil && offset+M <= len(idx.pqCodes) {
+		return idx.pqDistance(distTable, idx.pqCodes[offset:offset+M])
 	}
 	// Fall back to exact distance
 	vec := idx.getVector(id)
@@ -823,6 +796,19 @@ func (idx *Index) ApplyUpdate(ctx context.Context, id uint32, v []float32) error
 
 	idx.graphMu.Lock()
 	defer idx.graphMu.Unlock()
+
+	if id >= uint32(len(idx.graph)) {
+		// Update MemTable
+		if err := idx.memTable.ApplyInsert(ctx, id, v); err != nil {
+			return fmt.Errorf("diskann: memtable update: %w", err)
+		}
+
+		idx.deletedMu.Lock()
+		idx.deleted.Clear(uint(id))
+		idx.deletedMu.Unlock()
+
+		return nil
+	}
 
 	// CRITICAL: Snapshot graph BEFORE any mutations
 	// findNeighborsForInsert must search a fully connected graph,
@@ -950,35 +936,116 @@ func (idx *Index) KNNSearch(ctx context.Context, query []float32, k int, opts *i
 		return nil, nil
 	}
 
-	// Build PQ distance table for query
-	var distTable [][]float32
-	if idx.pq.IsTrained() {
-		distTable = idx.pq.BuildDistanceTable(query)
-	}
-
-	// Extract filter for pre-filtering during graph search
-	var filter func(uint32) bool
+	// Wrap filter to exclude deleted items
+	var userFilter func(uint32) bool
 	if opts != nil {
-		filter = opts.Filter
+		userFilter = opts.Filter
+	}
+	filter := func(id uint32) bool {
+		idx.deletedMu.RLock()
+		isDeleted := idx.deleted.Test(uint(id))
+		idx.deletedMu.RUnlock()
+		if isDeleted {
+			return false
+		}
+		if userFilter != nil {
+			return userFilter(id)
+		}
+		return true
 	}
 
-	// Optional BQ query encoding (search-only prefilter)
-	var queryBQ []uint64
-	if idx.opts.EnableBinaryPrefilter && idx.bq != nil && len(idx.bqCodes) > 0 {
-		queryBQ = idx.bq.EncodeUint64(query)
+	// Search MemTable
+	var memResults []index.SearchResult
+	if idx.memTable != nil {
+		memOpts := index.SearchOptions{
+			Filter: filter,
+		}
+		if opts != nil {
+			memOpts.EFSearch = opts.EFSearch
+		}
+		var err error
+		memResults, err = idx.memTable.KNNSearch(ctx, query, k, &memOpts)
+		if err != nil {
+			return nil, fmt.Errorf("diskann: memtable search: %w", err)
+		}
 	}
 
-	// Phase 1: Graph search using PQ distances WITH PRE-FILTERING
-	rerankK := idx.opts.RerankK
-	if rerankK < k {
-		rerankK = k * 2
+	// Search DiskANN Graph (if not empty)
+	var diskResults []index.SearchResult
+	idx.graphMu.RLock()
+	hasGraph := len(idx.graph) > 0
+	idx.graphMu.RUnlock()
+
+	if hasGraph {
+		// Build PQ distance table for query
+		var distTable [][]float32
+		if idx.pq.IsTrained() {
+			distTable = idx.pq.BuildDistanceTable(query)
+		}
+
+		// Optional BQ query encoding (search-only prefilter)
+		var queryBQ []uint64
+		if idx.opts.EnableBinaryPrefilter && idx.bq != nil && len(idx.bqCodes) > 0 {
+			queryBQ = idx.bq.EncodeUint64(query)
+		}
+
+		// Phase 1: Graph search using PQ distances WITH PRE-FILTERING
+		rerankK := idx.opts.RerankK
+		if rerankK < k {
+			rerankK = k * 2
+		}
+		candidates := idx.beamSearch(query, distTable, queryBQ, rerankK, filter)
+
+		// Phase 2: Rerank using exact distances (no post-filtering needed)
+		diskResults = idx.rerank(query, candidates, k, nil) // Filter already applied in beamSearch
 	}
-	candidates := idx.beamSearch(query, distTable, queryBQ, rerankK, filter)
 
-	// Phase 2: Rerank using exact distances (no post-filtering needed)
-	results := idx.rerank(query, candidates, k, nil) // Filter already applied in beamSearch
+	// Merge results
+	return idx.mergeResults(memResults, diskResults, k), nil
+}
 
-	return results, nil
+func (idx *Index) mergeResults(r1, r2 []index.SearchResult, k int) []index.SearchResult {
+	total := len(r1) + len(r2)
+	merged := make([]index.SearchResult, 0, total)
+
+	i, j := 0, 0
+	seen := make(map[uint32]bool)
+
+	for i < len(r1) && j < len(r2) {
+		if r1[i].Distance < r2[j].Distance {
+			if !seen[r1[i].ID] {
+				merged = append(merged, r1[i])
+				seen[r1[i].ID] = true
+			}
+			i++
+		} else {
+			if !seen[r2[j].ID] {
+				merged = append(merged, r2[j])
+				seen[r2[j].ID] = true
+			}
+			j++
+		}
+	}
+
+	for i < len(r1) {
+		if !seen[r1[i].ID] {
+			merged = append(merged, r1[i])
+			seen[r1[i].ID] = true
+		}
+		i++
+	}
+	for j < len(r2) {
+		if !seen[r2[j].ID] {
+			merged = append(merged, r2[j])
+			seen[r2[j].ID] = true
+		}
+		j++
+	}
+
+	if len(merged) > k {
+		merged = merged[:k]
+	}
+	return merged
 }
 
 // beamSearch performs beam search through the graph using PQ distances with optional pre-filtering.
@@ -1061,10 +1128,14 @@ func (idx *Index) beamSearch(query []float32, distTable [][]float32, queryBQ []u
 				}
 
 				// Optional BQ prefilter: skip nodes that are too far in Hamming space
-				if queryBQ != nil && neighbor < uint32(len(idx.bqCodes)) && idx.bqCodes[neighbor] != nil {
-					norm := quantization.NormalizedHammingDistance(queryBQ, idx.bqCodes[neighbor], idx.dim)
-					if norm > idx.opts.BinaryPrefilterMaxNormalizedDistance {
-						continue
+				if queryBQ != nil {
+					words := (idx.dim + 63) / 64
+					offset := int(neighbor) * words
+					if offset+words <= len(idx.bqCodes) {
+						norm := quantization.NormalizedHammingDistance(queryBQ, idx.bqCodes[offset:offset+words], idx.dim)
+						if norm > idx.opts.BinaryPrefilterMaxNormalizedDistance {
+							continue
+						}
 					}
 				}
 
@@ -1310,7 +1381,13 @@ func (idx *Index) Compact(ctx context.Context) error {
 	deletedCount := idx.deleted.Count()
 	idx.deletedMu.RUnlock()
 
-	if deletedCount == 0 {
+	idx.graphMu.RLock()
+	graphLen := len(idx.graph)
+	idx.graphMu.RUnlock()
+
+	hasNewVectors := idx.count > graphLen
+
+	if deletedCount == 0 && !hasNewVectors {
 		return nil // Nothing to compact
 	}
 
@@ -1362,26 +1439,33 @@ func (idx *Index) Compact(ctx context.Context) error {
 
 	// Rebuild vectors and PQ codes
 	newVectors := columnar.New(idx.dim)
-	newPQCodes := make([][]byte, len(liveVectors))
-	var newBQCodes [][]uint64
+	M := idx.opts.PQSubvectors
+	newPQCodes := make([]byte, len(liveVectors)*M)
+	var newBQCodes []uint64
 	if idx.opts.EnableBinaryPrefilter && idx.bq != nil {
-		newBQCodes = make([][]uint64, len(liveVectors))
+		words := (idx.dim + 63) / 64
+		newBQCodes = make([]uint64, len(liveVectors)*words)
 	}
 	for i, vec := range liveVectors {
 		if err := newVectors.SetVector(uint32(i), vec); err != nil {
 			return fmt.Errorf("diskann: set vector %d: %w", i, err)
 		}
-		newPQCodes[i] = idx.pq.Encode(vec)
+		copy(newPQCodes[i*M:], idx.pq.Encode(vec))
 		if newBQCodes != nil {
-			newBQCodes[i] = idx.bq.EncodeUint64(vec)
+			words := (idx.dim + 63) / 64
+			copy(newBQCodes[i*words:], idx.bq.EncodeUint64(vec))
 		}
 	}
 
 	// Rebuild graph with remapped IDs
 	idx.graphMu.Lock()
+	oldGraphLen := len(idx.graph)
 	newGraph := make([][]uint32, len(liveVectors))
+	var newVectorIDs []uint32
+
 	for oldID, newID := range idMap {
-		if int(oldID) >= len(idx.graph) {
+		if int(oldID) >= oldGraphLen {
+			newVectorIDs = append(newVectorIDs, newID)
 			continue
 		}
 
@@ -1407,8 +1491,6 @@ func (idx *Index) Compact(ctx context.Context) error {
 
 	// Replace with new structures
 	idx.graph = newGraph
-
-	// Rebuild incoming edges reverse index
 	idx.incomingEdges = make(map[uint32][]uint32)
 	for nodeID := uint32(0); nodeID < uint32(len(newGraph)); nodeID++ {
 		for _, neighbor := range newGraph[nodeID] {
@@ -1416,13 +1498,35 @@ func (idx *Index) Compact(ctx context.Context) error {
 		}
 	}
 
-	// Replace other search-critical structures under graphMu to avoid races with concurrent searches.
 	idx.pqCodes = newPQCodes
 	if newBQCodes != nil {
 		idx.bqCodes = newBQCodes
 	}
 	idx.vectors = newVectors
 	idx.count = len(liveVectors)
+
+	// Insert new vectors (from MemTable) into the graph
+	for _, id := range newVectorIDs {
+		v, _ := idx.vectors.GetVector(id)
+		neighbors := idx.findNeighborsForInsert(v, id, idx.opts.R, idx.opts.L)
+		idx.graph[id] = neighbors
+		idx.repairReverseEdges(id, v, neighbors)
+	}
+
+	// Reset MemTable
+	memTable, err := hnsw.New(func(o *hnsw.Options) {
+		o.Dimension = idx.dim
+		o.M = 32
+		o.EF = 100
+		o.Heuristic = true
+		o.DistanceType = idx.distType
+		o.Vectors = idx.vectors
+	})
+	if err != nil {
+		idx.graphMu.Unlock()
+		return fmt.Errorf("diskann: reset memtable: %w", err)
+	}
+	idx.memTable = memTable
 
 	idx.graphMu.Unlock()
 

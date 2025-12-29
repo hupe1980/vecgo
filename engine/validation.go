@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"iter"
 	"math"
 	"sync/atomic"
 
@@ -226,6 +227,71 @@ func (v *ValidatedCoordinator[T]) Count() int64 {
 // SetCount sets the vector count, useful when restoring from snapshot.
 func (v *ValidatedCoordinator[T]) SetCount(n int64) {
 	v.count.Store(n)
+}
+
+// HybridSearch validates input and delegates to the inner coordinator.
+func (v *ValidatedCoordinator[T]) HybridSearch(ctx context.Context, query []float32, k int, opts *HybridSearchOptions) ([]index.SearchResult, error) {
+	if err := v.validateVector(query); err != nil {
+		return nil, err
+	}
+	if k <= 0 {
+		return nil, index.ErrInvalidK
+	}
+	if k > v.limits.MaxK {
+		return nil, fmt.Errorf("k %d exceeds limit %d", k, v.limits.MaxK)
+	}
+	return v.inner.HybridSearch(ctx, query, k, opts)
+}
+
+// KNNSearchStream validates input and delegates to the inner coordinator.
+func (v *ValidatedCoordinator[T]) KNNSearchStream(ctx context.Context, query []float32, k int, opts *index.SearchOptions) iter.Seq2[index.SearchResult, error] {
+	// We can't easily return an error from the iterator setup, so we return an iterator that yields an error immediately if validation fails.
+	if err := v.validateVector(query); err != nil {
+		return func(yield func(index.SearchResult, error) bool) {
+			yield(index.SearchResult{}, err)
+		}
+	}
+	if k <= 0 {
+		return func(yield func(index.SearchResult, error) bool) {
+			yield(index.SearchResult{}, index.ErrInvalidK)
+		}
+	}
+	if k > v.limits.MaxK {
+		return func(yield func(index.SearchResult, error) bool) {
+			yield(index.SearchResult{}, fmt.Errorf("k %d exceeds limit %d", k, v.limits.MaxK))
+		}
+	}
+	return v.inner.KNNSearchStream(ctx, query, k, opts)
+}
+
+// EnableProductQuantization delegates to the inner coordinator.
+func (v *ValidatedCoordinator[T]) EnableProductQuantization(cfg index.ProductQuantizationConfig) error {
+	return v.inner.EnableProductQuantization(cfg)
+}
+
+// DisableProductQuantization delegates to the inner coordinator.
+func (v *ValidatedCoordinator[T]) DisableProductQuantization() {
+	v.inner.DisableProductQuantization()
+}
+
+// SaveToWriter delegates to the inner coordinator.
+func (v *ValidatedCoordinator[T]) SaveToWriter(w io.Writer) error {
+	return v.inner.SaveToWriter(w)
+}
+
+// SaveToFile delegates to the inner coordinator.
+func (v *ValidatedCoordinator[T]) SaveToFile(path string) error {
+	return v.inner.SaveToFile(path)
+}
+
+// RecoverFromWAL delegates to the inner coordinator.
+func (v *ValidatedCoordinator[T]) RecoverFromWAL(ctx context.Context) error {
+	return v.inner.RecoverFromWAL(ctx)
+}
+
+// Stats delegates to the inner coordinator.
+func (v *ValidatedCoordinator[T]) Stats() index.Stats {
+	return v.inner.Stats()
 }
 
 // Close closes the wrapped coordinator if it implements io.Closer.

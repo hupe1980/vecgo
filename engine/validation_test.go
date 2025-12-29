@@ -2,6 +2,8 @@ package engine
 
 import (
 	"context"
+	"io"
+	"iter"
 	"math"
 	"strings"
 	"testing"
@@ -57,6 +59,42 @@ func (m *mockCoordinator[T]) KNNSearch(ctx context.Context, query []float32, k i
 
 func (m *mockCoordinator[T]) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint32) bool) ([]index.SearchResult, error) {
 	return []index.SearchResult{{ID: 1, Distance: 0.1}}, nil
+}
+
+func (m *mockCoordinator[T]) HybridSearch(ctx context.Context, query []float32, k int, opts *HybridSearchOptions) ([]index.SearchResult, error) {
+	return []index.SearchResult{{ID: 1, Distance: 0.1}}, nil
+}
+
+func (m *mockCoordinator[T]) KNNSearchStream(ctx context.Context, query []float32, k int, opts *index.SearchOptions) iter.Seq2[index.SearchResult, error] {
+	return func(yield func(index.SearchResult, error) bool) {
+		yield(index.SearchResult{ID: 1, Distance: 0.1}, nil)
+	}
+}
+
+func (m *mockCoordinator[T]) EnableProductQuantization(cfg index.ProductQuantizationConfig) error {
+	return nil
+}
+
+func (m *mockCoordinator[T]) DisableProductQuantization() {}
+
+func (m *mockCoordinator[T]) SaveToWriter(w io.Writer) error {
+	return nil
+}
+
+func (m *mockCoordinator[T]) SaveToFile(path string) error {
+	return nil
+}
+
+func (m *mockCoordinator[T]) RecoverFromWAL(ctx context.Context) error {
+	return nil
+}
+
+func (m *mockCoordinator[T]) Stats() index.Stats {
+	return index.Stats{}
+}
+
+func (m *mockCoordinator[T]) Close() error {
+	return nil
 }
 
 func TestValidation_NilVector(t *testing.T) {

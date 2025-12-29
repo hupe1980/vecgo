@@ -22,6 +22,9 @@ type Durability interface {
 
 	LogPrepareDelete(id uint32) error
 	LogCommitDelete(id uint32) error
+
+	// Close releases any resources held by the durability layer (e.g. file handles).
+	Close() error
 }
 
 // NoopDurability implements Durability with no persistence.
@@ -47,3 +50,4 @@ func (NoopDurability) LogPrepareUpdate(uint32, []float32, []byte, metadata.Metad
 func (NoopDurability) LogCommitUpdate(uint32) error  { return nil }
 func (NoopDurability) LogPrepareDelete(uint32) error { return nil }
 func (NoopDurability) LogCommitDelete(uint32) error  { return nil }
+func (NoopDurability) Close() error                  { return nil }

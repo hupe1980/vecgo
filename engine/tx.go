@@ -3,11 +3,15 @@ package engine
 import (
 	"context"
 	"fmt"
+	"io"
+	"iter"
+	"os"
 	"sync"
 
 	"github.com/hupe1980/vecgo/codec"
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/metadata"
+	"github.com/hupe1980/vecgo/wal"
 )
 
 // Tx is the transaction/coordination unit for WAL-backed mutations.
@@ -23,8 +27,9 @@ type Tx[T any] struct {
 	dataStore Store[T]
 	metaStore *metadata.UnifiedIndex
 
-	durability Durability
-	codec      codec.Codec
+	durability   Durability
+	codec        codec.Codec
+	snapshotPath string
 }
 
 // allocateID allocates a new ID from the index
@@ -331,4 +336,168 @@ func (tx *Tx[T]) KNNSearch(ctx context.Context, query []float32, k int, opts *in
 // This method is added to satisfy the coordinator[T] interface.
 func (tx *Tx[T]) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint32) bool) ([]index.SearchResult, error) {
 	return tx.txIndex.BruteSearch(ctx, query, k, filter)
+}
+
+// EnableProductQuantization enables Product Quantization (PQ) on the underlying index.
+func (tx *Tx[T]) EnableProductQuantization(cfg index.ProductQuantizationConfig) error {
+	if cap, ok := tx.txIndex.(index.ProductQuantizationEnabler); ok {
+		return cap.EnableProductQuantization(cfg)
+	}
+	return fmt.Errorf("index type %T does not support product quantization", tx.txIndex)
+}
+
+// DisableProductQuantization disables Product Quantization (PQ) on the underlying index.
+func (tx *Tx[T]) DisableProductQuantization() {
+	if cap, ok := tx.txIndex.(index.ProductQuantizationEnabler); ok {
+		cap.DisableProductQuantization()
+	}
+}
+
+// Close releases all resources held by the transaction coordinator.
+func (tx *Tx[T]) Close() error {
+	var errs []error
+
+	// Close durability (WAL)
+	if err := tx.durability.Close(); err != nil {
+		errs = append(errs, fmt.Errorf("durability close: %w", err))
+	}
+
+	// Close index if it implements io.Closer
+	if c, ok := tx.txIndex.(io.Closer); ok {
+		if err := c.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("index close: %w", err))
+		}
+	}
+
+	// Close data store if it implements io.Closer
+	if c, ok := tx.dataStore.(io.Closer); ok {
+		if err := c.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("datastore close: %w", err))
+		}
+	}
+
+	// Close metadata store if it implements io.Closer
+	// Note: UnifiedIndex currently doesn't implement io.Closer, but we check for future proofing
+	if c, ok := any(tx.metaStore).(io.Closer); ok {
+		if err := c.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("metastore close: %w", err))
+		}
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("close errors: %v", errs)
+	}
+	return nil
+}
+
+// HybridSearch performs a hybrid search combining vector similarity and metadata filtering.
+func (tx *Tx[T]) HybridSearch(ctx context.Context, query []float32, k int, opts *HybridSearchOptions) ([]index.SearchResult, error) {
+	if opts == nil {
+		opts = &HybridSearchOptions{EF: 0}
+	}
+
+	// If no metadata filters, fall back to regular KNN search
+	if opts.MetadataFilters == nil || len(opts.MetadataFilters.Filters) == 0 {
+		return tx.KNNSearch(ctx, query, k, &index.SearchOptions{EFSearch: opts.EF})
+	}
+
+	// Create metadata filter function
+	metadataFilter := func(id uint32) bool {
+		meta, ok := tx.metaStore.Get(id)
+		if !ok {
+			return false
+		}
+		return opts.MetadataFilters.Matches(meta)
+	}
+	if tx.metaStore != nil {
+		metadataFilter = tx.metaStore.CreateFilterFunc(opts.MetadataFilters)
+	}
+
+	if opts.PreFilter {
+		// Pre-filtering
+		searchOpts := &index.SearchOptions{EFSearch: opts.EF, Filter: metadataFilter}
+		return tx.txIndex.KNNSearch(ctx, query, k, searchOpts)
+	}
+
+	// Post-filtering
+	oversampleK := min(k*3, 1000)
+	searchOpts := &index.SearchOptions{EFSearch: opts.EF}
+	bestCandidates, err := tx.txIndex.KNNSearch(ctx, query, oversampleK, searchOpts)
+	if err != nil {
+		return nil, err
+	}
+
+	// Apply metadata filtering
+	results := make([]index.SearchResult, 0, k)
+	for _, item := range bestCandidates {
+		if len(results) >= k {
+			break
+		}
+		if metadataFilter(item.ID) {
+			results = append(results, item)
+		}
+	}
+	return results, nil
+}
+
+// KNNSearchStream returns an iterator over K-nearest neighbor search results.
+func (tx *Tx[T]) KNNSearchStream(ctx context.Context, query []float32, k int, opts *index.SearchOptions) iter.Seq2[index.SearchResult, error] {
+	return tx.txIndex.KNNSearchStream(ctx, query, k, opts)
+}
+
+// SaveToWriter saves the database to an io.Writer.
+func (tx *Tx[T]) SaveToWriter(w io.Writer) error {
+	// Convert UnifiedIndex to map store for snapshot saving
+	metadataStore := NewMapStore[metadata.Metadata]()
+	for id, doc := range tx.metaStore.ToMap() {
+		_ = metadataStore.Set(id, doc)
+	}
+	return SaveToWriter(w, tx.txIndex, tx.dataStore, metadataStore, tx.codec)
+}
+
+// SaveToFile saves the database to a file.
+func (tx *Tx[T]) SaveToFile(path string) error {
+	// Convert UnifiedIndex to map store for snapshot saving
+	metadataStore := NewMapStore[metadata.Metadata]()
+	for id, doc := range tx.metaStore.ToMap() {
+		_ = metadataStore.Set(id, doc)
+	}
+
+	var w *wal.WAL
+	if walLog, ok := tx.durability.(*wal.WAL); ok {
+		w = walLog
+	}
+
+	return SaveToFile(path, tx.txIndex, tx.dataStore, metadataStore, w, tx.codec)
+}
+
+// RecoverFromWAL replays the write-ahead log.
+func (tx *Tx[T]) RecoverFromWAL(ctx context.Context) error {
+	w, ok := tx.durability.(*wal.WAL)
+	if !ok {
+		return fmt.Errorf("durability layer is not a WAL")
+	}
+	return RecoverFromWAL(ctx, tx.txIndex, tx.dataStore, tx.metaStore, w, tx.codec)
+}
+
+// Stats returns statistics about the underlying index.
+func (tx *Tx[T]) Stats() index.Stats {
+	return tx.txIndex.Stats()
+}
+
+// autoCheckpoint is called by WAL when auto-checkpoint thresholds are exceeded.
+func (tx *Tx[T]) autoCheckpoint() error {
+	if tx.snapshotPath == "" {
+		return nil
+	}
+	// Create a temporary file for the snapshot
+	tmpPath := tx.snapshotPath + ".tmp"
+	if err := tx.SaveToFile(tmpPath); err != nil {
+		return fmt.Errorf("failed to save snapshot: %w", err)
+	}
+	// Rename to final path (atomic)
+	if err := os.Rename(tmpPath, tx.snapshotPath); err != nil {
+		return fmt.Errorf("failed to rename snapshot: %w", err)
+	}
+	return nil
 }

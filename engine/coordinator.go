@@ -22,11 +22,26 @@ package engine
 import (
 	"context"
 	"fmt"
+	"io"
+	"iter"
 
 	"github.com/hupe1980/vecgo/codec"
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/metadata"
 )
+
+// HybridSearchOptions contains options for hybrid search (vector + metadata).
+type HybridSearchOptions struct {
+	// EF (Explore Factor) for HNSW search
+	EF int
+
+	// MetadataFilters are metadata conditions that must all match (AND logic)
+	MetadataFilters *metadata.FilterSet
+
+	// PreFilter applies metadata filtering before vector search (more efficient but may reduce recall)
+	// PostFilter applies metadata filtering after vector search (maintains recall but less efficient)
+	PreFilter bool
+}
 
 // Coordinator is the interface for all mutation orchestration in vecgo.
 //
@@ -65,6 +80,34 @@ type Coordinator[T any] interface {
 
 	// BruteSearch performs exact brute-force search with optional filter.
 	BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint32) bool) ([]index.SearchResult, error)
+
+	// HybridSearch performs a hybrid search combining vector similarity and metadata filtering.
+	HybridSearch(ctx context.Context, query []float32, k int, opts *HybridSearchOptions) ([]index.SearchResult, error)
+
+	// KNNSearchStream returns an iterator over K-nearest neighbor search results.
+	KNNSearchStream(ctx context.Context, query []float32, k int, opts *index.SearchOptions) iter.Seq2[index.SearchResult, error]
+
+	// EnableProductQuantization enables Product Quantization (PQ) on the underlying index(es).
+	EnableProductQuantization(cfg index.ProductQuantizationConfig) error
+
+	// DisableProductQuantization disables Product Quantization (PQ) on the underlying index(es).
+	DisableProductQuantization()
+
+	// SaveToWriter saves the database to an io.Writer.
+	// Note: For sharded coordinators, this might not be supported or might save a combined format.
+	SaveToWriter(w io.Writer) error
+
+	// SaveToFile saves the database to a file (or directory for sharded).
+	SaveToFile(path string) error
+
+	// RecoverFromWAL replays the write-ahead log to recover from a crash.
+	RecoverFromWAL(ctx context.Context) error
+
+	// Stats returns statistics about the underlying index(es).
+	Stats() index.Stats
+
+	// Close releases all resources held by the coordinator (indexes, stores, WALs).
+	Close() error
 }
 
 // Compile-time interface checks

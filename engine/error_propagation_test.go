@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"iter"
 	"testing"
 	"time"
 
@@ -61,6 +63,42 @@ func (f *failingCoordinator[T]) BruteSearch(ctx context.Context, query []float32
 	return nil, f.err
 }
 
+func (f *failingCoordinator[T]) HybridSearch(ctx context.Context, query []float32, k int, opts *engine.HybridSearchOptions) ([]index.SearchResult, error) {
+	return nil, f.err
+}
+
+func (f *failingCoordinator[T]) KNNSearchStream(ctx context.Context, query []float32, k int, opts *index.SearchOptions) iter.Seq2[index.SearchResult, error] {
+	return func(yield func(index.SearchResult, error) bool) {
+		yield(index.SearchResult{}, f.err)
+	}
+}
+
+func (f *failingCoordinator[T]) EnableProductQuantization(cfg index.ProductQuantizationConfig) error {
+	return f.err
+}
+
+func (f *failingCoordinator[T]) DisableProductQuantization() {}
+
+func (f *failingCoordinator[T]) SaveToWriter(w io.Writer) error {
+	return f.err
+}
+
+func (f *failingCoordinator[T]) SaveToFile(path string) error {
+	return f.err
+}
+
+func (f *failingCoordinator[T]) RecoverFromWAL(ctx context.Context) error {
+	return f.err
+}
+
+func (f *failingCoordinator[T]) Stats() index.Stats {
+	return index.Stats{}
+}
+
+func (f *failingCoordinator[T]) Close() error {
+	return f.err
+}
+
 // slowCoordinator is a mock coordinator that delays operations.
 type slowCoordinator[T any] struct {
 	delay time.Duration
@@ -111,6 +149,62 @@ func (s *slowCoordinator[T]) BruteSearch(ctx context.Context, query []float32, k
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+}
+
+func (s *slowCoordinator[T]) HybridSearch(ctx context.Context, query []float32, k int, opts *engine.HybridSearchOptions) ([]index.SearchResult, error) {
+	select {
+	case <-time.After(s.delay):
+		return nil, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (s *slowCoordinator[T]) KNNSearchStream(ctx context.Context, query []float32, k int, opts *index.SearchOptions) iter.Seq2[index.SearchResult, error] {
+	return func(yield func(index.SearchResult, error) bool) {
+		select {
+		case <-time.After(s.delay):
+		case <-ctx.Done():
+			yield(index.SearchResult{}, ctx.Err())
+		}
+	}
+}
+
+func (s *slowCoordinator[T]) EnableProductQuantization(cfg index.ProductQuantizationConfig) error {
+	time.Sleep(s.delay)
+	return nil
+}
+
+func (s *slowCoordinator[T]) DisableProductQuantization() {
+	time.Sleep(s.delay)
+}
+
+func (s *slowCoordinator[T]) SaveToWriter(w io.Writer) error {
+	time.Sleep(s.delay)
+	return nil
+}
+
+func (s *slowCoordinator[T]) SaveToFile(path string) error {
+	time.Sleep(s.delay)
+	return nil
+}
+
+func (s *slowCoordinator[T]) RecoverFromWAL(ctx context.Context) error {
+	select {
+	case <-time.After(s.delay):
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *slowCoordinator[T]) Stats() index.Stats {
+	return index.Stats{}
+}
+
+func (s *slowCoordinator[T]) Close() error {
+	time.Sleep(s.delay)
+	return nil
 }
 
 // TestShardedSearchErrorPropagation verifies that errors from individual shards

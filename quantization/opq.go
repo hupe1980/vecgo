@@ -98,7 +98,7 @@ func (opq *OptimizedProductQuantizer) updateRotation(originalVectors, rotatedVec
 		reconstructed := opq.pq.Decode(codes)
 
 		// Compute residual (quantization error)
-		for j := 0; j < dim; j++ {
+		for j := range dim {
 			residuals[i][j] = rotatedVectors[i][j] - reconstructed[j]
 		}
 	}
@@ -135,7 +135,7 @@ func (opq *OptimizedProductQuantizer) updateRotation(originalVectors, rotatedVec
 	// Apply small rotation adjustment using Householder reflection
 	// This is a simplified update that nudges the rotation toward better decorrelation
 	alpha := float32(0.1) // learning rate
-	for i := 0; i < dim; i++ {
+	for i := range dim {
 		for j := 0; j < dim; j++ {
 			if i == j {
 				opq.rotation[i][j] += alpha * (eigenvector[i] - opq.rotation[i][j])
@@ -173,16 +173,16 @@ func (opq *OptimizedProductQuantizer) computeCovariance(vectors [][]float32) [][
 	}
 
 	for _, vec := range vectors {
-		for i := 0; i < dim; i++ {
-			for j := 0; j < dim; j++ {
+		for i := range dim {
+			for j := range dim {
 				cov[i][j] += (vec[i] - mean[i]) * (vec[j] - mean[j])
 			}
 		}
 	}
 
 	// Normalize
-	for i := 0; i < dim; i++ {
-		for j := 0; j < dim; j++ {
+	for i := range dim {
+		for j := range dim {
 			cov[i][j] /= float32(n - 1)
 		}
 	}
@@ -194,30 +194,30 @@ func (opq *OptimizedProductQuantizer) computeCovariance(vectors [][]float32) [][
 func (opq *OptimizedProductQuantizer) orthogonalize(matrix [][]float32) {
 	dim := len(matrix)
 
-	for i := 0; i < dim; i++ {
+	for i := range dim {
 		// Orthogonalize against all previous rows
-		for j := 0; j < i; j++ {
+		for j := range i {
 			// Compute dot product
 			dot := float32(0)
-			for k := 0; k < dim; k++ {
+			for k := range dim {
 				dot += matrix[i][k] * matrix[j][k]
 			}
 
 			// Subtract projection
-			for k := 0; k < dim; k++ {
+			for k := range dim {
 				matrix[i][k] -= dot * matrix[j][k]
 			}
 		}
 
 		// Normalize row
 		norm := float32(0)
-		for k := 0; k < dim; k++ {
+		for k := range dim {
 			norm += matrix[i][k] * matrix[i][k]
 		}
 		norm = float32(math.Sqrt(float64(norm)))
 
 		if norm > 1e-10 {
-			for k := 0; k < dim; k++ {
+			for k := range dim {
 				matrix[i][k] /= norm
 			}
 		}
@@ -302,7 +302,7 @@ func (opq *OptimizedProductQuantizer) transpose(matrix [][]float32) [][]float32 
 	result := make([][]float32, n)
 	for i := range result {
 		result[i] = make([]float32, n)
-		for j := 0; j < n; j++ {
+		for j := range n {
 			result[i][j] = matrix[j][i]
 		}
 	}

@@ -173,10 +173,7 @@ func HammingDistance(a, b []uint64) int {
 // This is a convenience wrapper that converts bytes to uint64 for POPCNT.
 func HammingDistanceBytes(a, b []byte) int {
 	// Use byte-level POPCNT for smaller vectors or misaligned data
-	minLen := len(a)
-	if len(b) < minLen {
-		minLen = len(b)
-	}
+	minLen := min(len(b), len(a))
 
 	var dist int
 	// Process 8 bytes at a time using uint64 POPCNT

@@ -3,6 +3,12 @@ package engine
 import (
 	"context"
 	"fmt"
+	"io"
+	"iter"
+	"os"
+	"path/filepath"
+	"sort"
+	"sync"
 
 	"github.com/hupe1980/vecgo/codec"
 	"github.com/hupe1980/vecgo/index"
@@ -512,13 +518,34 @@ func heapifyDown(arr []index.SearchResult, i int) {
 	}
 }
 
+// EnableProductQuantization enables Product Quantization (PQ) on all shards.
+func (sc *ShardedCoordinator[T]) EnableProductQuantization(cfg index.ProductQuantizationConfig) error {
+	var errs []error
+	for i, shard := range sc.shards {
+		if err := shard.EnableProductQuantization(cfg); err != nil {
+			errs = append(errs, fmt.Errorf("shard %d: %w", i, err))
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("failed to enable PQ on %d shards: %v", len(errs), errs)
+	}
+	return nil
+}
+
+// DisableProductQuantization disables Product Quantization (PQ) on all shards.
+func (sc *ShardedCoordinator[T]) DisableProductQuantization() {
+	for _, shard := range sc.shards {
+		shard.DisableProductQuantization()
+	}
+}
+
 // Close closes all shards and releases their resources.
 // This method ensures proper cleanup of all shard resources, including
 // the worker pool and any background workers in the underlying indexes.
 //
 // Shutdown order:
 //  1. Close worker pool (waits for in-flight searches to complete)
-//  2. Close all shard indexes (background workers, caches, etc.)
+//  2. Close all shards (durability, indexes, stores)
 //
 // This ensures graceful shutdown with no work interruption.
 func (sc *ShardedCoordinator[T]) Close() error {
@@ -530,16 +557,157 @@ func (sc *ShardedCoordinator[T]) Close() error {
 	// Then close all shards
 	var errs []error
 	for i, shard := range sc.shards {
-		// Each shard's txIndex may have background workers (e.g., DiskANN compaction)
-		// Close the index to ensure clean shutdown
-		if closeable, ok := shard.txIndex.(interface{ Close() error }); ok {
-			if err := closeable.Close(); err != nil {
-				errs = append(errs, fmt.Errorf("shard %d index: %w", i, err))
-			}
+		if err := shard.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("shard %d close: %w", i, err))
 		}
 	}
 	if len(errs) > 0 {
 		return fmt.Errorf("sharded close errors: %v", errs)
 	}
 	return nil
+}
+
+// HybridSearch performs a hybrid search across all shards.
+func (sc *ShardedCoordinator[T]) HybridSearch(ctx context.Context, query []float32, k int, opts *HybridSearchOptions) ([]index.SearchResult, error) {
+	// Fan out to all shards
+	results := make([][]index.SearchResult, sc.numShards)
+	errs := make([]error, sc.numShards)
+	var wg sync.WaitGroup
+
+	for i := 0; i < sc.numShards; i++ {
+		wg.Add(1)
+		// Use worker pool if available, otherwise goroutine
+		// But worker pool is for KNNSearch. Can we reuse it?
+		// WorkerPool task is specific.
+		// Let's just use goroutines for now, or extend WorkerPool.
+		// Given "Breaking changes are no problem", I'll just use goroutines for simplicity.
+		go func(shardIdx int) {
+			defer wg.Done()
+			res, err := sc.shards[shardIdx].HybridSearch(ctx, query, k, opts)
+			results[shardIdx] = res
+			errs[shardIdx] = err
+		}(i)
+	}
+	wg.Wait()
+
+	// Check errors
+	for _, err := range errs {
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Merge results
+	// We can reuse the merge logic from KNNSearch if we extract it.
+	// But for now, duplicate it or use a simple merge.
+	// Since k is usually small, a simple merge is fine.
+	merged := make([]index.SearchResult, 0, k*sc.numShards)
+	for _, res := range results {
+		merged = append(merged, res...)
+	}
+
+	// Sort and take top k
+	// Note: This is not as efficient as a heap merge, but correct.
+	// Optimization: Use heap merge.
+	// Let's use the existing merge logic if possible.
+	// But KNNSearch logic is embedded.
+	// I'll implement a simple sort here.
+	// index.SearchResult doesn't implement sort.Interface.
+	// I need to sort manually.
+	// Actually, index package has sort helpers? No.
+	// I'll use sort.Slice.
+	// Wait, I need to import "sort".
+	// Or I can use the heap logic from KNNSearch if I copy it.
+	// I'll use a simple insertion sort or selection sort if k is small, or sort.Slice.
+	// I'll assume sort package is available or add it.
+	// I'll add "sort" to imports.
+
+	// For now, let's just return the merged results sorted.
+	// I'll add "sort" to imports in a separate step if needed.
+	// Or I can use a simple bubble sort if k is very small? No.
+	// I'll use a heap.
+
+	return sc.mergeResults(results, k), nil
+}
+
+// mergeResults merges sorted results from shards into a single sorted result.
+func (sc *ShardedCoordinator[T]) mergeResults(shardResults [][]index.SearchResult, k int) []index.SearchResult {
+	total := 0
+	for _, res := range shardResults {
+		total += len(res)
+	}
+	flat := make([]index.SearchResult, 0, total)
+	for _, res := range shardResults {
+		flat = append(flat, res...)
+	}
+
+	if len(flat) == 0 {
+		return nil
+	}
+
+	// Sort by distance
+	sort.Slice(flat, func(i, j int) bool {
+		return flat[i].Distance < flat[j].Distance
+	})
+
+	// Take top k
+	if len(flat) > k {
+		return flat[:k]
+	}
+	return flat
+}
+
+// KNNSearchStream returns an iterator over K-nearest neighbor search results.
+func (sc *ShardedCoordinator[T]) KNNSearchStream(ctx context.Context, query []float32, k int, opts *index.SearchOptions) iter.Seq2[index.SearchResult, error] {
+	// For sharded streaming, we collect all results and yield them.
+	// True streaming merge is complex.
+	return func(yield func(index.SearchResult, error) bool) {
+		results, err := sc.KNNSearch(ctx, query, k, opts)
+		if err != nil {
+			yield(index.SearchResult{}, err)
+			return
+		}
+		for _, res := range results {
+			if !yield(res, nil) {
+				return
+			}
+		}
+	}
+}
+
+// SaveToWriter is not supported for sharded coordinator.
+func (sc *ShardedCoordinator[T]) SaveToWriter(w io.Writer) error {
+	return fmt.Errorf("SaveToWriter not supported for sharded coordinator (use SaveToFile)")
+}
+
+// SaveToFile saves each shard to a subdirectory.
+func (sc *ShardedCoordinator[T]) SaveToFile(path string) error {
+	if err := os.MkdirAll(path, 0755); err != nil {
+		return err
+	}
+	for i, shard := range sc.shards {
+		shardPath := filepath.Join(path, fmt.Sprintf("shard-%d", i))
+		if err := shard.SaveToFile(shardPath); err != nil {
+			return fmt.Errorf("shard %d save: %w", i, err)
+		}
+	}
+	return nil
+}
+
+// RecoverFromWAL recovers each shard from its WAL.
+func (sc *ShardedCoordinator[T]) RecoverFromWAL(ctx context.Context) error {
+	for i, shard := range sc.shards {
+		if err := shard.RecoverFromWAL(ctx); err != nil {
+			return fmt.Errorf("shard %d recovery: %w", i, err)
+		}
+	}
+	return nil
+}
+
+// Stats returns statistics from the first shard (primary).
+func (sc *ShardedCoordinator[T]) Stats() index.Stats {
+	if len(sc.shards) > 0 {
+		return sc.shards[0].Stats()
+	}
+	return index.Stats{}
 }
