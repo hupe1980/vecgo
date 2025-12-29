@@ -16,8 +16,8 @@ func (h *HNSW) Stats() index.Stats {
 	deletedNodes := 0
 
 	// Iterate all segments
-	for _, segPtr := range h.segments {
-		seg := segPtr.Load()
+	for i := range h.segments {
+		seg := h.segments[i].Load()
 		if seg == nil {
 			continue
 		}
@@ -40,8 +40,8 @@ func (h *HNSW) Stats() index.Stats {
 	connectionNodeStats := make([]int, maxLevel+1)
 
 	// Iterate all segments again for detailed stats
-	for _, segPtr := range h.segments {
-		seg := segPtr.Load()
+	for i := range h.segments {
+		seg := h.segments[i].Load()
 		if seg == nil {
 			continue
 		}

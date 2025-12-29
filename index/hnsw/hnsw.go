@@ -796,8 +796,8 @@ func (h *HNSW) Delete(ctx context.Context, id uint32) error {
 		// Or just lazy update.
 		// For now, linear scan of segments.
 		h.segmentsMu.RLock()
-		for _, segPtr := range h.segments {
-			seg := segPtr.Load()
+		for i := range h.segments {
+			seg := h.segments[i].Load()
 			if seg == nil {
 				continue
 			}
@@ -983,8 +983,8 @@ func (h *HNSW) BruteSearch(ctx context.Context, query []float32, k int, filter f
 	h.segmentsMu.RLock()
 	defer h.segmentsMu.RUnlock()
 
-	for _, segPtr := range h.segments {
-		seg := segPtr.Load()
+	for i := range h.segments {
+		seg := h.segments[i].Load()
 		if seg == nil {
 			continue
 		}
