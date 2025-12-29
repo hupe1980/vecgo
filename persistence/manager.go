@@ -110,7 +110,6 @@ func NewManager(opts ManagerOptions) (*Manager, error) {
 		walOptFns := append([]func(*wal.Options){
 			func(o *wal.Options) {
 				o.Path = opts.WALPath
-				o.MetadataCodec = pm.codec
 			},
 		}, opts.WALOptions...)
 

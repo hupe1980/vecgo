@@ -27,7 +27,7 @@ func TestCoordinator_InsertUpdateDelete(t *testing.T) {
 
 	walLog, err := wal.New(func(o *wal.Options) {
 		o.Path = t.TempDir()
-		o.Sync = false
+		o.DurabilityMode = wal.DurabilityAsync
 	})
 	if err != nil {
 		t.Fatalf("wal.New failed: %v", err)

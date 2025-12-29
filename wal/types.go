@@ -3,7 +3,6 @@ package wal
 import (
 	"time"
 
-	"github.com/hupe1980/vecgo/codec"
 	"github.com/hupe1980/vecgo/metadata"
 )
 
@@ -64,9 +63,6 @@ type Options struct {
 	// Path is the directory where WAL files are stored.
 	Path string
 
-	// Sync forces fsync after each write (slower but more durable).
-	Sync bool
-
 	// Compress enables zstd compression (2-3x smaller, slightly slower writes).
 	// Recommended for production use to reduce disk I/O and storage costs.
 	Compress bool
@@ -78,11 +74,6 @@ type Options struct {
 	// Level 9: High, ~3x compression
 	// Level 22: Ultra, ~3.5x compression (very slow)
 	CompressionLevel int
-
-	// MetadataCodec controls how metadata values are marshaled into WAL entries.
-	// If nil, codec.Default is used.
-	// Deprecated: Vecgo now always uses VecgoBinary for metadata.
-	MetadataCodec codec.Codec
 
 	// AutoCheckpointOps triggers automatic checkpoint after N committed operations.
 	// Set to 0 to disable operation-based checkpoints.
@@ -112,23 +103,11 @@ type Options struct {
 // DefaultOptions returns default WAL options.
 var DefaultOptions = Options{
 	Path:                ".",
-	Sync:                true, // Deprecated: use DurabilityMode instead
 	Compress:            false,
-	CompressionLevel:    3, // zstd default level
-	MetadataCodec:       nil,
+	CompressionLevel:    3,                     // zstd default level
 	AutoCheckpointOps:   10000,                 // Checkpoint every 10k operations
 	AutoCheckpointMB:    100,                   // Checkpoint at 100MB WAL size
 	DurabilityMode:      DurabilityGroupCommit, // Balanced performance/durability
 	GroupCommitInterval: 10 * time.Millisecond, // 100 fsync/sec max
 	GroupCommitMaxOps:   100,                   // Batch up to 100 ops
-}
-
-// WithMetadataCodec configures the codec used to encode/decode metadata in WAL entries.
-// Note: mixing codecs in a single WAL file is unsafe because entries do not
-// self-describe which codec was used.
-// Deprecated: Vecgo now always uses VecgoBinary for metadata. This option is ignored.
-func WithMetadataCodec(c codec.Codec) func(o *Options) {
-	return func(o *Options) {
-		// o.MetadataCodec = c
-	}
 }

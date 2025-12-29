@@ -28,7 +28,7 @@ func createTestCoordinator[T any](t *testing.T) Coordinator[T] {
 
 	walLog, err := wal.New(func(o *wal.Options) {
 		o.Path = t.TempDir()
-		o.Sync = false
+		o.DurabilityMode = wal.DurabilityAsync
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { walLog.Close() })
@@ -65,7 +65,7 @@ func TestMetadataMutationProtection(t *testing.T) {
 		originalMeta["tag"] = metadata.String("development")
 		originalMeta["count"] = metadata.Int(999)
 		originalMeta["extra"] = metadata.String("should not appear")
-		
+
 		// Mutate array values
 		if arr, ok := originalMeta["values"]; ok && arr.Kind == metadata.KindArray {
 			arr.A[0] = metadata.Int(999)
@@ -124,7 +124,7 @@ func TestMetadataMutationProtection(t *testing.T) {
 		// Mutate original metadata slice
 		metadataSlice[0]["batch"] = metadata.Int(999)
 		metadataSlice[1]["batch"] = metadata.Int(888)
-		
+
 		// Mutate nested arrays
 		metadataSlice[0]["nested"].A[0] = metadata.String("MUTATED")
 		metadataSlice[1]["nested"].A[1] = metadata.String("MUTATED")
@@ -236,16 +236,16 @@ func TestMetadataCloneDeep(t *testing.T) {
 	// Verify stored metadata is unchanged
 	meta, ok := coord.GetMetadata(id)
 	require.True(t, ok)
-	
+
 	level1 := meta["level1"]
 	require.Equal(t, metadata.KindArray, level1.Kind)
-	
+
 	level2 := level1.A[0]
 	require.Equal(t, metadata.KindArray, level2.Kind)
-	
+
 	level3 := level2.A[0]
 	require.Equal(t, metadata.KindArray, level3.Kind)
-	
+
 	assert.Equal(t, "deep", level3.A[0].S, "deeply nested string should not be mutated")
 	assert.Equal(t, int64(123), level3.A[1].I64, "deeply nested int should not be mutated")
 }
@@ -257,10 +257,10 @@ func TestMetadataCloneAllTypes(t *testing.T) {
 
 	// Create metadata with all value types
 	allTypesMeta := metadata.Metadata{
-		"string": metadata.String("test"),
-		"int64":  metadata.Int(42),
+		"string":  metadata.String("test"),
+		"int64":   metadata.Int(42),
 		"float64": metadata.Float(3.14),
-		"bool":   metadata.Bool(true),
+		"bool":    metadata.Bool(true),
 		"array": metadata.Array([]metadata.Value{
 			metadata.String("a"),
 			metadata.Int(1),
@@ -283,7 +283,7 @@ func TestMetadataCloneAllTypes(t *testing.T) {
 	// Verify all types are unchanged
 	meta, ok := coord.GetMetadata(id)
 	require.True(t, ok)
-	
+
 	assert.Equal(t, "test", meta["string"].S)
 	assert.Equal(t, int64(42), meta["int64"].I64)
 	assert.Equal(t, 3.14, meta["float64"].F64)

@@ -24,7 +24,7 @@ func BenchmarkCoordinatorInsert(b *testing.B) {
 
 	walLog, err := wal.New(func(o *wal.Options) {
 		o.Path = b.TempDir()
-		o.Sync = false
+		o.DurabilityMode = wal.DurabilityAsync
 	})
 	if err != nil {
 		b.Fatal(err)

@@ -35,7 +35,6 @@ type WAL struct {
 	seqNum           uint64
 	filePath         string
 	compressed       bool
-	sync             bool
 	compressionLevel int
 	dataOffset       int64 // start of entry stream (after optional header)
 
@@ -91,7 +90,6 @@ func New(optFns ...func(o *Options)) (*WAL, error) {
 	w := &WAL{
 		file:                file,
 		filePath:            filePath,
-		sync:                opts.Sync, // Deprecated: use durability mode
 		compressionLevel:    opts.CompressionLevel,
 		autoCheckpointOps:   opts.AutoCheckpointOps,
 		autoCheckpointMB:    opts.AutoCheckpointMB,
@@ -102,23 +100,13 @@ func New(optFns ...func(o *Options)) (*WAL, error) {
 		groupCommitPending:  0,
 	}
 
-	// Reconcile deprecated Sync option with DurabilityMode
-	// If Sync is explicitly set to false and DurabilityMode is default, use Async
-	// If Sync is true and DurabilityMode is default GroupCommit, keep GroupCommit (similar behavior)
-	if !opts.Sync && opts.DurabilityMode == DurabilityGroupCommit {
-		// User explicitly disabled sync, use async mode
-		w.durabilityMode = DurabilityAsync
-	}
-
 	// Determine header/dataOffset.
 	if st.Size() == 0 {
 		w.compressed = opts.Compress
 		w.compressionLevel = opts.CompressionLevel
-		codecName := "vecgo-binary"
 		hdrLen, err := writeWALHeader(w.file, walHeaderInfo{
-			Compressed:        w.compressed,
-			CompressionLevel:  w.compressionLevel,
-			MetadataCodecName: codecName,
+			Compressed:       w.compressed,
+			CompressionLevel: w.compressionLevel,
 		})
 		if err != nil {
 			_ = file.Close()
@@ -134,20 +122,6 @@ func New(optFns ...func(o *Options)) (*WAL, error) {
 		if !hasHeader {
 			_ = file.Close()
 			return nil, fmt.Errorf("unsupported WAL format: missing header")
-		}
-		// Existing WAL: if the caller didn't specify a codec, infer it from the header.
-		if hdr.MetadataCodecName == "" {
-			_ = file.Close()
-			return nil, fmt.Errorf("WAL header missing metadata codec name")
-		}
-		// Enforce VecgoBinary for metadata
-		expectedCodec := "vecgo-binary"
-		if hdr.MetadataCodecName != expectedCodec {
-			// For backward compatibility, we might want to allow migration, but for now we enforce it.
-			// Or we could just warn. But since we removed w.metadataCodec, we can't support others easily.
-			// Let's assume we are in a breaking change phase.
-			_ = file.Close()
-			return nil, fmt.Errorf("WAL metadata codec %q is not supported (expected %q)", hdr.MetadataCodecName, expectedCodec)
 		}
 
 		if opts.Compress != hdr.Compressed {
@@ -238,10 +212,6 @@ func (w *WAL) syncIfNeeded() error {
 		return nil
 
 	default:
-		// Fallback to sync behavior for backward compatibility
-		if w.sync {
-			return w.file.Sync()
-		}
 		return nil
 	}
 }
@@ -640,11 +610,9 @@ func (w *WAL) truncate() error {
 	w.file = file
 
 	// Always write a self-describing header after truncation.
-	codecName := "vecgo-binary"
 	hdrLen, err := writeWALHeader(w.file, walHeaderInfo{
-		Compressed:        w.compressed,
-		CompressionLevel:  w.compressionLevel,
-		MetadataCodecName: codecName,
+		Compressed:       w.compressed,
+		CompressionLevel: w.compressionLevel,
 	})
 	if err != nil {
 		_ = w.file.Close()

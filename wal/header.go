@@ -1,38 +1,25 @@
 package wal
 
 import (
-	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
 	"os"
-
-	"github.com/hupe1980/vecgo/codec"
 )
 
 var (
 	walMagic          = [4]byte{'V', 'G', 'W', '0'}
-	walHeaderVersion  = uint16(2)
+	walHeaderVersion  = uint16(1)
 	walHeaderFixedLen = 16 // excludes variable codec name bytes
 )
 
 type walHeaderInfo struct {
-	Compressed        bool
-	CompressionLevel  int
-	MetadataCodecName string
-	HeaderLen         int64
+	Compressed       bool
+	CompressionLevel int
+	HeaderLen        int64
 }
 
 func writeWALHeader(w io.Writer, info walHeaderInfo) (int64, error) {
-	codecName := info.MetadataCodecName
-	if codecName == "" {
-		codecName = codec.Default.Name()
-	}
-	nameBytes := []byte(codecName)
-	if len(nameBytes) > 0xFFFF {
-		return 0, fmt.Errorf("WAL codec name too long: %d", len(nameBytes))
-	}
-
 	var flags uint16
 	if info.Compressed {
 		flags |= 1
@@ -42,17 +29,14 @@ func writeWALHeader(w io.Writer, info walHeaderInfo) (int64, error) {
 		level = uint8(info.CompressionLevel)
 	}
 
-	buf := make([]byte, 0, walHeaderFixedLen+len(nameBytes))
+	buf := make([]byte, 0, walHeaderFixedLen)
 	buf = append(buf, walMagic[:]...)
 	var fixed [12]byte
 	binary.LittleEndian.PutUint16(fixed[0:2], walHeaderVersion)
 	binary.LittleEndian.PutUint16(fixed[2:4], flags)
 	fixed[4] = level
-	// fixed[5:8] reserved
-	binary.LittleEndian.PutUint16(fixed[8:10], uint16(len(nameBytes)))
-	// fixed[10:12] reserved
+	// fixed[5:12] reserved
 	buf = append(buf, fixed[:]...)
-	buf = append(buf, nameBytes...)
 
 	if _, err := w.Write(buf); err != nil {
 		return 0, fmt.Errorf("failed to write WAL header: %w", err)
@@ -88,23 +72,12 @@ func readWALHeader(f *os.File) (walHeaderInfo, bool, error) {
 	flags := binary.LittleEndian.Uint16(fixed[2:4])
 	compressed := (flags & 1) != 0
 	level := int(fixed[4])
-	nameLen := int(binary.LittleEndian.Uint16(fixed[8:10]))
+	// fixed[5:12] reserved
 
-	nameBytes := make([]byte, nameLen)
-	if nameLen > 0 {
-		if _, err := io.ReadFull(f, nameBytes); err != nil {
-			return walHeaderInfo{}, true, fmt.Errorf("failed to read WAL codec name: %w", err)
-		}
-	}
-
-	headerLen := int64(4) + int64(len(fixed)) + int64(nameLen)
-	if string(bytes.TrimSpace(nameBytes)) == "" {
-		return walHeaderInfo{}, true, fmt.Errorf("WAL header codec name is empty")
-	}
+	headerLen := int64(walHeaderFixedLen)
 	return walHeaderInfo{
-		Compressed:        compressed,
-		CompressionLevel:  level,
-		MetadataCodecName: string(bytes.TrimSpace(nameBytes)),
-		HeaderLen:         headerLen,
+		Compressed:       compressed,
+		CompressionLevel: level,
+		HeaderLen:        headerLen,
 	}, true, nil
 }
