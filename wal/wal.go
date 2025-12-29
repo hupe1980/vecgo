@@ -47,14 +47,14 @@ type WAL struct {
 	committedOps      int          // Counter for committed operations
 	checkpointFunc    func() error // Callback to trigger checkpoint
 
-	// Group commit support
+	// Group commit support (background goroutine lifecycle)
 	durabilityMode      DurabilityMode
 	groupCommitInterval time.Duration
 	groupCommitMaxOps   int
 	groupCommitTicker   *time.Ticker
-	groupCommitStopCh   chan struct{}
-	groupCommitPending  int // Operations since last fsync
-	groupCommitWg       sync.WaitGroup
+	groupCommitStopCh   chan struct{}  // Shutdown signal for worker goroutine
+	groupCommitPending  int            // Operations since last fsync
+	groupCommitWg       sync.WaitGroup // Tracks worker goroutine lifecycle
 }
 
 // MetadataCodec returns the codec used to encode/decode metadata in WAL entries.
@@ -698,17 +698,30 @@ func (w *WAL) truncate() error {
 	return nil
 }
 
-// Close closes the WAL file.
+// Close closes the WAL file gracefully.
+//
+// This method:
+// 1. Signals the group commit worker to stop (if running)
+// 2. Waits for the worker to finish (ensuring clean shutdown)
+// 3. Performs final fsync to flush any pending entries
+// 4. Flushes and closes the file
+//
+// After Close() returns, the WAL is no longer usable.
 func (w *WAL) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+
+	// Check if already closed (idempotency)
+	if w.file == nil {
+		return nil
+	}
 
 	// Stop group commit worker if running (only once)
 	if w.groupCommitTicker != nil {
 		// Signal worker to stop first
 		close(w.groupCommitStopCh)
 		w.mu.Unlock()
-		w.groupCommitWg.Wait() // Wait for worker to finish
+		w.groupCommitWg.Wait() // Wait for worker to finish (ensures no goroutine leak)
 		w.mu.Lock()
 		// Now safe to stop and nil the ticker
 		w.groupCommitTicker.Stop()
@@ -734,10 +747,9 @@ func (w *WAL) Close() error {
 		w.decompressor.Close()
 	}
 
-	if w.file != nil {
-		return w.file.Close()
-	}
-	return nil
+	err := w.file.Close()
+	w.file = nil // Mark as closed
+	return err
 }
 
 // Len returns the number of entries in the WAL (approximate, for testing).

@@ -482,8 +482,8 @@ func (h *HNSW) insertNode(node *Node, vec []float32) error {
 
 	// 2. Search and link from node.Layer down to 0
 	for level := min(node.Layer, maxLevel); level >= 0; level-- {
-		// Search layer
-		candidates, err := h.searchLayer(vec, currObj, currDist, level, h.opts.EF)
+		// Search layer (no filtering during insertion)
+		candidates, err := h.searchLayer(vec, currObj, currDist, level, h.opts.EF, nil)
 		if err != nil {
 			return err
 		}
@@ -668,8 +668,13 @@ func (h *HNSW) selectNeighborsHeuristic(candidates *queue.PriorityQueue, m int) 
 	return result
 }
 
-// searchLayer searches a specific layer.
-func (h *HNSW) searchLayer(query []float32, ep *Node, epDist float32, level int, ef int) (*queue.PriorityQueue, error) {
+// searchLayer searches a specific layer with optional pre-filtering.
+// filter: if not nil, nodes are filtered DURING traversal (not after).
+// This ensures:
+// 1. Correct recall (returns k results if available, not fewer)
+// 2. Less wasted computation (skips filtered regions)
+// 3. Matches exact search behavior
+func (h *HNSW) searchLayer(query []float32, ep *Node, epDist float32, level int, ef int, filter func(uint32) bool) (*queue.PriorityQueue, error) {
 	visited := h.bitsetPool.Get().(*bitset.BitSet)
 	defer func() { visited.ClearAll(); h.bitsetPool.Put(visited) }()
 
@@ -680,15 +685,25 @@ func (h *HNSW) searchLayer(query []float32, ep *Node, epDist float32, level int,
 	results.Reset()                                        // Caller must put back
 
 	visited.Set(uint(ep.ID))
+
+	// CRITICAL: Always add entry point to candidates for navigation (even if filtered)
+	// This ensures we have a starting point for graph traversal
 	candidates.PushItem(queue.PriorityQueueItem{Node: ep.ID, Distance: epDist})
-	results.PushItem(queue.PriorityQueueItem{Node: ep.ID, Distance: epDist})
+
+	// Only add to results if it passes the filter
+	if filter == nil || filter(ep.ID) {
+		results.PushItem(queue.PriorityQueueItem{Node: ep.ID, Distance: epDist})
+	}
 
 	for candidates.Len() > 0 {
 		curr, _ := candidates.PopItem()
-		worst, _ := results.TopItem()
 
-		if curr.Distance > worst.Distance && results.Len() >= ef {
-			break
+		// Termination condition: only check if we have valid results
+		if results.Len() > 0 {
+			worst, _ := results.TopItem()
+			if curr.Distance > worst.Distance && results.Len() >= ef {
+				break
+			}
 		}
 
 		node := h.getNode(curr.Node)
@@ -702,15 +717,25 @@ func (h *HNSW) searchLayer(query []float32, ep *Node, epDist float32, level int,
 				visited.Set(uint(nextID))
 
 				nextDist := h.dist(query, nextID)
-				worst, _ = results.TopItem()
 
-				if results.Len() < ef || nextDist < worst.Distance {
-					item := queue.PriorityQueueItem{Node: nextID, Distance: nextDist}
-					candidates.PushItem(item)
-					results.PushItem(item)
+				// Always add to candidates for navigation
+				candidates.PushItem(queue.PriorityQueueItem{Node: nextID, Distance: nextDist})
 
-					if results.Len() > ef {
-						_, _ = results.PopItem()
+				// PRE-FILTER: Only add to results if passes filter
+				if filter == nil || filter(nextID) {
+					// Check if we should add to results
+					if results.Len() == 0 {
+						// No results yet, add it
+						results.PushItem(queue.PriorityQueueItem{Node: nextID, Distance: nextDist})
+					} else {
+						worst, _ := results.TopItem()
+						if results.Len() < ef || nextDist < worst.Distance {
+							results.PushItem(queue.PriorityQueueItem{Node: nextID, Distance: nextDist})
+
+							if results.Len() > ef {
+								_, _ = results.PopItem()
+							}
+						}
 					}
 				}
 			}
@@ -901,14 +926,19 @@ func (h *HNSW) KNNSearch(ctx context.Context, q []float32, k int, opts *index.Se
 		}
 	}
 
-	// 2. Search layer 0
-	results, err := h.searchLayer(q, currObj, currDist, 0, ef)
+	// 2. Search layer 0 with pre-filtering
+	var filter func(uint32) bool
+	if opts != nil && opts.Filter != nil {
+		filter = opts.Filter
+	}
+
+	results, err := h.searchLayer(q, currObj, currDist, 0, ef, filter)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { results.Reset(); h.maxQueuePool.Put(results) }()
 
-	// Extract K
+	// Extract K (filter is already applied during traversal)
 	count := results.Len()
 	if count > k {
 		count = k
@@ -925,17 +955,7 @@ func (h *HNSW) KNNSearch(ctx context.Context, q []float32, k int, opts *index.Se
 		res[i] = index.SearchResult{ID: item.Node, Distance: item.Distance}
 	}
 
-	// Filter
-	if opts != nil && opts.Filter != nil {
-		filtered := res[:0]
-		for _, r := range res {
-			if opts.Filter(r.ID) {
-				filtered = append(filtered, r)
-			}
-		}
-		res = filtered
-	}
-
+	// No post-filtering needed - filtering happened during traversal
 	return res, nil
 }
 

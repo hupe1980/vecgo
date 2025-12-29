@@ -192,9 +192,8 @@ var recallTestConfigs = []TestRecallConfig{
 		MinRecall:    0.95,
 		MinRecall1:   0.90,
 	},
-	// With filtering - NOTE: HNSW uses post-filtering, so we need to request
-	// more results to compensate for filtered-out vectors. This test verifies
-	// that at least the returned results are correct (high Recall@1).
+	// With filtering - NOW USES PRE-FILTERING (as of Dec 2024 refactoring)
+	// Pre-filtering ensures correct recall by filtering during graph traversal
 	{
 		Name:         "Small_L2_Filtered",
 		NumVectors:   1000,
@@ -202,8 +201,8 @@ var recallTestConfigs = []TestRecallConfig{
 		NumQueries:   100,
 		K:            10,
 		DistanceType: index.DistanceTypeSquaredL2,
-		MinRecall:    0.40, // Lower threshold due to post-filtering (expect ~50% of results)
-		MinRecall1:   0.90, // First result should still be accurate
+		MinRecall:    0.85, // With pre-filtering, recall should be high (similar to unfiltered)
+		MinRecall1:   0.90, // First result should be accurate
 		FilterRatio:  0.5,
 	},
 	// Large K

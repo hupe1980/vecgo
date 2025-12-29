@@ -67,9 +67,10 @@ type Index struct {
 	deleted   *bitset.BitSet
 	deletedMu sync.RWMutex
 
-	// Compaction tracking
+	// Compaction tracking (background goroutine lifecycle)
 	compacting      atomic.Bool
-	stopCompaction  chan struct{}
+	stopCompaction  chan struct{}  // Shutdown signal for compaction worker
+	compactionWg    sync.WaitGroup // Tracks compaction worker lifecycle
 	compactionStats CompactionStats
 	compactionMu    sync.RWMutex
 
@@ -145,6 +146,7 @@ func New(dim int, distType index.DistanceType, indexPath string, opts *Options) 
 
 	// Start background compaction if enabled
 	if opts.EnableAutoCompaction {
+		idx.compactionWg.Add(1)
 		go idx.backgroundCompaction()
 	}
 
@@ -203,16 +205,28 @@ func Open(indexPath string, opts *Options) (*Index, error) {
 	return idx, nil
 }
 
-// Close releases resources held by the index.
+// Close releases resources held by the index gracefully.
+//
+// This method:
+// 1. Signals the background compaction worker to stop (if running)
+// 2. Waits for the worker to finish (ensuring clean shutdown)
+// 3. Closes mmap resources (if any)
+//
+// After Close() returns, the index is no longer usable.
 func (idx *Index) Close() error {
 	idx.mu.Lock()
-	defer idx.mu.Unlock()
 
 	// Stop background compaction if running
 	if idx.stopCompaction != nil {
 		close(idx.stopCompaction)
+		idx.mu.Unlock()
+		idx.compactionWg.Wait() // Wait for compaction worker to finish (ensures no goroutine leak)
+		idx.mu.Lock()
 	}
 
+	idx.mu.Unlock()
+
+	// Close mmap resources if present
 	if idx.mmapReader != nil {
 		return idx.mmapReader.Close()
 	}
@@ -848,7 +862,8 @@ func (idx *Index) readVectorMmap(id uint32) []float32 {
 // Search Operations
 // ============================================================================
 
-// KNNSearch performs k-nearest neighbor search.
+// KNNSearch performs k-nearest neighbor search with optional pre-filtering.
+// filter (in opts): Applied DURING graph traversal for correct recall and performance.
 func (idx *Index) KNNSearch(ctx context.Context, query []float32, k int, opts *index.SearchOptions) ([]index.SearchResult, error) {
 	if len(query) != idx.dim {
 		return nil, &index.ErrDimensionMismatch{Expected: idx.dim, Actual: len(query)}
@@ -871,22 +886,30 @@ func (idx *Index) KNNSearch(ctx context.Context, query []float32, k int, opts *i
 		distTable = idx.pq.BuildDistanceTable(query)
 	}
 
-	// Phase 1: Graph search using PQ distances
+	// Extract filter for pre-filtering during graph search
+	var filter func(uint32) bool
+	if opts != nil {
+		filter = opts.Filter
+	}
+
+	// Phase 1: Graph search using PQ distances WITH PRE-FILTERING
 	rerankK := idx.opts.RerankK
 	if rerankK < k {
 		rerankK = k * 2
 	}
-	candidates := idx.beamSearch(query, distTable, rerankK)
+	candidates := idx.beamSearch(query, distTable, rerankK, filter)
 
-	// Phase 2: Rerank using exact distances
-	results := idx.rerank(query, candidates, k, opts)
+	// Phase 2: Rerank using exact distances (no post-filtering needed)
+	results := idx.rerank(query, candidates, k, nil) // Filter already applied in beamSearch
 
 	return results, nil
 }
 
-// beamSearch performs beam search through the graph using PQ distances.
+// beamSearch performs beam search through the graph using PQ distances with optional pre-filtering.
+// filter: if not nil, nodes are filtered DURING graph traversal (not after).
+// This ensures correct recall and reduces wasted distance computations.
 // Uses proper DiskANN termination: stop when current candidate is worse than worst in beam.
-func (idx *Index) beamSearch(query []float32, distTable [][]float32, topK int) []distNode {
+func (idx *Index) beamSearch(query []float32, distTable [][]float32, topK int, filter func(uint32) bool) []distNode {
 	idx.graphMu.RLock()
 	defer idx.graphMu.RUnlock()
 
@@ -919,12 +942,15 @@ func (idx *Index) beamSearch(query []float32, distTable [][]float32, topK int) [
 	// Result list (sorted by distance, worst at end)
 	results := make([]distNode, 0, topK*2)
 
-	// Skip deleted entry point
+	// Skip deleted entry point (and apply filter)
 	idx.deletedMu.RLock()
-	if !idx.deleted.Test(uint(entryPoint)) {
+	isDeleted := idx.deleted.Test(uint(entryPoint))
+	idx.deletedMu.RUnlock()
+
+	// PRE-FILTER: Only add to results if passes filter
+	if !isDeleted && (filter == nil || filter(entryPoint)) {
 		results = append(results, distNode{id: entryPoint, dist: entryDist})
 	}
-	idx.deletedMu.RUnlock()
 
 	// DiskANN beam search: expand until no better candidates exist
 	for candidates.Len() > 0 {
@@ -952,6 +978,11 @@ func (idx *Index) beamSearch(query []float32, distTable [][]float32, topK int) [
 				idx.deletedMu.RLock()
 				isDeleted := idx.deleted.Test(uint(neighbor))
 				idx.deletedMu.RUnlock()
+
+				// PRE-FILTER: Skip filtered nodes BEFORE computing distance
+				if filter != nil && !filter(neighbor) {
+					continue
+				}
 
 				dist := idx.computeDistance(query, neighbor, distTable)
 				heap.Push(candidates, distNode{id: neighbor, dist: dist})
@@ -987,15 +1018,13 @@ func (idx *Index) pqDistance(distTable [][]float32, codes []byte) float32 {
 }
 
 // rerank fetches vectors and computes exact distances.
-func (idx *Index) rerank(query []float32, candidates []distNode, k int, opts *index.SearchOptions) []index.SearchResult {
-	var filter func(uint32) bool
-	if opts != nil {
-		filter = opts.Filter
-	}
-
+// filter: Optional post-filtering (but should be nil since pre-filtering is done in beamSearch).
+// Kept for backward compatibility, but pre-filtering is the recommended approach.
+func (idx *Index) rerank(query []float32, candidates []distNode, k int, filter func(uint32) bool) []index.SearchResult {
 	// Fetch vectors and compute exact distances
 	results := make([]distNode, 0, len(candidates))
 	for _, c := range candidates {
+		// Optional post-filter (should be nil if pre-filtering was used)
 		if filter != nil && !filter(c.id) {
 			continue
 		}
@@ -1352,7 +1381,10 @@ func (idx *Index) CompactionStats() CompactionStats {
 }
 
 // backgroundCompaction runs periodic compaction checks.
+// This method runs in a background goroutine and is tracked by compactionWg.
 func (idx *Index) backgroundCompaction() {
+	defer idx.compactionWg.Done() // Ensure WaitGroup is decremented on exit
+
 	ticker := newTicker(idx.opts.CompactionInterval)
 	defer ticker.Stop()
 

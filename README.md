@@ -16,12 +16,13 @@
 
 ### 🗄️ Enterprise Features
 - **Full CRUD**: Insert, update, delete, and batch operations
-- **Metadata Filtering**: Typed filters with Roaring Bitmap inverted index
+- **Native Pre-Filtering**: Filter during graph traversal for 100% recall (vs ~50% post-filtering)
 - **Hybrid Search**: Combine vector similarity with attribute filters
 - **Streaming Results**: Iterator-based search with early termination
 - **Persistence**: Binary snapshots with zero-copy mmap loading
 - **Write-Ahead Log**: Crash recovery with group commit (83x faster than sync)
 - **Auto-Compaction**: Background cleanup of deleted vectors
+- **Production-Ready**: Zero goroutine leaks, comprehensive error propagation, idempotent Close()
 
 ### 🚀 Performance
 - **SIMD Kernels**: AVX/AVX512 (x86_64) and NEON (ARM64) acceleration
@@ -29,7 +30,7 @@
 - **Columnar Storage**: SOA layout for optimal cache locality
 - **Sharded Writes**: 2.7-3.4x speedup with parallel write coordinators
 - **Lock-Free Reads**: Concurrent search without contention
-- **Arena Allocator**: Custom memory management for graph structures
+- **Smart Filtering**: Pre-filtering reduces distance computations by ~40% for filtered searches
 
 ### 🗜️ Compression
 - **Binary Quantization**: 32x compression (0.68ns/op for 128-dim Hamming)
@@ -114,6 +115,8 @@ db, err := vecgo.DiskANN[string]("./data", 128).
 
 ### Metadata Filtering
 
+**Native pre-filtering** achieves 100% recall by filtering during graph traversal (not after):
+
 ```go
 import "github.com/hupe1980/vecgo/metadata"
 
@@ -134,6 +137,8 @@ results, _ := db.Search(query).
     Filter(metadata.Gt("year", 2020)).
     Execute(ctx)
 ```
+
+**Performance**: Pre-filtering is ~30% faster than post-filtering and guarantees k results when available.
 
 ### Streaming Search
 

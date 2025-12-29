@@ -270,6 +270,11 @@ func (sc *ShardedCoordinator[T]) GetMetadata(id uint32) (metadata.Metadata, bool
 // and merges them to return the global top-k results. Result IDs are GlobalIDs
 // that encode shard routing information.
 //
+// Error Handling:
+//   - Returns error if any shard fails (fail-fast behavior for correctness)
+//   - Respects context cancellation and deadlines
+//   - Includes shard index in error messages for debugging
+//
 // Performance:
 //   - Parallel fan-out utilizes multiple cores for search
 //   - Latency is roughly the same as single-shard (limited by slowest shard)
@@ -302,22 +307,41 @@ func (sc *ShardedCoordinator[T]) KNNSearch(ctx context.Context, query []float32,
 				}
 			}
 			results, err := sc.shards[shardIdx].KNNSearch(ctx, query, k, shardOpts)
-			resultsCh <- shardResult{shardIdx: shardIdx, results: results, err: err}
+
+			// Send result to channel, but respect context cancellation
+			select {
+			case resultsCh <- shardResult{shardIdx: shardIdx, results: results, err: err}:
+			case <-ctx.Done():
+				// Context cancelled, don't block on send
+			}
 		}(i)
 	}
 
 	// Collect results from all shards and convert to global IDs
 	allResults := make([]index.SearchResult, 0, k*sc.numShards)
+	var errors []error
+
 	for i := 0; i < sc.numShards; i++ {
-		res := <-resultsCh
-		if res.err != nil {
-			return nil, res.err
+		select {
+		case res := <-resultsCh:
+			if res.err != nil {
+				errors = append(errors, fmt.Errorf("shard %d: %w", res.shardIdx, res.err))
+			} else {
+				// Convert local IDs to global IDs
+				for j := range res.results {
+					res.results[j].ID = uint32(NewGlobalID(res.shardIdx, res.results[j].ID))
+				}
+				allResults = append(allResults, res.results...)
+			}
+		case <-ctx.Done():
+			// Context cancelled (timeout or explicit cancellation)
+			return nil, fmt.Errorf("search cancelled: %w", ctx.Err())
 		}
-		// Convert local IDs to global IDs
-		for j := range res.results {
-			res.results[j].ID = uint32(NewGlobalID(res.shardIdx, res.results[j].ID))
-		}
-		allResults = append(allResults, res.results...)
+	}
+
+	// Fail if any shard failed (fail-fast for correctness)
+	if len(errors) > 0 {
+		return nil, fmt.Errorf("parallel search failed (%d/%d shards): %v", len(errors), sc.numShards, errors)
 	}
 
 	// Merge results to get global top-k
@@ -328,6 +352,11 @@ func (sc *ShardedCoordinator[T]) KNNSearch(ctx context.Context, query []float32,
 //
 // Similar to KNNSearch, this fans out to all shards and merges results.
 // Result IDs are GlobalIDs that encode shard routing information.
+//
+// Error Handling:
+//   - Returns error if any shard fails (fail-fast behavior)
+//   - Respects context cancellation and deadlines
+//   - Includes shard index in error messages
 func (sc *ShardedCoordinator[T]) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint32) bool) ([]index.SearchResult, error) {
 	if k <= 0 {
 		return nil, index.ErrInvalidK
@@ -352,22 +381,41 @@ func (sc *ShardedCoordinator[T]) BruteSearch(ctx context.Context, query []float3
 				}
 			}
 			results, err := sc.shards[shardIdx].BruteSearch(ctx, query, k, localFilter)
-			resultsCh <- shardResult{shardIdx: shardIdx, results: results, err: err}
+
+			// Send result to channel, but respect context cancellation
+			select {
+			case resultsCh <- shardResult{shardIdx: shardIdx, results: results, err: err}:
+			case <-ctx.Done():
+				// Context cancelled, don't block on send
+			}
 		}(i)
 	}
 
 	// Collect results from all shards and convert to global IDs
 	allResults := make([]index.SearchResult, 0, k*sc.numShards)
+	var errors []error
+
 	for i := 0; i < sc.numShards; i++ {
-		res := <-resultsCh
-		if res.err != nil {
-			return nil, res.err
+		select {
+		case res := <-resultsCh:
+			if res.err != nil {
+				errors = append(errors, fmt.Errorf("shard %d: %w", res.shardIdx, res.err))
+			} else {
+				// Convert local IDs to global IDs
+				for j := range res.results {
+					res.results[j].ID = uint32(NewGlobalID(res.shardIdx, res.results[j].ID))
+				}
+				allResults = append(allResults, res.results...)
+			}
+		case <-ctx.Done():
+			// Context cancelled (timeout or explicit cancellation)
+			return nil, fmt.Errorf("brute search cancelled: %w", ctx.Err())
 		}
-		// Convert local IDs to global IDs
-		for j := range res.results {
-			res.results[j].ID = uint32(NewGlobalID(res.shardIdx, res.results[j].ID))
-		}
-		allResults = append(allResults, res.results...)
+	}
+
+	// Fail if any shard failed (fail-fast for correctness)
+	if len(errors) > 0 {
+		return nil, fmt.Errorf("parallel brute search failed (%d/%d shards): %v", len(errors), sc.numShards, errors)
 	}
 
 	// Merge results to get global top-k
@@ -454,4 +502,24 @@ func heapifyDown(arr []index.SearchResult, i int) {
 		arr[i], arr[largest] = arr[largest], arr[i]
 		i = largest
 	}
+}
+
+// Close closes all shards and releases their resources.
+// This method ensures proper cleanup of all shard resources, including
+// any background workers that may be running in the underlying indexes.
+func (sc *ShardedCoordinator[T]) Close() error {
+	var errs []error
+	for i, shard := range sc.shards {
+		// Each shard's txIndex may have background workers (e.g., DiskANN compaction)
+		// Close the index to ensure clean shutdown
+		if closeable, ok := shard.txIndex.(interface{ Close() error }); ok {
+			if err := closeable.Close(); err != nil {
+				errs = append(errs, fmt.Errorf("shard %d index: %w", i, err))
+			}
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("sharded close errors: %v", errs)
+	}
+	return nil
 }
