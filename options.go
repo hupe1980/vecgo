@@ -9,16 +9,16 @@ import (
 )
 
 type options struct {
-	codec            codec.Codec
-	numShards        int
-	metricsCollector MetricsCollector
-	logger           *Logger
-	walPath          string
-	walOptions       []func(*wal.Options)
-	snapshotPath     string                   // Path for auto-checkpoint snapshots
-	validationLimits *engine.ValidationLimits // nil = use defaults, empty = disable validation
-	disableValidation bool                    // explicit disable flag
-	dimension        int                      // Vector dimension (set by builders)
+	codec             codec.Codec
+	numShards         int
+	metricsCollector  MetricsCollector
+	logger            *Logger
+	walPath           string
+	walOptions        []func(*wal.Options)
+	snapshotPath      string                   // Path for auto-checkpoint snapshots
+	validationLimits  *engine.ValidationLimits // nil = use defaults, empty = disable validation
+	disableValidation bool                     // explicit disable flag
+	dimension         int                      // Vector dimension (set by builders)
 }
 
 // Option configures Vecgo constructor/load behavior.
@@ -29,8 +29,9 @@ type options struct {
 // Breaking changes are expected while Vecgo is pre-release.
 type Option func(*options)
 
-// WithCodec configures the codec used for decoding snapshot sections.
+// WithCodec configures the codec used for encoding/decoding the user payload (DataStore).
 //
+// Note: Metadata is always encoded using the internal VecgoBinary format.
 // If nil is passed, codec.Default is used.
 func WithCodec(c codec.Codec) Option {
 	return func(o *options) {

@@ -104,16 +104,16 @@ func BenchmarkCodec_Unmarshal_Payload(b *testing.B) {
 		},
 	}
 
-	data := MustMarshal(JSON{}, payload)
+	jsonData := MustMarshal(JSON{}, payload)
 
 	b.Run("stdlib", func(b *testing.B) {
 		var sink benchPayload
-		benchmarkCodecUnmarshal(b, JSON{}, data, &sink)
+		benchmarkCodecUnmarshal(b, JSON{}, jsonData, &sink)
 		_ = sink
 	})
 	b.Run("go-json", func(b *testing.B) {
 		var sink benchPayload
-		benchmarkCodecUnmarshal(b, GoJSON{}, data, &sink)
+		benchmarkCodecUnmarshal(b, GoJSON{}, jsonData, &sink)
 		_ = sink
 	})
 }
@@ -142,16 +142,16 @@ func BenchmarkCodec_Unmarshal_Metadata(b *testing.B) {
 		"numbers": metadata.Array([]metadata.Value{metadata.Int(1), metadata.Int(2), metadata.Int(3), metadata.Int(4)}),
 	}
 
-	data := MustMarshal(JSON{}, m)
+	jsonData := MustMarshal(JSON{}, m)
 
 	b.Run("stdlib", func(b *testing.B) {
 		var sink metadata.Metadata
-		benchmarkCodecUnmarshal(b, JSON{}, data, &sink)
+		benchmarkCodecUnmarshal(b, JSON{}, jsonData, &sink)
 		_ = sink
 	})
 	b.Run("go-json", func(b *testing.B) {
 		var sink metadata.Metadata
-		benchmarkCodecUnmarshal(b, GoJSON{}, data, &sink)
+		benchmarkCodecUnmarshal(b, GoJSON{}, jsonData, &sink)
 		_ = sink
 	})
 }

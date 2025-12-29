@@ -20,7 +20,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hupe1980/vecgo/codec"
 	"github.com/hupe1980/vecgo/metadata"
 	"github.com/klauspost/compress/zstd"
 )
@@ -38,7 +37,6 @@ type WAL struct {
 	compressed       bool
 	sync             bool
 	compressionLevel int
-	metadataCodec    codec.Codec
 	dataOffset       int64 // start of entry stream (after optional header)
 
 	// Auto-checkpoint tracking
@@ -55,11 +53,6 @@ type WAL struct {
 	groupCommitStopCh   chan struct{}  // Shutdown signal for worker goroutine
 	groupCommitPending  int            // Operations since last fsync
 	groupCommitWg       sync.WaitGroup // Tracks worker goroutine lifecycle
-}
-
-// MetadataCodec returns the codec used to encode/decode metadata in WAL entries.
-func (w *WAL) MetadataCodec() codec.Codec {
-	return w.metadataCodec
 }
 
 // FilePath returns the path to the WAL file.
@@ -100,7 +93,6 @@ func New(optFns ...func(o *Options)) (*WAL, error) {
 		filePath:            filePath,
 		sync:                opts.Sync, // Deprecated: use durability mode
 		compressionLevel:    opts.CompressionLevel,
-		metadataCodec:       opts.MetadataCodec,
 		autoCheckpointOps:   opts.AutoCheckpointOps,
 		autoCheckpointMB:    opts.AutoCheckpointMB,
 		committedOps:        0,
@@ -120,17 +112,9 @@ func New(optFns ...func(o *Options)) (*WAL, error) {
 
 	// Determine header/dataOffset.
 	if st.Size() == 0 {
-		// New WAL: if the caller didn't specify a codec, use the library default.
-		if w.metadataCodec == nil {
-			w.metadataCodec = codec.Default
-		}
-
 		w.compressed = opts.Compress
 		w.compressionLevel = opts.CompressionLevel
-		codecName := ""
-		if w.metadataCodec != nil {
-			codecName = w.metadataCodec.Name()
-		}
+		codecName := "vecgo-binary"
 		hdrLen, err := writeWALHeader(w.file, walHeaderInfo{
 			Compressed:        w.compressed,
 			CompressionLevel:  w.compressionLevel,
@@ -152,22 +136,20 @@ func New(optFns ...func(o *Options)) (*WAL, error) {
 			return nil, fmt.Errorf("unsupported WAL format: missing header")
 		}
 		// Existing WAL: if the caller didn't specify a codec, infer it from the header.
-		if w.metadataCodec == nil {
-			cc, ok := codec.ByName(hdr.MetadataCodecName)
-			if !ok {
-				_ = file.Close()
-				return nil, fmt.Errorf("unsupported WAL metadata codec %q", hdr.MetadataCodecName)
-			}
-			w.metadataCodec = cc
-		}
 		if hdr.MetadataCodecName == "" {
 			_ = file.Close()
 			return nil, fmt.Errorf("WAL header missing metadata codec name")
 		}
-		if w.metadataCodec.Name() != hdr.MetadataCodecName {
+		// Enforce VecgoBinary for metadata
+		expectedCodec := "vecgo-binary"
+		if hdr.MetadataCodecName != expectedCodec {
+			// For backward compatibility, we might want to allow migration, but for now we enforce it.
+			// Or we could just warn. But since we removed w.metadataCodec, we can't support others easily.
+			// Let's assume we are in a breaking change phase.
 			_ = file.Close()
-			return nil, fmt.Errorf("WAL metadata codec %q does not match existing WAL file metadata codec %q", w.metadataCodec.Name(), hdr.MetadataCodecName)
+			return nil, fmt.Errorf("WAL metadata codec %q is not supported (expected %q)", hdr.MetadataCodecName, expectedCodec)
 		}
+
 		if opts.Compress != hdr.Compressed {
 			_ = file.Close()
 			return nil, fmt.Errorf("WAL compression setting (Compress=%v) does not match existing WAL file (Compress=%v)", opts.Compress, hdr.Compressed)
@@ -658,10 +640,7 @@ func (w *WAL) truncate() error {
 	w.file = file
 
 	// Always write a self-describing header after truncation.
-	codecName := ""
-	if w.metadataCodec != nil {
-		codecName = w.metadataCodec.Name()
-	}
+	codecName := "vecgo-binary"
 	hdrLen, err := writeWALHeader(w.file, walHeaderInfo{
 		Compressed:        w.compressed,
 		CompressionLevel:  w.compressionLevel,

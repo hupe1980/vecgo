@@ -81,6 +81,7 @@ type Options struct {
 
 	// MetadataCodec controls how metadata values are marshaled into WAL entries.
 	// If nil, codec.Default is used.
+	// Deprecated: Vecgo now always uses VecgoBinary for metadata.
 	MetadataCodec codec.Codec
 
 	// AutoCheckpointOps triggers automatic checkpoint after N committed operations.
@@ -125,8 +126,9 @@ var DefaultOptions = Options{
 // WithMetadataCodec configures the codec used to encode/decode metadata in WAL entries.
 // Note: mixing codecs in a single WAL file is unsafe because entries do not
 // self-describe which codec was used.
+// Deprecated: Vecgo now always uses VecgoBinary for metadata. This option is ignored.
 func WithMetadataCodec(c codec.Codec) func(o *Options) {
 	return func(o *Options) {
-		o.MetadataCodec = c
+		// o.MetadataCodec = c
 	}
 }

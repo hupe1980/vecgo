@@ -118,7 +118,9 @@ func LoadFromFileMmapWithCodec[T any](filename string, c codec.Codec) (*Snapshot
 		}
 	}
 	metadataMap := make(map[uint32]metadata.Metadata)
-	if err := c.Unmarshal(metadataBytes, &metadataMap); err != nil {
+	// Always use VecgoBinary for metadata persistence
+	metadataMap, err = metadata.UnmarshalMetadataMap(metadataBytes)
+	if err != nil {
 		_ = mf.Close()
 		return nil, fmt.Errorf("failed to decode metadata: %w", err)
 	}

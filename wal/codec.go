@@ -62,10 +62,10 @@ func (w *WAL) encodeEntry(entry *Entry) error {
 			}
 		}
 
-		// Metadata (default codec: JSON)
+		// Metadata (default codec: VecgoBinary)
 		var metadataBytes []byte
 		if entry.Metadata != nil {
-			b, err := w.metadataCodec.Marshal(entry.Metadata)
+			b, err := entry.Metadata.MarshalBinary()
 			if err != nil {
 				return err
 			}
@@ -151,7 +151,7 @@ func (w *WAL) decodeEntry(reader io.Reader, entry *Entry) error {
 				return err
 			}
 			var meta metadata.Metadata
-			if err := w.metadataCodec.Unmarshal(metadataBytes, &meta); err != nil {
+			if err := meta.UnmarshalBinary(metadataBytes); err != nil {
 				return err
 			}
 			entry.Metadata = meta

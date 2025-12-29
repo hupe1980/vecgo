@@ -130,7 +130,8 @@ func SaveToWriter[T any](w io.Writer, idx index.Index, dataStore Store[T], metad
 
 	// Metadata store: codec-marshaled map with checksum.
 	metaOff := uint64(cw.n)
-	metaBytes, err := c.Marshal(metadataStore.ToMap())
+	// Always use VecgoBinary for metadata persistence
+	metaBytes, err := metadata.MarshalMetadataMap(metadataStore.ToMap())
 	if err != nil {
 		return fmt.Errorf("failed to encode metadata: %w", err)
 	}
@@ -272,7 +273,9 @@ func LoadFromReaderWithCodec[T any](r io.ReadSeeker, c codec.Codec) (*Snapshot[T
 		}
 	}
 	metadataMap := make(map[uint32]metadata.Metadata)
-	if err := c.Unmarshal(metaBytes, &metadataMap); err != nil {
+	// Always use VecgoBinary for metadata persistence
+	metadataMap, err = metadata.UnmarshalMetadataMap(metaBytes)
+	if err != nil {
 		return nil, fmt.Errorf("failed to decode metadata: %w", err)
 	}
 	metadataStoreOut := NewMapStore[metadata.Metadata]()

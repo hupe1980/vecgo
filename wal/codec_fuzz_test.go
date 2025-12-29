@@ -48,6 +48,11 @@ func FuzzWALEntry(f *testing.F) {
 
 		// Write entry
 		if err := wal.LogInsert(id, []float32{v1, v2}, data, meta); err != nil {
+			// If metadata was invalid (e.g. KindInvalid from zero-value unmarshal), this is expected.
+			if err.Error() == "failed to encode WAL prepare entry: unknown metadata kind" {
+				_ = wal.Close()
+				return
+			}
 			_ = wal.Close()
 			t.Fatalf("LogInsert failed: %v", err)
 		}

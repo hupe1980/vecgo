@@ -306,7 +306,6 @@ func new[T any](i index.Index, s engine.Store[T], ms *metadata.UnifiedIndex, opt
 		walOptFns := append([]func(*wal.Options){
 			func(o *wal.Options) {
 				o.Path = opts.walPath
-				o.MetadataCodec = c // Use unified codec
 			},
 		}, opts.walOptions...)
 
@@ -390,7 +389,6 @@ func newSharded[T any](indexes []index.Index, dataStores []engine.Store[T], meta
 			walOptFns := append([]func(*wal.Options){
 				func(o *wal.Options) {
 					o.Path = shardPath
-					o.MetadataCodec = c // Use unified codec
 				},
 			}, opts.walOptions...)
 
@@ -523,7 +521,6 @@ func NewFromFile[T any](filename string, optFns ...Option) (*Vecgo[T], error) {
 		walOptFns := append([]func(*wal.Options){
 			func(o *wal.Options) {
 				o.Path = opts.walPath
-				o.MetadataCodec = c // Use unified codec
 			},
 		}, opts.walOptions...)
 
