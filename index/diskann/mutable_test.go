@@ -260,8 +260,8 @@ func TestMutableStats(t *testing.T) {
 	stats := idx.Stats()
 
 	// Verify mode
-	if stats.Options["Mode"] != "mutable" {
-		t.Errorf("Expected Mode=mutable, got %s", stats.Options["Mode"])
+	if stats.Options["Mode"] != "LSM" {
+		t.Errorf("Expected Mode=LSM, got %s", stats.Options["Mode"])
 	}
 
 	// Verify counts (50 - 5 = 45)
@@ -571,57 +571,3 @@ func TestCompactionConcurrency(t *testing.T) {
 }
 
 // TestCompactionReadOnly verifies that read-only indexes cannot be compacted.
-func TestCompactionReadOnly(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "diskann-readonly-compact-test-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	indexPath := filepath.Join(tmpDir, "readonly-index")
-
-	// Build index with Builder
-	builder, err := NewBuilder(16, index.DistanceTypeSquaredL2, indexPath, &Options{
-		R:            8,
-		L:            20,
-		Alpha:        1.2,
-		PQSubvectors: 4,
-		PQCentroids:  256,
-	})
-	if err != nil {
-		t.Fatalf("NewBuilder: %v", err)
-	}
-
-	rng := rand.New(rand.NewSource(42))
-	for i := 0; i < 50; i++ {
-		vec := make([]float32, 16)
-		for j := range vec {
-			vec[j] = rng.Float32()
-		}
-		if _, err := builder.Add(vec); err != nil {
-			t.Fatalf("Add[%d]: %v", i, err)
-		}
-	}
-
-	ctx := context.Background()
-	if err := builder.Build(ctx); err != nil {
-		t.Fatalf("Build: %v", err)
-	}
-
-	// Open as read-only
-	idx, err := Open(indexPath, nil)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer idx.Close()
-
-	// Compaction should fail
-	if err := idx.Compact(ctx); err == nil {
-		t.Error("Compact should fail on read-only index")
-	}
-
-	// ShouldCompact should return false
-	if idx.ShouldCompact() {
-		t.Error("ShouldCompact should return false for read-only index")
-	}
-}

@@ -60,6 +60,7 @@ func (h *HNSW) SaveToFile(filename string) error {
 // LoadFromFile loads the HNSW index from a file.
 func LoadFromFile(filename string, opts Options) (*HNSW, error) {
 	h := &HNSW{}
+	h.initPools()
 	err := persistence.LoadFromFile(filename, func(r io.Reader) error {
 		return h.ReadFromWithOptions(r, opts)
 	})

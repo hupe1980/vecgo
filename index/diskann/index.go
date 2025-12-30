@@ -3,25 +3,19 @@ package diskann
 import (
 	"container/heap"
 	"context"
-	"encoding/binary"
 	"fmt"
-	"io"
 	"iter"
-	"math"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
-	"unsafe"
 
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/index/hnsw"
 	"github.com/hupe1980/vecgo/internal/bitset"
-	"github.com/hupe1980/vecgo/internal/mmap"
-	"github.com/hupe1980/vecgo/quantization"
-	"github.com/hupe1980/vecgo/vectorstore"
-	"github.com/hupe1980/vecgo/vectorstore/columnar"
 )
 
 // Compile-time interface checks
@@ -39,63 +33,57 @@ var (
 //   - Updates (delete + insert)
 //   - Background compaction (removes deleted vectors, rebuilds graph, re-trains PQ)
 //   - Both mutable mode (New) and read-only mode (Open for Builder-created indexes)
+//
+// Index is a disk-resident approximate nearest neighbor index using an LSM-tree architecture.
+//
+// Architecture:
+//   - MemTable: In-memory HNSW index for recent inserts.
+//   - Segments: Immutable, disk-resident DiskANN indexes (Vamana graph).
+//   - Global ID Space: IDs are monotonic and partitioned across segments.
+//
+// Operations:
+//   - Insert: Adds to MemTable.
+//   - Search: Queries MemTable and all Segments, merges results.
+//   - Flush: Converts MemTable to a new immutable Segment.
+//   - Compact: Merges multiple Segments into a larger one (background).
 type Index struct {
-	dim      int
-	distType index.DistanceType
-	distFunc index.DistanceFunc
-	opts     *Options
+	dim       int
+	distType  index.DistanceType
+	distFunc  index.DistanceFunc
+	opts      *Options
+	indexPath string
 
-	// Graph navigation (in RAM)
-	// INVARIANT: graphMu protects both graph and incomingEdges
-	entryPointAtomic atomic.Uint64
-	graph            [][]uint64          // Adjacency lists (mutable)
-	incomingEdges    map[uint64][]uint64 // Reverse index for O(1) incoming edge removal (protected by graphMu)
-	graphMu          sync.RWMutex
+	// LSM Components
+	mu              sync.RWMutex
+	segments        []*Segment
+	memTable        *hnsw.HNSW
+	memTableStartID uint64         // Global ID of the first vector in MemTable
+	memTableCount   uint64         // Number of vectors in MemTable
+	memTablePresent *bitset.BitSet // IDs currently in MemTable (to mask stale segment data)
 
-	// PQ for approximate distances (in RAM)
-	pq      *quantization.ProductQuantizer
-	pqCodes []byte // PQ codes per vector (flat array: count * M)
+	// Logical Count
+	count uint64
 
-	// Optional BQ codes for search-only prefiltering (in RAM)
-	bq      *quantization.BinaryQuantizer
-	bqCodes []uint64 // BQ codes per vector (flat array: count * numUint64)
-
-	fileFlags uint32 // persisted flags from meta header (read-only indexes)
-
-	// Vectors - mutable columnar storage (for New()) or mmap (for Open())
-	vectors    vectorstore.Store // Used in mutable mode
-	mmapReader *mmap.File        // Used in read-only mode
-
-	// MemTable for fast writes (LSM-tree style)
-	memTable *hnsw.HNSW
-
-	// ID management (for TransactionalIndex)
+	// ID Management
 	nextIDAtomic atomic.Uint64
-	freeList     []uint64
-	freeListMu   sync.Mutex
+	deleted      *bitset.BitSet
+	deletedMu    sync.RWMutex
 
-	// Deletion tracking
-	deleted   *bitset.BitSet
-	deletedMu sync.RWMutex
-
-	// Compaction tracking (background goroutine lifecycle)
+	// Compaction
 	compacting      atomic.Bool
-	stopCompaction  chan struct{}  // Shutdown signal for compaction worker
-	compactionWg    sync.WaitGroup // Tracks compaction worker lifecycle
+	stopCompaction  chan struct{}
+	compactionWg    sync.WaitGroup
 	compactionStats CompactionStats
 	compactionMu    sync.RWMutex
 
-	// Performance optimization: pool visited bitsets to reduce allocations
-	visitedPool sync.Pool
+	// Pooling
+	scratchPool sync.Pool
+}
 
-	// Index path for persistence
-	indexPath string
-
-	// Mode flag
-	isReadOnly bool
-	count      uint64 // For read-only mode, total vector count
-
-	mu sync.RWMutex
+// searchScratch holds temporary buffers for search to avoid allocations.
+type searchScratch struct {
+	results []index.SearchResult
+	seen    map[uint64]struct{}
 }
 
 // CompactionStats tracks compaction statistics.
@@ -107,8 +95,7 @@ type CompactionStats struct {
 	LastCompactionDuration int64  // Duration in milliseconds
 }
 
-// New creates a new mutable DiskANN index with incremental update support.
-// For read-only indexes built with Builder, use Open() instead.
+// New creates a new DiskANN index.
 func New(dim int, distType index.DistanceType, indexPath string, opts *Options) (*Index, error) {
 	if opts == nil {
 		opts = DefaultOptions()
@@ -118,71 +105,31 @@ func New(dim int, distType index.DistanceType, indexPath string, opts *Options) 
 		return nil, &index.ErrInvalidDimension{Dimension: dim}
 	}
 
-	if dim%opts.PQSubvectors != 0 {
-		return nil, fmt.Errorf("diskann: dimension %d not divisible by PQSubvectors %d", dim, opts.PQSubvectors)
-	}
-	if opts.EnableBinaryPrefilter {
-		if opts.BinaryPrefilterMaxNormalizedDistance < 0 || opts.BinaryPrefilterMaxNormalizedDistance > 1 {
-			return nil, fmt.Errorf("diskann: BinaryPrefilterMaxNormalizedDistance must be in [0, 1], got %f", opts.BinaryPrefilterMaxNormalizedDistance)
-		}
-	}
-
-	// Create PQ quantizer (will be trained incrementally or from samples)
-	pq, err := quantization.NewProductQuantizer(dim, opts.PQSubvectors, opts.PQCentroids)
-	if err != nil {
-		return nil, fmt.Errorf("diskann: create PQ: %w", err)
+	// Ensure directory exists
+	if err := os.MkdirAll(indexPath, 0755); err != nil {
+		return nil, fmt.Errorf("diskann: create directory: %w", err)
 	}
 
 	idx := &Index{
-		dim:            dim,
-		distType:       distType,
-		distFunc:       index.NewDistanceFunc(distType),
-		opts:           opts,
-		pq:             pq,
-		graph:          make([][]uint64, 0, 1024),
-		incomingEdges:  make(map[uint64][]uint64),
-		pqCodes:        make([]byte, 0, 1024*opts.PQSubvectors),
-		bq:             nil,
-		bqCodes:        nil,
-		vectors:        columnar.New(dim),
-		deleted:        bitset.New(1024),
-		freeList:       make([]uint64, 0),
-		indexPath:      indexPath,
-		isReadOnly:     false,
-		stopCompaction: make(chan struct{}),
+		dim:             dim,
+		distType:        distType,
+		distFunc:        index.NewDistanceFunc(distType),
+		opts:            opts,
+		indexPath:       indexPath,
+		segments:        make([]*Segment, 0),
+		deleted:         bitset.New(1024),
+		memTablePresent: bitset.New(1024),
+		stopCompaction:  make(chan struct{}),
 	}
 
-	if opts.EnableBinaryPrefilter {
-		idx.bq = quantization.NewBinaryQuantizer(dim)
-		words := (dim + 63) / 64
-		idx.bqCodes = make([]uint64, 0, 1024*words)
+	idx.initPools()
+
+	// Initialize MemTable
+	if err := idx.resetMemTable(); err != nil {
+		return nil, err
 	}
 
-	// Initialize MemTable (HNSW)
-	memTable, err := hnsw.New(func(o *hnsw.Options) {
-		o.Dimension = dim
-		o.M = 32
-		o.EF = 100
-		o.Heuristic = true
-		o.DistanceType = distType
-		o.Vectors = idx.vectors
-	})
-	if err != nil {
-		return nil, fmt.Errorf("diskann: create memtable: %w", err)
-	}
-	idx.memTable = memTable
-
-	idx.nextIDAtomic.Store(0)
-	idx.entryPointAtomic.Store(0) // Will be set on first insert
-
-	// Initialize visited pool for performance
-	idx.visitedPool = sync.Pool{
-		New: func() interface{} {
-			return bitset.New(1024)
-		},
-	}
-
-	// Start background compaction if enabled
+	// Start background compaction
 	if opts.EnableAutoCompaction {
 		idx.compactionWg.Add(1)
 		go idx.backgroundCompaction()
@@ -191,320 +138,211 @@ func New(dim int, distType index.DistanceType, indexPath string, opts *Options) 
 	return idx, nil
 }
 
-// Open loads a DiskANN index from disk (read-only mode for Builder-created indexes).
-// For new mutable indexes, use New() instead.
+// Open opens an existing DiskANN index.
 func Open(indexPath string, opts *Options) (*Index, error) {
 	if opts == nil {
 		opts = DefaultOptions()
 	}
 
 	idx := &Index{
-		opts:          opts,
-		indexPath:     indexPath,
-		isReadOnly:    true,
-		deleted:       bitset.New(1024),
-		freeList:      make([]uint64, 0),
-		incomingEdges: make(map[uint64][]uint64),
+		opts:            opts,
+		indexPath:       indexPath,
+		segments:        make([]*Segment, 0),
+		deleted:         bitset.New(1024),
+		memTablePresent: bitset.New(1024),
+		stopCompaction:  make(chan struct{}),
 	}
 
-	// Load metadata (sets dim, count, distType, distFunc, entryPoint, pq)
-	if err := idx.loadMeta(indexPath); err != nil {
-		return nil, fmt.Errorf("diskann: load meta: %w", err)
-	}
+	idx.initPools()
 
-	// Load graph
-	if err := idx.loadGraph(indexPath); err != nil {
-		return nil, fmt.Errorf("diskann: load graph: %w", err)
-	}
-
-	// Load PQ codes
-	if err := idx.loadPQCodes(indexPath); err != nil {
-		return nil, fmt.Errorf("diskann: load pq codes: %w", err)
-	}
-
-	// Optional: Load BQ codes for search-only prefiltering
-	if opts.EnableBinaryPrefilter {
-		if idx.fileFlags&FlagBQEnabled == 0 {
-			return nil, fmt.Errorf("diskann: binary prefilter enabled but index has no %s (rebuild with EnableBinaryPrefilter)", BQCodesFilename)
-		}
-		if err := idx.loadBQCodes(indexPath); err != nil {
-			return nil, fmt.Errorf("diskann: load bq codes: %w", err)
-		}
-		idx.bq = quantization.NewBinaryQuantizer(idx.dim)
-	}
-
-	// Mmap vectors file
-	vectorsPath := filepath.Join(indexPath, VectorsFilename)
-	reader, err := mmap.Open(vectorsPath)
+	// Scan for segments
+	entries, err := os.ReadDir(indexPath)
 	if err != nil {
-		return nil, fmt.Errorf("diskann: mmap vectors: %w", err)
+		return nil, fmt.Errorf("diskann: read dir: %w", err)
 	}
-	idx.mmapReader = reader
 
-	// Set nextID for potential future mutations (not used in read-only mode)
-	idx.nextIDAtomic.Store(idx.count)
+	var segmentPaths []string
+	for _, entry := range entries {
+		if entry.IsDir() && strings.HasPrefix(entry.Name(), "segment-") {
+			segmentPaths = append(segmentPaths, filepath.Join(indexPath, entry.Name()))
+		}
+	}
+	sort.Strings(segmentPaths) // Ensure deterministic order
 
-	// Initialize visited pool for performance
-	idx.visitedPool = sync.Pool{
-		New: func() interface{} {
-			return bitset.New(1024)
-		},
+	// Load segments
+	maxID := uint64(0)
+	for _, path := range segmentPaths {
+		var baseID uint64
+		var dummy string
+		n, err := fmt.Sscanf(filepath.Base(path), "segment-%d%s", &baseID, &dummy)
+		if n < 1 {
+			continue
+		}
+
+		seg, err := OpenSegment(path, baseID, opts)
+		if err != nil {
+			return nil, fmt.Errorf("diskann: open segment %s: %w", path, err)
+		}
+		idx.segments = append(idx.segments, seg)
+		idx.count += seg.count
+
+		segMax := baseID + seg.count
+		if segMax > maxID {
+			maxID = segMax
+		}
+
+		if idx.dim == 0 {
+			idx.dim = seg.dim
+			idx.distType = seg.distType
+			idx.distFunc = seg.distFunc
+		}
+	}
+
+	// Check for legacy single-file index (migration)
+	legacyMeta := filepath.Join(indexPath, MetaFilename)
+	if _, err := os.Stat(legacyMeta); err == nil {
+		seg, err := OpenSegment(indexPath, 0, opts)
+		if err != nil {
+			return nil, fmt.Errorf("diskann: open legacy segment: %w", err)
+		}
+		idx.segments = append(idx.segments, seg)
+		idx.count += seg.count
+		if seg.count > maxID {
+			maxID = seg.count
+		}
+		if idx.dim == 0 {
+			idx.dim = seg.dim
+			idx.distType = seg.distType
+			idx.distFunc = seg.distFunc
+		}
+	}
+
+	idx.nextIDAtomic.Store(maxID)
+	idx.memTableStartID = maxID
+
+	// Initialize MemTable
+	if err := idx.resetMemTable(); err != nil {
+		return nil, err
+	}
+
+	// Start background compaction
+	if opts.EnableAutoCompaction {
+		idx.compactionWg.Add(1)
+		go idx.backgroundCompaction()
 	}
 
 	return idx, nil
 }
 
-// Close releases resources held by the index gracefully.
-//
-// This method:
-// 1. Signals the background compaction worker to stop (if running)
-// 2. Waits for the worker to finish (ensuring clean shutdown)
-// 3. Closes mmap resources (if any)
-//
-// After Close() returns, the index is no longer usable.
+// initPools initializes the sync.Pools.
+func (idx *Index) initPools() {
+	idx.scratchPool.New = func() interface{} {
+		return &searchScratch{
+			results: make([]index.SearchResult, 0, 1024),
+			seen:    make(map[uint64]struct{}, 1024),
+		}
+	}
+}
+
+// Close releases resources held by the index.
 func (idx *Index) Close() error {
 	idx.mu.Lock()
+	defer idx.mu.Unlock()
 
-	// Stop background compaction if running
+	// Stop background compaction
 	if idx.stopCompaction != nil {
 		close(idx.stopCompaction)
-		idx.mu.Unlock()
-		idx.compactionWg.Wait() // Wait for compaction worker to finish (ensures no goroutine leak)
-		idx.mu.Lock()
+		idx.compactionWg.Wait()
+		idx.stopCompaction = nil
 	}
 
-	idx.mu.Unlock()
-
-	// Close mmap resources if present
-	if idx.mmapReader != nil {
-		return idx.mmapReader.Close()
-	}
-	return nil
-}
-
-// loadMeta loads index metadata and PQ codebooks.
-func (idx *Index) loadMeta(indexPath string) error {
-	path := filepath.Join(indexPath, MetaFilename)
-	f, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	// Read header
-	var header FileHeader
-	if _, err := header.ReadFrom(f); err != nil {
-		return err
-	}
-	if err := header.Validate(); err != nil {
-		return err
-	}
-
-	idx.fileFlags = header.Flags
-
-	idx.dim = int(header.Dimension)
-	idx.count = header.Count
-	idx.distType = header.DistType()
-	idx.distFunc = index.NewDistanceFunc(idx.distType)
-
-	// Restore options from header (override user-provided opts with file values)
-	idx.opts.R = int(header.R)
-	idx.opts.L = int(header.L)
-	idx.opts.Alpha = float32(header.Alpha) / 1000.0
-	idx.opts.PQSubvectors = int(header.PQSubvectors)
-	idx.opts.PQCentroids = int(header.PQCentroids)
-
-	// Read entry point
-	var entryBuf [8]byte
-	if _, err := io.ReadFull(f, entryBuf[:]); err != nil {
-		return err
-	}
-	idx.entryPointAtomic.Store(binary.LittleEndian.Uint64(entryBuf[:]))
-
-	// Load PQ codebooks
-	return idx.loadPQCodebooks(f, &header)
-}
-
-func (idx *Index) loadBQCodes(indexPath string) error {
-	path := filepath.Join(indexPath, BQCodesFilename)
-	f, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	words := (idx.dim + 63) / 64
-	idx.bqCodes = make([]uint64, int(idx.count)*words)
-	buf := make([]byte, 8)
-	for i := 0; i < len(idx.bqCodes); i++ {
-		if _, err := io.ReadFull(f, buf); err != nil {
+	// Close segments
+	for _, seg := range idx.segments {
+		if err := seg.Close(); err != nil {
 			return err
 		}
-		idx.bqCodes[i] = binary.LittleEndian.Uint64(buf)
-	}
-	return nil
-}
-
-func (idx *Index) loadPQCodebooks(r io.Reader, header *FileHeader) error {
-	M := int(header.PQSubvectors)
-	K := int(header.PQCentroids)
-	subDim := idx.dim / M
-
-	// Create PQ with loaded codebooks
-	var err error
-	idx.pq, err = quantization.NewProductQuantizer(idx.dim, M, K)
-	if err != nil {
-		return err
 	}
 
-	// Read codebooks
-	// Flat storage: M * K * subvectorDim
-	totalFloats := M * K * subDim
-	codebooks := make([]float32, totalFloats)
-
-	for i := 0; i < totalFloats; i++ {
-		var buf [4]byte
-		if _, err := io.ReadFull(r, buf[:]); err != nil {
-			return err
-		}
-		bits := binary.LittleEndian.Uint32(buf[:])
-		codebooks[i] = math.Float32frombits(bits)
-	}
-
-	// Set codebooks
-	idx.pq.SetCodebooks(codebooks)
-	return nil
-}
-
-func (idx *Index) loadGraph(indexPath string) error {
-	path := filepath.Join(indexPath, GraphFilename)
-	f, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	idx.graph = make([][]uint64, idx.count)
-	buf := make([]byte, 8)    // 8 bytes for neighbors
-	degBuf := make([]byte, 4) // 4 bytes for degree
-
-	for i := 0; i < int(idx.count); i++ {
-		// Read degree
-		if _, err := io.ReadFull(f, degBuf); err != nil {
-			return err
-		}
-		degree := binary.LittleEndian.Uint32(degBuf)
-
-		// Read neighbors
-		idx.graph[i] = make([]uint64, degree)
-		for j := uint32(0); j < degree; j++ {
-			if _, err := io.ReadFull(f, buf); err != nil {
-				return err
-			}
-			idx.graph[i][j] = binary.LittleEndian.Uint64(buf)
-		}
-	}
-
-	// Build incoming edges reverse index
-	for nodeID := uint64(0); nodeID < idx.count; nodeID++ {
-		for _, neighbor := range idx.graph[nodeID] {
-			idx.incomingEdges[neighbor] = append(idx.incomingEdges[neighbor], nodeID)
-		}
+	// Close MemTable
+	if idx.memTable != nil {
+		return idx.memTable.Close()
 	}
 
 	return nil
 }
 
-func (idx *Index) loadPQCodes(indexPath string) error {
-	path := filepath.Join(indexPath, PQCodesFilename)
-	f, err := os.Open(path)
+func (idx *Index) resetMemTable() error {
+	memTable, err := hnsw.New(func(o *hnsw.Options) {
+		o.Dimension = idx.dim
+		o.M = 32 // Fixed for MemTable
+		o.EF = 100
+		o.Heuristic = true
+		o.DistanceType = idx.distType
+		// MemTable manages its own vectors in memory
+	})
 	if err != nil {
-		return err
+		return fmt.Errorf("diskann: create memtable: %w", err)
 	}
-	defer f.Close()
-
-	M := idx.opts.PQSubvectors
-	idx.pqCodes = make([]byte, int(idx.count)*M)
-
-	if _, err := io.ReadFull(f, idx.pqCodes); err != nil {
-		return err
+	idx.memTable = memTable
+	idx.memTableCount = 0
+	if idx.memTablePresent != nil {
+		idx.memTablePresent.ClearAll()
 	}
-
 	return nil
 }
 
 // ============================================================================
-// TransactionalIndex Implementation (ID Allocation)
+// TransactionalIndex Implementation
 // ============================================================================
 
 // AllocateID reserves a new ID for insertion.
 func (idx *Index) AllocateID() uint64 {
-	idx.freeListMu.Lock()
-	defer idx.freeListMu.Unlock()
-
-	if len(idx.freeList) > 0 {
-		id := idx.freeList[len(idx.freeList)-1]
-		idx.freeList = idx.freeList[:len(idx.freeList)-1]
-		return id
-	}
-
 	return idx.nextIDAtomic.Add(1) - 1
 }
 
-// ReleaseID returns a previously allocated but unused ID.
-func (idx *Index) ReleaseID(id uint64) {
-	idx.freeListMu.Lock()
-	defer idx.freeListMu.Unlock()
-	idx.freeList = append(idx.freeList, id)
-}
+// ReleaseID is a no-op in this LSM implementation.
+func (idx *Index) ReleaseID(id uint64) {}
 
 // ============================================================================
 // Index Mutations (Insert/Delete/Update)
 // ============================================================================
 
-// Insert adds a vector to the index using incremental Vamana construction.
+// Insert adds a vector to the index.
 func (idx *Index) Insert(ctx context.Context, v []float32) (uint64, error) {
-	if idx.isReadOnly {
-		return 0, fmt.Errorf("diskann: cannot insert into read-only index")
-	}
-
-	if len(v) != idx.dim {
-		return 0, &index.ErrDimensionMismatch{Expected: idx.dim, Actual: len(v)}
-	}
-
 	id := idx.AllocateID()
 	if err := idx.ApplyInsert(ctx, id, v); err != nil {
-		idx.ReleaseID(id)
 		return 0, err
 	}
-
+	idx.mu.Lock()
+	idx.count++
+	idx.mu.Unlock()
 	return id, nil
 }
 
-// ApplyInsert performs the actual insert (used by transactions and recovery).
+// ApplyInsert adds a vector with a specific ID to the MemTable.
 func (idx *Index) ApplyInsert(ctx context.Context, id uint64, v []float32) error {
-	if len(v) != idx.dim {
-		return &index.ErrDimensionMismatch{Expected: idx.dim, Actual: len(v)}
+	idx.mu.RLock()
+	memTable := idx.memTable
+	idx.mu.RUnlock()
+
+	if memTable == nil {
+		return fmt.Errorf("diskann: memtable not initialized")
 	}
 
-	idx.mu.Lock()
-	defer idx.mu.Unlock()
-
-	// Store vector (shared with MemTable)
-	if err := idx.vectors.SetVector(id, v); err != nil {
-		return fmt.Errorf("diskann: store vector: %w", err)
-	}
-
-	// Insert into MemTable (HNSW)
-	// This provides immediate durability and searchability.
-	// The on-disk graph (Vamana) is NOT updated here; it is updated during background compaction.
-	if err := idx.memTable.ApplyInsert(ctx, id, v); err != nil {
+	// Insert into MemTable
+	if err := memTable.ApplyInsert(ctx, id, v); err != nil {
 		return fmt.Errorf("diskann: memtable insert: %w", err)
 	}
 
-	idx.count++
+	// Update shadowing bitset
+	idx.mu.Lock()
+	idx.memTablePresent.Set(id)
+	idx.mu.Unlock()
 
-	// Clear deletion bit
+	// Update stats
+	atomic.AddUint64(&idx.memTableCount, 1)
+
+	// Clear deletion bit if it was previously deleted
 	idx.deletedMu.Lock()
 	idx.deleted.Unset(id)
 	idx.deletedMu.Unlock()
@@ -512,223 +350,41 @@ func (idx *Index) ApplyInsert(ctx context.Context, id uint64, v []float32) error
 	return nil
 }
 
-// findNeighborsForInsert finds the best neighbors for a new vector using greedy search.
-func (idx *Index) findNeighborsForInsert(v []float32, excludeID uint64, R, L int) []uint64 {
-	return idx.findNeighborsForInsertWithGraph(v, excludeID, R, L, idx.graph)
+// Delete removes a vector from the index.
+func (idx *Index) Delete(ctx context.Context, id uint64) error {
+	return idx.ApplyDelete(ctx, id)
 }
 
-// findNeighborsForInsertWithGraph finds the best neighbors using a specified graph.
-// This is critical for updates: the graph parameter must be a pre-mutation snapshot,
-// otherwise greedy search navigates a partially disconnected graph (Vamana violation).
-func (idx *Index) findNeighborsForInsertWithGraph(v []float32, excludeID uint64, R, L int, graph [][]uint64) []uint64 {
-	if idx.count == 0 {
-		return nil
+// ApplyDelete marks a vector as deleted.
+func (idx *Index) ApplyDelete(ctx context.Context, id uint64) error {
+	idx.deletedMu.Lock()
+	idx.deleted.Set(id)
+	idx.deletedMu.Unlock()
+
+	// Also delete from MemTable if present to keep it clean
+	idx.mu.RLock()
+	memTable := idx.memTable
+	idx.mu.RUnlock()
+
+	if memTable != nil {
+		_ = memTable.ApplyDelete(ctx, id)
 	}
 
-	// Greedy search from entry point
-	entryPoint := idx.entryPointAtomic.Load()
-	if entryPoint >= uint64(len(graph)) {
-		return nil
-	}
-
-	// CRITICAL: Use exact distances for graph construction, not PQ
-	// PQ distances drift as vectors are added, corrupting neighbor selection.
-	// PQ is only used during search (after graph is built).
-	var distTable []float32 = nil // Force exact distance computation
-
-	// BFS/greedy search to find L nearest candidates
-	// Use bitset for visited tracking (memory efficient, faster than map at scale)
-	maxID := uint64(len(graph))
-	visited := idx.getVisitedBitset(maxID)
-	defer idx.putVisitedBitset(visited)
-
-	candidates := &distHeap{}
-	heap.Init(candidates)
-
-	entryDist := idx.computeDistance(v, entryPoint, distTable)
-	heap.Push(candidates, distNode{id: entryPoint, dist: entryDist})
-	visited.Set(entryPoint)
-
-	results := make([]distNode, 0, L)
-	results = append(results, distNode{id: entryPoint, dist: entryDist})
-
-	// Expansion limit: explore up to L*3 candidates for good quality without unbounded search
-	expansionLimit := L * 3
-	if expansionLimit < 300 {
-		expansionLimit = 300
-	}
-
-	for candidates.Len() > 0 && len(results) < expansionLimit {
-		curr := heap.Pop(candidates).(distNode)
-
-		// Quality termination: stop when current candidate is worse than L-th best
-		if len(results) >= L {
-			sortDistNodes(results)
-			if curr.dist > results[L-1].dist {
-				break
-			}
-		}
-
-		if curr.id < uint64(len(graph)) && graph[curr.id] != nil {
-			for _, neighbor := range graph[curr.id] {
-				if neighbor >= maxID || visited.Test(neighbor) || neighbor == excludeID {
-					continue
-				}
-				visited.Set(neighbor)
-
-				// Skip deleted vectors
-				idx.deletedMu.RLock()
-				isDeleted := idx.deleted.Test(neighbor)
-				idx.deletedMu.RUnlock()
-				if isDeleted {
-					continue
-				}
-
-				dist := idx.computeDistance(v, neighbor, distTable)
-				heap.Push(candidates, distNode{id: neighbor, dist: dist})
-				results = append(results, distNode{id: neighbor, dist: dist})
-			}
-		}
-	}
-
-	// Sort by distance and apply robust pruning
-	sortDistNodes(results)
-	return idx.robustPrune(v, results, R)
+	return nil
 }
 
-// robustPrune applies the Vamana pruning strategy to select diverse neighbors.
-// Uses exact distances for correct α-RNG geometry during graph construction.
-func (idx *Index) robustPrune(center []float32, candidates []distNode, R int) []uint64 {
-	if len(candidates) == 0 {
-		return nil
-	}
-
-	alpha := idx.opts.Alpha
-	result := make([]uint64, 0, R)
-
-	for _, cand := range candidates {
-		if len(result) >= R {
-			break
-		}
-
-		// Check if this candidate is dominated by existing neighbors
-		// α-RNG test: reject cand if ∃ selected s.t. α * d(cand, selected) < d(cand, center)
-		dominated := false
-
-		// Fetch candidate vector ONCE per candidate
-		candVec := idx.getVector(cand.id)
-		if candVec == nil {
-			continue
-		}
-
-		// Test against all already-selected neighbors (exact distance, no PQ)
-		for _, selected := range result {
-			distCandSelected := idx.computeDistance(candVec, selected, nil)
-			if float32(alpha)*distCandSelected < cand.dist {
-				dominated = true
-				break
-			}
-		}
-
-		if !dominated {
-			result = append(result, cand.id)
-		}
-	}
-
-	return result
+// Update updates a vector in the index.
+func (idx *Index) Update(ctx context.Context, id uint64, v []float32) error {
+	return idx.ApplyUpdate(ctx, id, v)
 }
 
-// repairReverseEdges performs reverse-edge repair with re-pruning.
-// This is MANDATORY for Vamana correctness after any node insertion/update.
-// For each neighbor v of node id:
-//  1. Add id as a candidate to v's adjacency list
-//  2. Re-prune v's list to maintain α-RNG property
-//  3. Track incoming edges for O(1) removal during updates
-func (idx *Index) repairReverseEdges(id uint64, v []float32, neighbors []uint64) {
-	for _, neighbor := range neighbors {
-		if neighbor >= uint64(len(idx.graph)) {
-			continue
-		}
-
-		// Get neighbor's vector for distance computation
-		neighborVec := idx.getVector(neighbor)
-		if neighborVec == nil {
-			continue
-		}
-
-		// Collect current neighbors as candidates (using exact distances)
-		candidates := make([]distNode, 0, len(idx.graph[neighbor])+1)
-		for _, n := range idx.graph[neighbor] {
-			nVec := idx.getVector(n)
-			if nVec == nil {
-				continue
-			}
-			dist := idx.distFunc(neighborVec, nVec)
-			candidates = append(candidates, distNode{id: n, dist: dist})
-		}
-
-		// Add the new/updated node as a candidate
-		distToNew := idx.distFunc(neighborVec, v)
-		candidates = append(candidates, distNode{id: id, dist: distToNew})
-
-		// Sort and re-prune to maintain Vamana invariants
-		sortDistNodes(candidates)
-		oldNeighbors := idx.graph[neighbor]
-		newNeighbors := idx.robustPrune(neighborVec, candidates, idx.opts.R)
-		idx.graph[neighbor] = newNeighbors
-
-		// Track incoming edges: if id is now in neighbor's list, record it
-		for _, n := range newNeighbors {
-			if n == id {
-				idx.incomingEdges[id] = append(idx.incomingEdges[id], neighbor)
-				break
-			}
-		}
-
-		// Remove from incoming edges if id was removed during pruning
-		wasInOld := false
-		isInNew := false
-		for _, n := range oldNeighbors {
-			if n == id {
-				wasInOld = true
-				break
-			}
-		}
-		for _, n := range newNeighbors {
-			if n == id {
-				isInNew = true
-				break
-			}
-		}
-		if wasInOld && !isInNew {
-			// Remove neighbor from incoming edges list
-			filtered := idx.incomingEdges[id][:0]
-			for _, inc := range idx.incomingEdges[id] {
-				if inc != neighbor {
-					filtered = append(filtered, inc)
-				}
-			}
-			idx.incomingEdges[id] = filtered
-		}
-	}
+// ApplyUpdate updates a vector with a specific ID.
+func (idx *Index) ApplyUpdate(ctx context.Context, id uint64, v []float32) error {
+	// In LSM, update is Insert with same ID.
+	return idx.ApplyInsert(ctx, id, v)
 }
 
-// computeDistance computes distance using PQ (if trained) or exact distance.
-func (idx *Index) computeDistance(v []float32, id uint64, distTable []float32) float32 {
-	M := idx.opts.PQSubvectors
-	offset := int(id) * M
-	if distTable != nil && offset+M <= len(idx.pqCodes) {
-		return idx.pqDistance(distTable, idx.pqCodes[offset:offset+M])
-	}
-	// Fall back to exact distance
-	vec := idx.getVector(id)
-	if vec == nil {
-		return math.MaxFloat32
-	}
-	return idx.distFunc(v, vec)
-}
-
-// BatchInsert adds multiple vectors in a single operation.
+// BatchInsert adds multiple vectors.
 func (idx *Index) BatchInsert(ctx context.Context, vectors [][]float32) index.BatchInsertResult {
 	result := index.BatchInsertResult{
 		IDs:    make([]uint64, len(vectors)),
@@ -744,115 +400,6 @@ func (idx *Index) BatchInsert(ctx context.Context, vectors [][]float32) index.Ba
 	return result
 }
 
-// Delete removes a vector from the index using soft delete.
-func (idx *Index) Delete(ctx context.Context, id uint64) error {
-	if idx.isReadOnly {
-		return fmt.Errorf("diskann: cannot delete from read-only index")
-	}
-	return idx.ApplyDelete(ctx, id)
-}
-
-// ApplyDelete performs the actual delete (used by transactions and recovery).
-func (idx *Index) ApplyDelete(ctx context.Context, id uint64) error {
-	idx.deletedMu.Lock()
-	defer idx.deletedMu.Unlock()
-
-	if id >= idx.count {
-		return &index.ErrNodeNotFound{ID: id}
-	}
-
-	idx.deleted.Set(id)
-	return nil
-}
-
-// Update updates a vector in the index.
-func (idx *Index) Update(ctx context.Context, id uint64, v []float32) error {
-	if idx.isReadOnly {
-		return fmt.Errorf("diskann: cannot update read-only index")
-	}
-	return idx.ApplyUpdate(ctx, id, v)
-}
-
-// ApplyUpdate performs the actual update (used by transactions and recovery).
-func (idx *Index) ApplyUpdate(ctx context.Context, id uint64, v []float32) error {
-	// Soft delete old, then insert with same ID
-	if err := idx.ApplyDelete(ctx, id); err != nil {
-		return err
-	}
-
-	idx.mu.Lock()
-	defer idx.mu.Unlock()
-
-	// Update vector
-	if err := idx.vectors.SetVector(id, v); err != nil {
-		return fmt.Errorf("diskann: update vector: %w", err)
-	}
-
-	// NOTE: PQ code will be recomputed on compaction.
-	// During incremental updates, graph uses exact distances.
-	// This ensures graph quality until compaction retrains PQ.
-
-	idx.graphMu.Lock()
-	defer idx.graphMu.Unlock()
-
-	if id >= uint64(len(idx.graph)) {
-		// Update MemTable
-		if err := idx.memTable.ApplyInsert(ctx, id, v); err != nil {
-			return fmt.Errorf("diskann: memtable update: %w", err)
-		}
-
-		idx.deletedMu.Lock()
-		idx.deleted.Unset(id)
-		idx.deletedMu.Unlock()
-
-		return nil
-	}
-
-	// CRITICAL: Snapshot graph BEFORE any mutations
-	// findNeighborsForInsert must search a fully connected graph,
-	// otherwise greedy search explores damaged neighborhoods (Vamana violation)
-	snapshot := make([][]uint64, len(idx.graph))
-	for i := range idx.graph {
-		if idx.graph[i] != nil {
-			snapshot[i] = append([]uint64(nil), idx.graph[i]...)
-		}
-	}
-
-	// Remove incoming edges using reverse index (O(R) instead of O(N*R))
-	for _, incoming := range idx.incomingEdges[id] {
-		if incoming >= uint64(len(idx.graph)) {
-			continue
-		}
-		filtered := idx.graph[incoming][:0]
-		for _, n := range idx.graph[incoming] {
-			if n != id {
-				filtered = append(filtered, n)
-			}
-		}
-		idx.graph[incoming] = filtered
-	}
-	// Clear incoming edges for this node
-	idx.incomingEdges[id] = nil
-
-	// Rebuild outgoing edges using PRE-MUTATION snapshot
-	// NOTE: Use adaptive L (1.5x higher) during updates to compensate for slightly
-	// weaker exploration from termination condition (len(results) < L*2).
-	// This maintains update quality close to fresh inserts.
-	adaptiveL := idx.opts.L + idx.opts.L/2
-	neighbors := idx.findNeighborsForInsertWithGraph(v, id, idx.opts.R, adaptiveL, snapshot)
-	idx.graph[id] = neighbors
-
-	// MANDATORY: Perform reverse-edge repair (same as insert)
-	idx.repairReverseEdges(id, v, neighbors)
-
-	// Clear deletion bit AFTER graph is fully repaired
-	idx.deletedMu.Lock()
-	idx.deleted.Unset(id)
-	idx.deletedMu.Unlock()
-
-	return nil
-}
-
 // VectorByID retrieves a vector by its ID.
 func (idx *Index) VectorByID(ctx context.Context, id uint64) ([]float32, error) {
 	idx.deletedMu.RLock()
@@ -863,58 +410,29 @@ func (idx *Index) VectorByID(ctx context.Context, id uint64) ([]float32, error) 
 		return nil, &index.ErrNodeDeleted{ID: id}
 	}
 
-	vec := idx.getVector(id)
-	if vec == nil {
-		return nil, &index.ErrNodeNotFound{ID: id}
-	}
+	// Check MemTable
+	idx.mu.RLock()
+	memTable := idx.memTable
+	segments := idx.segments
+	idx.mu.RUnlock()
 
-	return vec, nil
-}
-
-// getVector retrieves a vector from either columnar store or mmap.
-func (idx *Index) getVector(id uint64) []float32 {
-	if idx.isReadOnly {
-		return idx.readVectorMmap(id)
-	}
-
-	vec, ok := idx.vectors.GetVector(id)
-	if !ok {
-		return nil
-	}
-	return vec
-}
-
-// readVectorMmap reads a vector from the mmap'd file.
-func (idx *Index) readVectorMmap(id uint64) []float32 {
-	if idx.mmapReader == nil {
-		return nil
-	}
-
-	offset := int(id) * int(idx.dim) * 4
-	if offset < 0 || offset+int(idx.dim)*4 > len(idx.mmapReader.Data) {
-		return nil
-	}
-
-	// Zero-copy access
-	// Note: This assumes LittleEndian architecture and 4-byte alignment.
-	// mmap data is usually page-aligned.
-	// If offset is not aligned, we must copy.
-	if offset%4 != 0 {
-		vec := make([]float32, idx.dim)
-		buf := idx.mmapReader.Data[offset : offset+int(idx.dim)*4]
-		for i := 0; i < idx.dim; i++ {
-			bits := binary.LittleEndian.Uint32(buf[i*4:])
-			vec[i] = math.Float32frombits(bits)
+	if memTable != nil {
+		vec, err := memTable.VectorByID(ctx, id)
+		if err == nil {
+			return vec, nil
 		}
-		return vec
 	}
 
-	return unsafe.Slice((*float32)(unsafe.Pointer(&idx.mmapReader.Data[offset])), idx.dim)
-}
+	// Check Segments (newest to oldest)
+	for i := len(segments) - 1; i >= 0; i-- {
+		vec, err := segments[i].VectorByID(ctx, id)
+		if err == nil {
+			return vec, nil
+		}
+	}
 
-// ============================================================================
-// Search Operations
-// ============================================================================
+	return nil, &index.ErrNodeNotFound{ID: id}
+}
 
 // KNNSearch performs k-nearest neighbor search with optional pre-filtering.
 // filter (in opts): Applied DURING graph traversal for correct recall and performance.
@@ -927,19 +445,29 @@ func (idx *Index) KNNSearch(ctx context.Context, query []float32, k int, opts *i
 	}
 
 	idx.mu.RLock()
-	count := idx.count
+	memTable := idx.memTable
+	segments := idx.segments
 	idx.mu.RUnlock()
 
-	if count == 0 {
-		return nil, nil
-	}
+	// Get scratch buffer from pool
+	scratch := idx.scratchPool.Get().(*searchScratch)
+	defer func() {
+		// Clear and return to pool
+		scratch.results = scratch.results[:0]
+		for k := range scratch.seen {
+			delete(scratch.seen, k)
+		}
+		idx.scratchPool.Put(scratch)
+	}()
 
 	// Wrap filter to exclude deleted items
 	var userFilter func(uint64) bool
 	if opts != nil {
 		userFilter = opts.Filter
 	}
-	filter := func(id uint64) bool {
+
+	// Base filter: deleted check
+	baseFilter := func(id uint64) bool {
 		idx.deletedMu.RLock()
 		isDeleted := idx.deleted.Test(id)
 		idx.deletedMu.RUnlock()
@@ -952,73 +480,82 @@ func (idx *Index) KNNSearch(ctx context.Context, query []float32, k int, opts *i
 		return true
 	}
 
+	// Segment filter: base filter + check if shadowed by MemTable
+	segmentFilter := func(id uint64) bool {
+		if !baseFilter(id) {
+			return false
+		}
+		// Check shadowing
+		idx.mu.RLock()
+		shadowed := idx.memTablePresent.Test(id)
+		idx.mu.RUnlock()
+		return !shadowed
+	}
+
 	// Search MemTable
-	var memResults []index.SearchResult
-	if idx.memTable != nil {
+	if memTable != nil {
 		memOpts := index.SearchOptions{
-			Filter: filter,
+			Filter: baseFilter,
 		}
 		if opts != nil {
 			memOpts.EFSearch = opts.EFSearch
 		}
-		var err error
-		memResults, err = idx.memTable.KNNSearch(ctx, query, k, &memOpts)
-		if err != nil {
+
+		// Use Zero-Alloc KNNSearchWithBuffer
+		if err := memTable.KNNSearchWithBuffer(ctx, query, k, &memOpts, &scratch.results); err != nil {
 			return nil, fmt.Errorf("diskann: memtable search: %w", err)
 		}
 	}
 
-	// Search DiskANN Graph (if not empty)
-	var diskResults []index.SearchResult
-	idx.graphMu.RLock()
-	hasGraph := len(idx.graph) > 0
-	idx.graphMu.RUnlock()
-
-	if hasGraph {
-		// Build PQ distance table for query
-		var distTable []float32
-		if idx.pq.IsTrained() {
-			distTable = idx.pq.BuildDistanceTable(query)
+	// Search DiskANN Segments
+	if len(segments) > 0 {
+		// Search all segments
+		for _, seg := range segments {
+			// Use Zero-Alloc SearchWithBuffer
+			// Note: We pass segmentFilter to exclude shadowed IDs
+			// We pass nil for distTable so Segment builds it if needed
+			if err := seg.SearchWithBuffer(ctx, query, k, nil, segmentFilter, &scratch.results); err != nil {
+				return nil, fmt.Errorf("diskann: segment search: %w", err)
+			}
 		}
-
-		// Optional BQ query encoding (search-only prefilter)
-		var queryBQ []uint64
-		if idx.opts.EnableBinaryPrefilter && idx.bq != nil && len(idx.bqCodes) > 0 {
-			queryBQ = idx.bq.EncodeUint64(query)
-		}
-
-		// Phase 1: Graph search using PQ distances WITH PRE-FILTERING
-		rerankK := idx.opts.RerankK
-		if rerankK < k {
-			rerankK = k * 2
-		}
-		candidates := idx.beamSearch(query, distTable, queryBQ, rerankK, filter)
-
-		// Phase 2: Rerank using exact distances (no post-filtering needed)
-		diskResults = idx.rerank(query, candidates, k, nil) // Filter already applied in beamSearch
 	}
 
-	// Merge results
-	return idx.mergeResults(memResults, diskResults, k), nil
+	// Merge and Deduplicate
+	// Sort by distance
+	sort.Slice(scratch.results, func(i, j int) bool {
+		return scratch.results[i].Distance < scratch.results[j].Distance
+	})
+
+	// Deduplicate and take top-k
+	finalResults := make([]index.SearchResult, 0, k)
+	for _, res := range scratch.results {
+		if len(finalResults) >= k {
+			break
+		}
+		if _, ok := scratch.seen[res.ID]; !ok {
+			finalResults = append(finalResults, res)
+			scratch.seen[res.ID] = struct{}{}
+		}
+	}
+
+	return finalResults, nil
 }
 
 // BruteSearch performs a brute-force search on the index.
 func (idx *Index) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint64) bool) ([]index.SearchResult, error) {
-	if len(query) != idx.dim {
-		return nil, &index.ErrDimensionMismatch{Expected: idx.dim, Actual: len(query)}
-	}
-	if k <= 0 {
-		return nil, index.ErrInvalidK
-	}
-
 	idx.mu.RLock()
-	defer idx.mu.RUnlock()
+	maxID := idx.nextIDAtomic.Load()
+	idx.mu.RUnlock()
 
-	// Use a max-heap to keep track of the top-k results
 	h := &maxDistHeap{}
 	heap.Init(h)
 
-	for id := uint64(0); id < idx.count; id++ {
+	for id := uint64(0); id < maxID; id++ {
+		// Check filter
+		if filter != nil && !filter(id) {
+			continue
+		}
+
 		// Check deleted
 		idx.deletedMu.RLock()
 		isDeleted := idx.deleted.Test(id)
@@ -1027,13 +564,8 @@ func (idx *Index) BruteSearch(ctx context.Context, query []float32, k int, filte
 			continue
 		}
 
-		// Check filter
-		if filter != nil && !filter(id) {
-			continue
-		}
-
-		vec := idx.getVector(id)
-		if vec == nil {
+		vec, err := idx.VectorByID(ctx, id)
+		if err != nil {
 			continue
 		}
 
@@ -1047,7 +579,7 @@ func (idx *Index) BruteSearch(ctx context.Context, query []float32, k int, filte
 		}
 	}
 
-	// Convert to SearchResult
+	// Extract results
 	results := make([]index.SearchResult, h.Len())
 	for i := h.Len() - 1; i >= 0; i-- {
 		node := heap.Pop(h).(distNode)
@@ -1055,206 +587,6 @@ func (idx *Index) BruteSearch(ctx context.Context, query []float32, k int, filte
 	}
 
 	return results, nil
-}
-
-func (idx *Index) mergeResults(r1, r2 []index.SearchResult, k int) []index.SearchResult {
-	total := len(r1) + len(r2)
-	merged := make([]index.SearchResult, 0, total)
-
-	i, j := 0, 0
-	seen := make(map[uint64]bool)
-
-	for i < len(r1) && j < len(r2) {
-		if r1[i].Distance < r2[j].Distance {
-			if !seen[r1[i].ID] {
-				merged = append(merged, r1[i])
-				seen[r1[i].ID] = true
-			}
-			i++
-		} else {
-			if !seen[r2[j].ID] {
-				merged = append(merged, r2[j])
-				seen[r2[j].ID] = true
-			}
-			j++
-		}
-	}
-
-	for i < len(r1) {
-		if !seen[r1[i].ID] {
-			merged = append(merged, r1[i])
-			seen[r1[i].ID] = true
-		}
-		i++
-	}
-	for j < len(r2) {
-		if !seen[r2[j].ID] {
-			merged = append(merged, r2[j])
-			seen[r2[j].ID] = true
-		}
-		j++
-	}
-
-	if len(merged) > k {
-		merged = merged[:k]
-	}
-	return merged
-}
-
-// beamSearch performs beam search through the graph using PQ distances with optional pre-filtering.
-// filter: if not nil, nodes are filtered DURING graph traversal (not after).
-// This ensures correct recall and reduces wasted distance computations.
-// Uses proper DiskANN termination: stop when current candidate is worse than worst in beam.
-func (idx *Index) beamSearch(query []float32, distTable []float32, queryBQ []uint64, topK int, filter func(uint64) bool) []distNode {
-	idx.graphMu.RLock()
-	defer idx.graphMu.RUnlock()
-
-	if len(idx.graph) == 0 {
-		return nil
-	}
-
-	// Min-heap for candidates
-	candidates := &distHeap{}
-	heap.Init(candidates)
-
-	// Start from entry point
-	// NOTE: If entry point is deleted, it's still used for graph navigation
-	// (deleted nodes are skipped when adding to results). Compaction resets
-	// entry point to a live node. This matches DiskANN behavior.
-	entryPoint := idx.entryPointAtomic.Load()
-	if entryPoint >= uint64(len(idx.graph)) {
-		return nil
-	}
-
-	entryDist := idx.computeDistance(query, entryPoint, distTable)
-	heap.Push(candidates, distNode{id: entryPoint, dist: entryDist})
-
-	// Use bitset for visited tracking (memory efficient, faster than map at scale)
-	maxID := uint64(len(idx.graph))
-	visited := idx.getVisitedBitset(maxID)
-	defer idx.putVisitedBitset(visited)
-	visited.Set(entryPoint)
-
-	// Result list (sorted by distance, worst at end)
-	results := make([]distNode, 0, topK*2)
-
-	// Skip deleted entry point (and apply filter)
-	idx.deletedMu.RLock()
-	isDeleted := idx.deleted.Test(entryPoint)
-	idx.deletedMu.RUnlock()
-
-	// PRE-FILTER: Only add to results if passes filter
-	if !isDeleted && (filter == nil || filter(entryPoint)) {
-		results = append(results, distNode{id: entryPoint, dist: entryDist})
-	}
-
-	// DiskANN beam search: expand until no better candidates exist
-	for candidates.Len() > 0 {
-		// Pop closest candidate
-		curr := heap.Pop(candidates).(distNode)
-
-		// CRITICAL FIX: Proper DiskANN termination condition
-		// If beam is full and current candidate is worse than worst in beam, stop
-		if len(results) >= topK {
-			worstInBeam := results[len(results)-1].dist
-			if curr.dist > worstInBeam {
-				break
-			}
-		}
-
-		// Expand neighbors
-		if curr.id < uint64(len(idx.graph)) && idx.graph[curr.id] != nil {
-			for _, neighbor := range idx.graph[curr.id] {
-				if neighbor >= maxID || visited.Test(neighbor) {
-					continue
-				}
-				visited.Set(neighbor)
-
-				// Skip deleted vectors
-				idx.deletedMu.RLock()
-				isDeleted := idx.deleted.Test(neighbor)
-				idx.deletedMu.RUnlock()
-
-				// PRE-FILTER: Skip filtered nodes BEFORE computing distance
-				if filter != nil && !filter(neighbor) {
-					continue
-				}
-
-				// Optional BQ prefilter: skip nodes that are too far in Hamming space
-				if queryBQ != nil {
-					words := (idx.dim + 63) / 64
-					offset := int(neighbor) * words
-					if offset+words <= len(idx.bqCodes) {
-						norm := quantization.NormalizedHammingDistance(queryBQ, idx.bqCodes[offset:offset+words], idx.dim)
-						if norm > idx.opts.BinaryPrefilterMaxNormalizedDistance {
-							continue
-						}
-					}
-				}
-
-				dist := idx.computeDistance(query, neighbor, distTable)
-				heap.Push(candidates, distNode{id: neighbor, dist: dist})
-
-				if !isDeleted {
-					results = append(results, distNode{id: neighbor, dist: dist})
-					// Keep results sorted for termination check
-					sortDistNodes(results)
-					if len(results) > topK*2 {
-						results = results[:topK*2]
-					}
-				}
-			}
-		}
-	}
-
-	// Sort and return top candidates
-	sortDistNodes(results)
-	if len(results) > topK {
-		results = results[:topK]
-	}
-
-	return results
-}
-
-// pqDistance computes approximate distance using PQ codes.
-func (idx *Index) pqDistance(distTable []float32, codes []byte) float32 {
-	return idx.pq.AdcDistance(distTable, codes)
-}
-
-// rerank fetches vectors and computes exact distances.
-// filter: Optional post-filtering (but should be nil since pre-filtering is done in beamSearch).
-// Kept for backward compatibility, but pre-filtering is the recommended approach.
-func (idx *Index) rerank(query []float32, candidates []distNode, k int, filter func(uint64) bool) []index.SearchResult {
-	// Fetch vectors and compute exact distances
-	results := make([]distNode, 0, len(candidates))
-	for _, c := range candidates {
-		// Optional post-filter (should be nil if pre-filtering was used)
-		if filter != nil && !filter(c.id) {
-			continue
-		}
-
-		vec := idx.getVector(c.id)
-		if vec == nil {
-			continue
-		}
-
-		dist := idx.distFunc(query, vec)
-		results = append(results, distNode{id: c.id, dist: dist})
-	}
-
-	// Sort by exact distance
-	sortDistNodes(results)
-	if len(results) > k {
-		results = results[:k]
-	}
-
-	// Convert to SearchResult
-	out := make([]index.SearchResult, len(results))
-	for i, r := range results {
-		out[i] = index.SearchResult{ID: r.id, Distance: r.dist}
-	}
-
-	return out
 }
 
 // KNNSearchStream returns an iterator over search results.
@@ -1283,37 +615,23 @@ func (idx *Index) Stats() index.Stats {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 
-	idx.graphMu.RLock()
-	totalEdges := 0
-	for _, neighbors := range idx.graph {
-		totalEdges += len(neighbors)
-	}
-	idx.graphMu.RUnlock()
+	totalCount := idx.count
 
 	idx.deletedMu.RLock()
 	deletedCount := idx.deleted.Count()
 	idx.deletedMu.RUnlock()
 
-	liveCount := int(idx.count) - deletedCount
-	avgDegree := 0
-	if liveCount > 0 {
-		avgDegree = totalEdges / liveCount
-	}
-
-	mode := "mutable"
-	if idx.isReadOnly {
-		mode = "read-only"
-	}
+	liveCount := int(totalCount) - int(deletedCount)
 
 	storage := map[string]string{
 		"VectorCount":   fmt.Sprintf("%d", liveCount),
-		"TotalEdges":    fmt.Sprintf("%d", totalEdges),
-		"AverageDegree": fmt.Sprintf("%d", avgDegree),
+		"MemTableCount": fmt.Sprintf("%d", idx.memTableCount),
+		"SegmentCount":  fmt.Sprintf("%d", len(idx.segments)),
 	}
 
 	// Include deletion stats if there are any deleted vectors
 	if deletedCount > 0 {
-		storage["TotalCount"] = fmt.Sprintf("%d", idx.count)
+		storage["TotalCount"] = fmt.Sprintf("%d", totalCount)
 		storage["DeletedCount"] = fmt.Sprintf("%d", deletedCount)
 	}
 
@@ -1321,7 +639,7 @@ func (idx *Index) Stats() index.Stats {
 		Options: map[string]string{
 			"Dimension":    fmt.Sprintf("%d", idx.dim),
 			"DistanceType": idx.distType.String(),
-			"Mode":         mode,
+			"Mode":         "LSM",
 		},
 		Parameters: map[string]string{
 			"R":            fmt.Sprintf("%d", idx.opts.R),
@@ -1345,221 +663,222 @@ func (idx *Index) Count() int {
 	deletedCount := idx.deleted.Count()
 	idx.deletedMu.RUnlock()
 
-	return int(idx.count) - int(deletedCount)
+	idx.mu.RLock()
+	total := idx.count
+	idx.mu.RUnlock()
+
+	return int(total) - int(deletedCount)
 }
 
 // ============================================================================
 // Compaction (removes deleted vectors, rebuilds graph, re-trains PQ)
 // ============================================================================
 
-// Compact removes all deleted vectors and rebuilds the index for optimal performance.
-// This is a blocking operation that acquires exclusive locks.
-func (idx *Index) Compact(ctx context.Context) error {
-	if idx.isReadOnly {
-		return fmt.Errorf("diskann: cannot compact read-only index")
+// ============================================================================
+// LSM Operations (Flush & Compaction)
+// ============================================================================
+
+// Flush forces the MemTable to be written to a new disk segment.
+func (idx *Index) Flush(ctx context.Context) error {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+
+	if idx.memTable == nil || idx.memTableCount == 0 {
+		return nil
 	}
 
+	// Prepare segment path
+	baseID := idx.memTableStartID
+	segmentName := fmt.Sprintf("segment-%019d", baseID)
+	segmentPath := filepath.Join(idx.indexPath, segmentName)
+
+	// Create builder
+	builder, err := NewBuilder(idx.dim, idx.distType, segmentPath, idx.opts)
+	if err != nil {
+		return fmt.Errorf("diskann: create builder: %w", err)
+	}
+
+	// Extract vectors from MemTable
+	// We iterate from baseID to nextID
+	endID := idx.nextIDAtomic.Load()
+	vectors := make([][]float32, 0, endID-baseID)
+
+	for id := baseID; id < endID; id++ {
+		// Check if deleted
+		idx.deletedMu.RLock()
+		isDeleted := idx.deleted.Test(id)
+		idx.deletedMu.RUnlock()
+
+		var vec []float32
+		if !isDeleted {
+			var err error
+			vec, err = idx.memTable.VectorByID(ctx, id)
+			if err != nil {
+				// Should not happen for live vectors in MemTable
+				// But if it does, we treat it as deleted/zero
+				vec = make([]float32, idx.dim)
+			}
+		} else {
+			// Placeholder for deleted vector to maintain ID alignment
+			vec = make([]float32, idx.dim)
+		}
+		vectors = append(vectors, vec)
+	}
+
+	// Build segment
+	if _, err := builder.AddBatch(vectors); err != nil {
+		return fmt.Errorf("diskann: add batch: %w", err)
+	}
+	if err := builder.Build(ctx); err != nil {
+		return fmt.Errorf("diskann: build segment: %w", err)
+	}
+
+	// Open new segment
+	seg, err := OpenSegment(segmentPath, baseID, idx.opts)
+	if err != nil {
+		return fmt.Errorf("diskann: open new segment: %w", err)
+	}
+
+	// Add to segments list
+	idx.segments = append(idx.segments, seg)
+
+	// Reset MemTable
+	if err := idx.resetMemTable(); err != nil {
+		return err
+	}
+	idx.memTableStartID = endID
+
+	return nil
+}
+
+// Compact merges all segments into a single new segment (Major Compaction).
+// This is a blocking operation.
+func (idx *Index) Compact(ctx context.Context) error {
 	// Prevent concurrent compactions
 	if !idx.compacting.CompareAndSwap(false, true) {
 		return fmt.Errorf("diskann: compaction already in progress")
 	}
 	defer idx.compacting.Store(false)
 
-	startTime := nowMillis()
-
-	idx.deletedMu.RLock()
-	deletedCount := idx.deleted.Count()
-	idx.deletedMu.RUnlock()
-
-	idx.graphMu.RLock()
-	graphLen := len(idx.graph)
-	idx.graphMu.RUnlock()
-
-	hasNewVectors := idx.count > uint64(graphLen)
-
-	if deletedCount == 0 && !hasNewVectors {
-		return nil // Nothing to compact
+	// 1. Flush MemTable first to ensure everything is on disk
+	if err := idx.Flush(ctx); err != nil {
+		return fmt.Errorf("diskann: flush before compact: %w", err)
 	}
 
-	// Acquire exclusive lock for compaction
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
-	// Build ID remapping (old ID -> new ID)
-	idMap := make(map[uint64]uint64)
-	newID := uint64(0)
-	liveVectors := make([][]float32, 0, idx.count-uint64(deletedCount))
-
-	// Collect all live vectors
-	for oldID := uint64(0); oldID < idx.count; oldID++ {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-
-		idx.deletedMu.RLock()
-		isDeleted := idx.deleted.Test(oldID)
-		idx.deletedMu.RUnlock()
-
-		if isDeleted {
-			continue
-		}
-
-		vec := idx.getVector(oldID)
-		if vec == nil {
-			continue
-		}
-
-		// Copy vector
-		vecCopy := make([]float32, len(vec))
-		copy(vecCopy, vec)
-		liveVectors = append(liveVectors, vecCopy)
-
-		idMap[oldID] = newID
-		newID++
+	if len(idx.segments) == 0 {
+		return nil // Nothing to compact
 	}
 
-	if len(liveVectors) == 0 {
-		return fmt.Errorf("diskann: no live vectors after compaction")
+	start := time.Now()
+
+	// Create builder
+	// Use a unique name to avoid conflicts
+	mergedName := fmt.Sprintf("segment-merged-%d", time.Now().UnixNano())
+	mergedPath := filepath.Join(idx.indexPath, mergedName)
+
+	builder, err := NewBuilder(idx.dim, idx.distType, mergedPath, idx.opts)
+	if err != nil {
+		return fmt.Errorf("diskann: create builder: %w", err)
 	}
 
-	// Re-train PQ on live vectors
-	if err := idx.pq.Train(liveVectors); err != nil {
-		return fmt.Errorf("diskann: re-train PQ: %w", err)
-	}
+	// Iterate all segments
+	vectorsRemoved := 0
+	oldSegments := idx.segments
 
-	// Rebuild vectors and PQ codes
-	newVectors := columnar.New(idx.dim)
-	M := idx.opts.PQSubvectors
-	newPQCodes := make([]byte, len(liveVectors)*M)
-	var newBQCodes []uint64
-	if idx.opts.EnableBinaryPrefilter && idx.bq != nil {
-		words := (idx.dim + 63) / 64
-		newBQCodes = make([]uint64, len(liveVectors)*words)
-	}
-	for i, vec := range liveVectors {
-		if err := newVectors.SetVector(uint64(i), vec); err != nil {
-			return fmt.Errorf("diskann: set vector %d: %w", i, err)
-		}
-		copy(newPQCodes[i*M:], idx.pq.Encode(vec))
-		if newBQCodes != nil {
-			words := (idx.dim + 63) / 64
-			copy(newBQCodes[i*words:], idx.bq.EncodeUint64(vec))
-		}
-	}
+	for _, seg := range oldSegments {
+		for i := uint64(0); i < seg.count; i++ {
+			globalID := seg.baseID + i
 
-	// Rebuild graph with remapped IDs
-	idx.graphMu.Lock()
-	oldGraphLen := len(idx.graph)
-	newGraph := make([][]uint64, len(liveVectors))
-	var newVectorIDs []uint64
+			// Check deleted
+			idx.deletedMu.RLock()
+			isDeleted := idx.deleted.Test(globalID)
+			idx.deletedMu.RUnlock()
 
-	for oldID, newID := range idMap {
-		if int(oldID) >= oldGraphLen {
-			newVectorIDs = append(newVectorIDs, newID)
-			continue
-		}
+			if isDeleted {
+				vectorsRemoved++
+				continue
+			}
 
-		oldNeighbors := idx.graph[oldID]
-		newNeighbors := make([]uint64, 0, len(oldNeighbors))
+			vec := seg.getVector(i)
+			if vec == nil {
+				continue // Should not happen
+			}
 
-		for _, oldNeighbor := range oldNeighbors {
-			if newNeighbor, ok := idMap[oldNeighbor]; ok {
-				newNeighbors = append(newNeighbors, newNeighbor)
+			if _, err := builder.Add(vec); err != nil {
+				return fmt.Errorf("diskann: add vector: %w", err)
 			}
 		}
-
-		newGraph[newID] = newNeighbors
 	}
 
-	// Update entry point
-	oldEntry := idx.entryPointAtomic.Load()
-	if newEntry, ok := idMap[oldEntry]; ok {
-		idx.entryPointAtomic.Store(newEntry)
-	} else if len(liveVectors) > 0 {
-		idx.entryPointAtomic.Store(0) // Default to first vector
+	// Build
+	if err := builder.Build(ctx); err != nil {
+		return fmt.Errorf("diskann: build merged segment: %w", err)
 	}
 
-	// Replace with new structures
-	idx.graph = newGraph
-	idx.incomingEdges = make(map[uint64][]uint64)
-	for nodeID := uint64(0); nodeID < uint64(len(newGraph)); nodeID++ {
-		for _, neighbor := range newGraph[nodeID] {
-			idx.incomingEdges[neighbor] = append(idx.incomingEdges[neighbor], nodeID)
-		}
-	}
-
-	idx.pqCodes = newPQCodes
-	if newBQCodes != nil {
-		idx.bqCodes = newBQCodes
-	}
-	idx.vectors = newVectors
-	idx.count = uint64(len(liveVectors))
-
-	// Insert new vectors (from MemTable) into the graph
-	for _, id := range newVectorIDs {
-		v, _ := idx.vectors.GetVector(id)
-		neighbors := idx.findNeighborsForInsert(v, id, idx.opts.R, idx.opts.L)
-		idx.graph[id] = neighbors
-		idx.repairReverseEdges(id, v, neighbors)
-	}
-
-	// Reset MemTable
-	memTable, err := hnsw.New(func(o *hnsw.Options) {
-		o.Dimension = idx.dim
-		o.M = 32
-		o.EF = 100
-		o.Heuristic = true
-		o.DistanceType = idx.distType
-		o.Vectors = idx.vectors
-	})
+	// Open new segment
+	newSeg, err := OpenSegment(mergedPath, 0, idx.opts)
 	if err != nil {
-		idx.graphMu.Unlock()
-		return fmt.Errorf("diskann: reset memtable: %w", err)
+		return fmt.Errorf("diskann: open merged segment: %w", err)
 	}
-	idx.memTable = memTable
 
-	idx.graphMu.Unlock()
+	// Close old segments
+	for _, seg := range oldSegments {
+		_ = seg.Close()
+		// We could delete files here, but safer to do it after swap?
+		// Or keep them as backup?
+		// For now, we delete them to save space.
+		_ = os.RemoveAll(seg.path)
+	}
 
-	// Reset deletion tracking
+	// Replace segments
+	idx.segments = []*Segment{newSeg}
+	idx.count = newSeg.count
+	idx.memTableStartID = newSeg.count
+	idx.nextIDAtomic.Store(newSeg.count)
+
+	// Reset deleted
 	idx.deletedMu.Lock()
-	idx.deleted = bitset.New(uint64(len(liveVectors)))
+	idx.deleted.ClearAll()
 	idx.deletedMu.Unlock()
 
-	// Reset ID allocation
-	idx.nextIDAtomic.Store(uint64(len(liveVectors)))
-	idx.freeListMu.Lock()
-	idx.freeList = make([]uint64, 0)
-	idx.freeListMu.Unlock()
+	// Reset shadowing
+	idx.memTablePresent.ClearAll()
 
 	// Update stats
-	duration := nowMillis() - startTime
 	idx.compactionMu.Lock()
-	idx.compactionStats.LastCompactionTime = startTime
 	idx.compactionStats.TotalCompactions++
-	idx.compactionStats.VectorsRemovedTotal += uint64(deletedCount)
-	idx.compactionStats.LastVectorsRemoved = uint32(deletedCount)
-	idx.compactionStats.LastCompactionDuration = duration
+	idx.compactionStats.VectorsRemovedTotal += uint64(vectorsRemoved)
+	idx.compactionStats.LastVectorsRemoved = uint32(vectorsRemoved)
+	idx.compactionStats.LastCompactionTime = time.Now().Unix()
+	idx.compactionStats.LastCompactionDuration = time.Since(start).Milliseconds()
 	idx.compactionMu.Unlock()
 
 	return nil
 }
 
-// ShouldCompact returns true if compaction is recommended based on threshold.
+// ShouldCompact returns true if compaction is recommended.
 func (idx *Index) ShouldCompact() bool {
-	if idx.isReadOnly {
-		return false
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	// Compact if too many segments
+	if len(idx.segments) > 4 {
+		return true
 	}
 
+	// Compact if deleted ratio is high
 	idx.deletedMu.RLock()
 	deletedCount := idx.deleted.Count()
 	idx.deletedMu.RUnlock()
 
-	if idx.count < uint64(idx.opts.CompactionMinVectors) {
-		return false
+	if idx.count > 0 && float32(deletedCount)/float32(idx.count) >= idx.opts.CompactionThreshold {
+		return true
 	}
 
-	deletedRatio := float32(deletedCount) / float32(idx.count)
-	return deletedRatio >= idx.opts.CompactionThreshold
+	return false
 }
 
 // CompactionStats returns current compaction statistics.
@@ -1570,9 +889,8 @@ func (idx *Index) CompactionStats() CompactionStats {
 }
 
 // backgroundCompaction runs periodic compaction checks.
-// This method runs in a background goroutine and is tracked by compactionWg.
 func (idx *Index) backgroundCompaction() {
-	defer idx.compactionWg.Done() // Ensure WaitGroup is decremented on exit
+	defer idx.compactionWg.Done()
 
 	ticker := newTicker(idx.opts.CompactionInterval)
 	defer ticker.Stop()
@@ -1582,7 +900,7 @@ func (idx *Index) backgroundCompaction() {
 		case <-ticker.C:
 			if idx.ShouldCompact() {
 				ctx := context.Background()
-				_ = idx.Compact(ctx) // Ignore errors in background
+				_ = idx.Compact(ctx)
 			}
 		case <-idx.stopCompaction:
 			return
@@ -1625,22 +943,4 @@ func nowMillis() int64 {
 // newTicker creates a ticker that ticks every interval seconds.
 func newTicker(intervalSeconds int) *time.Ticker {
 	return time.NewTicker(time.Duration(intervalSeconds) * time.Second)
-}
-
-// getVisitedBitset gets a bitset from the pool, sized appropriately.
-func (idx *Index) getVisitedBitset(size uint64) *bitset.BitSet {
-	bs := idx.visitedPool.Get().(*bitset.BitSet)
-	bs.ClearAll()
-	if bs.Len() < size {
-		// Grow bitset if needed
-		bs = bitset.New(size)
-	}
-	return bs
-}
-
-// putVisitedBitset returns a bitset to the pool for reuse.
-func (idx *Index) putVisitedBitset(bs *bitset.BitSet) {
-	if bs != nil {
-		idx.visitedPool.Put(bs)
-	}
 }

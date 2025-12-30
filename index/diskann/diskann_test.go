@@ -338,66 +338,6 @@ func TestBruteSearch(t *testing.T) {
 	}
 }
 
-func TestReadOnlyOperations(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "diskann-test-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	indexPath := filepath.Join(tmpDir, "test-index")
-
-	// Build minimal index
-	builder, err := NewBuilder(8, index.DistanceTypeSquaredL2, indexPath, &Options{
-		R:            4,
-		L:            10,
-		Alpha:        1.2,
-		PQSubvectors: 2,
-		PQCentroids:  256,
-	})
-	if err != nil {
-		t.Fatalf("NewBuilder: %v", err)
-	}
-
-	vec := []float32{1, 2, 3, 4, 5, 6, 7, 8}
-	if _, err := builder.Add(vec); err != nil {
-		t.Fatalf("Add: %v", err)
-	}
-
-	ctx := context.Background()
-	if err := builder.Build(ctx); err != nil {
-		t.Fatalf("Build: %v", err)
-	}
-
-	// Open index
-	idx, err := Open(indexPath, nil)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer idx.Close()
-
-	// Insert should fail
-	if _, err := idx.Insert(ctx, vec); err == nil {
-		t.Error("Insert should fail on read-only index")
-	}
-
-	// Delete should fail
-	if err := idx.Delete(ctx, 0); err == nil {
-		t.Error("Delete should fail on read-only index")
-	}
-
-	// Update should fail
-	if err := idx.Update(ctx, 0, vec); err == nil {
-		t.Error("Update should fail on read-only index")
-	}
-
-	// BatchInsert should fail
-	result := idx.BatchInsert(ctx, [][]float32{vec})
-	if len(result.Errors) == 0 || result.Errors[0] == nil {
-		t.Error("BatchInsert should fail on read-only index")
-	}
-}
-
 func TestStats(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "diskann-test-*")
 	if err != nil {

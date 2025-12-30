@@ -17,7 +17,7 @@ This document provides an in-depth look at Vecgo's internal architecture, helpin
 
 ## High-Level Overview
 
-Vecgo is organized in layers, from high-level API down to low-level storage:
+Vecgo is designed around a **Shared-Nothing, LSM-Tree Architecture** to maximize performance, concurrency, and durability.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -28,34 +28,25 @@ Vecgo is organized in layers, from high-level API down to low-level storage:
                             │
 ┌─────────────────────────────────────────────────────────────┐
 │                   Coordinator Layer                         │
-│   - Transaction coordination (optional sharding)            │
-│   - Metadata integration                                    │
-│   - WAL integration                                         │
-│   - MemTable (Write Buffer)                                 │
-│   - Search result aggregation (sharded mode)                │
+│   - Sharding (Shared-Nothing)                               │
+│   - Request Routing (GlobalID)                              │
+│   - Result Aggregation                                      │
+└─────────────────────────────────────────────────────────────┘
+                            │
+┌─────────────────────────────────────────────────────────────┐
+│                   Shard Engine (Per Shard)                  │
+│   - Write-Ahead Log (WAL)                                   │
+│   - MemTable (Mutable HNSW)                                 │
+│   - Immutable Segments (DiskANN/Flat)                       │
+│   - Compaction & Merging                                    │
 └─────────────────────────────────────────────────────────────┘
                             │
         ┌───────────────────┼───────────────────┐
         │                   │                   │
 ┌───────▼────────┐  ┌───────▼────────┐  ┌──────▼──────┐
-│  Flat Index    │  │  HNSW Index    │  │ DiskANN     │
-│  (exact)       │  │  (approximate) │  │ (disk-based)│
+│   MemTable     │  │   Segment 1    │  │  Segment N  │
+│   (Mutable)    │  │  (Immutable)   │  │ (Immutable) │
 └────────────────┘  └────────────────┘  └─────────────┘
-        │                   │                   │
-┌───────▼───────────────────▼───────────────────▼──────┐
-│              Storage Layer                            │
-│   - Columnar (in-memory with mmap support)           │
-│   - Disk-resident (DiskANN)                          │
-│   - Soft deletes + compaction                        │
-└───────────────────────────────────────────────────────┘
-        │
-┌───────▼───────────────────────────────────────────────┐
-│         Write-Ahead Log (WAL) - Optional              │
-│   - Group commit (batched fsync)                      │
-│   - Async / GroupCommit / Sync modes                  │
-│   - Auto-checkpoint                                   │
-│   - Crash recovery with replay                        │
-└───────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -72,7 +63,7 @@ The main entry point provides:
 
 ### 2. Coordinator (`engine/coordinator.go`)
 
-The coordinator is a **proper interface** that orchestrates all mutation operations. This provides clean abstraction and compile-time verification.
+The coordinator is the central nervous system of Vecgo. It enforces **Shared-Nothing Sharding** and **Monotonic Visibility**.
 
 **Coordinator Interface**:
 ```go
@@ -189,7 +180,7 @@ Updates in vector databases are complex due to graph topology maintenance. Vecgo
 |------------|-----------------|-------------|
 | **Flat** | **In-Place** | Direct overwrite of the vector in the columnar store. Safe and fast ($O(1)$). |
 | **HNSW** | **Delete + Insert** | The old node is soft-deleted (tombstone), and the new vector is inserted as a fresh node. This prevents graph degradation over time. |
-| **DiskANN** | **Tombstone + MemTable** | The on-disk vector is marked deleted. The new vector is inserted into the in-memory MemTable (LSM-style). |
+| **DiskANN** | **LSM-Tree** | New writes go to a **MemTable** (HNSW). When full, it is flushed to an **Immutable Disk Segment**. Updates are effectively Delete+Insert across the LSM tree. |
 
 **Default Behavior**: `UpdateModeDeleteInsert` is the default for graph-based indexes to guarantee recall.
 
@@ -267,9 +258,9 @@ To minimize Garbage Collection (GC) pauses, Vecgo uses custom memory management 
 ### 3. DiskANN Index (`index/diskann`)
 *   **Algorithm**: Vamana graph (Disk-resident).
 *   **Architecture**:
+    *   **Immutable Segments**: The on-disk index is strictly immutable.
     *   **RAM**: Compressed vectors (PQ/BQ) + Graph navigation cache.
     *   **Disk**: Full vectors + Adjacency lists.
-    *   **MemTable**: An in-memory HNSW index buffers new inserts to support real-time updates on a disk-based index.
 *   **Optimizations**:
     *   **Beam Search**: Uses a larger beam width to navigate the graph, reducing disk I/O.
     *   **Implicit Reranking**: Automatically fetches full vectors from disk for the final candidates.
@@ -327,9 +318,9 @@ func (c *ColumnarStore) Delete(id uint64) {
 Used by DiskANN for large-scale datasets:
 
 **Components**:
-- **Vamana Graph**: Adjacency lists on disk
-- **Vector File**: Memory-mapped float32 arrays
-- **PQ Codes**: Compressed representations
+- **Vamana Graph**: Adjacency lists on disk (Immutable)
+- **Vector File**: Memory-mapped float32 arrays (Immutable)
+- **PQ Codes**: Compressed representations (Immutable)
 - **Metadata**: Index metadata (dimension, count, etc.)
 
 **Memory-Mapped Vectors**:
@@ -350,6 +341,7 @@ func (m *MmapVectors) Get(id uint64) []float32 {
 - OS page cache handles hot vectors
 - Lazy loading (only read what you need)
 - Supports datasets larger than RAM
+- **Crash Safety**: Immutable files are never corrupted by crashes.
 
 ---
 

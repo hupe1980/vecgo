@@ -7,6 +7,7 @@ import (
 	"iter"
 	"math"
 	"math/rand"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -173,28 +174,10 @@ func New(optFns ...func(o *Options)) (*HNSW, error) {
 		shardID:      0,
 		numShards:    1,
 		shardedLocks: make([]sync.RWMutex, 1024),
-		minQueuePool: &sync.Pool{
-			New: func() any { return queue.NewMin(opts.EF) },
-		},
-		maxQueuePool: &sync.Pool{
-			New: func() any { return queue.NewMax(opts.EF) },
-		},
-		visitedPool: &sync.Pool{
-			New: func() any { return visited.New(1024) },
-		},
-		scratchPool: &sync.Pool{
-			New: func() any {
-				return &scratch{
-					floats:              make([]float32, opts.Dimension),
-					results:             make([]index.SearchResult, 0, opts.EF),
-					heuristicCandidates: make([]queue.PriorityQueueItem, 0, opts.EF),
-					heuristicResult:     make([]uint64, 0, opts.M),
-					heuristicResultVecs: make([][]float32, 0, opts.M),
-				}
-			},
-		},
-		tombstones: bitset.New(1024),
+		tombstones:   bitset.New(1024),
 	}
+
+	h.initPools()
 
 	h.dimensionAtomic.Store(int32(opts.Dimension))
 	if h.vectors == nil {
@@ -205,6 +188,29 @@ func New(optFns ...func(o *Options)) (*HNSW, error) {
 	h.growNodes(0)
 
 	return h, nil
+}
+
+func (h *HNSW) initPools() {
+	h.minQueuePool = &sync.Pool{
+		New: func() any { return queue.NewMin(h.opts.EF) },
+	}
+	h.maxQueuePool = &sync.Pool{
+		New: func() any { return queue.NewMax(h.opts.EF) },
+	}
+	h.visitedPool = &sync.Pool{
+		New: func() any { return visited.New(1024) },
+	}
+	h.scratchPool = &sync.Pool{
+		New: func() any {
+			return &scratch{
+				floats:              make([]float32, h.opts.Dimension),
+				results:             make([]index.SearchResult, 0, h.opts.EF),
+				heuristicCandidates: make([]queue.PriorityQueueItem, 0, h.opts.EF),
+				heuristicResult:     make([]uint64, 0, h.opts.M),
+				heuristicResultVecs: make([][]float32, 0, h.opts.M),
+			}
+		},
+	}
 }
 
 // getNodeOffset returns the offset for the given ID, or 0 if not found.
@@ -264,10 +270,7 @@ func (h *HNSW) growNodes(id uint64) {
 		}
 
 		// Create new slice with enough capacity
-		newLen := segmentIdx + 1
-		if newLen < currentLen {
-			newLen = currentLen
-		}
+		newLen := max(segmentIdx+1, currentLen)
 		newNodes = make([]*NodeSegment, newLen)
 
 		// Copy existing segments
@@ -292,14 +295,6 @@ func (h *HNSW) growNodes(id uint64) {
 }
 
 // Helper methods for node access
-
-func (h *HNSW) getLevel(id uint64) int {
-	node := h.getNode(id)
-	if node == nil {
-		return -1
-	}
-	return node.Level
-}
 
 func (h *HNSW) getConnections(id uint64, layer int) []uint64 {
 	node := h.getNode(id)
@@ -338,10 +333,8 @@ func (h *HNSW) addConnection(sourceID, targetID uint64, level int) {
 	conns := node.getConnections(level)
 
 	// Check if already connected
-	for _, c := range conns {
-		if c == targetID {
-			return
-		}
+	if slices.Contains(conns, targetID) {
+		return
 	}
 
 	maxM := h.maxConnectionsPerLayer
@@ -871,30 +864,6 @@ func (h *HNSW) Delete(ctx context.Context, id uint64) error {
 	return nil
 }
 
-func (h *HNSW) removeLink(id uint64, neighborID uint64, layer int) {
-	h.shardedLocks[id%uint64(len(h.shardedLocks))].Lock()
-	defer h.shardedLocks[id%uint64(len(h.shardedLocks))].Unlock()
-
-	node := h.getNode(id)
-	if node == nil {
-		return
-	}
-
-	conns := node.getConnections(layer)
-
-	for i, c := range conns {
-		if c == neighborID {
-			// COW Removal
-			newConns := make([]uint64, len(conns)-1)
-			copy(newConns, conns[:i])
-			copy(newConns[i:], conns[i+1:])
-
-			node.setConnections(layer, newConns)
-			return
-		}
-	}
-}
-
 // Update updates a vector.
 func (h *HNSW) Update(ctx context.Context, id uint64, v []float32) error {
 	node := h.getNode(id)
@@ -913,29 +882,39 @@ func (h *HNSW) Update(ctx context.Context, id uint64, v []float32) error {
 
 // KNNSearch performs search.
 func (h *HNSW) KNNSearch(ctx context.Context, q []float32, k int, opts *index.SearchOptions) ([]index.SearchResult, error) {
-	if err := ctx.Err(); err != nil {
+	res := make([]index.SearchResult, 0, k)
+	if err := h.KNNSearchWithBuffer(ctx, q, k, opts, &res); err != nil {
 		return nil, err
 	}
+	return res, nil
+}
+
+// KNNSearchWithBuffer performs a K-nearest neighbor search and appends results to the provided buffer.
+// This avoids allocating a new slice for results, which is critical for high-throughput scenarios.
+func (h *HNSW) KNNSearchWithBuffer(ctx context.Context, q []float32, k int, opts *index.SearchOptions, buf *[]index.SearchResult) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	// Get scratch buffer
+	scratch := h.scratchPool.Get().(*scratch)
+	defer h.scratchPool.Put(scratch)
 
 	// Normalize
 	if h.opts.NormalizeVectors {
-		// Use scratch pool to avoid allocation
-		scratch := h.scratchPool.Get().(*scratch)
-		defer h.scratchPool.Put(scratch)
-
 		if len(scratch.floats) < len(q) {
 			scratch.floats = make([]float32, len(q))
 		}
 		copy(scratch.floats, q)
 		if !distance.NormalizeL2InPlace(scratch.floats) {
-			return nil, fmt.Errorf("hnsw: zero query vector")
+			return fmt.Errorf("hnsw: zero query vector")
 		}
 		q = scratch.floats
 	}
 
 	epID := h.entryPointAtomic.Load()
 	if h.getNode(epID) == nil {
-		return nil, nil
+		return nil
 	}
 
 	ef := h.opts.EF
@@ -975,29 +954,30 @@ func (h *HNSW) KNNSearch(ctx context.Context, q []float32, k int, opts *index.Se
 
 	results, err := h.searchLayer(q, currID, currDist, 0, ef, filter)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer func() { results.Reset(); h.maxQueuePool.Put(results) }()
 
 	// Extract K (filter is already applied during traversal)
-	count := results.Len()
-	if count > k {
-		count = k
-	}
-
 	// MaxHeap pops worst first, so we need to pop (Len-k) items first
 	for results.Len() > k {
 		_, _ = results.PopItem()
 	}
 
-	res := make([]index.SearchResult, results.Len())
-	for i := results.Len() - 1; i >= 0; i-- {
+	// Collect results in reverse order (nearest first)
+	// We use scratch.results as a temporary stack to reverse
+	scratch.results = scratch.results[:0]
+	for results.Len() > 0 {
 		item, _ := results.PopItem()
-		res[i] = index.SearchResult{ID: item.Node, Distance: item.Distance}
+		scratch.results = append(scratch.results, index.SearchResult{ID: item.Node, Distance: item.Distance})
 	}
 
-	// No post-filtering needed - filtering happened during traversal
-	return res, nil
+	// Append to output buffer in correct order
+	for i := len(scratch.results) - 1; i >= 0; i-- {
+		*buf = append(*buf, scratch.results[i])
+	}
+
+	return nil
 }
 
 // KNNSearchStream implements streaming search.

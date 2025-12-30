@@ -95,15 +95,7 @@ func loadHNSWMmap(data []byte) (index.Index, int, error) {
 
 	// Initialize runtime fields
 	h.shardedLocks = make([]sync.RWMutex, 1024)
-	h.minQueuePool = &sync.Pool{
-		New: func() any { return queue.NewMin(h.opts.EF) },
-	}
-	h.maxQueuePool = &sync.Pool{
-		New: func() any { return queue.NewMax(h.opts.EF) },
-	}
-	h.visitedPool = &sync.Pool{
-		New: func() any { return visited.New(1024) },
-	}
+	h.initPools()
 	h.distanceFunc = index.NewDistanceFunc(dt)
 	h.rng = rand.New(rand.NewSource(time.Now().UnixNano()))
 

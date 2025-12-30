@@ -42,7 +42,7 @@ type SearchContext struct {
 
 // searchContextPool is the global pool of SearchContext objects.
 var searchContextPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		return &SearchContext{
 			Visited:         bitset.New(DefaultMaxNodes),
 			Candidates:      queue.NewMin(DefaultQueueCapacity),
