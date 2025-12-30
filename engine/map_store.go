@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"iter"
 	"maps"
 	"sync"
 )
@@ -115,4 +116,18 @@ func (m *MapStore[T]) ToMap() map[uint64]T {
 	maps.Copy(result, m.data)
 
 	return result
+}
+
+// All returns an iterator over all items in the store.
+func (m *MapStore[T]) All() iter.Seq2[uint64, T] {
+	return func(yield func(uint64, T) bool) {
+		m.mu.RLock()
+		defer m.mu.RUnlock()
+
+		for k, v := range m.data {
+			if !yield(k, v) {
+				return
+			}
+		}
+	}
 }

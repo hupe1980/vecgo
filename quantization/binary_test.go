@@ -1,8 +1,9 @@
 package quantization
 
 import (
-	"math/rand"
 	"testing"
+
+	"github.com/hupe1980/vecgo/testutil"
 )
 
 func TestBinaryQuantizer_Basic(t *testing.T) {
@@ -119,11 +120,8 @@ func TestBinaryQuantizer_EncodeDecode_Roundtrip(t *testing.T) {
 	bq := NewBinaryQuantizer(128).WithThreshold(0.0)
 
 	// Create random vector
-	rng := rand.New(rand.NewSource(42))
-	vec := make([]float32, 128)
-	for i := range vec {
-		vec[i] = rng.Float32()*2 - 1 // [-1, 1]
-	}
+	rng := testutil.NewRNG(42)
+	vec := rng.UniformRangeVectors(1, 128)[0]
 
 	encoded := bq.Encode(vec)
 	decoded := bq.Decode(encoded)
@@ -211,11 +209,8 @@ func BenchmarkHammingDistance_768dim(b *testing.B) {
 // BenchmarkBinaryEncode benchmarks encoding for 128-dim vectors
 func BenchmarkBinaryEncode_128dim(b *testing.B) {
 	bq := NewBinaryQuantizer(128)
-	vec := make([]float32, 128)
-	rng := rand.New(rand.NewSource(42))
-	for i := range vec {
-		vec[i] = rng.Float32()*2 - 1
-	}
+	rng := testutil.NewRNG(42)
+	vec := rng.UniformRangeVectors(1, 128)[0]
 
 	b.ResetTimer()
 	for b.Loop() {
@@ -226,11 +221,8 @@ func BenchmarkBinaryEncode_128dim(b *testing.B) {
 // BenchmarkBinaryEncode benchmarks encoding for 768-dim vectors
 func BenchmarkBinaryEncode_768dim(b *testing.B) {
 	bq := NewBinaryQuantizer(768)
-	vec := make([]float32, 768)
-	rng := rand.New(rand.NewSource(42))
-	for i := range vec {
-		vec[i] = rng.Float32()*2 - 1
-	}
+	rng := testutil.NewRNG(42)
+	vec := rng.UniformRangeVectors(1, 768)[0]
 
 	b.ResetTimer()
 	for b.Loop() {

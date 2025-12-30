@@ -62,16 +62,16 @@ func TestBinaryPersistence_SaveLoad(t *testing.T) {
 	// Verify each vector
 	nextID := h.nextIDAtomic.Load()
 	for i := uint64(0); i < nextID; i++ {
-		originalOffset := h.getNodeOffset(i)
-		if originalOffset == 0 {
-			if loaded.getNodeOffset(i) != 0 {
+		originalNode := h.getNode(i)
+		if originalNode == nil {
+			if loaded.getNode(i) != nil {
 				t.Errorf("Node %d should be nil", i)
 			}
 			continue
 		}
 
-		loadedOffset := loaded.getNodeOffset(i)
-		if loadedOffset == 0 {
+		loadedNode := loaded.getNode(i)
+		if loadedNode == nil {
 			t.Errorf("Node %d should not be nil", i)
 			continue
 		}
@@ -206,30 +206,21 @@ func TestBinaryPersistence_MmapLoad(t *testing.T) {
 		t.Errorf("Vector count mismatch: got %d, want %d", loaded.VectorCount(), h.VectorCount())
 	}
 
-	// Verify mmapOffsets are used
-	if loaded.mmapOffsets == nil {
-		t.Error("mmapOffsets should not be nil for mmap loaded index")
-	}
-
 	// Verify each vector
 	nextID := h.nextIDAtomic.Load()
 	for i := uint64(0); i < nextID; i++ {
-		originalOffset := h.getNodeOffset(i)
-		if originalOffset == 0 {
-			if loaded.getNodeOffset(i) != 0 {
+		originalNode := h.getNode(i)
+		if originalNode == nil {
+			if loaded.getNode(i) != nil {
 				t.Errorf("Node %d should be nil", i)
 			}
 			continue
 		}
 
-		loadedOffset := loaded.getNodeOffset(i)
-		if loadedOffset == 0 {
+		loadedNode := loaded.getNode(i)
+		if loadedNode == nil {
 			t.Errorf("Node %d should not be nil", i)
 			continue
-		}
-
-		if loadedOffset != originalOffset {
-			t.Errorf("Node %d offset mismatch: got %d, want %d", i, loadedOffset, originalOffset)
 		}
 
 		origVec, ok := h.vectors.GetVector(i)

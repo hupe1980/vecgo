@@ -3,7 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"sync/atomic"
 	"testing"
 
@@ -11,6 +11,7 @@ import (
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/index/hnsw"
 	"github.com/hupe1980/vecgo/metadata"
+	"github.com/hupe1980/vecgo/testutil"
 	"github.com/hupe1980/vecgo/wal"
 )
 
@@ -46,13 +47,12 @@ func BenchmarkEngineConcurrency(b *testing.B) {
 	// Pre-populate with some data
 	ctx := context.Background()
 	initialSize := 10000
+	rng := testutil.NewRNG(0)
+	vectors := rng.UniformVectors(initialSize, dim)
+
 	for i := 0; i < initialSize; i++ {
-		vec := make([]float32, dim)
-		for j := 0; j < dim; j++ {
-			vec[j] = rand.Float32()
-		}
 		id := fmt.Sprintf("init-%d", i)
-		if _, err := coord.Insert(ctx, vec, id, nil); err != nil {
+		if _, err := coord.Insert(ctx, vectors[i], id, nil); err != nil {
 			b.Fatal(err)
 		}
 	}

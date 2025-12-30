@@ -3,7 +3,6 @@ package hnsw
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
 	"iter"
 	"math"
@@ -14,7 +13,6 @@ import (
 
 	"github.com/hupe1980/vecgo/distance"
 	"github.com/hupe1980/vecgo/index"
-	"github.com/hupe1980/vecgo/internal/arena"
 	"github.com/hupe1980/vecgo/internal/bitset"
 	"github.com/hupe1980/vecgo/internal/queue"
 	"github.com/hupe1980/vecgo/internal/visited"
@@ -71,7 +69,7 @@ var DefaultOptions = Options{
 	EF:               DefaultEF,
 	Heuristic:        true,
 	DistanceType:     index.DistanceTypeSquaredL2,
-	InitialArenaSize: 64 * 1024 * 1024, // 64MB
+	InitialArenaSize: 1024 * 1024 * 1024, // 1GB
 }
 
 // HNSW represents the Hierarchical Navigable Small World graph.
@@ -83,15 +81,8 @@ type HNSW struct {
 	nextIDAtomic     atomic.Uint64
 	countAtomic      atomic.Int64 // Track live count
 
-	// Node storage: Segmented array of offsets
-	segments atomic.Pointer[[]*OffsetSegment]
-	// mmapOffsets is used for read-only mmap'd indexes to avoid indirection overhead.
-	// If non-nil, it takes precedence over segments.
-	mmapOffsets []uint64
-
-	// Arena for node data
-	arena  *arena.FlatArena
-	layout *nodeLayout
+	// Node storage: Segmented array of nodes
+	nodes atomic.Pointer[[]*NodeSegment]
 
 	// Sharded locks for node updates
 	shardedLocks []sync.RWMutex
@@ -124,6 +115,17 @@ type HNSW struct {
 	minQueuePool *sync.Pool
 	maxQueuePool *sync.Pool
 	visitedPool  *sync.Pool
+	scratchPool  *sync.Pool
+}
+
+type scratch struct {
+	floats  []float32
+	results []index.SearchResult
+
+	// Heuristic scratch buffers
+	heuristicCandidates []queue.PriorityQueueItem
+	heuristicResult     []uint64
+	heuristicResultVecs [][]float32
 }
 
 func (*HNSW) Name() string { return "HNSW" }
@@ -148,7 +150,7 @@ func New(optFns ...func(o *Options)) (*HNSW, error) {
 	}
 
 	if opts.InitialArenaSize == 0 {
-		opts.InitialArenaSize = 64 * 1024 * 1024
+		opts.InitialArenaSize = 1024 * 1024 * 1024 // 1GB
 	}
 
 	var rng *rand.Rand
@@ -165,13 +167,11 @@ func New(optFns ...func(o *Options)) (*HNSW, error) {
 		distanceFunc:           index.NewDistanceFunc(opts.DistanceType),
 		opts:                   opts,
 		rng:                    rng,
-		// segments initialized to nil (atomic.Pointer zero value)
+		// nodes initialized to nil
 		freeList:     make([]uint64, 0),
 		vectors:      opts.Vectors,
 		shardID:      0,
 		numShards:    1,
-		arena:        arena.NewFlat(opts.InitialArenaSize),
-		layout:       newNodeLayout(opts.M),
 		shardedLocks: make([]sync.RWMutex, 1024),
 		minQueuePool: &sync.Pool{
 			New: func() any { return queue.NewMin(opts.EF) },
@@ -182,6 +182,17 @@ func New(optFns ...func(o *Options)) (*HNSW, error) {
 		visitedPool: &sync.Pool{
 			New: func() any { return visited.New(1024) },
 		},
+		scratchPool: &sync.Pool{
+			New: func() any {
+				return &scratch{
+					floats:              make([]float32, opts.Dimension),
+					results:             make([]index.SearchResult, 0, opts.EF),
+					heuristicCandidates: make([]queue.PriorityQueueItem, 0, opts.EF),
+					heuristicResult:     make([]uint64, 0, opts.M),
+					heuristicResultVecs: make([][]float32, 0, opts.M),
+				}
+			},
+		},
 		tombstones: bitset.New(1024),
 	}
 
@@ -191,72 +202,64 @@ func New(optFns ...func(o *Options)) (*HNSW, error) {
 	}
 
 	// Initialize first segment
-	h.growSegments(0)
+	h.growNodes(0)
 
 	return h, nil
 }
 
 // getNodeOffset returns the offset for the given ID, or 0 if not found.
-func (h *HNSW) getNodeOffset(id uint64) uint64 {
-	// Fast path for mmap'd index
-	if len(h.mmapOffsets) > 0 {
-		if id >= uint64(len(h.mmapOffsets)) {
-			return 0
-		}
-		return h.mmapOffsets[id]
-	}
-
-	segments := h.segments.Load()
-	if segments == nil {
-		return 0
+// getNode returns the node for the given ID, or nil if not found.
+func (h *HNSW) getNode(id uint64) *Node {
+	nodes := h.nodes.Load()
+	if nodes == nil {
+		return nil
 	}
 
 	segmentIdx := int(id >> nodeSegmentBits)
-	if segmentIdx >= len(*segments) {
-		return 0
+	if segmentIdx >= len(*nodes) {
+		return nil
 	}
 
-	segment := (*segments)[segmentIdx]
+	segment := (*nodes)[segmentIdx]
 	if segment == nil {
-		return 0
+		return nil
 	}
 
 	return segment[id&nodeSegmentMask].Load()
 }
 
-// setNodeOffset sets the offset for the given ID.
-func (h *HNSW) setNodeOffset(id uint64, offset uint64) {
-	h.growSegments(id)
+// setNode sets the node for the given ID.
+func (h *HNSW) setNode(id uint64, node *Node) {
+	h.growNodes(id)
 
-	segments := h.segments.Load()
+	nodes := h.nodes.Load()
 	segmentIdx := int(id >> nodeSegmentBits)
-	segment := (*segments)[segmentIdx]
+	segment := (*nodes)[segmentIdx]
 
-	segment[id&nodeSegmentMask].Store(offset)
+	segment[id&nodeSegmentMask].Store(node)
 }
 
-// growSegments ensures capacity for the given ID.
-// Uses Copy-On-Write (COW) for lock-free growth.
-func (h *HNSW) growSegments(id uint64) {
+// growNodes ensures capacity for the given ID.
+func (h *HNSW) growNodes(id uint64) {
 	segmentIdx := int(id >> nodeSegmentBits)
 
 	// Fast path: check if segment exists
-	segments := h.segments.Load()
-	if segments != nil && segmentIdx < len(*segments) && (*segments)[segmentIdx] != nil {
+	nodes := h.nodes.Load()
+	if nodes != nil && segmentIdx < len(*nodes) && (*nodes)[segmentIdx] != nil {
 		return
 	}
 
 	// Slow path: grow using CAS loop
 	for {
-		oldSegments := h.segments.Load()
-		var newSegments []*OffsetSegment
+		oldNodes := h.nodes.Load()
+		var newNodes []*NodeSegment
 
 		currentLen := 0
-		if oldSegments != nil {
-			currentLen = len(*oldSegments)
+		if oldNodes != nil {
+			currentLen = len(*oldNodes)
 		}
 
-		if segmentIdx < currentLen && (*oldSegments)[segmentIdx] != nil {
+		if segmentIdx < currentLen && (*oldNodes)[segmentIdx] != nil {
 			return // Already grown by someone else
 		}
 
@@ -265,23 +268,23 @@ func (h *HNSW) growSegments(id uint64) {
 		if newLen < currentLen {
 			newLen = currentLen
 		}
-		newSegments = make([]*OffsetSegment, newLen)
+		newNodes = make([]*NodeSegment, newLen)
 
 		// Copy existing segments
-		if oldSegments != nil {
-			copy(newSegments, *oldSegments)
+		if oldNodes != nil {
+			copy(newNodes, *oldNodes)
 		}
 
 		// Allocate new segment
-		if newSegments[segmentIdx] == nil {
-			newSegments[segmentIdx] = new(OffsetSegment)
+		if newNodes[segmentIdx] == nil {
+			newNodes[segmentIdx] = new(NodeSegment)
 		}
 
 		// CAS
-		newSegmentsPtr := new([]*OffsetSegment)
-		*newSegmentsPtr = newSegments
+		newNodesPtr := new([]*NodeSegment)
+		*newNodesPtr = newNodes
 
-		if h.segments.CompareAndSwap(oldSegments, newSegmentsPtr) {
+		if h.nodes.CompareAndSwap(oldNodes, newNodesPtr) {
 			return
 		}
 		// Retry
@@ -291,98 +294,48 @@ func (h *HNSW) growSegments(id uint64) {
 // Helper methods for node access
 
 func (h *HNSW) getLevel(id uint64) int {
-	offset := h.getNodeOffset(id)
-	if offset == 0 {
+	node := h.getNode(id)
+	if node == nil {
 		return -1
 	}
-	buf := h.arena.Buffer()
-	return h.layout.getLevel(buf[int(offset):])
+	return node.Level
 }
 
 func (h *HNSW) getConnections(id uint64, layer int) []uint64 {
-	// Lock-free read!
-	// h.shardedLocks[id%uint64(len(h.shardedLocks))].RLock()
-	// defer h.shardedLocks[id%uint64(len(h.shardedLocks))].RUnlock()
-
-	offset := h.getNodeOffset(id)
-	if offset == 0 {
+	node := h.getNode(id)
+	if node == nil {
 		return nil
 	}
-
-	buf := h.arena.Buffer()
-
-	// New Layout Access
-	nodeData := buf[int(offset):]
-	linkOffset := h.layout.AtomicLoadLink(nodeData, layer)
-	if linkOffset == 0 {
-		return nil
-	}
-
-	listData := buf[int(linkOffset):]
-	return h.layout.getListNeighbors(listData)
+	return node.getConnections(layer)
 }
 
 func (h *HNSW) setConnections(id uint64, layer int, conns []uint64) {
-	offset := h.getNodeOffset(id)
-	if offset == 0 {
+	node := h.getNode(id)
+	if node == nil {
 		return
 	}
 
-	// 1. Allocate new list in arena
-	capacity := h.maxConnectionsPerLayer
-	if layer == 0 {
-		capacity = h.maxConnectionsLayer0
-	}
-	// Ensure capacity covers existing connections (just in case)
-	if len(conns) > capacity {
-		capacity = len(conns)
-	}
+	// Copy to new slice to ensure safety (COW)
+	newConns := make([]uint64, len(conns))
+	copy(newConns, conns)
 
-	// Size: Count(4) + Cap(4) + Neighbors(Cap*8)
-	listSize := 8 + uint32(capacity)*8
-	newListOffset, err := h.arena.Alloc(uint64(listSize))
-	if err != nil {
-		// In a real system we might handle this better, but for now panic is safer than corruption
-		panic(fmt.Sprintf("hnsw: arena alloc failed in setConnections: %v", err))
-	}
-
-	// 2. Write new list data
-	buf := h.arena.Buffer() // Refresh buffer after alloc
-	newListData := buf[int(newListOffset):]
-
-	h.layout.setListCount(newListData, uint32(len(conns)))
-	binary.LittleEndian.PutUint32(newListData[4:], uint32(capacity))
-
-	dest := h.layout.getListNeighbors(newListData)
-	copy(dest, conns)
-
-	// 3. Atomic Swap
-	nodeData := buf[int(offset):]
-	h.layout.AtomicStoreLink(nodeData, layer, newListOffset)
+	node.setConnections(layer, newConns)
 }
 
 func (h *HNSW) addConnection(sourceID, targetID uint64, level int) {
 	h.shardedLocks[sourceID%uint64(len(h.shardedLocks))].Lock()
 	defer h.shardedLocks[sourceID%uint64(len(h.shardedLocks))].Unlock()
 
-	offset := h.getNodeOffset(sourceID)
-	if offset == 0 {
+	node := h.getNode(sourceID)
+	if node == nil {
 		return
 	}
 
-	buf := h.arena.Buffer()
-	sourceLevel := h.layout.getLevel(buf[int(offset):])
-	if level > sourceLevel {
+	if level > node.Level {
 		return // Should not happen
 	}
 
-	// New Layout Access
-	nodeData := buf[int(offset):]
-	linkOffset := h.layout.AtomicLoadLink(nodeData, level)
-	var conns []uint64
-	if linkOffset != 0 {
-		conns = h.layout.getListNeighbors(buf[int(linkOffset):])
-	}
+	conns := node.getConnections(level)
 
 	// Check if already connected
 	for _, c := range conns {
@@ -398,32 +351,39 @@ func (h *HNSW) addConnection(sourceID, targetID uint64, level int) {
 
 	if len(conns) < maxM {
 		// Just append
-		newConns := append(conns, targetID)
-		h.setConnections(sourceID, level, newConns)
+		newConns := make([]uint64, len(conns)+1)
+		copy(newConns, conns)
+		newConns[len(conns)] = targetID
+		node.setConnections(level, newConns)
 	} else {
 		// Prune
+		sourceVec, ok := h.vectors.GetVector(sourceID)
+		if !ok {
+			return // Should not happen
+		}
+
 		candidates := h.maxQueuePool.Get().(*queue.PriorityQueue)
 		candidates.Reset()
 		defer h.maxQueuePool.Put(candidates)
 
 		// Add existing
-		vSource, ok := h.vectors.GetVector(sourceID)
-		if !ok {
-			return
-		}
-
 		for _, c := range conns {
-			d := h.dist(vSource, c)
+			d := h.dist(sourceVec, c)
 			candidates.PushItem(queue.PriorityQueueItem{Node: c, Distance: d})
 		}
-
-		// Add new one
-		d := h.dist(vSource, targetID)
+		// Add new
+		d := h.dist(sourceVec, targetID)
 		candidates.PushItem(queue.PriorityQueueItem{Node: targetID, Distance: d})
 
-		// Select best
-		newNeighbors := h.selectNeighbors(candidates, maxM)
-		h.setConnections(sourceID, level, newNeighbors)
+		// Use scratch for selectNeighbors
+		scratch := h.scratchPool.Get().(*scratch)
+		neighbors := h.selectNeighbors(candidates, maxM, scratch)
+		// Copy neighbors because scratch is returned to pool
+		neighborsCopy := make([]uint64, len(neighbors))
+		copy(neighborsCopy, neighbors)
+		h.scratchPool.Put(scratch)
+
+		node.setConnections(level, neighborsCopy)
 	}
 }
 
@@ -442,7 +402,7 @@ func (h *HNSW) AllocateID() uint64 {
 
 // ReleaseID releases an ID.
 func (h *HNSW) ReleaseID(id uint64) {
-	if h.getNodeOffset(id) != 0 {
+	if h.getNode(id) != nil {
 		return // Don't release live IDs
 	}
 	h.freeListMu.Lock()
@@ -557,26 +517,8 @@ func (h *HNSW) insert(v []float32, id uint64, layer int, useProvidedID bool) (ui
 		}
 	}
 
-	// Create Node using Arena
-	nodeSize := h.layout.InitialSize(layer)
-	offset, err := h.arena.Alloc(uint64(nodeSize))
-	if err != nil {
-		return 0, err
-	}
-
-	// Initialize fields
-	buf := h.arena.Buffer()
-	h.layout.Initialize(buf[int(offset):], id, layer)
-
-	// Initialize Link Array with offsets to the inline lists
-	nodeData := buf[int(offset):]
-	for l := 0; l <= layer; l++ {
-		// Calculate relative offset of the inline list
-		relOffset := h.layout.InitialNeighborListOffset(layer, l)
-		// Absolute offset
-		absOffset := offset + uint64(relOffset)
-		h.layout.AtomicStoreLink(nodeData, l, absOffset)
-	}
+	// Create Node (Heap)
+	node := newNode(layer)
 
 	// Store Vector
 	if err := h.vectors.SetVector(id, vec); err != nil {
@@ -590,7 +532,7 @@ func (h *HNSW) insert(v []float32, id uint64, layer int, useProvidedID bool) (ui
 	if h.countAtomic.Load() == 0 {
 		h.epMu.Lock()
 		if h.countAtomic.Load() == 0 {
-			h.setNodeOffset(id, offset)
+			h.setNode(id, node)
 			h.entryPointAtomic.Store(id)
 			h.maxLevelAtomic.Store(int32(layer))
 			h.countAtomic.Add(1)
@@ -601,7 +543,7 @@ func (h *HNSW) insert(v []float32, id uint64, layer int, useProvidedID bool) (ui
 	}
 
 	// Publish node so it can be found
-	h.setNodeOffset(id, offset)
+	h.setNode(id, node)
 
 	// Insert into Graph
 	if err := h.insertNode(id, vec, layer); err != nil {
@@ -629,7 +571,7 @@ func (h *HNSW) insertNode(id uint64, vec []float32, layer int) error {
 	epID := h.entryPointAtomic.Load()
 
 	// Handle case where entry point was deleted concurrently
-	if h.getNodeOffset(epID) == 0 {
+	if h.getNode(epID) == nil {
 		return index.ErrEntryPointDeleted
 	}
 
@@ -655,6 +597,9 @@ func (h *HNSW) insertNode(id uint64, vec []float32, layer int) error {
 	}
 
 	// 2. Search and link from node.Layer down to 0
+	scratch := h.scratchPool.Get().(*scratch)
+	defer h.scratchPool.Put(scratch)
+
 	for level := min(layer, maxLevel); level >= 0; level-- {
 		// Search layer (no filtering during insertion)
 		candidates, err := h.searchLayer(vec, currID, currDist, level, h.opts.EF, nil)
@@ -674,7 +619,7 @@ func (h *HNSW) insertNode(id uint64, vec []float32, layer int) error {
 			maxConns = h.maxConnectionsLayer0
 		}
 
-		neighbors := h.selectNeighbors(candidates, maxConns)
+		neighbors := h.selectNeighbors(candidates, maxConns, scratch)
 
 		// Put back candidates (results from searchLayer)
 		candidates.Reset()
@@ -694,9 +639,9 @@ func (h *HNSW) insertNode(id uint64, vec []float32, layer int) error {
 }
 
 // selectNeighbors selects the best neighbors from candidates.
-func (h *HNSW) selectNeighbors(candidates *queue.PriorityQueue, m int) []uint64 {
+func (h *HNSW) selectNeighbors(candidates *queue.PriorityQueue, m int, scratch *scratch) []uint64 {
 	if h.opts.Heuristic {
-		return h.selectNeighborsHeuristic(candidates, m)
+		return h.selectNeighborsHeuristic(candidates, m, scratch)
 	}
 	return h.selectNeighborsSimple(candidates, m)
 }
@@ -719,7 +664,7 @@ func (h *HNSW) selectNeighborsSimple(candidates *queue.PriorityQueue, m int) []u
 	return res
 }
 
-func (h *HNSW) selectNeighborsHeuristic(candidates *queue.PriorityQueue, m int) []uint64 {
+func (h *HNSW) selectNeighborsHeuristic(candidates *queue.PriorityQueue, m int, scratch *scratch) []uint64 {
 	if candidates.Len() <= m {
 		return h.selectNeighborsSimple(candidates, m) // Fallback to simple if few candidates
 	}
@@ -728,13 +673,20 @@ func (h *HNSW) selectNeighborsHeuristic(candidates *queue.PriorityQueue, m int) 
 	// candidates is a MaxHeap (stores worst at top), so popping gives worst-to-best.
 	// We want best-to-worst for the heuristic.
 
-	temp := make([]queue.PriorityQueueItem, candidates.Len())
-	for i := len(temp) - 1; i >= 0; i-- {
-		temp[i], _ = candidates.PopItem()
+	// Use scratch buffer for candidates
+	temp := scratch.heuristicCandidates[:0]
+	for candidates.Len() > 0 {
+		item, _ := candidates.PopItem()
+		temp = append(temp, item)
+	}
+	// Reverse to get nearest first
+	for i, j := 0, len(temp)-1; i < j; i, j = i+1, j-1 {
+		temp[i], temp[j] = temp[j], temp[i]
 	}
 
-	result := make([]uint64, 0, m)
-	resultVecs := make([][]float32, 0, m)
+	// Use scratch buffers for results
+	result := scratch.heuristicResult[:0]
+	resultVecs := scratch.heuristicResultVecs[:0]
 
 	for _, cand := range temp {
 		if len(result) >= m {
@@ -779,9 +731,25 @@ func (h *HNSW) selectNeighborsHeuristic(candidates *queue.PriorityQueue, m int) 
 			}
 			if !found {
 				result = append(result, cand.Node)
+				// We don't need to update resultVecs here as we don't use it anymore
 			}
 		}
 	}
+
+	// Copy result to a new slice to return (since scratch is reused)
+	// This is unavoidable as we need to return a slice that persists beyond this function call
+	// But we saved the intermediate allocations which were the bulk of the churn.
+	// Wait, the caller (insertNode) uses this slice immediately to set connections.
+	// Can we return the scratch slice?
+	// insertNode calls:
+	// h.setConnections(id, level, neighbors)
+	// h.addConnection(neighborID, id, level)
+	// setConnections copies the slice into the node.
+	// addConnection uses the values.
+	// So it is safe to return the scratch slice as long as the caller doesn't hold onto it
+	// after releasing the scratch object.
+	// insertNode releases scratch at the end of the function.
+	// So it is safe.
 
 	return result
 }
@@ -907,45 +875,21 @@ func (h *HNSW) removeLink(id uint64, neighborID uint64, layer int) {
 	h.shardedLocks[id%uint64(len(h.shardedLocks))].Lock()
 	defer h.shardedLocks[id%uint64(len(h.shardedLocks))].Unlock()
 
-	offset := h.getNodeOffset(id)
-	if offset == 0 {
+	node := h.getNode(id)
+	if node == nil {
 		return
 	}
-	buf := h.arena.Buffer()
 
-	// New Layout Access
-	nodeData := buf[int(offset):]
-	linkOffset := h.layout.AtomicLoadLink(nodeData, layer)
-	var conns []uint64
-	if linkOffset != 0 {
-		conns = h.layout.getListNeighbors(buf[int(linkOffset):])
-	}
+	conns := node.getConnections(layer)
 
 	for i, c := range conns {
 		if c == neighborID {
-			// Remove
-			// Swap with last
-			// We need to copy conns because it points to arena memory
-			// But setConnections will copy it anyway.
-			// However, modifying `conns` in place modifies the arena memory directly if we are not careful!
-			// `getListNeighbors` returns a slice backed by the arena.
-			// If we modify `conns[i]`, we are modifying the arena.
-			// This is NOT thread-safe if readers are reading it without lock (which they are in lock-free reads).
-			//
-			// Wait! Readers use `AtomicLoadLink`. They get a pointer to the list.
-			// If we modify the list in place, we break the "Copy-On-Write" promise for readers!
-			// Readers might see a torn read or a modified list while iterating.
-			//
-			// CORRECT COW:
-			// 1. Create a NEW slice.
-			// 2. Copy elements excluding the removed one.
-			// 3. Call setConnections with the new slice.
+			// COW Removal
+			newConns := make([]uint64, len(conns)-1)
+			copy(newConns, conns[:i])
+			copy(newConns[i:], conns[i+1:])
 
-			newConns := make([]uint64, 0, len(conns)-1)
-			newConns = append(newConns, conns[:i]...)
-			newConns = append(newConns, conns[i+1:]...)
-
-			h.setConnections(id, layer, newConns)
+			node.setConnections(layer, newConns)
 			return
 		}
 	}
@@ -953,13 +897,11 @@ func (h *HNSW) removeLink(id uint64, neighborID uint64, layer int) {
 
 // Update updates a vector.
 func (h *HNSW) Update(ctx context.Context, id uint64, v []float32) error {
-	offset := h.getNodeOffset(id)
-	if offset == 0 {
+	node := h.getNode(id)
+	if node == nil {
 		return &index.ErrNodeNotFound{ID: id}
 	}
-	// Read layer
-	buf := h.arena.Buffer()
-	layer := h.layout.getLevel(buf[int(offset):])
+	layer := node.Level
 
 	if err := h.Delete(ctx, id); err != nil {
 		return err
@@ -977,17 +919,22 @@ func (h *HNSW) KNNSearch(ctx context.Context, q []float32, k int, opts *index.Se
 
 	// Normalize
 	if h.opts.NormalizeVectors {
-		// Copy to avoid modifying input
-		qc := make([]float32, len(q))
-		copy(qc, q)
-		if !distance.NormalizeL2InPlace(qc) {
+		// Use scratch pool to avoid allocation
+		scratch := h.scratchPool.Get().(*scratch)
+		defer h.scratchPool.Put(scratch)
+
+		if len(scratch.floats) < len(q) {
+			scratch.floats = make([]float32, len(q))
+		}
+		copy(scratch.floats, q)
+		if !distance.NormalizeL2InPlace(scratch.floats) {
 			return nil, fmt.Errorf("hnsw: zero query vector")
 		}
-		q = qc
+		q = scratch.floats
 	}
 
 	epID := h.entryPointAtomic.Load()
-	if h.getNodeOffset(epID) == 0 {
+	if h.getNode(epID) == nil {
 		return nil, nil
 	}
 
@@ -1056,13 +1003,96 @@ func (h *HNSW) KNNSearch(ctx context.Context, q []float32, k int, opts *index.Se
 // KNNSearchStream implements streaming search.
 func (h *HNSW) KNNSearchStream(ctx context.Context, q []float32, k int, opts *index.SearchOptions) iter.Seq2[index.SearchResult, error] {
 	return func(yield func(index.SearchResult, error) bool) {
-		res, err := h.KNNSearch(ctx, q, k, opts)
+		if err := ctx.Err(); err != nil {
+			yield(index.SearchResult{}, err)
+			return
+		}
+
+		// Get scratch buffer
+		scratch := h.scratchPool.Get().(*scratch)
+		defer h.scratchPool.Put(scratch)
+
+		// Normalize
+		if h.opts.NormalizeVectors {
+			if len(scratch.floats) < len(q) {
+				scratch.floats = make([]float32, len(q))
+			}
+			copy(scratch.floats, q)
+			if !distance.NormalizeL2InPlace(scratch.floats) {
+				yield(index.SearchResult{}, fmt.Errorf("hnsw: zero query vector"))
+				return
+			}
+			q = scratch.floats
+		}
+
+		epID := h.entryPointAtomic.Load()
+		if h.getNode(epID) == nil {
+			return
+		}
+
+		ef := h.opts.EF
+		if opts != nil && opts.EFSearch > 0 {
+			ef = opts.EFSearch
+		}
+		if ef < k {
+			ef = k
+		}
+
+		// 1. Greedy to layer 0
+		currID := epID
+		currDist := h.dist(q, currID)
+		maxLevel := int(h.maxLevelAtomic.Load())
+
+		for level := maxLevel; level > 0; level-- {
+			changed := true
+			for changed {
+				changed = false
+				conns := h.getConnections(currID, level)
+				for _, nextID := range conns {
+					nextDist := h.dist(q, nextID)
+					if nextDist < currDist {
+						currID = nextID
+						currDist = nextDist
+						changed = true
+					}
+				}
+			}
+		}
+
+		// 2. Search layer 0 with pre-filtering
+		var filter func(uint64) bool
+		if opts != nil && opts.Filter != nil {
+			filter = opts.Filter
+		}
+
+		results, err := h.searchLayer(q, currID, currDist, 0, ef, filter)
 		if err != nil {
 			yield(index.SearchResult{}, err)
 			return
 		}
-		for _, r := range res {
-			if !yield(r, nil) {
+		defer func() { results.Reset(); h.maxQueuePool.Put(results) }()
+
+		// Extract K
+		count := results.Len()
+		if count > k {
+			count = k
+		}
+
+		// MaxHeap pops worst first, so we need to pop (Len-k) items first
+		for results.Len() > k {
+			_, _ = results.PopItem()
+		}
+
+		// Collect results in reverse order (nearest first)
+		scratch.results = scratch.results[:0]
+		for results.Len() > 0 {
+			item, _ := results.PopItem()
+			scratch.results = append(scratch.results, index.SearchResult{ID: item.Node, Distance: item.Distance})
+		}
+
+		// Yield in reverse (since we popped worst first, the last item in scratch.results is the best)
+		for i := len(scratch.results) - 1; i >= 0; i-- {
+			if !yield(scratch.results[i], nil) {
 				return
 			}
 		}
@@ -1074,15 +1104,15 @@ func (h *HNSW) BruteSearch(ctx context.Context, query []float32, k int, filter f
 	// Simple scan
 	pq := queue.NewMax(k)
 
-	segments := h.segments.Load()
-	if segments != nil {
-		for i, seg := range *segments {
+	nodes := h.nodes.Load()
+	if nodes != nil {
+		for i, seg := range *nodes {
 			if seg == nil {
 				continue
 			}
 			for j := range seg {
-				offset := seg[j].Load()
-				if offset == 0 {
+				node := seg[j].Load()
+				if node == nil {
 					continue
 				}
 				nodeID := uint64(i)*nodeSegmentSize + uint64(j)
@@ -1133,7 +1163,7 @@ func (h *HNSW) ContainsID(id uint64) bool {
 	if h.tombstones.Test(id) {
 		return false
 	}
-	return h.getNodeOffset(id) != 0
+	return h.getNode(id) != nil
 }
 func (h *HNSW) ShardID() int   { return 0 }
 func (h *HNSW) NumShards() int { return 1 }

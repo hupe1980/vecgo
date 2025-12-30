@@ -1,9 +1,9 @@
 package math32
 
 import (
-	"math/rand"
 	"testing"
 
+	"github.com/hupe1980/vecgo/testutil"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -35,13 +35,9 @@ func TestDot(t *testing.T) {
 func BenchmarkDot(b *testing.B) {
 	// Generate random float32 slices for benchmarking.
 	const size = 1000000 // Size of slices
-	va := make([]float32, size)
-	vb := make([]float32, size)
-
-	for i := range va {
-		va[i] = rand.Float32() // nolint gosec
-		vb[i] = rand.Float32() // nolint gosec
-	}
+	rng := testutil.NewRNG(0)
+	va := rng.UniformVectors(1, size)[0]
+	vb := rng.UniformVectors(1, size)[0]
 
 	// Run the Dot function b.N times and measure the time taken.
 	b.ResetTimer()
@@ -75,13 +71,9 @@ func TestSquaredL2(t *testing.T) {
 func BenchmarkSquaredL2(b *testing.B) {
 	// Generate random float32 slices for benchmarking.
 	const size = 1000000 // Size of slices
-	va := make([]float32, size)
-	vb := make([]float32, size)
-
-	for i := range va {
-		va[i] = rand.Float32() // nolint gosec
-		vb[i] = rand.Float32() // nolint gosec
-	}
+	rng := testutil.NewRNG(0)
+	va := rng.UniformVectors(1, size)[0]
+	vb := rng.UniformVectors(1, size)[0]
 
 	// Run the Dot function b.N times and measure the time taken.
 	b.ResetTimer()

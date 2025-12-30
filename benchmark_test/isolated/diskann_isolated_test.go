@@ -80,7 +80,7 @@ func BenchmarkDiskANNIsolatedSearch(b *testing.B) {
 		}
 
 		if i == 0 {
-			recall := testutil.ComputeRecall(groundTruth, results)
+			recall := testutil.ComputeRecall(groundTruth, toTestUtilResults(results))
 			b.ReportMetric(recall, "recall")
 		}
 	}

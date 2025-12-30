@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -17,7 +16,7 @@ var (
 	snapshotMagic         = [4]byte{'V', 'G', 'S', '1'}
 	snapshotDirMagic      = [4]byte{'V', 'G', 'D', '1'}
 	snapshotFooterMagic   = [4]byte{'V', 'G', 'F', '1'}
-	snapshotFormatVersion = uint16(1)
+	snapshotFormatVersion = uint16(2)
 )
 
 const (
@@ -128,30 +127,67 @@ func SaveToWriter[T any](w io.Writer, idx index.Index, dataStore Store[T], metad
 	idxLen := uint64(cw.n) - idxOff
 	idxChecksum := checksumWriter.Sum()
 
-	// Data store: codec-marshaled map with checksum.
+	// Data store: Streamed entries with checksum.
 	storeOff := uint64(cw.n)
-	storeBytes, err := c.Marshal(dataStore.ToMap())
-	if err != nil {
-		return fmt.Errorf("failed to encode store: %w", err)
-	}
-	storeChecksum := persistence.ComputeChecksum(storeBytes)
-	if _, err := cw.Write(storeBytes); err != nil {
-		return err
-	}
-	storeLen := uint64(len(storeBytes))
+	storeChecksumWriter := persistence.NewChecksumWriter(cw)
 
-	// Metadata store: codec-marshaled map with checksum.
-	metaOff := uint64(cw.n)
-	// Always use VecgoBinary for metadata persistence
-	metaBytes, err := metadata.MarshalMetadataMap(metadataStore.ToMap())
-	if err != nil {
-		return fmt.Errorf("failed to encode metadata: %w", err)
-	}
-	metaChecksum := persistence.ComputeChecksum(metaBytes)
-	if _, err := cw.Write(metaBytes); err != nil {
+	// Write count
+	if err := binary.Write(storeChecksumWriter, binary.LittleEndian, uint64(dataStore.Len())); err != nil {
 		return err
 	}
-	metaLen := uint64(len(metaBytes))
+
+	for id, data := range dataStore.All() {
+		dataBytes, err := c.Marshal(data)
+		if err != nil {
+			return fmt.Errorf("failed to encode data for id %d: %w", id, err)
+		}
+
+		// Write ID
+		if err := binary.Write(storeChecksumWriter, binary.LittleEndian, id); err != nil {
+			return err
+		}
+		// Write Len
+		if err := binary.Write(storeChecksumWriter, binary.LittleEndian, uint32(len(dataBytes))); err != nil {
+			return err
+		}
+		// Write Bytes
+		if _, err := storeChecksumWriter.Write(dataBytes); err != nil {
+			return err
+		}
+	}
+	storeLen := uint64(cw.n) - storeOff
+	storeChecksum := storeChecksumWriter.Sum()
+
+	// Metadata store: Streamed entries with checksum.
+	metaOff := uint64(cw.n)
+	metaChecksumWriter := persistence.NewChecksumWriter(cw)
+
+	// Write count
+	if err := binary.Write(metaChecksumWriter, binary.LittleEndian, uint64(metadataStore.Len())); err != nil {
+		return err
+	}
+
+	for id, meta := range metadataStore.All() {
+		metaBytes, err := meta.MarshalBinary()
+		if err != nil {
+			return fmt.Errorf("failed to encode metadata for id %d: %w", id, err)
+		}
+
+		// Write ID
+		if err := binary.Write(metaChecksumWriter, binary.LittleEndian, id); err != nil {
+			return err
+		}
+		// Write Len
+		if err := binary.Write(metaChecksumWriter, binary.LittleEndian, uint32(len(metaBytes))); err != nil {
+			return err
+		}
+		// Write Bytes
+		if _, err := metaChecksumWriter.Write(metaBytes); err != nil {
+			return err
+		}
+	}
+	metaLen := uint64(cw.n) - metaOff
+	metaChecksum := metaChecksumWriter.Sum()
 
 	// Directory
 	dirOff := uint64(cw.n)
@@ -222,21 +258,26 @@ func LoadFromReaderWithCodec[T any](r io.ReadSeeker, c codec.Codec) (*Snapshot[T
 	}
 
 	// Read index data and verify checksum
-	idxData := make([]byte, idxEntry.Len)
-	if _, err := io.ReadFull(r, idxData); err != nil {
-		return nil, fmt.Errorf("failed to read index section: %w", err)
+	// Streamed load to avoid O(N) memory spike
+	idxReader := io.LimitReader(r, int64(idxEntry.Len))
+	idxChecksumReader := persistence.NewChecksumReader(idxReader)
+
+	// Load index from verified data
+	idx, err := index.LoadBinaryIndex(idxChecksumReader)
+	if err != nil {
+		return nil, err
 	}
-	if actualChecksum := persistence.ComputeChecksum(idxData); actualChecksum != idxEntry.Checksum {
+
+	// Drain any remaining bytes (should be none if ReadFrom matches WriteTo)
+	if _, err := io.Copy(io.Discard, idxChecksumReader); err != nil {
+		return nil, fmt.Errorf("failed to drain index section: %w", err)
+	}
+
+	if actualChecksum := idxChecksumReader.Sum(); actualChecksum != idxEntry.Checksum {
 		return nil, &persistence.ChecksumMismatchError{
 			Expected: idxEntry.Checksum,
 			Actual:   actualChecksum,
 		}
-	}
-
-	// Load index from verified data
-	idx, err := index.LoadBinaryIndex(bytes.NewReader(idxData))
-	if err != nil {
-		return nil, err
 	}
 
 	storeEntry, ok := sections[snapshotSectionDataStore]
@@ -246,24 +287,52 @@ func LoadFromReaderWithCodec[T any](r io.ReadSeeker, c codec.Codec) (*Snapshot[T
 	if _, err := r.Seek(int64(storeEntry.Offset), io.SeekStart); err != nil {
 		return nil, err
 	}
-	storeBytes := make([]byte, storeEntry.Len)
-	if _, err := io.ReadFull(r, storeBytes); err != nil {
-		return nil, fmt.Errorf("failed to read store section: %w", err)
+
+	// Streamed load for Data Store
+	storeReader := io.LimitReader(r, int64(storeEntry.Len))
+	storeChecksumReader := persistence.NewChecksumReader(storeReader)
+
+	var storeCount uint64
+	if err := binary.Read(storeChecksumReader, binary.LittleEndian, &storeCount); err != nil {
+		return nil, fmt.Errorf("failed to read store count: %w", err)
 	}
-	// Verify checksum
-	if actualChecksum := persistence.ComputeChecksum(storeBytes); actualChecksum != storeEntry.Checksum {
+
+	dataStoreOut := NewMapStore[T]()
+	for i := uint64(0); i < storeCount; i++ {
+		var id uint64
+		if err := binary.Read(storeChecksumReader, binary.LittleEndian, &id); err != nil {
+			return nil, fmt.Errorf("failed to read store id: %w", err)
+		}
+		var length uint32
+		if err := binary.Read(storeChecksumReader, binary.LittleEndian, &length); err != nil {
+			return nil, fmt.Errorf("failed to read store data length: %w", err)
+		}
+
+		if uint64(length) > storeEntry.Len {
+			return nil, fmt.Errorf("store data length %d exceeds section length %d", length, storeEntry.Len)
+		}
+
+		dataBytes := make([]byte, length)
+		if _, err := io.ReadFull(storeChecksumReader, dataBytes); err != nil {
+			return nil, fmt.Errorf("failed to read store data: %w", err)
+		}
+
+		var data T
+		if err := c.Unmarshal(dataBytes, &data); err != nil {
+			return nil, fmt.Errorf("failed to decode store data: %w", err)
+		}
+		dataStoreOut.Set(id, data)
+	}
+
+	// Drain and verify
+	if _, err := io.Copy(io.Discard, storeChecksumReader); err != nil {
+		return nil, fmt.Errorf("failed to drain store section: %w", err)
+	}
+	if actualChecksum := storeChecksumReader.Sum(); actualChecksum != storeEntry.Checksum {
 		return nil, &persistence.ChecksumMismatchError{
 			Expected: storeEntry.Checksum,
 			Actual:   actualChecksum,
 		}
-	}
-	storeMap := make(map[uint64]T)
-	if err := c.Unmarshal(storeBytes, &storeMap); err != nil {
-		return nil, fmt.Errorf("failed to decode store: %w", err)
-	}
-	dataStoreOut := NewMapStore[T]()
-	if err := dataStoreOut.BatchSet(storeMap); err != nil {
-		return nil, fmt.Errorf("failed to populate store: %w", err)
 	}
 
 	metaEntry, ok := sections[snapshotSectionMetadataStore]
@@ -273,26 +342,52 @@ func LoadFromReaderWithCodec[T any](r io.ReadSeeker, c codec.Codec) (*Snapshot[T
 	if _, err := r.Seek(int64(metaEntry.Offset), io.SeekStart); err != nil {
 		return nil, err
 	}
-	metaBytes := make([]byte, metaEntry.Len)
-	if _, err := io.ReadFull(r, metaBytes); err != nil {
-		return nil, fmt.Errorf("failed to read metadata section: %w", err)
+
+	// Streamed load for Metadata Store
+	metaReader := io.LimitReader(r, int64(metaEntry.Len))
+	metaChecksumReader := persistence.NewChecksumReader(metaReader)
+
+	var metaCount uint64
+	if err := binary.Read(metaChecksumReader, binary.LittleEndian, &metaCount); err != nil {
+		return nil, fmt.Errorf("failed to read metadata count: %w", err)
 	}
-	// Verify checksum
-	if actualChecksum := persistence.ComputeChecksum(metaBytes); actualChecksum != metaEntry.Checksum {
+
+	metadataStoreOut := NewMapStore[metadata.Metadata]()
+	for i := uint64(0); i < metaCount; i++ {
+		var id uint64
+		if err := binary.Read(metaChecksumReader, binary.LittleEndian, &id); err != nil {
+			return nil, fmt.Errorf("failed to read metadata id: %w", err)
+		}
+		var length uint32
+		if err := binary.Read(metaChecksumReader, binary.LittleEndian, &length); err != nil {
+			return nil, fmt.Errorf("failed to read metadata length: %w", err)
+		}
+
+		if uint64(length) > metaEntry.Len {
+			return nil, fmt.Errorf("metadata length %d exceeds section length %d", length, metaEntry.Len)
+		}
+
+		metaBytes := make([]byte, length)
+		if _, err := io.ReadFull(metaChecksumReader, metaBytes); err != nil {
+			return nil, fmt.Errorf("failed to read metadata bytes: %w", err)
+		}
+
+		var meta metadata.Metadata
+		if err := meta.UnmarshalBinary(metaBytes); err != nil {
+			return nil, fmt.Errorf("failed to decode metadata: %w", err)
+		}
+		metadataStoreOut.Set(id, meta)
+	}
+
+	// Drain and verify
+	if _, err := io.Copy(io.Discard, metaChecksumReader); err != nil {
+		return nil, fmt.Errorf("failed to drain metadata section: %w", err)
+	}
+	if actualChecksum := metaChecksumReader.Sum(); actualChecksum != metaEntry.Checksum {
 		return nil, &persistence.ChecksumMismatchError{
 			Expected: metaEntry.Checksum,
 			Actual:   actualChecksum,
 		}
-	}
-	metadataMap := make(map[uint64]metadata.Metadata)
-	// Always use VecgoBinary for metadata persistence
-	metadataMap, err = metadata.UnmarshalMetadataMap(metaBytes)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode metadata: %w", err)
-	}
-	metadataStoreOut := NewMapStore[metadata.Metadata]()
-	if err := metadataStoreOut.BatchSet(metadataMap); err != nil {
-		return nil, fmt.Errorf("failed to populate metadata: %w", err)
 	}
 
 	return &Snapshot[T]{

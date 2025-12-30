@@ -2,7 +2,6 @@ package flat
 
 import (
 	"context"
-	"math/rand"
 	"testing"
 
 	"github.com/hupe1980/vecgo/index"
@@ -11,8 +10,6 @@ import (
 )
 
 func TestFlat_ProductQuantization_EnableDisable(t *testing.T) {
-	rand.Seed(1)
-
 	f, err := New(func(o *Options) {
 		o.Dimension = 4
 		o.DistanceType = index.DistanceTypeSquaredL2

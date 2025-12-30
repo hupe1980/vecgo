@@ -2,11 +2,12 @@ package columnar
 
 import (
 	"bytes"
-	"math/rand"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
+
+	"github.com/hupe1980/vecgo/testutil"
 )
 
 func TestNew(t *testing.T) {
@@ -407,13 +408,15 @@ func TestConcurrentRead(t *testing.T) {
 		s.Append(vec)
 	}
 
+	rng := testutil.NewRNG(0)
+
 	var wg sync.WaitGroup
 	for g := 0; g < 10; g++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for i := 0; i < 100; i++ {
-				id := uint64(rand.Intn(1000))
+				id := uint64(rng.Intn(1000))
 				s.GetVector(id)
 			}
 		}()
@@ -459,8 +462,10 @@ func TestLargeStore(t *testing.T) {
 		t.Errorf("Count() = %v, want %v", s.Count(), count)
 	}
 
+	rng := testutil.NewRNG(0)
+
 	for i := 0; i < 100; i++ {
-		id := uint64(rand.Intn(count))
+		id := uint64(rng.Intn(count))
 		got, ok := s.GetVector(id)
 		if !ok {
 			t.Errorf("GetVector(%d) returned false", id)

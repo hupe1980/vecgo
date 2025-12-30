@@ -2,8 +2,9 @@ package quantization
 
 import (
 	"math"
-	"math/rand"
 	"testing"
+
+	"github.com/hupe1980/vecgo/testutil"
 )
 
 func TestProductQuantizer(t *testing.T) {
@@ -20,11 +21,10 @@ func TestProductQuantizer(t *testing.T) {
 		t.Fatalf("Failed to create PQ: %v", err)
 	}
 
+	rng := testutil.NewRNG(0)
+
 	// Generate random training vectors
-	trainingVectors := make([][]float32, numVectors)
-	for i := range trainingVectors {
-		trainingVectors[i] = generateRandomVector(dimension)
-	}
+	trainingVectors := rng.UnitVectors(numVectors, dimension)
 
 	// Train
 	if err := pq.Train(trainingVectors); err != nil {
@@ -36,7 +36,7 @@ func TestProductQuantizer(t *testing.T) {
 	}
 
 	// Test encode/decode
-	testVec := generateRandomVector(dimension)
+	testVec := rng.UnitVectors(1, dimension)[0]
 	codes := pq.Encode(testVec)
 
 	if len(codes) != numSubvectors {
@@ -85,16 +85,15 @@ func TestProductQuantizerAsymmetricDistance(t *testing.T) {
 
 	pq, _ := NewProductQuantizer(dimension, numSubvectors, numCentroids)
 
-	trainingVectors := make([][]float32, numVectors)
-	for i := range trainingVectors {
-		trainingVectors[i] = generateRandomVector(dimension)
-	}
+	rng := testutil.NewRNG(0)
+
+	trainingVectors := rng.UnitVectors(numVectors, dimension)
 
 	pq.Train(trainingVectors)
 
 	// Test asymmetric distance vs decoded distance
-	query := generateRandomVector(dimension)
-	testVec := generateRandomVector(dimension)
+	query := rng.UnitVectors(1, dimension)[0]
+	testVec := rng.UnitVectors(1, dimension)[0]
 
 	codes := pq.Encode(testVec)
 
@@ -136,14 +135,13 @@ func BenchmarkProductQuantizerEncode(b *testing.B) {
 
 	pq, _ := NewProductQuantizer(dimension, numSubvectors, numCentroids)
 
+	rng := testutil.NewRNG(0)
+
 	// Train with sample data
-	trainingVectors := make([][]float32, 1000)
-	for i := range trainingVectors {
-		trainingVectors[i] = generateRandomVector(dimension)
-	}
+	trainingVectors := rng.UnitVectors(1000, dimension)
 	pq.Train(trainingVectors)
 
-	testVec := generateRandomVector(dimension)
+	testVec := rng.UnitVectors(1, dimension)[0]
 
 	b.ResetTimer()
 	for b.Loop() {
@@ -160,40 +158,18 @@ func BenchmarkProductQuantizerAsymmetricDistance(b *testing.B) {
 
 	pq, _ := NewProductQuantizer(dimension, numSubvectors, numCentroids)
 
-	trainingVectors := make([][]float32, 1000)
-	for i := range trainingVectors {
-		trainingVectors[i] = generateRandomVector(dimension)
-	}
+	rng := testutil.NewRNG(0)
+
+	trainingVectors := rng.UnitVectors(1000, dimension)
 	pq.Train(trainingVectors)
 
-	query := generateRandomVector(dimension)
-	codes := pq.Encode(generateRandomVector(dimension))
+	query := rng.UnitVectors(1, dimension)[0]
+	codes := pq.Encode(rng.UnitVectors(1, dimension)[0])
 
 	b.ResetTimer()
 	for b.Loop() {
 		_ = pq.ComputeAsymmetricDistance(query, codes)
 	}
-}
-
-// Helper functions
-
-func generateRandomVector(dim int) []float32 {
-	vec := make([]float32, dim)
-	for i := range vec {
-		vec[i] = rand.Float32()*2 - 1 // Range: [-1, 1]
-	}
-	// Normalize
-	var norm float32
-	for _, v := range vec {
-		norm += v * v
-	}
-	norm = float32(math.Sqrt(float64(norm)))
-	if norm > 0 {
-		for i := range vec {
-			vec[i] /= norm
-		}
-	}
-	return vec
 }
 
 func squaredL2(a, b []float32) float32 {

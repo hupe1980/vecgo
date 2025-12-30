@@ -5,10 +5,13 @@ import (
 	"math/rand"
 	"sort"
 	"sync"
-
-	"github.com/hupe1980/vecgo/distance"
-	"github.com/hupe1980/vecgo/index"
 )
+
+// SearchResult represents a search result.
+type SearchResult struct {
+	ID       uint64
+	Distance float32
+}
 
 // RNG struct encapsulates the random number generator and seed.
 // It is thread-safe.
@@ -38,6 +41,20 @@ func (r *RNG) Seed() int64 {
 	return r.seed
 }
 
+// Intn returns a non-negative pseudo-random number in [0,n).
+func (r *RNG) Intn(n int) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.rand.Intn(n)
+}
+
+// Float32 returns, as a float32, a pseudo-random number in [0.0,1.0).
+func (r *RNG) Float32() float32 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.rand.Float32()
+}
+
 // UniformVectors generates random vectors with values in range [0, 1).
 // Uses a single backing array for efficiency.
 func (r *RNG) UniformVectors(num int, dimensions int) [][]float32 {
@@ -47,7 +64,7 @@ func (r *RNG) UniformVectors(num int, dimensions int) [][]float32 {
 	data := make([]float32, num*dimensions)
 	vectors := make([][]float32, num)
 
-	for i := 0; i < num; i++ {
+	for i := range num {
 		vec := data[i*dimensions : (i+1)*dimensions]
 		for j := range vec {
 			vec[j] = r.rand.Float32()
@@ -67,7 +84,7 @@ func (r *RNG) UniformRangeVectors(num int, dimensions int) [][]float32 {
 	data := make([]float32, num*dimensions)
 	vectors := make([][]float32, num)
 
-	for i := 0; i < num; i++ {
+	for i := range num {
 		vec := data[i*dimensions : (i+1)*dimensions]
 		for j := range vec {
 			vec[j] = r.rand.Float32()*2 - 1
@@ -86,7 +103,7 @@ func (r *RNG) GaussianVectors(num int, dimensions int) [][]float32 {
 	data := make([]float32, num*dimensions)
 	vectors := make([][]float32, num)
 
-	for i := 0; i < num; i++ {
+	for i := range num {
 		vec := data[i*dimensions : (i+1)*dimensions]
 		for j := range vec {
 			vec[j] = float32(r.rand.NormFloat64())
@@ -107,7 +124,7 @@ func (r *RNG) UnitVectors(num int, dimensions int) [][]float32 {
 	data := make([]float32, num*dimensions)
 	vectors := make([][]float32, num)
 
-	for i := 0; i < num; i++ {
+	for i := range num {
 		vec := data[i*dimensions : (i+1)*dimensions]
 		var norm float64
 		for j := range vec {
@@ -167,11 +184,11 @@ func (r *RNG) ClusteredVectors(num, dim, clusters int, spread float32) [][]float
 	data := make([]float32, num*dim)
 	vectors := make([][]float32, num)
 
-	for i := 0; i < num; i++ {
+	for i := range num {
 		centroid := centroids[i%clusters]
 		vec := data[i*dim : (i+1)*dim]
 
-		for j := 0; j < dim; j++ {
+		for j := range dim {
 			// Add Gaussian noise to centroid
 			vec[j] = centroid[j] + float32(r.rand.NormFloat64())*spread
 		}
@@ -182,7 +199,7 @@ func (r *RNG) ClusteredVectors(num, dim, clusters int, spread float32) [][]float
 }
 
 // ComputeRecall computes recall@k by comparing approximate results against ground truth.
-func ComputeRecall(groundTruth, approximate []index.SearchResult) float64 {
+func ComputeRecall(groundTruth, approximate []SearchResult) float64 {
 	if len(groundTruth) == 0 || len(approximate) == 0 {
 		if len(groundTruth) == 0 && len(approximate) == 0 {
 			return 1.0
@@ -190,13 +207,10 @@ func ComputeRecall(groundTruth, approximate []index.SearchResult) float64 {
 		return 0.0
 	}
 
-	k := len(approximate)
-	if k > len(groundTruth) {
-		k = len(groundTruth)
-	}
+	k := min(len(approximate), len(groundTruth))
 
 	truthSet := make(map[uint64]struct{}, k)
-	for i := 0; i < k; i++ {
+	for i := range k {
 		truthSet[groundTruth[i].ID] = struct{}{}
 	}
 
@@ -211,17 +225,16 @@ func ComputeRecall(groundTruth, approximate []index.SearchResult) float64 {
 }
 
 // BruteForceSearch performs exact search for ground truth.
-func BruteForceSearch(vectors [][]float32, query []float32, k int) []index.SearchResult {
+func BruteForceSearch(vectors [][]float32, query []float32, k int) []SearchResult {
 	type result struct {
 		id   uint64
 		dist float32
 	}
 
 	results := make([]result, len(vectors))
-	distFunc := distance.SquaredL2
 
 	for i, v := range vectors {
-		d := distFunc(query, v)
+		d := squaredL2(query, v)
 		results[i] = result{id: uint64(i), dist: d}
 	}
 
@@ -233,9 +246,18 @@ func BruteForceSearch(vectors [][]float32, query []float32, k int) []index.Searc
 		results = results[:k]
 	}
 
-	out := make([]index.SearchResult, len(results))
+	out := make([]SearchResult, len(results))
 	for i, r := range results {
-		out[i] = index.SearchResult{ID: r.id, Distance: r.dist}
+		out[i] = SearchResult{ID: r.id, Distance: r.dist}
 	}
 	return out
+}
+
+func squaredL2(a, b []float32) float32 {
+	var sum float32
+	for i := range a {
+		diff := a[i] - b[i]
+		sum += diff * diff
+	}
+	return sum
 }

@@ -44,6 +44,14 @@ func (m *MappedFile) Close() error {
 	return nil
 }
 
+// Madvise advises the kernel about how the memory map will be used.
+func (m *MappedFile) Madvise(advice int) error {
+	if m == nil || m.f == nil {
+		return nil
+	}
+	return m.f.Madvise(advice)
+}
+
 // MmapReadOnly opens path and memory-maps it as read-only.
 func MmapReadOnly(path string) (*MappedFile, error) {
 	f, err := mmap.Open(path)

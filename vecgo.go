@@ -254,7 +254,7 @@ func newHNSW[T any](dimension int, distanceType index.DistanceType, indexOptFns 
 	dataStores := make([]engine.Store[T], numShards)
 	metaStores := make([]*metadata.UnifiedIndex, numShards)
 
-	for i := 0; i < numShards; i++ {
+	for i := range numShards {
 		idx, err := hnsw.NewSharded(i, numShards, func(o *hnsw.Options) {
 			*o = opts
 		})
@@ -405,7 +405,7 @@ func newSharded[T any](indexes []index.Index, dataStores []engine.Store[T], meta
 			wals[i], err = wal.New(walOptFns...)
 			if err != nil {
 				// Close already created WALs
-				for j := 0; j < i; j++ {
+				for j := range i {
 					_ = wals[j].Close()
 				}
 				return nil, fmt.Errorf("vecgo: failed to create WAL for shard %d: %w", i, err)

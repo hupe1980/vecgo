@@ -6,7 +6,6 @@ package vecgo
 import (
 	"context"
 	"iter"
-	"math"
 
 	"github.com/hupe1980/vecgo/metadata"
 )
@@ -316,17 +315,4 @@ func (sb *SearchBuilder[T]) ExistsWithin(ctx context.Context, threshold float32)
 // This is a convenience method equivalent to WithinDistance(threshold).Count(ctx).
 func (sb *SearchBuilder[T]) CountWithin(ctx context.Context, threshold float32) (int, error) {
 	return sb.WithinDistance(threshold).Count(ctx)
-}
-
-// min returns the smaller of two integers.
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-// isRangeQuery returns true if this is a range query (WithinDistance was called).
-func (sb *SearchBuilder[T]) isRangeQuery() bool {
-	return sb.withinDistance != nil && *sb.withinDistance < math.MaxFloat32
 }

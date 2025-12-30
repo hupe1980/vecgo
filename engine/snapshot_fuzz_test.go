@@ -144,33 +144,33 @@ func FuzzSnapshotLoad(f *testing.F) {
 
 // FuzzSnapshotChecksumCorruption tests that checksum verification catches corruption.
 func FuzzSnapshotChecksumCorruption(f *testing.F) {
+	// Create a valid snapshot ONCE
+	ctx := context.Background()
+	idx, _ := flat.New(func(o *flat.Options) {
+		o.Dimension = 2
+		o.DistanceType = index.DistanceTypeSquaredL2
+	})
+	id1, _ := idx.Insert(ctx, []float32{1.0, 2.0})
+	id2, _ := idx.Insert(ctx, []float32{3.0, 4.0})
+
+	dataStore := NewMapStore[string]()
+	_ = dataStore.Set(id1, "data1")
+	_ = dataStore.Set(id2, "data2")
+
+	metadataStore := NewMapStore[metadata.Metadata]()
+	_ = metadataStore.Set(id1, metadata.Metadata{"k": metadata.String("v1")})
+	_ = metadataStore.Set(id2, metadata.Metadata{"k": metadata.String("v2")})
+
+	var buf bytes.Buffer
+	if err := SaveToWriter(&buf, idx, dataStore, metadataStore, codec.Default); err != nil {
+		f.Fatalf("save failed: %v", err)
+	}
+	snapshotData := buf.Bytes()
+
 	f.Add(uint(100)) // corrupt at byte 100
 	f.Add(uint(500)) // corrupt at byte 500
 
 	f.Fuzz(func(t *testing.T, corruptPos uint) {
-		// Create a valid snapshot
-		ctx := context.Background()
-		idx, _ := flat.New(func(o *flat.Options) {
-			o.Dimension = 2
-			o.DistanceType = index.DistanceTypeSquaredL2
-		})
-		id1, _ := idx.Insert(ctx, []float32{1.0, 2.0})
-		id2, _ := idx.Insert(ctx, []float32{3.0, 4.0})
-
-		dataStore := NewMapStore[string]()
-		_ = dataStore.Set(id1, "data1")
-		_ = dataStore.Set(id2, "data2")
-
-		metadataStore := NewMapStore[metadata.Metadata]()
-		_ = metadataStore.Set(id1, metadata.Metadata{"k": metadata.String("v1")})
-		_ = metadataStore.Set(id2, metadata.Metadata{"k": metadata.String("v2")})
-
-		var buf bytes.Buffer
-		if err := SaveToWriter(&buf, idx, dataStore, metadataStore, codec.Default); err != nil {
-			t.Fatalf("save failed: %v", err)
-		}
-
-		snapshotData := buf.Bytes()
 		if len(snapshotData) == 0 {
 			t.Skip()
 		}

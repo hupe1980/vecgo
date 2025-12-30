@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"fmt"
-	"math/rand"
 	"sync"
 	"testing"
 	"time"
@@ -12,6 +11,7 @@ import (
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/index/hnsw"
 	"github.com/hupe1980/vecgo/metadata"
+	"github.com/hupe1980/vecgo/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -123,10 +123,15 @@ func TestAsyncIndex_Race_FlushAndDelete(t *testing.T) {
 	var wg sync.WaitGroup
 	n := 1000
 
+	rng := testutil.NewRNG(1)
+
 	// Insert items
 	ids := make([]uint64, n)
 	for i := 0; i < n; i++ {
-		vec := []float32{rand.Float32(), rand.Float32(), rand.Float32(), rand.Float32()}
+		vec := make([]float32, 4)
+		for j := 0; j < 4; j++ {
+			vec[j] = rng.Float32()
+		}
 		id, err := tx.Insert(ctx, vec, fmt.Sprintf("item-%d", i), nil)
 		require.NoError(t, err)
 		ids[i] = id

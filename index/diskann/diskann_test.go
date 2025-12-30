@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/hupe1980/vecgo/index"
+	"github.com/hupe1980/vecgo/testutil"
 )
 
 func TestBuilder(t *testing.T) {
@@ -32,15 +33,9 @@ func TestBuilder(t *testing.T) {
 	}
 
 	// Add vectors
-	rng := rand.New(rand.NewSource(42))
+	rng := testutil.NewRNG(42)
 	n := 1000
-	vectors := make([][]float32, n)
-	for i := 0; i < n; i++ {
-		vectors[i] = make([]float32, 64)
-		for j := range vectors[i] {
-			vectors[i][j] = rng.Float32()
-		}
-	}
+	vectors := rng.UniformVectors(n, 64)
 
 	ids, err := builder.AddBatch(vectors)
 	if err != nil {
@@ -154,15 +149,9 @@ func TestOpenAndSearch(t *testing.T) {
 		t.Fatalf("NewBuilder: %v", err)
 	}
 
-	rng := rand.New(rand.NewSource(42))
+	rng := testutil.NewRNG(42)
 	n := 500
-	vectors := make([][]float32, n)
-	for i := 0; i < n; i++ {
-		vectors[i] = make([]float32, 64)
-		for j := range vectors[i] {
-			vectors[i][j] = rng.Float32()
-		}
-	}
+	vectors := rng.UniformVectors(n, 64)
 
 	if _, err := builder.AddBatch(vectors); err != nil {
 		t.Fatalf("AddBatch: %v", err)

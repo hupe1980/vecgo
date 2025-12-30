@@ -12,18 +12,18 @@ func (h *HNSW) Stats() index.Stats {
 	activeNodes := 0
 	deletedNodes := 0
 
-	segments := h.segments.Load()
+	nodes := h.nodes.Load()
 	numSegments := 0
-	if segments != nil {
-		numSegments = len(*segments)
+	if nodes != nil {
+		numSegments = len(*nodes)
 		// Iterate all segments
-		for _, seg := range *segments {
+		for _, seg := range *nodes {
 			if seg == nil {
 				continue
 			}
 			for j := range seg {
 				node := seg[j].Load()
-				if node == 0 {
+				if node == nil {
 					deletedNodes++
 				} else {
 					activeNodes++
@@ -42,35 +42,29 @@ func (h *HNSW) Stats() index.Stats {
 	connectionNodeStats := make([]int, maxLevel+1)
 
 	// Iterate all segments again for detailed stats
-	if segments != nil {
-		buf := h.arena.Buffer()
-		for _, seg := range *segments {
+	if nodes != nil {
+		for _, seg := range *nodes {
 			if seg == nil {
 				continue
 			}
 			for j := range seg {
-				offset := seg[j].Load()
-				if offset == 0 {
+				node := seg[j].Load()
+				if node == nil {
 					continue
 				}
 
-				level := int(h.layout.getLevel(buf[int(offset):]))
+				level := node.Level
 				if level < len(levelStats) {
 					levelStats[level]++
 				}
 
 				// Loop through each connection
 				for i2 := level; i2 >= 0; i2-- {
-					// Read connections
-					nodeData := buf[int(offset):]
-					linkOffset := h.layout.AtomicLoadLink(nodeData, int(i2))
-					if linkOffset != 0 {
-						connections := h.layout.getListNeighbors(buf[int(linkOffset):])
-						if len(connections) > 0 {
-							total := len(connections)
-							connectionStats[i2] += total
-							connectionNodeStats[i2]++
-						}
+					connections := node.getConnections(i2)
+					if len(connections) > 0 {
+						total := len(connections)
+						connectionStats[i2] += total
+						connectionNodeStats[i2]++
 					}
 				}
 			}

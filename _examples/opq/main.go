@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"log"
 	"math"
-	"math/rand"
 
 	"github.com/hupe1980/vecgo"
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/quantization"
+	"github.com/hupe1980/vecgo/testutil"
 )
 
 func main() {
@@ -32,9 +32,12 @@ func main() {
 
 	// Generate training vectors for OPQ
 	fmt.Printf("Generating %d training vectors (dim=%d)...\n", numVectors, dimension)
-	trainingVectors := make([][]float32, numVectors)
-	for i := range trainingVectors {
-		trainingVectors[i] = generateRandomVector(dimension, i)
+	rng := testutil.NewRNG(0)
+	trainingVectors := rng.UniformVectors(numVectors, dimension)
+
+	// Normalize vectors (OPQ works best with normalized data for cosine/L2)
+	for _, vec := range trainingVectors {
+		normalize(vec)
 	}
 
 	// Train OPQ quantizer
@@ -164,15 +167,8 @@ func main() {
 	fmt.Println("Full OPQ integration into the index layer is a future enhancement.")
 }
 
-// generateRandomVector creates a random vector with deterministic seeding
-func generateRandomVector(dim, seed int) []float32 {
-	rng := rand.New(rand.NewSource(int64(seed)))
-	vec := make([]float32, dim)
-	for i := range vec {
-		vec[i] = rng.Float32()*2 - 1 // [-1, 1]
-	}
-
-	// Normalize to unit length for more realistic embeddings
+// normalize normalizes a vector to unit length
+func normalize(vec []float32) {
 	norm := float32(0)
 	for _, v := range vec {
 		norm += v * v
@@ -183,8 +179,6 @@ func generateRandomVector(dim, seed int) []float32 {
 			vec[i] /= norm
 		}
 	}
-
-	return vec
 }
 
 // l2DistanceSquared computes squared L2 distance

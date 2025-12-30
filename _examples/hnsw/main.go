@@ -13,7 +13,7 @@ import (
 func main() {
 	seed := int64(4711)
 	dim := 32
-	size := 50000
+	size := 10000 // Reduced from 50000 to fit in default arena (64MB)
 	k := 10
 
 	// Create HNSW index using Fluent API
@@ -46,7 +46,7 @@ func main() {
 	//    - For larger batches, split into chunks as shown below
 	vg, err := vecgo.HNSW[int](dim).
 		SquaredL2().
-		M(32). // Increase connections for better recall
+		M(16). // Default connections (16) to save memory
 		Build()
 	if err != nil {
 		log.Fatalf("failed to create vecgo: %v", err)

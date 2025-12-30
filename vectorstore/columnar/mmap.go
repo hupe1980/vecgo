@@ -80,6 +80,9 @@ func OpenMmap(filename string) (*MmapStore, io.Closer, error) {
 		reader: reader,
 	}
 
+	// Advise random access for vector data as we expect random reads during search
+	_ = reader.Madvise(mmap.AdviceRandom)
+
 	// Read vector data
 	vecDataSize := int(header.Count) * int(header.Dimension) * 4
 	if vecDataSize > 0 {

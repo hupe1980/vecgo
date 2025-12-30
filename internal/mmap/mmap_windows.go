@@ -40,3 +40,7 @@ func munmap(data []byte) error {
 	addr := uintptr(unsafe.Pointer(&data[0]))
 	return syscall.UnmapViewOfFile(addr)
 }
+
+func madvise(data []byte, advice int) error {
+	return nil // No-op on Windows
+}

@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/hupe1980/vecgo"
-	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/testutil"
 )
 
@@ -76,9 +75,12 @@ func BenchmarkHNSW(b *testing.B) {
 			}
 
 			if i == 0 {
-				approx := make([]index.SearchResult, len(res))
+				approx := make([]testutil.SearchResult, len(res))
 				for j, r := range res {
-					approx[j] = r.SearchResult
+					approx[j] = testutil.SearchResult{
+						ID:       r.SearchResult.ID,
+						Distance: r.SearchResult.Distance,
+					}
 				}
 				recall := testutil.ComputeRecall(groundTruth, approx)
 				b.ReportMetric(recall, "recall")

@@ -5,12 +5,12 @@ package main
 import (
 	"context"
 	"fmt"
-	"math/rand"
 	"os"
 	"time"
 
 	"github.com/hupe1980/vecgo"
 	"github.com/hupe1980/vecgo/metadata"
+	"github.com/hupe1980/vecgo/testutil"
 )
 
 func main() {
@@ -24,7 +24,7 @@ func main() {
 	fmt.Println("=== DiskANN Example (Integrated Vecgo API) ===")
 	fmt.Printf("Dimension: %d, Vectors: %d\n\n", dimension, numVectors)
 
-	rng := rand.New(rand.NewSource(42))
+	rng := testutil.NewRNG(42)
 
 	fmt.Println("Creating DiskANN index with fluent builder...")
 	startBuild := time.Now()
@@ -47,8 +47,10 @@ func main() {
 	fmt.Println("Inserting vectors with metadata...")
 	categories := []string{"tech", "science", "business"}
 
+	vectors := rng.UniformVectors(numVectors, dimension)
+
 	for i := 0; i < numVectors; i++ {
-		vec := randomVector(rng, dimension)
+		vec := vectors[i]
 		category := categories[i%len(categories)]
 
 		_, err := db.Insert(ctx, vecgo.VectorWithData[string]{
@@ -67,7 +69,7 @@ func main() {
 	fmt.Printf("Build completed in %v\n\n", time.Since(startBuild))
 
 	// Create query vector
-	query := randomVector(rng, dimension)
+	query := rng.UniformVectors(1, dimension)[0]
 	k := 10
 
 	// Standard KNN search
@@ -150,12 +152,4 @@ func main() {
 	fmt.Println("✅ Background compaction for deleted vectors")
 	fmt.Println("✅ Compatible with WAL for durability")
 	fmt.Println("\nPerfect for billion-scale datasets that don't fit in RAM!")
-}
-
-func randomVector(rng *rand.Rand, dim int) []float32 {
-	vec := make([]float32, dim)
-	for i := range vec {
-		vec[i] = rng.Float32()*2 - 1
-	}
-	return vec
 }

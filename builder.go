@@ -44,21 +44,22 @@ func HNSW[T any](dimension int) HNSWBuilder[T] {
 // HNSWBuilder is an immutable fluent builder for creating HNSW-based Vecgo instances.
 // Each method returns a new builder with the updated configuration.
 type HNSWBuilder[T any] struct {
-	dimension    int
-	distanceType index.DistanceType
-	m            int
-	ef           int
-	heuristic    bool
-	numShards    int
-	randomSeed   *int64
-	codec        codec.Codec
-	logger       *Logger
-	metrics      MetricsCollector
-	walEnabled   bool
-	walPath      string
-	walOptions   []func(*wal.Options)
-	snapshotPath string
-	syncWrite    bool
+	dimension        int
+	distanceType     index.DistanceType
+	m                int
+	ef               int
+	heuristic        bool
+	numShards        int
+	randomSeed       *int64
+	codec            codec.Codec
+	logger           *Logger
+	metrics          MetricsCollector
+	walEnabled       bool
+	walPath          string
+	walOptions       []func(*wal.Options)
+	snapshotPath     string
+	syncWrite        bool
+	initialArenaSize int
 }
 
 // SquaredL2 sets the distance metric to Squared Euclidean distance.
@@ -162,6 +163,15 @@ func (b HNSWBuilder[T]) SnapshotPath(path string) HNSWBuilder[T] {
 	return b
 }
 
+// InitialArenaSize sets the initial size of the memory arena in bytes.
+// HNSW uses a custom memory allocator (Arena) for graph nodes to improve cache locality
+// and reduce GC pressure.
+// Default: 64MB.
+func (b HNSWBuilder[T]) InitialArenaSize(size int) HNSWBuilder[T] {
+	b.initialArenaSize = size
+	return b
+}
+
 // Build creates the HNSW-based Vecgo instance.
 func (b HNSWBuilder[T]) Build() (*Vecgo[T], error) {
 	hnswOpts := func(o *hnsw.Options) {
@@ -169,6 +179,9 @@ func (b HNSWBuilder[T]) Build() (*Vecgo[T], error) {
 		o.EF = b.ef
 		o.Heuristic = b.heuristic
 		o.RandomSeed = b.randomSeed
+		if b.initialArenaSize > 0 {
+			o.InitialArenaSize = b.initialArenaSize
+		}
 	}
 
 	var vecgoOpts []Option

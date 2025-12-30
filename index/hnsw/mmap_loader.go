@@ -11,7 +11,6 @@ import (
 	"unsafe"
 
 	"github.com/hupe1980/vecgo/index"
-	"github.com/hupe1980/vecgo/internal/arena"
 	"github.com/hupe1980/vecgo/internal/bitset"
 	"github.com/hupe1980/vecgo/internal/queue"
 	"github.com/hupe1980/vecgo/internal/visited"
@@ -105,51 +104,45 @@ func loadHNSWMmap(data []byte) (index.Index, int, error) {
 	h.visitedPool = &sync.Pool{
 		New: func() any { return visited.New(1024) },
 	}
-	h.layout = newNodeLayout(h.opts.M)
 	h.distanceFunc = index.NewDistanceFunc(dt)
 	h.rng = rand.New(rand.NewSource(time.Now().UnixNano()))
 
 	// Set countAtomic
 	h.countAtomic.Store(int64(nextID) - int64(len(freeList)) - int64(ts.Count()))
 
-	// Read Arena Size
-	arenaSize, err := r.ReadUint64()
-	if err != nil {
-		return nil, 0, err
-	}
+	// Initialize nodes
+	h.growNodes(0)
 
-	// Skip padding for Arena Data alignment
-	padding := (8 - (r.Offset() % 8)) % 8
-	if padding > 0 {
-		if _, err := r.ReadBytes(int(padding)); err != nil {
+	// Read Graph Data
+	for id := uint64(0); id < nextID; id++ {
+		levelBytes, err := r.ReadBytes(4)
+		if err != nil {
 			return nil, 0, err
 		}
-	}
+		level := int32(binary.LittleEndian.Uint32(levelBytes))
 
-	// Initialize Arena (Zero-Copy)
-	arenaData, err := r.ReadBytes(int(arenaSize))
-	if err != nil {
-		return nil, 0, err
-	}
-	h.arena = arena.NewFlatFromBytes(arenaData)
-	h.arena.SetSize(arenaSize)
-
-	// Skip padding
-	padding = int((8 - (arenaSize % 8)) % 8)
-	if padding > 0 {
-		if _, err := r.ReadBytes(int(padding)); err != nil {
-			return nil, 0, err
+		if level < 0 {
+			continue
 		}
-	}
 
-	// Read Offsets (Zero-Copy)
-	offsetsData, err := r.ReadBytes(int(nextID) * 8)
-	if err != nil {
-		return nil, 0, err
-	}
+		node := newNode(int(level))
+		h.setNode(id, node)
 
-	if len(offsetsData) > 0 {
-		h.mmapOffsets = unsafe.Slice((*uint64)(unsafe.Pointer(&offsetsData[0])), int(nextID))
+		for layer := 0; layer <= int(level); layer++ {
+			countBytes, err := r.ReadBytes(4)
+			if err != nil {
+				return nil, 0, err
+			}
+			count := binary.LittleEndian.Uint32(countBytes)
+
+			if count > 0 {
+				conns, err := r.ReadUint64SliceCopy(int(count))
+				if err != nil {
+					return nil, 0, err
+				}
+				node.setConnections(layer, conns)
+			}
+		}
 	}
 
 	// Read Vectors (Zero-Copy, Contiguous)
@@ -174,8 +167,6 @@ func loadHNSWMmap(data []byte) (index.Index, int, error) {
 		}
 	}
 
-	// Initialize layout
-	h.layout = newNodeLayout(h.opts.M)
 	h.shardedLocks = make([]sync.RWMutex, 1024)
 
 	h.distanceFunc = index.NewDistanceFunc(h.opts.DistanceType)

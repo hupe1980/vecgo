@@ -3,7 +3,6 @@ package hnsw
 import (
 	"context"
 	"fmt"
-	"math/rand"
 	"testing"
 
 	"github.com/hupe1980/vecgo/distance"
@@ -102,8 +101,6 @@ func TestValidateInsertSearch(t *testing.T) {
 }
 
 func TestHNSW_DotProduct_DistanceOrdering(t *testing.T) {
-	rand.Seed(1)
-
 	ctx := context.Background()
 	h, err := New(func(o *Options) {
 		o.Dimension = 3

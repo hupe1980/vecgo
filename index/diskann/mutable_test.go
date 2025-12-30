@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/hupe1980/vecgo/index"
+	"github.com/hupe1980/vecgo/testutil"
 )
 
 // TestMutableIndex tests incremental insert/delete/update operations on a mutable DiskANN index.
@@ -34,7 +35,7 @@ func TestMutableIndex(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	rng := rand.New(rand.NewSource(42))
+	rng := testutil.NewRNG(42)
 
 	// Test initial state
 	if idx.Count() != 0 {
@@ -42,14 +43,9 @@ func TestMutableIndex(t *testing.T) {
 	}
 
 	// Insert vectors one by one
-	vectors := make([][]float32, 100)
+	vectors := rng.UniformVectors(100, 32)
 	ids := make([]uint64, 100)
 	for i := 0; i < 100; i++ {
-		vectors[i] = make([]float32, 32)
-		for j := range vectors[i] {
-			vectors[i][j] = rng.Float32()
-		}
-
 		id, err := idx.Insert(ctx, vectors[i])
 		if err != nil {
 			t.Fatalf("Insert[%d]: %v", i, err)

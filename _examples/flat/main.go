@@ -53,17 +53,27 @@ func main() {
 	start := time.Now()
 
 	// Use batch insert for better performance
-	batchResult := vg.BatchInsert(context.Background(), items)
-
-	// Check for errors
-	errorCount := 0
-	for _, err := range batchResult.Errors {
-		if err != nil {
-			errorCount++
+	// Split into chunks to respect default validation limit (10,000 vectors per batch)
+	batchSize := 10000
+	for i := 0; i < len(items); i += batchSize {
+		end := i + batchSize
+		if end > len(items) {
+			end = len(items)
 		}
-	}
-	if errorCount > 0 {
-		log.Printf("Failed to insert %d vectors", errorCount)
+		batch := items[i:end]
+
+		batchResult := vg.BatchInsert(context.Background(), batch)
+
+		// Check for errors
+		errorCount := 0
+		for _, err := range batchResult.Errors {
+			if err != nil {
+				errorCount++
+			}
+		}
+		if errorCount > 0 {
+			log.Fatalf("Failed to insert vectors in batch %d: %d errors", i/batchSize, errorCount)
+		}
 	}
 
 	end := time.Since(start)

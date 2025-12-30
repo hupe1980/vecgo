@@ -6,6 +6,15 @@ import (
 	"os"
 )
 
+// Advice constants for Madvise
+const (
+	AdviceNormal = iota
+	AdviceRandom
+	AdviceSequential
+	AdviceWillNeed
+	AdviceDontNeed
+)
+
 // File represents a memory-mapped file.
 type File struct {
 	Data []byte
@@ -29,6 +38,16 @@ func (m *File) Close() error {
 		m.f = nil
 	}
 	return err
+}
+
+// Madvise advises the kernel about how the memory map will be used.
+// This is a hint to the OS to optimize page cache usage.
+// On Windows, this is a no-op.
+func (m *File) Madvise(advice int) error {
+	if m == nil || m.Data == nil {
+		return nil
+	}
+	return madvise(m.Data, advice)
 }
 
 // Open maps the file at path into memory as read-only.

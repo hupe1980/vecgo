@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/hupe1980/vecgo/index"
-	"github.com/hupe1980/vecgo/internal/arena"
 	"github.com/hupe1980/vecgo/internal/bitset"
 	"github.com/hupe1980/vecgo/internal/queue"
 	"github.com/hupe1980/vecgo/internal/visited"
@@ -131,40 +130,34 @@ func (h *HNSW) WriteTo(w io.Writer) (int64, error) {
 		return cw.n, err
 	}
 
-	// Write Arena Size
-	arenaSize := h.arena.Size()
-	if err := binary.Write(cw, binary.LittleEndian, arenaSize); err != nil {
-		return cw.n, err
-	}
-
-	// Padding for Arena Data alignment
-	// We need the arena data to start at an 8-byte aligned offset
-	// so that atomic operations on the mmap'd data work on ARM64.
-	padding := (8 - (cw.n % 8)) % 8
-	if padding > 0 {
-		if _, err := cw.Write(make([]byte, padding)); err != nil {
-			return cw.n, err
-		}
-	}
-
-	// Write Arena Data
-	if _, err := cw.Write(h.arena.Buffer()[:arenaSize]); err != nil {
-		return cw.n, err
-	}
-
-	// Padding for 8-byte alignment of Offsets
-	padding = int64((8 - (arenaSize % 8)) % 8)
-	if padding > 0 {
-		if _, err := cw.Write(make([]byte, padding)); err != nil {
-			return cw.n, err
-		}
-	}
-
-	// Write Offsets
+	// Write Graph Data
 	for id := uint64(0); id < nextID; id++ {
-		offset := h.getNodeOffset(id)
-		if err := binary.Write(cw, binary.LittleEndian, offset); err != nil {
+		node := h.getNode(id)
+		if node == nil {
+			// Deleted or unused ID
+			if err := binary.Write(cw, binary.LittleEndian, int32(-1)); err != nil {
+				return cw.n, err
+			}
+			continue
+		}
+
+		// Write Level
+		if err := binary.Write(cw, binary.LittleEndian, int32(node.Level)); err != nil {
 			return cw.n, err
+		}
+
+		// Write Connections
+		for layer := 0; layer <= node.Level; layer++ {
+			conns := node.getConnections(layer)
+			count := uint32(len(conns))
+			if err := binary.Write(cw, binary.LittleEndian, count); err != nil {
+				return cw.n, err
+			}
+			if count > 0 {
+				if err := writer.WriteUint64Slice(conns); err != nil {
+					return cw.n, err
+				}
+			}
 		}
 	}
 
@@ -242,7 +235,7 @@ func (h *HNSW) ReadFromWithOptions(r io.Reader, opts Options) error {
 
 	// Initialize runtime fields
 	h.distanceFunc = index.NewDistanceFunc(h.opts.DistanceType)
-	h.layout = newNodeLayout(h.opts.M)
+	h.growNodes(0)
 	h.shardedLocks = make([]sync.RWMutex, 1024)
 	h.minQueuePool = &sync.Pool{
 		New: func() any { return queue.NewMin(h.opts.EF) },
@@ -298,45 +291,33 @@ func (h *HNSW) ReadFromWithOptions(r io.Reader, opts Options) error {
 	// Set countAtomic
 	h.countAtomic.Store(int64(h.nextIDAtomic.Load()) - int64(len(h.freeList)) - int64(h.tombstones.Count()))
 
-	// Read Arena Size
-	var arenaSize uint64
-	if err := binary.Read(cr, binary.LittleEndian, &arenaSize); err != nil {
-		return err
-	}
-
-	// Skip padding for Arena Data alignment
-	padding := int((8 - (cr.n % 8)) % 8)
-	if padding > 0 {
-		if _, err := io.ReadFull(cr, make([]byte, padding)); err != nil {
-			return err
-		}
-	}
-
-	// Initialize Arena
-	h.arena = arena.NewFlat(int(arenaSize))
-	// Read Arena Data
-	if _, err := io.ReadFull(cr, h.arena.Buffer()[:arenaSize]); err != nil {
-		return err
-	}
-	h.arena.SetSize(arenaSize)
-
-	// Skip padding
-	padding = int((8 - (arenaSize % 8)) % 8)
-	if padding > 0 {
-		if _, err := io.ReadFull(cr, make([]byte, padding)); err != nil {
-			return err
-		}
-	}
-
-	// Read Offsets
+	// Read Graph Data
 	nextID := h.nextIDAtomic.Load()
 	for id := uint64(0); id < nextID; id++ {
-		var offset uint64
-		if err := binary.Read(cr, binary.LittleEndian, &offset); err != nil {
+		var level int32
+		if err := binary.Read(cr, binary.LittleEndian, &level); err != nil {
 			return err
 		}
-		if offset != 0 {
-			h.setNodeOffset(id, offset)
+
+		if level < 0 {
+			continue
+		}
+
+		node := newNode(int(level))
+		h.setNode(id, node)
+
+		for layer := 0; layer <= int(level); layer++ {
+			var count uint32
+			if err := binary.Read(cr, binary.LittleEndian, &count); err != nil {
+				return err
+			}
+			if count > 0 {
+				conns, err := reader.ReadUint64Slice(int(count))
+				if err != nil {
+					return err
+				}
+				node.setConnections(layer, conns)
+			}
 		}
 	}
 
@@ -361,13 +342,6 @@ func (h *HNSW) ReadFromWithOptions(r io.Reader, opts Options) error {
 			return err
 		}
 	}
-
-	// Initialize layout
-	h.layout = newNodeLayout(h.opts.M)
-	h.shardedLocks = make([]sync.RWMutex, 1024)
-
-	// Initialize distance function
-	h.distanceFunc = index.NewDistanceFunc(h.opts.DistanceType)
 
 	// Initialize pools
 	h.minQueuePool = &sync.Pool{

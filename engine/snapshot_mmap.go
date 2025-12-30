@@ -88,15 +88,42 @@ func LoadFromFileMmapWithCodec[T any](filename string, c codec.Codec) (*Snapshot
 			Actual:   actualChecksum,
 		}
 	}
-	storeMap := make(map[uint64]T)
-	if err := c.Unmarshal(storeBytes, &storeMap); err != nil {
+
+	if len(storeBytes) < 8 {
 		_ = mf.Close()
-		return nil, fmt.Errorf("failed to decode store: %w", err)
+		return nil, fmt.Errorf("truncated store section: missing count")
 	}
+	storeCount := binary.LittleEndian.Uint64(storeBytes)
+	storeBytes = storeBytes[8:]
+
 	dataStore := NewMapStore[T]()
-	if err := dataStore.BatchSet(storeMap); err != nil {
-		_ = mf.Close()
-		return nil, fmt.Errorf("failed to populate store: %w", err)
+	for i := uint64(0); i < storeCount; i++ {
+		if len(storeBytes) < 12 { // ID (8) + Len (4)
+			_ = mf.Close()
+			return nil, fmt.Errorf("truncated store entry header at index %d", i)
+		}
+		id := binary.LittleEndian.Uint64(storeBytes)
+		storeBytes = storeBytes[8:]
+
+		l := binary.LittleEndian.Uint32(storeBytes)
+		storeBytes = storeBytes[4:]
+
+		if uint64(len(storeBytes)) < uint64(l) {
+			_ = mf.Close()
+			return nil, fmt.Errorf("truncated store entry data at index %d", i)
+		}
+		valBytes := storeBytes[:l]
+		storeBytes = storeBytes[l:]
+
+		var val T
+		if err := c.Unmarshal(valBytes, &val); err != nil {
+			_ = mf.Close()
+			return nil, fmt.Errorf("failed to decode data for id %d: %w", id, err)
+		}
+		if err := dataStore.Set(id, val); err != nil {
+			_ = mf.Close()
+			return nil, fmt.Errorf("failed to set data for id %d: %w", id, err)
+		}
 	}
 
 	metaEntry, ok := sections[snapshotSectionMetadataStore]
@@ -117,17 +144,42 @@ func LoadFromFileMmapWithCodec[T any](filename string, c codec.Codec) (*Snapshot
 			Actual:   actualChecksum,
 		}
 	}
-	metadataMap := make(map[uint64]metadata.Metadata)
-	// Always use VecgoBinary for metadata persistence
-	metadataMap, err = metadata.UnmarshalMetadataMap(metadataBytes)
-	if err != nil {
+
+	if len(metadataBytes) < 8 {
 		_ = mf.Close()
-		return nil, fmt.Errorf("failed to decode metadata: %w", err)
+		return nil, fmt.Errorf("truncated metadata section: missing count")
 	}
+	metaCount := binary.LittleEndian.Uint64(metadataBytes)
+	metadataBytes = metadataBytes[8:]
+
 	metadataStore := NewMapStore[metadata.Metadata]()
-	if err := metadataStore.BatchSet(metadataMap); err != nil {
-		_ = mf.Close()
-		return nil, fmt.Errorf("failed to populate metadata: %w", err)
+	for i := uint64(0); i < metaCount; i++ {
+		if len(metadataBytes) < 12 { // ID (8) + Len (4)
+			_ = mf.Close()
+			return nil, fmt.Errorf("truncated metadata entry header at index %d", i)
+		}
+		id := binary.LittleEndian.Uint64(metadataBytes)
+		metadataBytes = metadataBytes[8:]
+
+		l := binary.LittleEndian.Uint32(metadataBytes)
+		metadataBytes = metadataBytes[4:]
+
+		if uint64(len(metadataBytes)) < uint64(l) {
+			_ = mf.Close()
+			return nil, fmt.Errorf("truncated metadata entry data at index %d", i)
+		}
+		valBytes := metadataBytes[:l]
+		metadataBytes = metadataBytes[l:]
+
+		var meta metadata.Metadata
+		if err := meta.UnmarshalBinary(valBytes); err != nil {
+			_ = mf.Close()
+			return nil, fmt.Errorf("failed to decode metadata for id %d: %w", id, err)
+		}
+		if err := metadataStore.Set(id, meta); err != nil {
+			_ = mf.Close()
+			return nil, fmt.Errorf("failed to set metadata for id %d: %w", id, err)
+		}
 	}
 
 	return &SnapshotMmap[T]{

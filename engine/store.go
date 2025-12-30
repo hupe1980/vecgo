@@ -1,5 +1,7 @@
 package engine
 
+import "iter"
+
 // Store is a generic interface for storing and retrieving data associated with vector IDs.
 //
 // This previously lived in the top-level `store` package. It was moved into `engine`
@@ -36,4 +38,7 @@ type Store[T any] interface {
 
 	// ToMap returns a copy of all data as a map (for serialization).
 	ToMap() map[uint64]T
+
+	// All returns an iterator over all items in the store.
+	All() iter.Seq2[uint64, T]
 }

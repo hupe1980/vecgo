@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"math/rand"
 
 	"github.com/hupe1980/vecgo"
+	"github.com/hupe1980/vecgo/testutil"
 )
 
 func main() {
@@ -28,8 +28,10 @@ func main() {
 
 	// Insert 1000 vectors
 	fmt.Println("Inserting 1000 vectors...")
-	for i := 0; i < 1000; i++ {
-		vec := randomVector(128)
+	rng := testutil.NewRNG(0)
+	vectors := rng.UniformVectors(1000, 128)
+
+	for i, vec := range vectors {
 		_, err := db.Insert(ctx, vecgo.VectorWithData[string]{
 			Vector: vec,
 			Data:   fmt.Sprintf("item-%d", i),
@@ -39,7 +41,7 @@ func main() {
 		}
 	}
 
-	query := randomVector(128)
+	query := rng.UniformVectors(1, 128)[0]
 
 	// Example 1: Basic streaming search using Fluent API
 	fmt.Println()
@@ -128,12 +130,4 @@ func main() {
 
 	fmt.Println()
 	fmt.Println("✅ Streaming search demo complete!")
-}
-
-func randomVector(dim int) []float32 {
-	vec := make([]float32, dim)
-	for i := range vec {
-		vec[i] = rand.Float32()
-	}
-	return vec
 }
