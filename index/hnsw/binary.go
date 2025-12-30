@@ -137,13 +137,23 @@ func (h *HNSW) WriteTo(w io.Writer) (int64, error) {
 		return cw.n, err
 	}
 
+	// Padding for Arena Data alignment
+	// We need the arena data to start at an 8-byte aligned offset
+	// so that atomic operations on the mmap'd data work on ARM64.
+	padding := (8 - (cw.n % 8)) % 8
+	if padding > 0 {
+		if _, err := cw.Write(make([]byte, padding)); err != nil {
+			return cw.n, err
+		}
+	}
+
 	// Write Arena Data
 	if _, err := cw.Write(h.arena.Buffer()[:arenaSize]); err != nil {
 		return cw.n, err
 	}
 
 	// Padding for 8-byte alignment of Offsets
-	padding := (8 - (arenaSize % 8)) % 8
+	padding = int64((8 - (arenaSize % 8)) % 8)
 	if padding > 0 {
 		if _, err := cw.Write(make([]byte, padding)); err != nil {
 			return cw.n, err
@@ -187,7 +197,9 @@ func (h *HNSW) ReadFrom(r io.Reader) (int64, error) {
 
 // ReadFromWithOptions reads the HNSW index from a reader in binary format.
 func (h *HNSW) ReadFromWithOptions(r io.Reader, opts Options) error {
-	reader := persistence.NewBinaryIndexReader(r)
+	// Wrap r in countingReader to track offset for alignment
+	cr := &countingReader{r: r}
+	reader := persistence.NewBinaryIndexReader(cr)
 
 	// Read and validate header
 	header, err := reader.ReadHeader()
@@ -200,7 +212,7 @@ func (h *HNSW) ReadFromWithOptions(r io.Reader, opts Options) error {
 	}
 
 	// Read HNSW metadata
-	metadata, err := persistence.ReadHNSWMetadata(r)
+	metadata, err := persistence.ReadHNSWMetadata(cr)
 	if err != nil {
 		return err
 	}
@@ -279,7 +291,7 @@ func (h *HNSW) ReadFromWithOptions(r io.Reader, opts Options) error {
 	}
 
 	// Read Tombstones
-	if _, err := h.tombstones.ReadFrom(r); err != nil {
+	if _, err := h.tombstones.ReadFrom(cr); err != nil {
 		return err
 	}
 
@@ -288,22 +300,30 @@ func (h *HNSW) ReadFromWithOptions(r io.Reader, opts Options) error {
 
 	// Read Arena Size
 	var arenaSize uint64
-	if err := binary.Read(r, binary.LittleEndian, &arenaSize); err != nil {
+	if err := binary.Read(cr, binary.LittleEndian, &arenaSize); err != nil {
 		return err
+	}
+
+	// Skip padding for Arena Data alignment
+	padding := int((8 - (cr.n % 8)) % 8)
+	if padding > 0 {
+		if _, err := io.ReadFull(cr, make([]byte, padding)); err != nil {
+			return err
+		}
 	}
 
 	// Initialize Arena
 	h.arena = arena.NewFlat(int(arenaSize))
 	// Read Arena Data
-	if _, err := io.ReadFull(r, h.arena.Buffer()[:arenaSize]); err != nil {
+	if _, err := io.ReadFull(cr, h.arena.Buffer()[:arenaSize]); err != nil {
 		return err
 	}
 	h.arena.SetSize(arenaSize)
 
 	// Skip padding
-	padding := (8 - (arenaSize % 8)) % 8
+	padding = int((8 - (arenaSize % 8)) % 8)
 	if padding > 0 {
-		if _, err := io.ReadFull(r, make([]byte, padding)); err != nil {
+		if _, err := io.ReadFull(cr, make([]byte, padding)); err != nil {
 			return err
 		}
 	}
@@ -312,7 +332,7 @@ func (h *HNSW) ReadFromWithOptions(r io.Reader, opts Options) error {
 	nextID := h.nextIDAtomic.Load()
 	for id := uint64(0); id < nextID; id++ {
 		var offset uint64
-		if err := binary.Read(r, binary.LittleEndian, &offset); err != nil {
+		if err := binary.Read(cr, binary.LittleEndian, &offset); err != nil {
 			return err
 		}
 		if offset != 0 {

@@ -100,8 +100,20 @@ func SaveToWriter[T any](w io.Writer, idx index.Index, dataStore Store[T], metad
 		}
 	}
 
+	// Padding for 8-byte alignment of the following Index section.
+	// This is critical for mmap-based loading on architectures like ARM64
+	// where atomic 64-bit operations require 8-byte alignment.
+	currentLen := int64(len(hdr)) + int64(len(codecName))
+	padding := (8 - (currentLen % 8)) % 8
+	if padding > 0 {
+		pad := make([]byte, padding)
+		if _, err := w.Write(pad); err != nil {
+			return err
+		}
+	}
+
 	cw := &countingWriter{w: w}
-	cw.n = int64(len(hdr)) + int64(len(codecName))
+	cw.n = currentLen + int64(padding)
 
 	// Index: native binary persistence with checksum.
 	bw, ok := idx.(io.WriterTo)

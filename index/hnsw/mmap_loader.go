@@ -118,6 +118,14 @@ func loadHNSWMmap(data []byte) (index.Index, int, error) {
 		return nil, 0, err
 	}
 
+	// Skip padding for Arena Data alignment
+	padding := (8 - (r.Offset() % 8)) % 8
+	if padding > 0 {
+		if _, err := r.ReadBytes(int(padding)); err != nil {
+			return nil, 0, err
+		}
+	}
+
 	// Initialize Arena (Zero-Copy)
 	arenaData, err := r.ReadBytes(int(arenaSize))
 	if err != nil {
@@ -127,7 +135,7 @@ func loadHNSWMmap(data []byte) (index.Index, int, error) {
 	h.arena.SetSize(arenaSize)
 
 	// Skip padding
-	padding := (8 - (arenaSize % 8)) % 8
+	padding = int((8 - (arenaSize % 8)) % 8)
 	if padding > 0 {
 		if _, err := r.ReadBytes(int(padding)); err != nil {
 			return nil, 0, err

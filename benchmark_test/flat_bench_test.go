@@ -21,7 +21,6 @@ func BenchmarkFlat(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		defer db.Close()
 
 		rng := testutil.NewRNG(42)
 		ctx := context.Background()
@@ -37,6 +36,8 @@ func BenchmarkFlat(b *testing.B) {
 				b.Fatal(err)
 			}
 		}
+		b.StopTimer()
+		db.Close()
 	})
 
 	b.Run("Search", func(b *testing.B) {
@@ -46,7 +47,6 @@ func BenchmarkFlat(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		defer db.Close()
 
 		rng := testutil.NewRNG(42)
 		ctx := context.Background()
@@ -84,5 +84,7 @@ func BenchmarkFlat(b *testing.B) {
 				b.ReportMetric(recall, "recall")
 			}
 		}
+		b.StopTimer()
+		db.Close()
 	})
 }

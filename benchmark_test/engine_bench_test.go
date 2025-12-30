@@ -32,7 +32,6 @@ func BenchmarkEngineInsert(b *testing.B) {
 			if err != nil {
 				b.Fatal(err)
 			}
-			defer db.Close()
 
 			rng := testutil.NewRNG(42)
 			ctx := context.Background()
@@ -48,6 +47,8 @@ func BenchmarkEngineInsert(b *testing.B) {
 					b.Fatal(err)
 				}
 			}
+			b.StopTimer()
+			db.Close()
 		})
 	}
 }
@@ -77,7 +78,6 @@ func BenchmarkEngineSearch(b *testing.B) {
 			if err != nil {
 				b.Fatal(err)
 			}
-			defer db.Close()
 
 			rng := testutil.NewRNG(42)
 			ctx := context.Background()
@@ -115,6 +115,8 @@ func BenchmarkEngineSearch(b *testing.B) {
 					b.ReportMetric(recall, "recall")
 				}
 			}
+			b.StopTimer()
+			db.Close()
 		})
 	}
 }

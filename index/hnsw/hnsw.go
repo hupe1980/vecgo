@@ -300,16 +300,26 @@ func (h *HNSW) getLevel(id uint64) int {
 }
 
 func (h *HNSW) getConnections(id uint64, layer int) []uint64 {
-	h.shardedLocks[id%uint64(len(h.shardedLocks))].RLock()
-	defer h.shardedLocks[id%uint64(len(h.shardedLocks))].RUnlock()
+	// Lock-free read!
+	// h.shardedLocks[id%uint64(len(h.shardedLocks))].RLock()
+	// defer h.shardedLocks[id%uint64(len(h.shardedLocks))].RUnlock()
 
 	offset := h.getNodeOffset(id)
 	if offset == 0 {
 		return nil
 	}
+
 	buf := h.arena.Buffer()
-	level := h.layout.getLevel(buf[int(offset):])
-	return h.layout.getNeighbors(buf[int(offset):], level, layer)
+
+	// New Layout Access
+	nodeData := buf[int(offset):]
+	linkOffset := h.layout.AtomicLoadLink(nodeData, layer)
+	if linkOffset == 0 {
+		return nil
+	}
+
+	listData := buf[int(linkOffset):]
+	return h.layout.getListNeighbors(listData)
 }
 
 func (h *HNSW) setConnections(id uint64, layer int, conns []uint64) {
@@ -317,16 +327,38 @@ func (h *HNSW) setConnections(id uint64, layer int, conns []uint64) {
 	if offset == 0 {
 		return
 	}
-	buf := h.arena.Buffer()
 
-	h.layout.setLayerCount(buf[int(offset):], layer, uint32(len(conns)))
-
-	_, neighborsOff := h.layout.layerOffsets(0, layer)
-	dest := buf[int(offset)+int(neighborsOff):]
-
-	for i, c := range conns {
-		binary.LittleEndian.PutUint64(dest[i*8:], c)
+	// 1. Allocate new list in arena
+	capacity := h.maxConnectionsPerLayer
+	if layer == 0 {
+		capacity = h.maxConnectionsLayer0
 	}
+	// Ensure capacity covers existing connections (just in case)
+	if len(conns) > capacity {
+		capacity = len(conns)
+	}
+
+	// Size: Count(4) + Cap(4) + Neighbors(Cap*8)
+	listSize := 8 + uint32(capacity)*8
+	newListOffset, err := h.arena.Alloc(uint64(listSize))
+	if err != nil {
+		// In a real system we might handle this better, but for now panic is safer than corruption
+		panic(fmt.Sprintf("hnsw: arena alloc failed in setConnections: %v", err))
+	}
+
+	// 2. Write new list data
+	buf := h.arena.Buffer() // Refresh buffer after alloc
+	newListData := buf[int(newListOffset):]
+
+	h.layout.setListCount(newListData, uint32(len(conns)))
+	binary.LittleEndian.PutUint32(newListData[4:], uint32(capacity))
+
+	dest := h.layout.getListNeighbors(newListData)
+	copy(dest, conns)
+
+	// 3. Atomic Swap
+	nodeData := buf[int(offset):]
+	h.layout.AtomicStoreLink(nodeData, layer, newListOffset)
 }
 
 func (h *HNSW) addConnection(sourceID, targetID uint64, level int) {
@@ -344,7 +376,13 @@ func (h *HNSW) addConnection(sourceID, targetID uint64, level int) {
 		return // Should not happen
 	}
 
-	conns := h.layout.getNeighbors(buf[int(offset):], sourceLevel, level)
+	// New Layout Access
+	nodeData := buf[int(offset):]
+	linkOffset := h.layout.AtomicLoadLink(nodeData, level)
+	var conns []uint64
+	if linkOffset != 0 {
+		conns = h.layout.getListNeighbors(buf[int(linkOffset):])
+	}
 
 	// Check if already connected
 	for _, c := range conns {
@@ -520,7 +558,7 @@ func (h *HNSW) insert(v []float32, id uint64, layer int, useProvidedID bool) (ui
 	}
 
 	// Create Node using Arena
-	nodeSize := h.layout.Size(layer)
+	nodeSize := h.layout.InitialSize(layer)
 	offset, err := h.arena.Alloc(uint64(nodeSize))
 	if err != nil {
 		return 0, err
@@ -528,8 +566,17 @@ func (h *HNSW) insert(v []float32, id uint64, layer int, useProvidedID bool) (ui
 
 	// Initialize fields
 	buf := h.arena.Buffer()
-	binary.LittleEndian.PutUint64(buf[int(offset)+nodeIDOffset:], id)
-	binary.LittleEndian.PutUint32(buf[int(offset)+nodeLevelOffset:], uint32(layer))
+	h.layout.Initialize(buf[int(offset):], id, layer)
+
+	// Initialize Link Array with offsets to the inline lists
+	nodeData := buf[int(offset):]
+	for l := 0; l <= layer; l++ {
+		// Calculate relative offset of the inline list
+		relOffset := h.layout.InitialNeighborListOffset(layer, l)
+		// Absolute offset
+		absOffset := offset + uint64(relOffset)
+		h.layout.AtomicStoreLink(nodeData, l, absOffset)
+	}
 
 	// Store Vector
 	if err := h.vectors.SetVector(id, vec); err != nil {
@@ -865,16 +912,40 @@ func (h *HNSW) removeLink(id uint64, neighborID uint64, layer int) {
 		return
 	}
 	buf := h.arena.Buffer()
-	level := h.layout.getLevel(buf[int(offset):])
-	conns := h.layout.getNeighbors(buf[int(offset):], level, layer)
+
+	// New Layout Access
+	nodeData := buf[int(offset):]
+	linkOffset := h.layout.AtomicLoadLink(nodeData, layer)
+	var conns []uint64
+	if linkOffset != 0 {
+		conns = h.layout.getListNeighbors(buf[int(linkOffset):])
+	}
 
 	for i, c := range conns {
 		if c == neighborID {
 			// Remove
 			// Swap with last
-			conns[i] = conns[len(conns)-1]
-			conns = conns[:len(conns)-1]
-			h.setConnections(id, layer, conns)
+			// We need to copy conns because it points to arena memory
+			// But setConnections will copy it anyway.
+			// However, modifying `conns` in place modifies the arena memory directly if we are not careful!
+			// `getListNeighbors` returns a slice backed by the arena.
+			// If we modify `conns[i]`, we are modifying the arena.
+			// This is NOT thread-safe if readers are reading it without lock (which they are in lock-free reads).
+			//
+			// Wait! Readers use `AtomicLoadLink`. They get a pointer to the list.
+			// If we modify the list in place, we break the "Copy-On-Write" promise for readers!
+			// Readers might see a torn read or a modified list while iterating.
+			//
+			// CORRECT COW:
+			// 1. Create a NEW slice.
+			// 2. Copy elements excluding the removed one.
+			// 3. Call setConnections with the new slice.
+
+			newConns := make([]uint64, 0, len(conns)-1)
+			newConns = append(newConns, conns[:i]...)
+			newConns = append(newConns, conns[i+1:]...)
+
+			h.setConnections(id, layer, newConns)
 			return
 		}
 	}
