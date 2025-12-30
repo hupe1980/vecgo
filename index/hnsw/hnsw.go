@@ -10,10 +10,12 @@ import (
 	"math/rand"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/hupe1980/vecgo/distance"
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/internal/arena"
+	"github.com/hupe1980/vecgo/internal/bitset"
 	"github.com/hupe1980/vecgo/internal/queue"
 	"github.com/hupe1980/vecgo/internal/visited"
 	"github.com/hupe1980/vecgo/vectorstore"
@@ -60,6 +62,7 @@ type Options struct {
 	NormalizeVectors bool
 	Vectors          vectorstore.Store
 	InitialArenaSize int
+	RandomSeed       *int64
 }
 
 var DefaultOptions = Options{
@@ -96,6 +99,8 @@ type HNSW struct {
 	// Components
 	distanceFunc index.DistanceFunc
 	vectors      vectorstore.Store
+	rng          *rand.Rand
+	rngMu        sync.Mutex
 
 	// Configuration
 	maxConnectionsPerLayer int
@@ -112,7 +117,8 @@ type HNSW struct {
 	freeListMu sync.Mutex   // Protects freeList
 
 	// State
-	freeList []uint32
+	freeList   []uint32
+	tombstones *bitset.BitSet
 
 	// Resources
 	minQueuePool *sync.Pool
@@ -145,12 +151,20 @@ func New(optFns ...func(o *Options)) (*HNSW, error) {
 		opts.InitialArenaSize = 64 * 1024 * 1024
 	}
 
+	var rng *rand.Rand
+	if opts.RandomSeed != nil {
+		rng = rand.New(rand.NewSource(*opts.RandomSeed))
+	} else {
+		rng = rand.New(rand.NewSource(time.Now().UnixNano()))
+	}
+
 	h := &HNSW{
 		maxConnectionsPerLayer: opts.M,
 		maxConnectionsLayer0:   mmax0Multiplier * opts.M,
 		layerMultiplier:        layerNormalizationBase / math.Log(float64(opts.M)),
 		distanceFunc:           index.NewDistanceFunc(opts.DistanceType),
 		opts:                   opts,
+		rng:                    rng,
 		// segments initialized to nil (atomic.Pointer zero value)
 		freeList:     make([]uint32, 0),
 		vectors:      opts.Vectors,
@@ -168,6 +182,7 @@ func New(optFns ...func(o *Options)) (*HNSW, error) {
 		visitedPool: &sync.Pool{
 			New: func() any { return visited.New(1024) },
 		},
+		tombstones: bitset.New(1024),
 	}
 
 	h.dimensionAtomic.Store(int32(opts.Dimension))
@@ -497,7 +512,10 @@ func (h *HNSW) insert(v []float32, id uint32, layer int, useProvidedID bool) (ui
 		if useProvidedID {
 			layer = h.layerForApplyInsert(id)
 		} else {
-			layer = int(math.Floor(-math.Log(rand.Float64()) * h.layerMultiplier))
+			h.rngMu.Lock()
+			r := h.rng.Float64()
+			h.rngMu.Unlock()
+			layer = int(math.Floor(-math.Log(r) * h.layerMultiplier))
 		}
 	}
 
@@ -611,6 +629,10 @@ func (h *HNSW) insertNode(id uint32, vec []float32, layer int) error {
 
 		neighbors := h.selectNeighbors(candidates, maxConns)
 
+		// Put back candidates (results from searchLayer)
+		candidates.Reset()
+		h.maxQueuePool.Put(candidates)
+
 		// Add bidirectional connections
 		h.shardedLocks[id%uint32(len(h.shardedLocks))].Lock()
 		h.setConnections(id, level, neighbors)
@@ -665,6 +687,8 @@ func (h *HNSW) selectNeighborsHeuristic(candidates *queue.PriorityQueue, m int) 
 	}
 
 	result := make([]uint32, 0, m)
+	resultVecs := make([][]float32, 0, m)
+
 	for _, cand := range temp {
 		if len(result) >= m {
 			break
@@ -678,11 +702,7 @@ func (h *HNSW) selectNeighborsHeuristic(candidates *queue.PriorityQueue, m int) 
 			continue
 		}
 
-		for _, resID := range result {
-			resVec, ok := h.vectors.GetVector(resID)
-			if !ok {
-				continue
-			}
+		for _, resVec := range resultVecs {
 			dist := h.distanceFunc(candVec, resVec)
 			if dist < cand.Distance {
 				good = false
@@ -692,6 +712,7 @@ func (h *HNSW) selectNeighborsHeuristic(candidates *queue.PriorityQueue, m int) 
 
 		if good {
 			result = append(result, cand.Node)
+			resultVecs = append(resultVecs, candVec)
 		}
 	}
 
@@ -731,6 +752,10 @@ func (h *HNSW) searchLayer(query []float32, epID uint32, epDist float32, level i
 
 	candidates := h.minQueuePool.Get().(*queue.PriorityQueue) // MinHeap: stores best candidates to explore
 	candidates.Reset()
+	defer func() {
+		candidates.Reset()
+		h.minQueuePool.Put(candidates)
+	}()
 
 	results := h.maxQueuePool.Get().(*queue.PriorityQueue) // MaxHeap: stores current top EF results
 	results.Reset()                                        // Caller must put back
@@ -741,8 +766,8 @@ func (h *HNSW) searchLayer(query []float32, epID uint32, epDist float32, level i
 	// This ensures we have a starting point for graph traversal
 	candidates.PushItem(queue.PriorityQueueItem{Node: epID, Distance: epDist})
 
-	// Only add to results if it passes the filter
-	if filter == nil || filter(epID) {
+	// Only add to results if it passes the filter AND is not deleted
+	if (filter == nil || filter(epID)) && !h.tombstones.Test(int(epID)) {
 		results.PushItem(queue.PriorityQueueItem{Node: epID, Distance: epDist})
 	}
 
@@ -781,8 +806,8 @@ func (h *HNSW) searchLayer(query []float32, epID uint32, epDist float32, level i
 					candidates.PushItem(queue.PriorityQueueItem{Node: nextID, Distance: nextDist})
 				}
 
-				// PRE-FILTER: Only add to results if passes filter
-				if filter == nil || filter(nextID) {
+				// PRE-FILTER: Only add to results if passes filter AND is not deleted
+				if (filter == nil || filter(nextID)) && !h.tombstones.Test(int(nextID)) {
 					// Check if we should add to results
 					if results.Len() == 0 {
 						results.PushItem(queue.PriorityQueueItem{Node: nextID, Distance: nextDist})
@@ -813,84 +838,27 @@ func (h *HNSW) dist(v []float32, id uint32) float32 {
 	return h.distanceFunc(v, vec)
 }
 
-// Delete deletes a node.
+// Delete marks a node as deleted (logical delete).
+// This is O(1) and avoids graph instability.
 func (h *HNSW) Delete(ctx context.Context, id uint32) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
-	offset := h.getNodeOffset(id)
-	if offset == 0 {
-		return &index.ErrNodeDeleted{ID: id}
-	}
+	// Ensure bitset capacity
+	h.tombstones.Grow(int(id) + 1)
+	h.tombstones.Set(int(id))
 
-	// Read level
-	buf := h.arena.Buffer()
-	level := h.layout.getLevel(buf[offset:])
-	// Remove connections to this node
-	for l := 0; l <= level; l++ {
-		neighbors := h.layout.getNeighbors(buf[offset:], level, l)
+	// We do NOT remove from graph or release ID.
+	// This preserves graph connectivity and avoids O(N) entry point scans.
+	// The node remains in the graph but is ignored during search.
 
-		for _, neighborID := range neighbors {
-			h.removeLink(neighborID, id, l)
-		}
-	}
+	// We can optionally delete the vector data to save memory,
+	// but keeping it might be safer for concurrent readers.
+	// For now, we keep it.
 
-	// Remove from graph
-	h.setNodeOffset(id, 0)
 	h.countAtomic.Add(-1)
-	h.ReleaseID(id)
-
-	// If entry point, find new one
-	if h.entryPointAtomic.Load() == id {
-		// Scan for new entry point (expensive but rare)
-		// For production, we might just pick a random node or scan top layer
-		// Simple scan:
-		var newEP uint32
-		var maxL int32 = -1
-
-		// This is slow. In production, maybe maintain a set of top nodes?
-		// Or just lazy update.
-		// For now, linear scan of segments.
-		segments := h.segments.Load()
-		if segments != nil {
-			buf := h.arena.Buffer()
-			for i, seg := range *segments {
-				if seg == nil {
-					continue
-				}
-				for j := range seg {
-					off := seg[j].Load()
-					if off != 0 {
-						nid := uint32(i)*nodeSegmentSize + uint32(j)
-						if nid == id {
-							continue
-						}
-						// Read level
-						l := int32(h.layout.getLevel(buf[off:]))
-						if l > maxL {
-							maxL = l
-							newEP = nid
-						}
-					}
-				}
-			}
-		}
-
-		h.epMu.Lock()
-		if h.entryPointAtomic.Load() == id {
-			if maxL == -1 {
-				h.entryPointAtomic.Store(0)
-				h.maxLevelAtomic.Store(0)
-			} else {
-				h.entryPointAtomic.Store(newEP)
-				h.maxLevelAtomic.Store(maxL)
-			}
-		}
-		h.epMu.Unlock()
-	}
-
-	return h.vectors.DeleteVector(id)
+	return nil
 }
 
 func (h *HNSW) removeLink(id uint32, neighborID uint32, layer int) {
@@ -1094,10 +1062,15 @@ func (h *HNSW) layerForApplyInsert(id uint32) int {
 }
 
 // Sharding stubs
-func (h *HNSW) VectorCount() int          { return int(h.countAtomic.Load()) }
-func (h *HNSW) ContainsID(id uint32) bool { return true }
-func (h *HNSW) ShardID() int              { return 0 }
-func (h *HNSW) NumShards() int            { return 1 }
+func (h *HNSW) VectorCount() int { return int(h.countAtomic.Load()) }
+func (h *HNSW) ContainsID(id uint32) bool {
+	if h.tombstones.Test(int(id)) {
+		return false
+	}
+	return h.getNodeOffset(id) != 0
+}
+func (h *HNSW) ShardID() int   { return 0 }
+func (h *HNSW) NumShards() int { return 1 }
 func NewSharded(shardID, numShards int, optFns ...func(o *Options)) (*HNSW, error) {
 	return New(optFns...)
 }
@@ -1114,4 +1087,9 @@ func (h *HNSW) VectorByID(ctx context.Context, id uint32) ([]float32, error) {
 // Close closes the index.
 func (h *HNSW) Close() error {
 	return nil
+}
+
+// Dimension returns the dimensionality of the vectors in the index.
+func (h *HNSW) Dimension() int {
+	return int(h.dimensionAtomic.Load())
 }

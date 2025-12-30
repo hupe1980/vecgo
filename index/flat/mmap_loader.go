@@ -2,6 +2,7 @@ package flat
 
 import (
 	"fmt"
+	"unsafe"
 
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/persistence"
@@ -63,28 +64,43 @@ func loadFlatMmap(data []byte) (index.Index, int, error) {
 		return nil, 0, err
 	}
 
+	// Read Markers
+	markers, err := r.ReadBytes(int(nodeCount))
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// Skip padding
+	padding := (4 - (nodeCount % 4)) % 4
+	if padding > 0 {
+		if _, err := r.ReadBytes(int(padding)); err != nil {
+			return nil, 0, err
+		}
+	}
+
+	// Read Vectors (Zero-Copy)
+	vecSize := int(h.Dimension) * 4
+	totalVecBytes := int(nodeCount) * vecSize
+	vecData, err := r.ReadBytes(totalVecBytes)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	if len(vecData) > 0 {
+		vecs := unsafe.Slice((*float32)(unsafe.Pointer(&vecData[0])), int(nodeCount)*int(h.Dimension))
+		if zs, ok := f.vectors.(*zerocopy.Store); ok {
+			zs.SetData(vecs)
+		} else {
+			return nil, 0, fmt.Errorf("internal error: expected zerocopy.Store")
+		}
+	}
+
+	// Reconstruct nodes
 	nodes := make([]*Node, int(nodeCount))
 	for i := 0; i < int(nodeCount); i++ {
-		marker, err := r.ReadUint32()
-		if err != nil {
-			return nil, 0, fmt.Errorf("failed to read node marker: %w", err)
+		if markers[i] != 0 {
+			nodes[i] = &Node{ID: uint32(i)}
 		}
-		if marker == 0 {
-			nodes[i] = nil
-			continue
-		}
-		id, err := r.ReadUint32()
-		if err != nil {
-			return nil, 0, fmt.Errorf("failed to read node id: %w", err)
-		}
-		vec, err := r.ReadFloat32SliceView(int(h.Dimension))
-		if err != nil {
-			return nil, 0, fmt.Errorf("failed to read node vector: %w", err)
-		}
-		if err := f.vectors.SetVector(id, vec); err != nil {
-			return nil, 0, fmt.Errorf("failed to store node vector: %w", err)
-		}
-		nodes[i] = &Node{ID: id}
 	}
 
 	f.state.Store(&indexState{nodes: nodes, freeList: freeList})

@@ -33,7 +33,7 @@ func createTestCoordinator[T any](t *testing.T) Coordinator[T] {
 	require.NoError(t, err)
 	t.Cleanup(func() { walLog.Close() })
 
-	coord, err := New(idx, dataStore, metaStore, walLog, codec.Default)
+	coord, err := New(idx, dataStore, metaStore, walLog, codec.Default, WithDimension(2))
 	require.NoError(t, err)
 
 	return coord

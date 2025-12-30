@@ -171,6 +171,16 @@ db := vecgo.HNSW[string](128).
     Build()
 ```
 
+### Deterministic Construction
+
+For reproducible benchmarks and tests, you can set a fixed random seed:
+
+```go
+db := vecgo.HNSW[string](128).
+    RandomSeed(42). // Deterministic graph construction
+    Build()
+```
+
 ### HNSW Configuration Examples
 
 ```go

@@ -173,7 +173,7 @@ func caseName(tc TestCases) string {
 func runValidateInsertSearchCase(t *testing.T, ctx context.Context, tc TestCases) {
 	rng := testutil.NewRNG(4711)
 
-	vecs := rng.GenerateRandomVectors(tc.VectorSize, tc.VectorDim)
+	vecs := rng.UniformVectors(tc.VectorSize, tc.VectorDim)
 	if len(vecs) != tc.VectorSize {
 		t.Fatalf("unexpected vector count: got %d want %d", len(vecs), tc.VectorSize)
 	}

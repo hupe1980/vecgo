@@ -50,6 +50,7 @@ type HNSWBuilder[T any] struct {
 	ef           int
 	heuristic    bool
 	numShards    int
+	randomSeed   *int64
 	codec        codec.Codec
 	logger       *Logger
 	metrics      MetricsCollector
@@ -57,6 +58,7 @@ type HNSWBuilder[T any] struct {
 	walPath      string
 	walOptions   []func(*wal.Options)
 	snapshotPath string
+	syncWrite    bool
 }
 
 // SquaredL2 sets the distance metric to Squared Euclidean distance.
@@ -98,6 +100,13 @@ func (b HNSWBuilder[T]) EFConstruction(ef int) HNSWBuilder[T] {
 	return b
 }
 
+// WithSyncWrite configures whether writes are synchronous (bypassing MemTable).
+// This is primarily for benchmarking and testing.
+func (b HNSWBuilder[T]) WithSyncWrite(sync bool) HNSWBuilder[T] {
+	b.syncWrite = sync
+	return b
+}
+
 // Heuristic enables or disables heuristic pruning.
 // Default: true.
 func (b HNSWBuilder[T]) Heuristic(enabled bool) HNSWBuilder[T] {
@@ -109,6 +118,13 @@ func (b HNSWBuilder[T]) Heuristic(enabled bool) HNSWBuilder[T] {
 // Default: 1 (no sharding). Recommended: 2-8 for high-concurrency workloads.
 func (b HNSWBuilder[T]) Shards(n int) HNSWBuilder[T] {
 	b.numShards = n
+	return b
+}
+
+// RandomSeed sets the seed for deterministic index construction.
+// If not set, a random seed (time-based) is used.
+func (b HNSWBuilder[T]) RandomSeed(seed int64) HNSWBuilder[T] {
+	b.randomSeed = &seed
 	return b
 }
 
@@ -152,6 +168,7 @@ func (b HNSWBuilder[T]) Build() (*Vecgo[T], error) {
 		o.M = b.m
 		o.EF = b.ef
 		o.Heuristic = b.heuristic
+		o.RandomSeed = b.randomSeed
 	}
 
 	var vecgoOpts []Option
@@ -172,6 +189,9 @@ func (b HNSWBuilder[T]) Build() (*Vecgo[T], error) {
 	}
 	if b.snapshotPath != "" {
 		vecgoOpts = append(vecgoOpts, WithSnapshotPath(b.snapshotPath))
+	}
+	if b.syncWrite {
+		vecgoOpts = append(vecgoOpts, WithSyncWrite(true))
 	}
 
 	return newHNSW[T](b.dimension, b.distanceType, []func(o *hnsw.Options){hnswOpts}, vecgoOpts)

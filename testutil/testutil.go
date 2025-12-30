@@ -1,11 +1,21 @@
 package testutil
 
-import "math/rand"
+import (
+	"math"
+	"math/rand"
+	"sort"
+	"sync"
+
+	"github.com/hupe1980/vecgo/distance"
+	"github.com/hupe1980/vecgo/index"
+)
 
 // RNG struct encapsulates the random number generator and seed.
+// It is thread-safe.
 type RNG struct {
 	rand *rand.Rand
 	seed int64
+	mu   sync.Mutex
 }
 
 // NewRNG creates a new RNG instance with the specified seed.
@@ -16,36 +26,216 @@ func NewRNG(seed int64) *RNG {
 	}
 }
 
-// GenerateRandomVectors generates random vectors using the given RNG.
-// Values are in range [0, 1).
-func (r *RNG) GenerateRandomVectors(num int, dimensions int) [][]float32 {
+// Reset resets the RNG to its initial seed.
+func (r *RNG) Reset() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.rand.Seed(r.seed)
+}
+
+// Seed returns the initial seed.
+func (r *RNG) Seed() int64 {
+	return r.seed
+}
+
+// UniformVectors generates random vectors with values in range [0, 1).
+// Uses a single backing array for efficiency.
+func (r *RNG) UniformVectors(num int, dimensions int) [][]float32 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	data := make([]float32, num*dimensions)
 	vectors := make([][]float32, num)
-	for i := range vectors {
-		vectors[i] = make([]float32, dimensions)
-		for j := range vectors[i] {
-			vectors[i][j] = r.rand.Float32()
+
+	for i := 0; i < num; i++ {
+		vec := data[i*dimensions : (i+1)*dimensions]
+		for j := range vec {
+			vec[j] = r.rand.Float32()
+		}
+		vectors[i] = vec
+	}
+
+	return vectors
+}
+
+// UniformRangeVectors generates random vectors with values in range [-1, 1).
+// This replaces the old "GenerateNormalizedVectors" which was misnamed.
+func (r *RNG) UniformRangeVectors(num int, dimensions int) [][]float32 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	data := make([]float32, num*dimensions)
+	vectors := make([][]float32, num)
+
+	for i := 0; i < num; i++ {
+		vec := data[i*dimensions : (i+1)*dimensions]
+		for j := range vec {
+			vec[j] = r.rand.Float32()*2 - 1
+		}
+		vectors[i] = vec
+	}
+
+	return vectors
+}
+
+// GaussianVectors generates random vectors with values from a standard normal distribution.
+func (r *RNG) GaussianVectors(num int, dimensions int) [][]float32 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	data := make([]float32, num*dimensions)
+	vectors := make([][]float32, num)
+
+	for i := 0; i < num; i++ {
+		vec := data[i*dimensions : (i+1)*dimensions]
+		for j := range vec {
+			vec[j] = float32(r.rand.NormFloat64())
+		}
+		vectors[i] = vec
+	}
+
+	return vectors
+}
+
+// UnitVectors generates L2-normalized random vectors (on the hypersphere).
+// Uses Gaussian distribution for uniform distribution on the sphere.
+// Essential for Cosine/DotProduct benchmarks and HNSW/DiskANN graph quality.
+func (r *RNG) UnitVectors(num int, dimensions int) [][]float32 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	data := make([]float32, num*dimensions)
+	vectors := make([][]float32, num)
+
+	for i := 0; i < num; i++ {
+		vec := data[i*dimensions : (i+1)*dimensions]
+		var norm float64
+		for j := range vec {
+			v := r.rand.NormFloat64()
+			vec[j] = float32(v)
+			norm += v * v
+		}
+
+		if norm == 0 {
+			norm = 1 // Avoid division by zero, though unlikely with floats
+		}
+
+		invNorm := float32(1.0 / math.Sqrt(norm))
+		for j := range vec {
+			vec[j] *= invNorm
+		}
+		vectors[i] = vec
+	}
+
+	return vectors
+}
+
+// UnitVector generates a single L2-normalized random vector.
+func (r *RNG) UnitVector(dimensions int) []float32 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	vec := make([]float32, dimensions)
+	var norm float64
+	for j := range vec {
+		v := r.rand.NormFloat64()
+		vec[j] = float32(v)
+		norm += v * v
+	}
+
+	if norm == 0 {
+		norm = 1
+	}
+
+	invNorm := float32(1.0 / math.Sqrt(norm))
+	for j := range vec {
+		vec[j] *= invNorm
+	}
+	return vec
+}
+
+// ClusteredVectors generates vectors clustered around random centroids.
+// Useful for testing ANN index performance on non-uniform data.
+func (r *RNG) ClusteredVectors(num, dim, clusters int, spread float32) [][]float32 {
+	// Generate centroids (unit vectors) - calling internal method which locks, so we need to be careful if we were holding lock.
+	// But UnitVectors acquires lock, so we are fine as long as we don't hold lock here yet.
+	centroids := r.UnitVectors(clusters, dim)
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	data := make([]float32, num*dim)
+	vectors := make([][]float32, num)
+
+	for i := 0; i < num; i++ {
+		centroid := centroids[i%clusters]
+		vec := data[i*dim : (i+1)*dim]
+
+		for j := 0; j < dim; j++ {
+			// Add Gaussian noise to centroid
+			vec[j] = centroid[j] + float32(r.rand.NormFloat64())*spread
+		}
+		vectors[i] = vec
+	}
+
+	return vectors
+}
+
+// ComputeRecall computes recall@k by comparing approximate results against ground truth.
+func ComputeRecall(groundTruth, approximate []index.SearchResult) float64 {
+	if len(groundTruth) == 0 || len(approximate) == 0 {
+		if len(groundTruth) == 0 && len(approximate) == 0 {
+			return 1.0
+		}
+		return 0.0
+	}
+
+	k := len(approximate)
+	if k > len(groundTruth) {
+		k = len(groundTruth)
+	}
+
+	truthSet := make(map[uint32]struct{}, k)
+	for i := 0; i < k; i++ {
+		truthSet[groundTruth[i].ID] = struct{}{}
+	}
+
+	hits := 0
+	for _, r := range approximate {
+		if _, ok := truthSet[r.ID]; ok {
+			hits++
 		}
 	}
 
-	return vectors
+	return float64(hits) / float64(k)
 }
 
-// GenerateNormalizedVectors generates random vectors with values in range [-1, 1).
-func (r *RNG) GenerateNormalizedVectors(num int, dimensions int) [][]float32 {
-	vectors := make([][]float32, num)
-	for i := range vectors {
-		vectors[i] = r.NormalizedVector(dimensions)
+// BruteForceSearch performs exact search for ground truth.
+func BruteForceSearch(vectors [][]float32, query []float32, k int) []index.SearchResult {
+	type result struct {
+		id   uint32
+		dist float32
 	}
 
-	return vectors
-}
+	results := make([]result, len(vectors))
+	distFunc := distance.SquaredL2
 
-// NormalizedVector generates a single random vector with values in range [-1, 1).
-func (r *RNG) NormalizedVector(dimensions int) []float32 {
-	vec := make([]float32, dimensions)
-	for i := range vec {
-		vec[i] = r.rand.Float32()*2 - 1 // Range [-1, 1)
+	for i, v := range vectors {
+		d := distFunc(query, v)
+		results[i] = result{id: uint32(i), dist: d}
 	}
 
-	return vec
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].dist < results[j].dist
+	})
+
+	if len(results) > k {
+		results = results[:k]
+	}
+
+	out := make([]index.SearchResult, len(results))
+	for i, r := range results {
+		out[i] = index.SearchResult{ID: r.id, Distance: r.dist}
+	}
+	return out
 }

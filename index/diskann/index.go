@@ -358,20 +358,17 @@ func (idx *Index) loadPQCodebooks(r io.Reader, header *FileHeader) error {
 	}
 
 	// Read codebooks
-	codebooks := make([][][]float32, M)
-	for m := 0; m < M; m++ {
-		codebooks[m] = make([][]float32, K)
-		for k := 0; k < K; k++ {
-			codebooks[m][k] = make([]float32, subDim)
-			for d := 0; d < subDim; d++ {
-				var buf [4]byte
-				if _, err := io.ReadFull(r, buf[:]); err != nil {
-					return err
-				}
-				bits := binary.LittleEndian.Uint32(buf[:])
-				codebooks[m][k][d] = math.Float32frombits(bits)
-			}
+	// Flat storage: M * K * subvectorDim
+	totalFloats := M * K * subDim
+	codebooks := make([]float32, totalFloats)
+
+	for i := 0; i < totalFloats; i++ {
+		var buf [4]byte
+		if _, err := io.ReadFull(r, buf[:]); err != nil {
+			return err
 		}
+		bits := binary.LittleEndian.Uint32(buf[:])
+		codebooks[i] = math.Float32frombits(bits)
 	}
 
 	// Set codebooks

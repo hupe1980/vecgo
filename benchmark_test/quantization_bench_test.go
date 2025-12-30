@@ -57,7 +57,7 @@ func BenchmarkProductQuantization(b *testing.B) {
 	// Train
 	trainingSize := 10000
 	training := make([][]float32, trainingSize)
-	for i := 0; i < trainingSize; i++ {
+	for i := range trainingSize {
 		training[i] = randomVector(dim)
 	}
 	pq.Train(training)
@@ -155,7 +155,7 @@ func BenchmarkFlatWithPQ(b *testing.B) {
 
 	ctx := context.Background()
 	batch := make([]vecgo.VectorWithData[int], size)
-	for i := 0; i < size; i++ {
+	for i := range size {
 		batch[i] = vecgo.VectorWithData[int]{
 			Vector: randomVector(dim),
 			Data:   i,
@@ -194,7 +194,7 @@ func BenchmarkScalarQuantization(b *testing.B) {
 			// Train
 			trainingSize := 1000
 			training := make([][]float32, trainingSize)
-			for i := 0; i < trainingSize; i++ {
+			for i := range trainingSize {
 				training[i] = randomVector(dim)
 			}
 			sq.Train(training)

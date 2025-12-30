@@ -1,9 +1,9 @@
 package quantization
 
 import (
-	"math"
 	"testing"
 
+	"github.com/hupe1980/vecgo/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -28,7 +28,7 @@ func TestOPQ_TrainEncodeDecode(t *testing.T) {
 	numVectors := 1000
 
 	// Generate training data
-	vectors := generateRandomVectors(numVectors, dim)
+	vectors := testutil.NewRNG(42).UniformRangeVectors(numVectors, dim)
 
 	// Create and train OPQ
 	opq, err := NewOptimizedProductQuantizer(dim, 8, 256, 10)
@@ -55,7 +55,7 @@ func TestOPQ_RotationOrthogonality(t *testing.T) {
 	dim := 32
 	numVectors := 500
 
-	vectors := generateRandomVectors(numVectors, dim)
+	vectors := testutil.NewRNG(42).UniformRangeVectors(numVectors, dim)
 
 	opq, err := NewOptimizedProductQuantizer(dim, 8, 256, 5)
 	require.NoError(t, err)
@@ -96,7 +96,7 @@ func TestOPQ_AsymmetricDistance(t *testing.T) {
 	dim := 64
 	numVectors := 500
 
-	vectors := generateRandomVectors(numVectors, dim)
+	vectors := testutil.NewRNG(42).UniformRangeVectors(numVectors, dim)
 
 	opq, err := NewOptimizedProductQuantizer(dim, 8, 256, 10)
 	require.NoError(t, err)
@@ -124,7 +124,7 @@ func TestOPQ_ReconstructionQuality(t *testing.T) {
 	dim := 64
 	numVectors := 1000
 
-	vectors := generateRandomVectors(numVectors, dim)
+	vectors := testutil.NewRNG(42).UniformRangeVectors(numVectors, dim)
 
 	// Train OPQ
 	opq, err := NewOptimizedProductQuantizer(dim, 8, 256, 15)
@@ -208,7 +208,7 @@ func TestOPQ_DimensionMismatch(t *testing.T) {
 	opq, err := NewOptimizedProductQuantizer(32, 4, 256, 10)
 	require.NoError(t, err)
 
-	wrongDimVectors := generateRandomVectors(100, 64)
+	wrongDimVectors := testutil.NewRNG(42).UniformRangeVectors(100, 64)
 	err = opq.Train(wrongDimVectors)
 	assert.Error(t, err)
 }
@@ -217,7 +217,7 @@ func BenchmarkOPQ_Train(b *testing.B) {
 	dim := 128
 	numVectors := 10000
 
-	vectors := generateRandomVectors(numVectors, dim)
+	vectors := testutil.NewRNG(42).UniformRangeVectors(numVectors, dim)
 
 	b.ResetTimer()
 	for b.Loop() {
@@ -230,7 +230,7 @@ func BenchmarkOPQ_Encode(b *testing.B) {
 	dim := 128
 	numVectors := 1000
 
-	vectors := generateRandomVectors(numVectors, dim)
+	vectors := testutil.NewRNG(42).UniformRangeVectors(numVectors, dim)
 
 	opq, _ := NewOptimizedProductQuantizer(dim, 8, 256, 10)
 	_ = opq.Train(vectors)
@@ -247,7 +247,7 @@ func BenchmarkOPQ_Decode(b *testing.B) {
 	dim := 128
 	numVectors := 1000
 
-	vectors := generateRandomVectors(numVectors, dim)
+	vectors := testutil.NewRNG(42).UniformRangeVectors(numVectors, dim)
 
 	opq, _ := NewOptimizedProductQuantizer(dim, 8, 256, 10)
 	_ = opq.Train(vectors)
@@ -264,7 +264,7 @@ func BenchmarkOPQ_AsymmetricDistance(b *testing.B) {
 	dim := 128
 	numVectors := 1000
 
-	vectors := generateRandomVectors(numVectors, dim)
+	vectors := testutil.NewRNG(42).UniformRangeVectors(numVectors, dim)
 
 	opq, _ := NewOptimizedProductQuantizer(dim, 8, 256, 10)
 	_ = opq.Train(vectors)
@@ -282,7 +282,7 @@ func BenchmarkOPQ_vs_PQ_ReconstructionQuality(b *testing.B) {
 	dim := 128
 	numVectors := 5000
 
-	vectors := generateRandomVectors(numVectors, dim)
+	vectors := testutil.NewRNG(42).UniformRangeVectors(numVectors, dim)
 
 	b.Run("OPQ", func(b *testing.B) {
 		opq, _ := NewOptimizedProductQuantizer(dim, 8, 256, 10)
@@ -329,16 +329,4 @@ func l2DistanceSquared(a, b []float32) float32 {
 		sum += diff * diff
 	}
 	return sum
-}
-
-// Helper function to generate random vectors
-func generateRandomVectors(n, dim int) [][]float32 {
-	vectors := make([][]float32, n)
-	for i := range vectors {
-		vectors[i] = make([]float32, dim)
-		for j := range vectors[i] {
-			vectors[i][j] = float32(math.Sin(float64(i*dim + j)))
-		}
-	}
-	return vectors
 }

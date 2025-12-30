@@ -5,10 +5,13 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math/rand"
 	"sync"
+	"time"
 
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/internal/arena"
+	"github.com/hupe1980/vecgo/internal/bitset"
 	"github.com/hupe1980/vecgo/internal/queue"
 	"github.com/hupe1980/vecgo/internal/visited"
 	"github.com/hupe1980/vecgo/persistence"
@@ -123,6 +126,11 @@ func (h *HNSW) WriteTo(w io.Writer) (int64, error) {
 		}
 	}
 
+	// Write Tombstones
+	if _, err := h.tombstones.WriteTo(cw); err != nil {
+		return cw.n, err
+	}
+
 	// Write Arena Size
 	arenaSize := h.arena.Size()
 	if err := binary.Write(cw, binary.LittleEndian, arenaSize); err != nil {
@@ -151,13 +159,15 @@ func (h *HNSW) WriteTo(w io.Writer) (int64, error) {
 	}
 
 	// Write Vectors
+	// We write vectors contiguously without length prefix for mmap compatibility.
+	// Missing vectors (freed IDs) are written as zeros.
+	zeroVec := make([]float32, h.opts.Dimension)
 	for id := uint32(0); id < nextID; id++ {
 		vec, ok := h.vectors.GetVector(id)
 		if !ok {
-			binary.Write(cw, binary.LittleEndian, uint32(0))
+			writer.WriteFloat32Slice(zeroVec)
 			continue
 		}
-		binary.Write(cw, binary.LittleEndian, uint32(len(vec)))
 		writer.WriteFloat32Slice(vec)
 	}
 
@@ -213,6 +223,28 @@ func (h *HNSW) ReadFromWithOptions(r io.Reader, opts Options) error {
 	h.dimensionAtomic.Store(int32(header.Dimension))
 	h.entryPointAtomic.Store(metadata.EntryPoint)
 	h.maxLevelAtomic.Store(int32(metadata.MaxLayers) - 1)
+
+	// Initialize runtime fields
+	h.distanceFunc = index.NewDistanceFunc(h.opts.DistanceType)
+	h.layout = newNodeLayout(h.opts.M)
+	h.shardedLocks = make([]sync.RWMutex, 1024)
+	h.minQueuePool = &sync.Pool{
+		New: func() any { return queue.NewMin(h.opts.EF) },
+	}
+	h.maxQueuePool = &sync.Pool{
+		New: func() any { return queue.NewMax(h.opts.EF) },
+	}
+	h.visitedPool = &sync.Pool{
+		New: func() any { return visited.New(1024) },
+	}
+	h.tombstones = bitset.New(1024)
+
+	if h.opts.RandomSeed != nil {
+		h.rng = rand.New(rand.NewSource(*h.opts.RandomSeed))
+	} else {
+		h.rng = rand.New(rand.NewSource(time.Now().UnixNano()))
+	}
+
 	if opts.Vectors != nil {
 		h.vectors = opts.Vectors
 	} else {
@@ -225,6 +257,7 @@ func (h *HNSW) ReadFromWithOptions(r io.Reader, opts Options) error {
 		return err
 	}
 	h.nextIDAtomic.Store(nextIDSlice[0])
+	h.tombstones.Grow(int(nextIDSlice[0]))
 
 	// Read freeList
 	freeListLenSlice, err := reader.ReadUint32Slice(1)
@@ -241,8 +274,13 @@ func (h *HNSW) ReadFromWithOptions(r io.Reader, opts Options) error {
 		h.freeList = []uint32{}
 	}
 
+	// Read Tombstones
+	if _, err := h.tombstones.ReadFrom(r); err != nil {
+		return err
+	}
+
 	// Set countAtomic
-	h.countAtomic.Store(int64(h.nextIDAtomic.Load()) - int64(len(h.freeList)))
+	h.countAtomic.Store(int64(h.nextIDAtomic.Load()) - int64(len(h.freeList)) - int64(h.tombstones.Count()))
 
 	// Read Arena Size
 	var arenaSize uint32
@@ -279,18 +317,23 @@ func (h *HNSW) ReadFromWithOptions(r io.Reader, opts Options) error {
 	}
 
 	// Read Vectors
+	// Vectors are stored contiguously (Dimension * 4 bytes each)
+	vecSize := h.opts.Dimension
+
+	// We can read all vectors in one go if the reader supports it,
+	// but for now let's read one by one to populate the store.
+	// Optimization: If h.vectors supports SetData (zerocopy), we could read all at once.
+	// But h.vectors is an interface.
+
+	vec := make([]float32, vecSize)
 	for id := uint32(0); id < nextID; id++ {
-		var vecLen uint32
-		if err := binary.Read(r, binary.LittleEndian, &vecLen); err != nil {
+		if err := binary.Read(r, binary.LittleEndian, vec); err != nil {
 			return err
 		}
-		if vecLen > 0 {
-			vec := make([]float32, vecLen)
-			if err := binary.Read(r, binary.LittleEndian, vec); err != nil {
-				return err
-			}
-			h.vectors.SetVector(id, vec)
-		}
+		// We need to copy because vec is reused
+		vecCopy := make([]float32, vecSize)
+		copy(vecCopy, vec)
+		h.vectors.SetVector(id, vecCopy)
 	}
 
 	// Initialize layout

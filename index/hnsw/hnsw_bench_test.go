@@ -2,29 +2,17 @@ package hnsw
 
 import (
 	"context"
-	"math/rand"
 	"sync"
 	"testing"
 
 	"github.com/hupe1980/vecgo/index"
+	"github.com/hupe1980/vecgo/testutil"
 )
-
-// Helper function to generate random vectors
-func generateRandomVectors(n, dim int) [][]float32 {
-	vectors := make([][]float32, n)
-	for i := range vectors {
-		vectors[i] = make([]float32, dim)
-		for j := range vectors[i] {
-			vectors[i][j] = rand.Float32()
-		}
-	}
-	return vectors
-}
 
 // BenchmarkInsertSequential measures sequential insert performance
 func BenchmarkInsertSequential(b *testing.B) {
 	ctx := context.Background()
-	vectors := generateRandomVectors(1000, 128)
+	vectors := testutil.NewRNG(42).UniformVectors(1000, 128)
 
 	b.ResetTimer()
 	b.ReportAllocs()
@@ -52,7 +40,7 @@ func BenchmarkInsertSequential(b *testing.B) {
 // BenchmarkInsertParallel measures parallel insert performance with fine-grained locking
 func BenchmarkInsertParallel(b *testing.B) {
 	ctx := context.Background()
-	vectors := generateRandomVectors(1000, 128)
+	vectors := testutil.NewRNG(42).UniformVectors(1000, 128)
 
 	b.ResetTimer()
 	b.ReportAllocs()
@@ -98,7 +86,7 @@ func BenchmarkInsertParallel(b *testing.B) {
 // BenchmarkBatchInsert measures batch insert performance
 func BenchmarkBatchInsert(b *testing.B) {
 	ctx := context.Background()
-	vectors := generateRandomVectors(1000, 128)
+	vectors := testutil.NewRNG(42).UniformVectors(1000, 128)
 
 	b.ResetTimer()
 	b.ReportAllocs()
@@ -122,8 +110,8 @@ func BenchmarkBatchInsert(b *testing.B) {
 func BenchmarkKNNSearch(b *testing.B) {
 	ctx := context.Background()
 	dim := 128
-	vectors := generateRandomVectors(10000, dim)
-	query := generateRandomVectors(1, dim)[0]
+	vectors := testutil.NewRNG(42).UniformVectors(10000, dim)
+	query := testutil.NewRNG(42).UniformVectors(1, dim)[0]
 
 	h, err := New(func(o *Options) {
 		o.Dimension = dim
@@ -161,8 +149,8 @@ func BenchmarkKNNSearch(b *testing.B) {
 func BenchmarkConcurrentSearchAndInsert(b *testing.B) {
 	ctx := context.Background()
 	dim := 128
-	vectors := generateRandomVectors(5000, dim)
-	queries := generateRandomVectors(100, dim)
+	vectors := testutil.NewRNG(42).UniformVectors(5000, dim)
+	queries := testutil.NewRNG(42).UniformVectors(100, dim)
 
 	h, err := New(func(o *Options) {
 		o.Dimension = dim
@@ -229,7 +217,7 @@ func BenchmarkConcurrentSearchAndInsert(b *testing.B) {
 func BenchmarkIDReuse(b *testing.B) {
 	ctx := context.Background()
 	dim := 128
-	vectors := generateRandomVectors(2000, dim)
+	vectors := testutil.NewRNG(42).UniformVectors(2000, dim)
 
 	b.ResetTimer()
 	b.ReportAllocs()

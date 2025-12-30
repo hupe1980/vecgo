@@ -118,26 +118,36 @@ func (f *Flat) WriteTo(w io.Writer) (int64, error) {
 		return cw.n, err
 	}
 
-	// Write each node
+	// Write Markers (Validity Bitmap)
+	// For simplicity and alignment, we use 1 byte per node for now.
+	// 0 = nil, 1 = valid.
+	markers := make([]byte, nodeCount)
+	for i, node := range st.nodes {
+		if node != nil {
+			markers[i] = 1
+		}
+	}
+	if _, err := cw.Write(markers); err != nil {
+		return cw.n, err
+	}
+
+	// Padding to 4-byte alignment
+	padding := (4 - (nodeCount % 4)) % 4
+	if padding > 0 {
+		if _, err := cw.Write(make([]byte, padding)); err != nil {
+			return cw.n, err
+		}
+	}
+
+	// Write Vectors (Contiguous)
+	zeroVec := make([]float32, f.opts.Dimension)
 	for _, node := range st.nodes {
 		if node == nil {
-			// Write nil marker (0)
-			binary.LittleEndian.PutUint32(buf4, 0)
-			if _, err := cw.Write(buf4); err != nil {
+			if err := writer.WriteFloat32Slice(zeroVec); err != nil {
 				return cw.n, err
 			}
 			continue
 		}
-
-		// Write non-nil marker (1) and ID (8 bytes total)
-		nodeHdr := make([]byte, 8)
-		binary.LittleEndian.PutUint32(nodeHdr[0:4], 1) // non-nil marker
-		binary.LittleEndian.PutUint32(nodeHdr[4:8], node.ID)
-		if _, err := cw.Write(nodeHdr); err != nil {
-			return cw.n, err
-		}
-
-		// Write vector
 		vec, err := f.VectorByID(context.Background(), node.ID)
 		if err != nil {
 			return cw.n, err
@@ -225,42 +235,48 @@ func (f *Flat) ReadFromWithOptions(r io.Reader, opts Options) error {
 	}
 	nodeCount := nodeCountSlice[0]
 
+	// Read Markers
+	markers := make([]byte, nodeCount)
+	if _, err := io.ReadFull(r, markers); err != nil {
+		return fmt.Errorf("failed to read markers: %w", err)
+	}
+
+	// Skip padding
+	padding := (4 - (nodeCount % 4)) % 4
+	if padding > 0 {
+		if _, err := io.ReadFull(r, make([]byte, padding)); err != nil {
+			return fmt.Errorf("failed to read padding: %w", err)
+		}
+	}
+
 	// Pre-allocate nodes array
 	nodes := make([]*Node, nodeCount)
 
-	// Read each node
-	for i := uint32(0); i < nodeCount; i++ {
-		// Read nil marker
-		markerSlice, err := reader.ReadUint32Slice(1)
-		if err != nil {
-			return fmt.Errorf("failed to read node marker: %w", err)
-		}
-		marker := markerSlice[0]
+	// Read Vectors
+	vecSize := int(header.Dimension)
+	vec := make([]float32, vecSize)
 
-		if marker == 0 {
-			// Nil node (tombstone)
+	for i := uint32(0); i < nodeCount; i++ {
+		// Read vector
+		if err := binary.Read(r, binary.LittleEndian, vec); err != nil {
+			return fmt.Errorf("failed to read node vector: %w", err)
+		}
+
+		if markers[i] == 0 {
 			nodes[i] = nil
 			continue
 		}
 
-		// Read ID
-		idSlice, err := reader.ReadUint32Slice(1)
-		if err != nil {
-			return fmt.Errorf("failed to read node ID: %w", err)
-		}
-		nodeID := idSlice[0]
+		// Copy vector
+		vecCopy := make([]float32, vecSize)
+		copy(vecCopy, vec)
 
-		// Read vector
-		vector, err := reader.ReadFloat32Slice(int(header.Dimension))
-		if err != nil {
-			return fmt.Errorf("failed to read node vector: %w", err)
-		}
-		if err := f.vectors.SetVector(nodeID, vector); err != nil {
+		if err := f.vectors.SetVector(i, vecCopy); err != nil {
 			return fmt.Errorf("failed to store node vector: %w", err)
 		}
 
 		nodes[i] = &Node{
-			ID: nodeID,
+			ID: i,
 		}
 	}
 

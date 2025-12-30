@@ -24,9 +24,12 @@ import (
 	"fmt"
 	"io"
 	"iter"
+	"sync"
 
 	"github.com/hupe1980/vecgo/codec"
+	"github.com/hupe1980/vecgo/distance"
 	"github.com/hupe1980/vecgo/index"
+	"github.com/hupe1980/vecgo/index/memtable"
 	"github.com/hupe1980/vecgo/metadata"
 )
 
@@ -119,11 +122,38 @@ var (
 	_ Coordinator[any] = (*ShardedCoordinator[any])(nil)
 )
 
+// Option configures the Coordinator.
+type Option func(*options)
+
+type options struct {
+	syncWrite bool
+	dimension int
+}
+
+// WithSyncWrite configures whether writes are synchronous (bypassing MemTable).
+func WithSyncWrite(sync bool) Option {
+	return func(o *options) {
+		o.syncWrite = sync
+	}
+}
+
+// WithDimension configures the vector dimension.
+func WithDimension(dim int) Option {
+	return func(o *options) {
+		o.dimension = dim
+	}
+}
+
 // New constructs a single-shard Coordinator (Tx).
 //
 // If d is nil, NoopDurability is used (same atomicity semantics, no persistence).
 // The index MUST implement index.TransactionalIndex.
-func New[T any](idx index.Index, dataStore Store[T], metaStore *metadata.UnifiedIndex, d Durability, c codec.Codec) (Coordinator[T], error) {
+func New[T any](idx index.Index, dataStore Store[T], metaStore *metadata.UnifiedIndex, d Durability, c codec.Codec, optFns ...Option) (Coordinator[T], error) {
+	opts := options{}
+	for _, fn := range optFns {
+		fn(&opts)
+	}
+
 	if idx == nil {
 		return nil, fmt.Errorf("coordinator: index is nil")
 	}
@@ -139,6 +169,17 @@ func New[T any](idx index.Index, dataStore Store[T], metaStore *metadata.Unified
 	if d == nil {
 		d = NoopDurability{}
 	}
+	if opts.dimension <= 0 {
+		// Try to infer from index if possible, otherwise error?
+		// Since Index interface doesn't expose Dimension, we require it via option.
+		// However, for backward compatibility (if we cared), we might default to something?
+		// But we don't care.
+		// Actually, existing tests might fail if they don't pass WithDimension.
+		// We should update tests or allow 0 if MemTable is not used?
+		// But MemTable is always initialized.
+		// Let's return error if dimension is missing.
+		return nil, fmt.Errorf("coordinator: dimension must be positive (use WithDimension)")
+	}
 
 	// Require TransactionalIndex
 	txIdx, ok := idx.(index.TransactionalIndex)
@@ -146,11 +187,23 @@ func New[T any](idx index.Index, dataStore Store[T], metaStore *metadata.Unified
 		return nil, fmt.Errorf("coordinator: index type %T must implement index.TransactionalIndex", idx)
 	}
 
-	return &Tx[T]{
+	tx := &Tx[T]{
 		txIndex:    txIdx,
 		dataStore:  dataStore,
 		metaStore:  metaStore,
 		durability: d,
 		codec:      c,
-	}, nil
+		memTable:   memtable.New(opts.dimension, distance.SquaredL2),
+		distFunc:   distance.SquaredL2,
+		flushCh:    make(chan struct{}, 1),
+		stopCh:     make(chan struct{}),
+		syncWrite:  opts.syncWrite,
+		dimension:  opts.dimension,
+	}
+	tx.flushCond = sync.NewCond(&tx.mu)
+
+	tx.wg.Add(1)
+	go tx.runFlushWorker()
+
+	return tx, nil
 }

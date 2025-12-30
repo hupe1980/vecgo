@@ -7,6 +7,7 @@ import (
 	"iter"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"sync"
 
@@ -69,6 +70,7 @@ func NewSharded[T any](
 	metaStores []*metadata.UnifiedIndex,
 	durabilities []Durability,
 	codec codec.Codec,
+	optFns ...Option,
 ) (Coordinator[T], error) {
 	numShards := len(indexes)
 	if numShards == 0 {
@@ -97,7 +99,7 @@ func NewSharded[T any](
 
 	shards := make([]*Tx[T], numShards)
 	for i := range indexes {
-		coord, err := New(indexes[i], dataStores[i], metaStores[i], durabilities[i], codec)
+		coord, err := New(indexes[i], dataStores[i], metaStores[i], durabilities[i], codec, optFns...)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create shard %d: %w", i, err)
 		}
@@ -107,7 +109,11 @@ func NewSharded[T any](
 
 	// Create worker pool with one worker per shard (optimal CPU affinity)
 	// This eliminates goroutine spam: 0 goroutines created per search vs N*QPS
-	workerPool := NewWorkerPool[T](numShards)
+	poolSize := numShards
+	if procs := runtime.GOMAXPROCS(0); procs > poolSize {
+		poolSize = procs
+	}
+	workerPool := NewWorkerPool[T](poolSize)
 
 	return &ShardedCoordinator[T]{
 		shards:     shards,

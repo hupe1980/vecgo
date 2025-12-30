@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"math/rand"
 	"time"
 
 	"github.com/hupe1980/vecgo"
 	"github.com/hupe1980/vecgo/quantization"
+	"github.com/hupe1980/vecgo/testutil"
 )
 
 func main() {
@@ -21,9 +21,11 @@ func main() {
 		k          = 10
 	)
 
+	rng := testutil.NewRNG(42)
+
 	// Generate random vectors
 	fmt.Printf("Generating %d random vectors with %d dimensions...\n", numVectors, dimensions)
-	vectors := generateRandomVectors(numVectors, dimensions)
+	vectors := rng.UniformRangeVectors(numVectors, dimensions)
 
 	// Create quantizer and train it on the dataset
 	fmt.Println("\nTraining 8-bit scalar quantizer...")
@@ -107,7 +109,7 @@ func main() {
 
 	// Perform search
 	fmt.Println("\n=== Search Performance ===")
-	queryVector := generateRandomVector(dimensions)
+	queryVector := rng.UniformRangeVectors(1, dimensions)[0]
 
 	start = time.Now()
 	results, err := db.KNNSearch(ctx, queryVector, k)
@@ -134,22 +136,6 @@ func main() {
 	fmt.Println("✓ Minimal accuracy loss (<1% typical)")
 	fmt.Println("\nNote: Quantization primitives are ready. Full integration with index storage")
 	fmt.Println("can be added based on specific requirements.")
-}
-
-func generateRandomVectors(count, dim int) [][]float32 {
-	vectors := make([][]float32, count)
-	for i := range vectors {
-		vectors[i] = generateRandomVector(dim)
-	}
-	return vectors
-}
-
-func generateRandomVector(dim int) []float32 {
-	vec := make([]float32, dim)
-	for i := range vec {
-		vec[i] = rand.Float32()*2 - 1 // Range: [-1, 1]
-	}
-	return vec
 }
 
 func abs(x float32) float32 {

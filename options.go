@@ -19,6 +19,7 @@ type options struct {
 	validationLimits  *engine.ValidationLimits // nil = use defaults, empty = disable validation
 	disableValidation bool                     // explicit disable flag
 	dimension         int                      // Vector dimension (set by builders)
+	syncWrite         bool                     // Bypass MemTable (synchronous writes)
 }
 
 // Option configures Vecgo constructor/load behavior.
@@ -114,6 +115,14 @@ func WithWAL(path string, optFns ...func(*wal.Options)) Option {
 func WithSnapshotPath(path string) Option {
 	return func(o *options) {
 		o.snapshotPath = path
+	}
+}
+
+// WithSyncWrite configures whether writes are synchronous (bypassing MemTable).
+// This is primarily for benchmarking and testing.
+func WithSyncWrite(sync bool) Option {
+	return func(o *options) {
+		o.syncWrite = sync
 	}
 }
 

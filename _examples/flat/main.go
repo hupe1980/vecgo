@@ -37,14 +37,14 @@ func main() {
 	rng := testutil.NewRNG(seed)
 
 	items := make([]vecgo.VectorWithData[int], 0, size)
-	for i, v := range rng.GenerateRandomVectors(size, dim) {
+	for i, v := range rng.UniformVectors(size, dim) {
 		items = append(items, vecgo.VectorWithData[int]{
 			Vector: v,
 			Data:   i,
 		})
 	}
 
-	query := rng.GenerateRandomVectors(1, dim)[0]
+	query := rng.UniformVectors(1, dim)[0]
 
 	fmt.Println("--- Insert ---")
 	fmt.Println("Dimension:", dim)

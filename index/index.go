@@ -272,6 +272,9 @@ type Index interface {
 	// Stats returns statistics about the index.
 	// This method must not write to stdout/stderr.
 	Stats() Stats
+
+	// Dimension returns the dimensionality of the vectors in the index.
+	Dimension() int
 }
 
 // TransactionalIndex consolidates all interfaces required for transactional operations.

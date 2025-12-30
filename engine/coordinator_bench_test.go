@@ -31,7 +31,7 @@ func BenchmarkCoordinatorInsert(b *testing.B) {
 	}
 	defer walLog.Close()
 
-	coord, err := New(idx, dataStore, metaStore, walLog, codec.Default)
+	coord, err := New(idx, dataStore, metaStore, walLog, codec.Default, WithDimension(3))
 	if err != nil {
 		b.Fatal(err)
 	}

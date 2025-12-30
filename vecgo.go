@@ -333,7 +333,14 @@ func new[T any](i index.Index, s engine.Store[T], ms *metadata.UnifiedIndex, opt
 		durability = w
 	}
 
-	coord, err := engine.New(i, s, ms, durability, c)
+	engineOpts := []engine.Option{
+		engine.WithSyncWrite(opts.syncWrite),
+	}
+	if opts.dimension > 0 {
+		engineOpts = append(engineOpts, engine.WithDimension(opts.dimension))
+	}
+
+	coord, err := engine.New(i, s, ms, durability, c, engineOpts...)
 	if err != nil {
 		if w != nil {
 			_ = w.Close()
@@ -419,7 +426,14 @@ func newSharded[T any](indexes []index.Index, dataStores []engine.Store[T], meta
 	}
 
 	// Create sharded coordinator
-	shardedCoord, err := engine.NewSharded(indexes, dataStores, metaStores, durabilities, c)
+	engineOpts := []engine.Option{
+		engine.WithSyncWrite(opts.syncWrite),
+	}
+	if opts.dimension > 0 {
+		engineOpts = append(engineOpts, engine.WithDimension(opts.dimension))
+	}
+
+	shardedCoord, err := engine.NewSharded(indexes, dataStores, metaStores, durabilities, c, engineOpts...)
 	if err != nil {
 		for _, w := range wals {
 			_ = w.Close()
@@ -562,7 +576,7 @@ func NewFromFile[T any](filename string, optFns ...Option) (*Vecgo[T], error) {
 		durability = w
 	}
 
-	coord, err := engine.New(snap.Index, snap.DataStore, metaStore, durability, c)
+	coord, err := engine.New(snap.Index, snap.DataStore, metaStore, durability, c, engine.WithDimension(snap.Index.Dimension()))
 	if err != nil {
 		if w != nil {
 			_ = w.Close()
@@ -989,13 +1003,6 @@ func (vg *Vecgo[T]) Stats() index.Stats {
 		return index.Stats{}
 	}
 	return vg.coordinator.Stats()
-}
-
-func (vg *Vecgo[T]) codecOrDefault() codec.Codec {
-	if vg.codec == nil {
-		return codec.Default
-	}
-	return vg.codec
 }
 
 // RecoverFromWAL replays the write-ahead log to recover from a crash.

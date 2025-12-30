@@ -17,12 +17,12 @@ lint:
 .PHONY: test
 ## test: Runs go test with default values
 test: 
-	@go test -v ./...
+	@go test -v -timeout 30s ./...
 
 .PHONY: test-race
 ## test-race: Runs go test with the race detector
 test-race:
-	@go test -race -v ./...
+	@go test -race -v -timeout 300s ./...
 
 .PHONY: help
 ## help: Prints this help message

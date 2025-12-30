@@ -29,10 +29,11 @@ type Store struct {
 	dim uint32
 
 	// Atomic for lock-free read access
-	data atomic.Pointer[[]float32] // Contiguous vector storage: vectors[id] = data[id*dim : (id+1)*dim]
+	data    atomic.Pointer[[]float32] // Contiguous vector storage: vectors[id] = data[id*dim : (id+1)*dim]
+	deleted atomic.Pointer[[]uint64]  // Bitmap: bit i = 1 means vector i is deleted
 
-	mu       sync.RWMutex
-	deleted  []uint64 // Bitmap: bit i = 1 means vector i is deleted
+	mu sync.RWMutex
+	// deleted  []uint64 // Removed in favor of atomic.Pointer
 	versions []uint64 // Version numbers for each vector (optional)
 	count    uint32   // Total vectors (including deleted)
 	live     uint32   // Live (non-deleted) vectors
@@ -51,10 +52,13 @@ func New(dim int) *Store {
 	data = data[:0] // Reset length to 0
 
 	s := &Store{
-		dim:     uint32(dim),
-		deleted: make([]uint64, 0, 16), // ~1K vectors per uint64 block
+		dim: uint32(dim),
 	}
 	s.data.Store(&data)
+
+	deleted := make([]uint64, 0, 16)
+	s.deleted.Store(&deleted)
+
 	return s
 }
 
@@ -72,10 +76,13 @@ func NewWithCapacity(dim, capacity int) *Store {
 
 	bitmapCap := (capacity + 63) / 64
 	s := &Store{
-		dim:     uint32(dim),
-		deleted: make([]uint64, 0, bitmapCap),
+		dim: uint32(dim),
 	}
 	s.data.Store(&data)
+
+	deleted := make([]uint64, 0, bitmapCap)
+	s.deleted.Store(&deleted)
+
 	return s
 }
 
@@ -118,12 +125,16 @@ func (s *Store) GetVector(id uint32) ([]float32, bool) {
 	}
 
 	// Check deletion bitmap
-	s.mu.RLock()
-	deleted := s.isDeletedLocked(id)
-	s.mu.RUnlock()
-
-	if deleted {
-		return nil, false
+	// Lock-free check
+	deletedPtr := s.deleted.Load()
+	if deletedPtr != nil {
+		bitmapIdx := id / 64
+		if int(bitmapIdx) < len(*deletedPtr) {
+			bitIdx := id % 64
+			if atomic.LoadUint64(&(*deletedPtr)[bitmapIdx])&(1<<bitIdx) != 0 {
+				return nil, false
+			}
+		}
 	}
 
 	return (*data)[start:end:end], true
@@ -176,8 +187,11 @@ func (s *Store) SetVector(id uint32, v []float32) error {
 
 		// Extend deletion bitmap if needed
 		requiredBitmapLen := int(id+63) / 64
-		for len(s.deleted) < requiredBitmapLen+1 {
-			s.deleted = append(s.deleted, 0)
+		currentDeleted := *s.deleted.Load()
+		if len(currentDeleted) < requiredBitmapLen+1 {
+			newDeleted := make([]uint64, requiredBitmapLen+1)
+			copy(newDeleted, currentDeleted)
+			s.deleted.Store(&newDeleted)
 		}
 
 		// Update count if we're adding a new vector
@@ -239,8 +253,11 @@ func (s *Store) Append(v []float32) (uint32, error) {
 
 	// Extend deletion bitmap if needed
 	bitmapIdx := id / 64
-	for uint32(len(s.deleted)) <= bitmapIdx {
-		s.deleted = append(s.deleted, 0)
+	currentDeleted := *s.deleted.Load()
+	if int(bitmapIdx) >= len(currentDeleted) {
+		newDeleted := make([]uint64, bitmapIdx+1)
+		copy(newDeleted, currentDeleted)
+		s.deleted.Store(&newDeleted)
 	}
 
 	s.count++
@@ -268,32 +285,43 @@ func (s *Store) DeleteVector(id uint32) error {
 
 // IsDeleted returns true if the vector at id is deleted.
 func (s *Store) IsDeleted(id uint32) bool {
-	s.mu.RLock()
-	d := s.isDeletedLocked(id)
-	s.mu.RUnlock()
-	return d
-}
-
-func (s *Store) isDeletedLocked(id uint32) bool {
+	// Lock-free check
+	deletedPtr := s.deleted.Load()
+	if deletedPtr == nil {
+		return false
+	}
 	bitmapIdx := id / 64
-	if int(bitmapIdx) >= len(s.deleted) {
+	if int(bitmapIdx) >= len(*deletedPtr) {
 		return false
 	}
 	bitIdx := id % 64
-	return s.deleted[bitmapIdx]&(1<<bitIdx) != 0
+	return atomic.LoadUint64(&(*deletedPtr)[bitmapIdx])&(1<<bitIdx) != 0
+}
+
+func (s *Store) isDeletedLocked(id uint32) bool {
+	return s.IsDeleted(id)
 }
 
 func (s *Store) setDeletedLocked(id uint32, deleted bool) {
 	bitmapIdx := id / 64
-	for uint32(len(s.deleted)) <= bitmapIdx {
-		s.deleted = append(s.deleted, 0)
+	currentDeleted := *s.deleted.Load()
+
+	if int(bitmapIdx) >= len(currentDeleted) {
+		newDeleted := make([]uint64, bitmapIdx+1)
+		copy(newDeleted, currentDeleted)
+		s.deleted.Store(&newDeleted)
+		currentDeleted = newDeleted
 	}
+
 	bitIdx := id % 64
+	addr := &currentDeleted[bitmapIdx]
+	val := atomic.LoadUint64(addr)
 	if deleted {
-		s.deleted[bitmapIdx] |= 1 << bitIdx
+		val |= 1 << bitIdx
 	} else {
-		s.deleted[bitmapIdx] &^= 1 << bitIdx
+		val &^= 1 << bitIdx
 	}
+	atomic.StoreUint64(addr, val)
 }
 
 // Compact removes deleted vectors and defragments the store.
@@ -330,7 +358,8 @@ func (s *Store) Compact() map[uint32]uint32 {
 	s.data.Store(&newData)
 	s.count = newID
 	s.live = newID
-	s.deleted = make([]uint64, (newID+63)/64)
+	newDeleted := make([]uint64, (newID+63)/64)
+	s.deleted.Store(&newDeleted)
 
 	return idMap
 }
@@ -416,7 +445,8 @@ func (s *Store) WriteTo(w io.Writer) (int64, error) {
 	}
 
 	// Write deletion bitmap
-	for _, block := range s.deleted {
+	currentDeleted := *s.deleted.Load()
+	for _, block := range currentDeleted {
 		var buf [8]byte
 		binary.LittleEndian.PutUint64(buf[:], block)
 		n, err := mw.Write(buf[:])
@@ -428,7 +458,7 @@ func (s *Store) WriteTo(w io.Writer) (int64, error) {
 
 	// Pad bitmap to expected size
 	expectedBitmapBlocks := (s.count + 63) / 64
-	for i := uint32(len(s.deleted)); i < expectedBitmapBlocks; i++ {
+	for i := uint32(len(currentDeleted)); i < expectedBitmapBlocks; i++ {
 		var buf [8]byte
 		n, err := mw.Write(buf[:])
 		written += int64(n)
@@ -489,16 +519,17 @@ func (s *Store) ReadFrom(r io.Reader) (int64, error) {
 	// Read deletion bitmap
 	bitmapSize := header.BitmapSize()
 	numBlocks := (bitmapSize + 7) / 8
-	s.deleted = make([]uint64, numBlocks)
-	for i := range s.deleted {
+	deleted := make([]uint64, numBlocks)
+	for i := range deleted {
 		var buf [8]byte
 		n3, err := io.ReadFull(tr, buf[:])
 		read += int64(n3)
 		if err != nil {
 			return read, err
 		}
-		s.deleted[i] = binary.LittleEndian.Uint64(buf[:])
+		deleted[i] = binary.LittleEndian.Uint64(buf[:])
 	}
+	s.deleted.Store(&deleted)
 
 	// Read and verify checksum
 	var checksumBuf [4]byte

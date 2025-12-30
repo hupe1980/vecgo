@@ -31,6 +31,7 @@ Vecgo is organized in layers, from high-level API down to low-level storage:
 │   - Transaction coordination (optional sharding)            │
 │   - Metadata integration                                    │
 │   - WAL integration                                         │
+│   - MemTable (Write Buffer)                                 │
 │   - Search result aggregation (sharded mode)                │
 └─────────────────────────────────────────────────────────────┘
                             │
@@ -103,22 +104,6 @@ type Coordinator[T any] interface {
 }
 ```
 
-### 3. Shared-Nothing Architecture
-
-Vecgo uses a **Shared-Nothing** architecture for scalability.
-
-*   **Single-Shard (`Tx[T]`)**: For simple deployments, a single coordinator manages all resources (Index, Store, Metadata, WAL).
-*   **Multi-Shard (`ShardedCoordinator[T]`)**: For high throughput, data is partitioned across multiple shards.
-    *   Each shard is an independent `Tx[T]` with its own **dedicated WAL**, Index, and Store.
-    *   Writes are routed to shards based on ID (round-robin or deterministic).
-    *   This eliminates global locks and allows write throughput to scale linearly with cores.
-    *   Search operations fan out to all shards in parallel and merge results.
-
----
-    Close() error
-}
-```
-
 **Implementations**:
 
 1. **Tx[T]** (Single-Shard Coordinator):
@@ -142,7 +127,7 @@ Vecgo uses a **Shared-Nothing** architecture for scalability.
    - Fan-out search to all shards via worker pool, merge results
    - **GlobalID encoding**: `[ShardID:8 bits][LocalID:24 bits]`
    - O(1) routing for Update/Delete/Get operations
-   - **Performance**: 2.7x-3.4x write throughput on multi-core systems
+   - **Performance**: Linear write scaling with number of shards
 
 3. **ValidatedCoordinator[T]** (Validation Middleware):
    - Wraps any Coordinator with input validation
@@ -165,145 +150,117 @@ Vecgo uses a **Shared-Nothing** architecture for scalability.
 - `Get(ctx, id)`: Decode GlobalID, retrieve vector + metadata from correct shard
 - `KNNSearch(ctx, query, k, filter)`: Fan-out via worker pool, merge top-k results, translate GlobalIDs in filters
 
-### 3. Index Implementations
+### 3. Inner Workings & Optimizations
 
-**Flat** (`index/flat/`):
-- Brute-force exact search
-- Columnar vector storage (SOA layout)
-- SIMD-optimized distance computations (AVX2/AVX-512/NEON via `internal/math32`)
-- Best for: <100K vectors, 100% recall required
+Vecgo employs several advanced techniques to achieve high performance and scalability.
 
-**HNSW** (`index/hnsw/`):
-- Hierarchical Navigable Small World graph
-- Columnar vector storage
-- Arena-allocated connection slices
-- Lock-free concurrent reads
-- Best for: 100K - 10M vectors, >95% recall acceptable
+#### A. Sharding (Shared-Nothing Architecture)
 
-**DiskANN** (`index/diskann/`):
-- Vamana graph with disk-resident vectors
-- Product Quantization (PQ) for memory compression
-- Optional Binary Quantization (BQ) traversal prefilter (search-only)
-- Beam search for approximate neighbors
-- Background compaction for deleted vectors
-- Best for: 10M+ vectors, disk-constrained environments
+To scale beyond a single core's capacity, Vecgo implements a **Shared-Nothing Sharding** strategy.
+
+*   **Partitioning**: The dataset is partitioned into $N$ independent shards (default: 4). Each shard possesses its own:
+    *   **Index** (HNSW/Flat/DiskANN)
+    *   **Vector Store**
+    *   **Metadata Store**
+    *   **Write-Ahead Log (WAL)**
+    *   **RWMutex** (Lock contention is isolated to the shard)
+
+*   **Global ID Encoding**:
+    Vecgo uses a 32-bit `GlobalID` that encodes routing information directly into the ID:
+    ```
+    | Shard Index (8 bits) | Local ID (24 bits) |
+    |----------------------|--------------------|
+    ```
+    *   **Max Shards**: 256
+    *   **Max Vectors per Shard**: ~16.7 Million
+    *   **Total Capacity**: ~4.2 Billion vectors
+
+*   **Routing**:
+    *   **Insert**: Round-robin distribution ensures balanced load.
+    *   **Update/Delete**: $O(1)$ routing. The shard index is extracted from the ID `(id >> 24)`, allowing direct access to the correct shard without a lookup table.
+    *   **Search**: Scatter-Gather. The request is fanned out to all shards in parallel using a worker pool. Results are merged (Top-K) at the coordinator level.
+
+#### B. Unified Metadata Index (Hybrid Search)
+
+Metadata filtering is often a bottleneck in vector databases. Vecgo solves this with a **Unified Index** (`metadata/unified.go`).
+
+*   **Structure**: Combines document storage with an inverted index in a single structure.
+*   **String Interning**: Uses Go 1.23 `unique.Handle` to deduplicate field names and string values. If 1 million documents have `category: "news"`, the string "news" is stored only once in memory.
+*   **Roaring Bitmaps**: The inverted index uses compressed bitmaps (Roaring Bitmaps) for posting lists. Set operations (AND, OR, NOT) for filtering are extremely fast and cache-friendly.
+
+#### C. Quantization & Reranking
+
+Vecgo supports two-stage search to balance speed and recall.
+
+*   **Binary Quantization (BQ)**:
+    *   Compresses vectors to 1 bit per dimension (32x compression).
+    *   Distance calculation uses Hamming distance (XOR + POPCNT), which is orders of magnitude faster than float32 arithmetic.
+    *   Used for: Fast coarse filtering.
+
+*   **Product Quantization (PQ)**:
+    *   Splits vectors into $M$ sub-vectors and quantizes each to a centroid ID (uint8).
+    *   Achieves 8x-32x compression.
+    *   Distance calculation uses pre-computed lookup tables (ADC - Asymmetric Distance Computation).
+
+*   **Reranking (DiskANN)**:
+    1.  **Coarse Search**: Search using compressed vectors (PQ/BQ) in memory.
+    2.  **Refinement**: Fetch full-precision vectors from disk for the top candidates.
+    3.  **Rerank**: Re-score candidates using exact L2/Cosine distance.
+
+#### D. Zero-Copy & Memory Mapping
+
+For large datasets, Vecgo avoids loading everything into the Go heap (which causes GC pressure).
+
+*   **Mmap**: Index files and vector stores are memory-mapped (`mmap`). The OS manages page caching.
+*   **Unsafe Casting**: Data is accessed directly from the memory map using `unsafe.Pointer` casting to structs (e.g., `OffsetSegment`), avoiding deserialization overhead.
+*   **Flat Layouts**: On-disk formats are designed to be "flat" (C-struct like) to support direct mapping.
+
+#### E. Memory Management (Arena & Pooling)
+
+To minimize Garbage Collection (GC) pauses, Vecgo uses custom memory management strategies:
+
+*   **Arena Allocation (`internal/arena`)**:
+    *   Used for HNSW graph construction.
+    *   Allocates memory in large chunks (default 1MB) and hands out slices via lock-free CAS.
+    *   **Benefit**: Eliminates millions of small allocations during bulk inserts, significantly reducing GC overhead.
+    *   **Lifecycle**: Memory is freed all at once when the index is closed.
+
+*   **Object Pooling (`internal/pool`)**:
+    *   **SearchContext**: Reuses buffers for visited sets (`bitset`), priority queues, and temporary vectors.
+    *   **Benefit**: Zero allocations per search request.
+    *   **Sync.Pool**: Uses Go's `sync.Pool` to automatically scale with load and release memory when idle.
 
 ---
 
 ## Index Types
 
-### Flat Index
+### 1. Flat Index (`index/flat`)
+*   **Algorithm**: Brute-force exact search.
+*   **Complexity**: $O(N)$
+*   **Optimizations**:
+    *   **Hardware Acceleration**: Uses AVX/NEON intrinsics (via `internal/math32`) for distance calculations.
+    *   **Copy-On-Write (COW)**: Uses `atomic.Value` to swap the index state, allowing lock-free reads during updates.
+*   **Use Case**: Small datasets (<100k) or when 100% recall is mandatory.
 
-**Storage**:
-```go
-type Flat[T any] struct {
-    store   vectorstore.VectorStore  // Columnar storage
-    vectors [][]float32              // Dense vectors (SOA)
-    data    []T                       // Associated data
-    tombstones map[uint64]struct{}   // Deleted IDs
-}
-```
+### 2. HNSW Index (`index/hnsw`)
+*   **Algorithm**: Hierarchical Navigable Small World graph.
+*   **Complexity**: $O(\log N)$
+*   **Optimizations**:
+    *   **Atomic Segments**: Node offsets are stored in fixed-size segments (`[65536]atomic.Uint32`). This allows the index to grow without expensive array resizing or global locks.
+    *   **BitSet Pooling**: Visited sets for graph traversal are pooled (`sync.Pool`) to minimize allocations.
+    *   **Logical Deletes**: Deletions mark a bit in a `BitSet` (Tombstones) rather than modifying the graph immediately.
+*   **Use Case**: General purpose, high performance, fits in RAM.
 
-**Search Algorithm**:
-```go
-func (f *Flat) Search(query []float32, k int) []Result {
-    // 1. Compute distances to ALL vectors (SIMD-optimized)
-    distances := make([]float32, len(f.vectors))
-    for i, vec := range f.vectors {
-        if _, deleted := f.tombstones[i]; deleted {
-            continue  // Skip deleted
-        }
-        distances[i] = distance.SquaredL2(query, vec)
-    }
-    
-    // 2. Find top-k smallest distances
-    return topK(distances, k)
-}
-```
-
-**Pros**: 100% recall, simple, fast for small datasets  
-**Cons**: O(N) search complexity, memory-bound
-
-### HNSW Index
-
-**Storage**:
-```go
-type HNSW[T any] struct {
-    store   vectorstore.VectorStore  // Columnar vectors
-    // Node storage: Segmented array of offsets (mutable) or flat offsets (mmap)
-    segments atomic.Pointer[[]*OffsetSegment]
-    mmapOffsets []uint32
-    
-    arena   *arena.FlatArena         // Contiguous node data (mmap-able)
-}
-
-// Node layout is position-independent (offsets instead of pointers)
-// Stored in FlatArena:
-// [Header: ID(4) Level(4)] [L0_Count(4) L0_Neighbors...] [L1_Count(4) L1_Neighbors...] ...
-```
-
-**Search Algorithm** (Greedy Best-First):
-```go
-func (h *HNSW) Search(query []float32, k int, ef int) []Result {
-    // 1. Start at entry point
-    current := h.entryPoint
-    
-    // 2. Descend layers (greedy search)
-    for level := h.maxLevel; level > 0; level-- {
-        current = h.searchLayer(query, current, 1, level)
-    }
-    
-    // 3. Search layer 0 with larger candidate pool (ef)
-    candidates := h.searchLayer(query, current, ef, 0)
-    
-    // 4. Return top-k from candidates
-    return topK(candidates, k)
-}
-```
-
-**Pros**: Sub-linear search (log N), high recall (>95%), fast inserts  
-**Cons**: Approximate (not 100% recall), memory overhead for graph
-
-### DiskANN Index
-
-**Storage**:
-```go
-type DiskANN[T any] struct {
-    graph      *VamanaGraph     // Disk-resident graph
-    pq         *PQCompressor    // Product Quantization
-    vectors    *MmapVectors     // Memory-mapped vectors
-    deleted    map[uint64]bool  // Tombstones
-    compactor  *BackgroundCompactor
-}
-```
-
-**Search Algorithm** (Beam Search):
-```go
-func (d *DiskANN) Search(query []float32, k int, beamWidth int) []Result {
-    // 1. Start with random entry points
-    beams := randomEntryPoints(beamWidth)
-    
-    // 2. Beam search iteration
-    for iter := 0; iter < L; iter++ {
-        // For each beam, expand to neighbors
-        for _, beam := range beams {
-            neighbors := d.graph.Neighbors(beam.id)
-            for _, nid := range neighbors {
-                // Disk read (cached)
-                vec := d.vectors.Get(nid)
-                dist := distance.SquaredL2(query, vec)
-                beams = mergeKeepBest(beams, nid, dist, beamWidth)
-            }
-        }
-    }
-    
-    // 3. Refine with full-precision vectors
-    return refineTopK(beams, k)
-}
-```
-
-**Pros**: Scales to billions of vectors, disk-efficient, compaction support  
-**Cons**: Higher latency than HNSW, requires disk I/O
+### 3. DiskANN Index (`index/diskann`)
+*   **Algorithm**: Vamana graph (Disk-resident).
+*   **Architecture**:
+    *   **RAM**: Compressed vectors (PQ/BQ) + Graph navigation cache.
+    *   **Disk**: Full vectors + Adjacency lists.
+    *   **MemTable**: An in-memory HNSW index buffers new inserts to support real-time updates on a disk-based index.
+*   **Optimizations**:
+    *   **Beam Search**: Uses a larger beam width to navigate the graph, reducing disk I/O.
+    *   **Implicit Reranking**: Automatically fetches full vectors from disk for the final candidates.
+*   **Use Case**: Massive datasets (> RAM size), cost-efficiency.
 
 ---
 
@@ -666,7 +623,7 @@ All indexes support **concurrent reads**:
 **Multi-Shard Mode** (`.Shards(n)`):
 - Each shard has independent lock
 - Hash-based routing: `shard = hash(vector) % N`
-- **2.7x-3.4x write speedup** on 4-8 cores
+- **Linear write speedup** on multi-core systems
 
 ```go
 // Shard 0        Shard 1        Shard 2        Shard 3

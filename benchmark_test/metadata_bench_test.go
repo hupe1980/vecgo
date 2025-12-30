@@ -104,7 +104,7 @@ func BenchmarkHybridSearchSelectivity(b *testing.B) {
 
 			// Insert data with controlled selectivity
 			numCategories := int(1.0 / selectivity)
-			for i := 0; i < size; i++ {
+			for i := range size {
 				_, err := db.Insert(ctx, vecgo.VectorWithData[int]{
 					Vector: randomVector(dim),
 					Data:   i,

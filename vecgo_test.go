@@ -207,7 +207,7 @@ func BenchmarkInsertAndBatchInsert(b *testing.B) {
 
 		rng := testutil.NewRNG(4711)
 
-		vectors := rng.GenerateRandomVectors(b.N, dim)
+		vectors := rng.UniformVectors(b.N, dim)
 		vectorWithData := make([]VectorWithData[int], b.N)
 
 		for i := range vectorWithData {
@@ -236,7 +236,7 @@ func BenchmarkInsertAndBatchInsert(b *testing.B) {
 
 		rng := testutil.NewRNG(4711)
 
-		vectors := rng.GenerateRandomVectors(b.N, dim)
+		vectors := rng.UniformVectors(b.N, dim)
 		vectorWithData := make([]VectorWithData[int], b.N)
 
 		for i := range vectorWithData {

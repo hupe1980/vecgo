@@ -144,7 +144,7 @@ func TestBinaryPersistence_WithDeletions(t *testing.T) {
 		t.Errorf("Expected 2 vectors, got %d", loaded.VectorCount())
 	}
 
-	if loaded.getNodeOffset(id2) != 0 {
+	if loaded.ContainsID(id2) {
 		t.Errorf("Deleted node %d should be nil in loaded index", id2)
 	}
 }

@@ -74,6 +74,11 @@ type Flat struct {
 
 func (*Flat) Name() string { return "Flat" }
 
+// Dimension returns the dimensionality of the vectors in the index.
+func (f *Flat) Dimension() int {
+	return int(f.dimension.Load())
+}
+
 // AllocateID reserves a new ID from the free list or by extending the nodes slice.
 // The reserved slot remains nil until ApplyInsert is called.
 func (f *Flat) AllocateID() uint32 {

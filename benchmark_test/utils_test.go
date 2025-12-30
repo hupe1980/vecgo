@@ -3,6 +3,7 @@ package vecgo_bench_test
 import (
 	"context"
 	"fmt"
+	"testing"
 
 	"github.com/hupe1980/vecgo"
 	"github.com/hupe1980/vecgo/index"
@@ -24,9 +25,9 @@ var (
 )
 
 // randomVector generates a random float32 vector of given dimension using seeded RNG.
-// Values are in range [-1, 1).
+// Values are L2-normalized (unit vectors).
 func randomVector(dim int) []float32 {
-	return rng.NormalizedVector(dim)
+	return rng.UnitVector(dim)
 }
 
 // computeRecall computes recall@k by comparing approximate results against ground truth.
@@ -173,4 +174,25 @@ func formatCount(count int) string {
 // formatPercent formats selectivity percentage
 func formatPercent(selectivity float64) string {
 	return fmt.Sprintf("%.0f%%", selectivity*100)
+}
+
+// setupFlatIndex creates and populates a Flat index for benchmarking.
+func setupFlatIndex(b *testing.B, dim, size int) *vecgo.Vecgo[int] {
+	db, err := vecgo.Flat[int](dim).SquaredL2().Build()
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	ctx := context.Background()
+	for i := 0; i < size; i++ {
+		vec := randomVector(dim)
+		_, err := db.Insert(ctx, vecgo.VectorWithData[int]{
+			Vector: vec,
+			Data:   i,
+		})
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+	return db
 }

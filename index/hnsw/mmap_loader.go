@@ -1,14 +1,18 @@
 package hnsw
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"math"
+	"math/rand"
 	"sync"
+	"time"
 	"unsafe"
 
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/internal/arena"
+	"github.com/hupe1980/vecgo/internal/bitset"
 	"github.com/hupe1980/vecgo/internal/queue"
 	"github.com/hupe1980/vecgo/internal/visited"
 	"github.com/hupe1980/vecgo/persistence"
@@ -61,6 +65,15 @@ func loadHNSWMmap(data []byte) (index.Index, int, error) {
 		return nil, 0, err
 	}
 
+	// Tombstones
+	ts := bitset.New(0)
+	remaining := r.Remaining()
+	n, err := ts.ReadFrom(bytes.NewReader(remaining))
+	if err != nil {
+		return nil, 0, err
+	}
+	r.Advance(int(n))
+
 	// node count
 	// nodeCount, err := r.ReadUint32()
 	// if err != nil {
@@ -85,9 +98,25 @@ func loadHNSWMmap(data []byte) (index.Index, int, error) {
 	h.nextIDAtomic.Store(nextID)
 	h.freeList = freeList
 	h.vectors = zerocopy.New(int(hdr.Dimension))
+	h.tombstones = ts
+
+	// Initialize runtime fields
+	h.shardedLocks = make([]sync.RWMutex, 1024)
+	h.minQueuePool = &sync.Pool{
+		New: func() any { return queue.NewMin(h.opts.EF) },
+	}
+	h.maxQueuePool = &sync.Pool{
+		New: func() any { return queue.NewMax(h.opts.EF) },
+	}
+	h.visitedPool = &sync.Pool{
+		New: func() any { return visited.New(1024) },
+	}
+	h.layout = newNodeLayout(h.opts.M)
+	h.distanceFunc = index.NewDistanceFunc(dt)
+	h.rng = rand.New(rand.NewSource(time.Now().UnixNano()))
 
 	// Set countAtomic
-	h.countAtomic.Store(int64(nextID) - int64(len(freeList)))
+	h.countAtomic.Store(int64(nextID) - int64(len(freeList)) - int64(ts.Count()))
 
 	// Read Arena Size
 	arenaSize, err := r.ReadUint32()
@@ -121,18 +150,25 @@ func loadHNSWMmap(data []byte) (index.Index, int, error) {
 		h.mmapOffsets = unsafe.Slice((*uint32)(unsafe.Pointer(&offsetsData[0])), int(nextID))
 	}
 
-	// Read Vectors
-	for id := uint32(0); id < nextID; id++ {
-		vecLen, err := r.ReadUint32()
-		if err != nil {
-			return nil, 0, err
-		}
-		if vecLen > 0 {
-			vec, err := r.ReadFloat32SliceView(int(vecLen))
-			if err != nil {
-				return nil, 0, err
-			}
-			h.vectors.SetVector(id, vec)
+	// Read Vectors (Zero-Copy, Contiguous)
+	// Format: [vec0][vec1]...[vecN] (no length prefixes)
+	vecSize := int(hdr.Dimension) * 4
+	totalVecBytes := int(nextID) * vecSize
+
+	vecData, err := r.ReadBytes(totalVecBytes)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	if len(vecData) > 0 {
+		// Cast to []float32
+		vecs := unsafe.Slice((*float32)(unsafe.Pointer(&vecData[0])), int(nextID)*int(hdr.Dimension))
+
+		// Set data in zerocopy store
+		if zs, ok := h.vectors.(*zerocopy.Store); ok {
+			zs.SetData(vecs)
+		} else {
+			return nil, 0, fmt.Errorf("internal error: expected zerocopy.Store")
 		}
 	}
 

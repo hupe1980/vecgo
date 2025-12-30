@@ -9,62 +9,74 @@
 package zerocopy
 
 import (
-	"sync"
+	"errors"
+	"sync/atomic"
 
 	"github.com/hupe1980/vecgo/vectorstore"
 )
 
-// Store holds zero-copy vector slice references.
-//
-// Vectors stored here may alias external memory (e.g., mmap'd regions).
-// The store does not copy vectors on SetVector/GetVector - callers must
-// ensure vectors are not mutated after SetVector.
-//
-// Thread-safe for concurrent reads; writes require external synchronization.
+// Store is a zero-copy vector store backed by a single contiguous slice.
+// It is designed for mmap usage where the entire vector data is mapped as a single block.
 type Store struct {
-	dim int
-
-	mu sync.RWMutex
-	m  map[uint32][]float32
+	dim  int
+	data atomic.Pointer[[]float32] // Contiguous storage: data[id*dim : (id+1)*dim]
+	size int                       // Number of vectors (capacity)
 }
 
-// New creates a new zero-copy vector store.
+// New creates a new zero-copy store.
+// Initially empty. Use SetData to provide the backing slice.
 func New(dim int) *Store {
 	if dim < 0 {
 		dim = 0
 	}
-	return &Store{dim: dim, m: make(map[uint32][]float32)}
+	s := &Store{dim: dim}
+	empty := []float32{}
+	s.data.Store(&empty)
+	return s
 }
 
-// Dimension returns the vector dimensionality.
+// SetData sets the backing slice for the store.
+// The slice must be a multiple of dimension.
+func (s *Store) SetData(data []float32) {
+	if s.dim > 0 && len(data)%s.dim != 0 {
+		panic("zerocopy: data length must be multiple of dimension")
+	}
+	s.data.Store(&data)
+	if s.dim > 0 {
+		s.size = len(data) / s.dim
+	}
+}
+
 func (s *Store) Dimension() int { return s.dim }
 
-// GetVector returns the vector at the given ID.
-// The returned slice may alias internal or external memory; do not modify.
 func (s *Store) GetVector(id uint32) ([]float32, bool) {
-	s.mu.RLock()
-	v, ok := s.m[id]
-	s.mu.RUnlock()
-	return v, ok
+	data := *s.data.Load()
+	idx := int(id) * s.dim
+	if idx < 0 || idx+s.dim > len(data) {
+		return nil, false
+	}
+	return data[idx : idx+s.dim], true
 }
 
-// SetVector stores a vector reference (no copy).
-// The caller must ensure v is not mutated after this call.
 func (s *Store) SetVector(id uint32, v []float32) error {
-	if s.dim != 0 && len(v) != s.dim {
+	if len(v) != s.dim {
 		return vectorstore.ErrWrongDimension
 	}
-	s.mu.Lock()
-	s.m[id] = v
-	s.mu.Unlock()
+	data := *s.data.Load()
+	idx := int(id) * s.dim
+	if idx < 0 || idx+s.dim > len(data) {
+		return errors.New("zerocopy: id out of bounds")
+	}
+	// Copy data into the slice
+	copy(data[idx:idx+s.dim], v)
 	return nil
 }
 
-// DeleteVector removes a vector from the store.
 func (s *Store) DeleteVector(id uint32) error {
-	s.mu.Lock()
-	delete(s.m, id)
-	s.mu.Unlock()
+	// Zero out the vector? Or just ignore?
+	// For mmap read-only, we can't really delete.
+	// But this store might be used for mutable buffers too.
+	// For now, no-op or zeroing.
 	return nil
 }
 

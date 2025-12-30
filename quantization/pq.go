@@ -164,10 +164,7 @@ func (pq *ProductQuantizer) ComputeAsymmetricDistance(query []float32, codes []b
 		centroid := pq.codebooks[centroidStart : centroidStart+pq.subvectorDim]
 
 		// Squared L2 distance between query subvector and centroid
-		for i, val := range querySubvec {
-			diff := val - centroid[i]
-			distance += diff * diff
-		}
+		distance += math32.SquaredL2(querySubvec, centroid)
 	}
 
 	return distance

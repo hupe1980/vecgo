@@ -255,8 +255,8 @@ func TestHNSW_Recall(t *testing.T) {
 		t.Run(cfg.Name, func(t *testing.T) {
 			// Generate data
 			rng := testutil.NewRNG(42)
-			vectors := rng.GenerateRandomVectors(cfg.NumVectors, cfg.Dimension)
-			queries := rng.GenerateRandomVectors(cfg.NumQueries, cfg.Dimension)
+			vectors := rng.UniformVectors(cfg.NumVectors, cfg.Dimension)
+			queries := rng.UniformVectors(cfg.NumQueries, cfg.Dimension)
 
 			// Compute ground truth
 			distFunc := getDistanceFunc(cfg.DistanceType)
@@ -348,8 +348,8 @@ func TestHNSW_RecallVsEF(t *testing.T) {
 	numQueries := 100
 	k := 10
 
-	vectors := rng.GenerateRandomVectors(numVectors, dimension)
-	queries := rng.GenerateRandomVectors(numQueries, dimension)
+	vectors := rng.UniformVectors(numVectors, dimension)
+	queries := rng.UniformVectors(numQueries, dimension)
 	groundTruth := computeGroundTruth(vectors, queries, k, distance.SquaredL2)
 
 	h, err := hnsw.New(func(o *hnsw.Options) {
@@ -407,8 +407,8 @@ func TestFlat_Recall(t *testing.T) {
 
 		t.Run(cfg.Name, func(t *testing.T) {
 			rng := testutil.NewRNG(42)
-			vectors := rng.GenerateRandomVectors(cfg.NumVectors, cfg.Dimension)
-			queries := rng.GenerateRandomVectors(cfg.NumQueries, cfg.Dimension)
+			vectors := rng.UniformVectors(cfg.NumVectors, cfg.Dimension)
+			queries := rng.UniformVectors(cfg.NumQueries, cfg.Dimension)
 
 			distFunc := getDistanceFunc(cfg.DistanceType)
 			groundTruth := computeGroundTruth(vectors, queries, cfg.K, distFunc)
@@ -485,8 +485,8 @@ func TestDiskANN_Recall(t *testing.T) {
 	for _, cfg := range diskannConfigs {
 		t.Run(cfg.Name, func(t *testing.T) {
 			rng := testutil.NewRNG(42)
-			vectors := rng.GenerateRandomVectors(cfg.NumVectors, cfg.Dimension)
-			queries := rng.GenerateRandomVectors(cfg.NumQueries, cfg.Dimension)
+			vectors := rng.UniformVectors(cfg.NumVectors, cfg.Dimension)
+			queries := rng.UniformVectors(cfg.NumQueries, cfg.Dimension)
 
 			distFunc := getDistanceFunc(cfg.DistanceType)
 			groundTruth := computeGroundTruth(vectors, queries, cfg.K, distFunc)
@@ -563,8 +563,8 @@ func TestHNSW_RecallAfterUpdates(t *testing.T) {
 	numQueries := 50
 	k := 10
 
-	vectors := rng.GenerateRandomVectors(numVectors, dimension)
-	queries := rng.GenerateRandomVectors(numQueries, dimension)
+	vectors := rng.UniformVectors(numVectors, dimension)
+	queries := rng.UniformVectors(numQueries, dimension)
 
 	h, err := hnsw.New(func(o *hnsw.Options) {
 		o.Dimension = dimension
@@ -632,11 +632,13 @@ func TestHNSW_RecallAfterMixedOperations(t *testing.T) {
 
 	dimension := 64
 	k := 10
+	seed := int64(42)
 
 	h, err := hnsw.New(func(o *hnsw.Options) {
 		o.Dimension = dimension
 		o.M = 16
 		o.EF = 200
+		o.RandomSeed = &seed
 	})
 	require.NoError(t, err)
 
@@ -644,7 +646,7 @@ func TestHNSW_RecallAfterMixedOperations(t *testing.T) {
 	allVectors := make(map[uint32][]float32)
 
 	// Phase 1: Insert 500 vectors
-	vectors1 := rng.GenerateRandomVectors(500, dimension)
+	vectors1 := rng.UniformVectors(500, dimension)
 	for _, vec := range vectors1 {
 		id, err := h.Insert(ctx, vec)
 		require.NoError(t, err)
@@ -659,7 +661,7 @@ func TestHNSW_RecallAfterMixedOperations(t *testing.T) {
 	}
 
 	// Phase 3: Insert 500 more vectors (they may reuse deleted IDs)
-	vectors2 := rng.GenerateRandomVectors(500, dimension)
+	vectors2 := rng.UniformVectors(500, dimension)
 	for _, vec := range vectors2 {
 		id, err := h.Insert(ctx, vec)
 		require.NoError(t, err)
@@ -678,7 +680,7 @@ func TestHNSW_RecallAfterMixedOperations(t *testing.T) {
 	assert.Equal(t, 900, len(currentVectors), "Expected 900 vectors in index")
 
 	// Generate queries and compute ground truth manually
-	queries := rng.GenerateRandomVectors(50, dimension)
+	queries := rng.UniformVectors(50, dimension)
 	totalRecall := 0.0
 
 	for _, query := range queries {
@@ -805,7 +807,7 @@ func TestRecall_EdgeCases(t *testing.T) {
 		require.NoError(t, err)
 
 		rng := testutil.NewRNG(42)
-		vectors := rng.GenerateRandomVectors(100, 64)
+		vectors := rng.UniformVectors(100, 64)
 		for _, vec := range vectors {
 			_, err := h.Insert(ctx, vec)
 			require.NoError(t, err)
@@ -830,13 +832,13 @@ func TestRecall_EdgeCases(t *testing.T) {
 		require.NoError(t, err)
 
 		rng := testutil.NewRNG(42)
-		vectors := rng.GenerateRandomVectors(5, 64)
+		vectors := rng.UniformVectors(5, 64)
 		for _, vec := range vectors {
 			_, err := h.Insert(ctx, vec)
 			require.NoError(t, err)
 		}
 
-		query := rng.GenerateRandomVectors(1, 64)[0]
+		query := rng.UniformVectors(1, 64)[0]
 		results, err := h.KNNSearch(ctx, query, 100, &index.SearchOptions{
 			Filter: func(id uint32) bool { return true },
 		})
@@ -895,8 +897,8 @@ func computeFilteredGroundTruth(vectors [][]float32, queries [][]float32, k int,
 
 func BenchmarkGroundTruthComputation(b *testing.B) {
 	rng := testutil.NewRNG(42)
-	vectors := rng.GenerateRandomVectors(10000, 128)
-	queries := rng.GenerateRandomVectors(100, 128)
+	vectors := rng.UniformVectors(10000, 128)
+	queries := rng.UniformVectors(100, 128)
 
 	b.ResetTimer()
 	for b.Loop() {
@@ -921,8 +923,8 @@ func TestRecallReport(t *testing.T) {
 	numQueries := 200
 	k := 10
 
-	vectors := rng.GenerateRandomVectors(numVectors, dimension)
-	queries := rng.GenerateRandomVectors(numQueries, dimension)
+	vectors := rng.UniformVectors(numVectors, dimension)
+	queries := rng.UniformVectors(numQueries, dimension)
 	groundTruth := computeGroundTruth(vectors, queries, k, distance.SquaredL2)
 
 	// Build indexes

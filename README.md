@@ -22,6 +22,7 @@
 - **Atomic Persistence**: Binary snapshots with atomic writes (temp file + rename)
 - **Write-Ahead Log**: Crash recovery with group commit (83x faster than sync)
 - **Auto-Compaction**: Background cleanup of deleted vectors
+- **Async Indexing**: LSM-style write path (WAL + MemTable) for sub-millisecond write latency
 - **Production-Ready**: Zero goroutine leaks, comprehensive error propagation, idempotent Close()
 - **Metadata Safety**: Deep copy on insert prevents silent mutation bugs. Uses Go 1.24 `unique` package for efficient string interning.
 - **DiskANN Crash Safety**: All index files written atomically
@@ -33,7 +34,8 @@
 - **Columnar Storage**: SOA layout for optimal cache locality
 - **Shared-Nothing Architecture**: Linear write scaling with independent shards and WALs
 - **Worker Pool**: Fixed goroutine pool for sharded searches (0 goroutines created per search)
-- **Lock-Free Reads**: Concurrent search without contention
+- **Lock-Free Reads**: Concurrent search without contention (Atomic Pointer Swapping)
+- **Cache-Optimized**: Cached vector access in heuristic search
 - **Smart Filtering**: Pre-filtering reduces distance computations by ~40% for filtered searches
 
 ### 🗜️ Compression

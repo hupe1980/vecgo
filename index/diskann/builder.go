@@ -540,13 +540,10 @@ func (b *Builder) writePQCodebooksToWriter(w io.Writer) error {
 	// Get codebooks from PQ
 	codebooks := b.pq.Codebooks()
 
-	for m := 0; m < b.opts.PQSubvectors; m++ {
-		for k := 0; k < b.opts.PQCentroids; k++ {
-			for _, v := range codebooks[m][k] {
-				if err := writeFloat32ToWriter(w, v); err != nil {
-					return err
-				}
-			}
+	// Codebooks are flat: M * K * subvectorDim
+	for _, v := range codebooks {
+		if err := writeFloat32ToWriter(w, v); err != nil {
+			return err
 		}
 	}
 	return nil

@@ -50,6 +50,17 @@ func (r *SliceReader) ReadUint16() (uint16, error) {
 	return binary.LittleEndian.Uint16(b), nil
 }
 
+func (r *SliceReader) Remaining() []byte {
+	if r.off >= len(r.b) {
+		return nil
+	}
+	return r.b[r.off:]
+}
+
+func (r *SliceReader) Advance(n int) {
+	r.off += n
+}
+
 func (r *SliceReader) ReadFileHeader() (*FileHeader, error) {
 	sz := binary.Size(FileHeader{})
 	if sz <= 0 {
