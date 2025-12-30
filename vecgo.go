@@ -595,7 +595,7 @@ func NewFromFile[T any](filename string, optFns ...Option) (*Vecgo[T], error) {
 }
 
 // Get retrieves an item by ID.
-func (vg *Vecgo[T]) Get(id uint32) (T, error) {
+func (vg *Vecgo[T]) Get(id uint64) (T, error) {
 	data, ok := vg.coordinator.Get(id)
 	if !ok {
 		var zero T
@@ -613,7 +613,7 @@ type VectorWithData[T any] struct {
 }
 
 // Insert inserts a vector along with associated data into the database.
-func (vg *Vecgo[T]) Insert(ctx context.Context, item VectorWithData[T]) (uint32, error) {
+func (vg *Vecgo[T]) Insert(ctx context.Context, item VectorWithData[T]) (uint64, error) {
 	start := time.Now()
 	if vg.coordinator == nil {
 		return 0, fmt.Errorf("vecgo: coordinator not initialized (internal error - use builder API)")
@@ -634,7 +634,7 @@ func (vg *Vecgo[T]) Insert(ctx context.Context, item VectorWithData[T]) (uint32,
 // When WAL is enabled, successful insertions are logged for crash recovery.
 // WAL affects durability, not atomicity.
 type BatchInsertResult[T any] struct {
-	IDs    []uint32 // IDs of successfully inserted items
+	IDs    []uint64 // IDs of successfully inserted items
 	Errors []error  // Errors for failed insertions (nil for successful)
 }
 
@@ -643,7 +643,7 @@ type BatchInsertResult[T any] struct {
 func (vg *Vecgo[T]) BatchInsert(ctx context.Context, items []VectorWithData[T]) BatchInsertResult[T] {
 	start := time.Now()
 	result := BatchInsertResult[T]{
-		IDs:    make([]uint32, 0),
+		IDs:    make([]uint64, 0),
 		Errors: make([]error, len(items)),
 	}
 	if vg.coordinator == nil {
@@ -709,7 +709,7 @@ func extractMetadata[T any](items []VectorWithData[T]) []metadata.Metadata {
 }
 
 // Delete removes a vector and associated data from the database.
-func (vg *Vecgo[T]) Delete(ctx context.Context, id uint32) error {
+func (vg *Vecgo[T]) Delete(ctx context.Context, id uint64) error {
 	start := time.Now()
 	if vg.coordinator == nil {
 		return fmt.Errorf("vecgo: coordinator not initialized (ensure vecgo.New was called correctly)")
@@ -722,7 +722,7 @@ func (vg *Vecgo[T]) Delete(ctx context.Context, id uint32) error {
 }
 
 // Update updates a vector and associated data in the database.
-func (vg *Vecgo[T]) Update(ctx context.Context, id uint32, item VectorWithData[T]) error {
+func (vg *Vecgo[T]) Update(ctx context.Context, id uint64, item VectorWithData[T]) error {
 	start := time.Now()
 	if vg.coordinator == nil {
 		return fmt.Errorf("vecgo: coordinator not initialized (internal error - use builder API)")
@@ -746,7 +746,7 @@ type SearchResult[T any] struct {
 }
 
 // FilterFunc is a function type used for filtering search results.
-type FilterFunc func(id uint32) bool
+type FilterFunc func(id uint64) bool
 
 // KNNSearchOptions contains options for KNN search.
 type KNNSearchOptions struct {

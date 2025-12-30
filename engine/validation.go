@@ -62,7 +62,7 @@ func WithValidation[T any](c Coordinator[T], dimension int, limits ValidationLim
 }
 
 // Insert validates input and delegates to the inner coordinator.
-func (v *ValidatedCoordinator[T]) Insert(ctx context.Context, vector []float32, data T, meta metadata.Metadata) (uint32, error) {
+func (v *ValidatedCoordinator[T]) Insert(ctx context.Context, vector []float32, data T, meta metadata.Metadata) (uint64, error) {
 	if err := v.validateVector(vector); err != nil {
 		return 0, err
 	}
@@ -81,7 +81,7 @@ func (v *ValidatedCoordinator[T]) Insert(ctx context.Context, vector []float32, 
 }
 
 // BatchInsert validates all inputs and delegates to the inner coordinator.
-func (v *ValidatedCoordinator[T]) BatchInsert(ctx context.Context, vectors [][]float32, data []T, meta []metadata.Metadata) ([]uint32, error) {
+func (v *ValidatedCoordinator[T]) BatchInsert(ctx context.Context, vectors [][]float32, data []T, meta []metadata.Metadata) ([]uint64, error) {
 	if len(vectors) > v.limits.MaxBatchSize {
 		return nil, fmt.Errorf("batch size %d exceeds limit %d", len(vectors), v.limits.MaxBatchSize)
 	}
@@ -114,7 +114,7 @@ func (v *ValidatedCoordinator[T]) BatchInsert(ctx context.Context, vectors [][]f
 }
 
 // Update validates input and delegates to the inner coordinator.
-func (v *ValidatedCoordinator[T]) Update(ctx context.Context, id uint32, vector []float32, data T, meta metadata.Metadata) error {
+func (v *ValidatedCoordinator[T]) Update(ctx context.Context, id uint64, vector []float32, data T, meta metadata.Metadata) error {
 	if err := v.validateVector(vector); err != nil {
 		return err
 	}
@@ -125,7 +125,7 @@ func (v *ValidatedCoordinator[T]) Update(ctx context.Context, id uint32, vector 
 }
 
 // Delete delegates to the inner coordinator and decrements count on success.
-func (v *ValidatedCoordinator[T]) Delete(ctx context.Context, id uint32) error {
+func (v *ValidatedCoordinator[T]) Delete(ctx context.Context, id uint64) error {
 	err := v.inner.Delete(ctx, id)
 	if err == nil {
 		v.count.Add(-1)
@@ -148,7 +148,7 @@ func (v *ValidatedCoordinator[T]) KNNSearch(ctx context.Context, query []float32
 }
 
 // BruteSearch validates query and k, then delegates to the inner coordinator.
-func (v *ValidatedCoordinator[T]) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint32) bool) ([]index.SearchResult, error) {
+func (v *ValidatedCoordinator[T]) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint64) bool) ([]index.SearchResult, error) {
 	if err := v.validateVector(query); err != nil {
 		return nil, err
 	}
@@ -162,12 +162,12 @@ func (v *ValidatedCoordinator[T]) BruteSearch(ctx context.Context, query []float
 }
 
 // Get delegates to the inner coordinator.
-func (v *ValidatedCoordinator[T]) Get(id uint32) (T, bool) {
+func (v *ValidatedCoordinator[T]) Get(id uint64) (T, bool) {
 	return v.inner.Get(id)
 }
 
 // GetMetadata delegates to the inner coordinator.
-func (v *ValidatedCoordinator[T]) GetMetadata(id uint32) (metadata.Metadata, bool) {
+func (v *ValidatedCoordinator[T]) GetMetadata(id uint64) (metadata.Metadata, bool) {
 	return v.inner.GetMetadata(id)
 }
 

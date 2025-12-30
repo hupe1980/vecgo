@@ -12,10 +12,10 @@ var (
 
 // FlatArena is a contiguous memory arena.
 // It is designed to be mmap-able.
-// It uses uint32 offsets for addressing.
+// It uses uint64 offsets for addressing.
 type FlatArena struct {
 	buf []byte
-	ptr atomic.Uint32 // Current allocation offset
+	ptr atomic.Uint64 // Current allocation offset
 	mu  sync.RWMutex  // Protects buf during growth (if we support growth)
 }
 
@@ -43,10 +43,10 @@ func NewFlatFromBytes(buf []byte) *FlatArena {
 
 // Alloc allocates size bytes and returns the offset.
 // It returns ErrArenaFull if there is not enough space.
-func (a *FlatArena) Alloc(size uint32) (uint32, error) {
+func (a *FlatArena) Alloc(size uint64) (uint64, error) {
 	// We need to ensure alignment?
-	// Let's align to 4 bytes for uint32 access.
-	const align = 4
+	// Let's align to 8 bytes for uint64 access.
+	const align = 8
 
 	for {
 		cur := a.ptr.Load()
@@ -70,7 +70,7 @@ func (a *FlatArena) Alloc(size uint32) (uint32, error) {
 
 // Get returns a slice of the arena at the given offset and size.
 // WARNING: The returned slice is valid only as long as the arena buffer is not reallocated.
-func (a *FlatArena) Get(offset uint32, size uint32) []byte {
+func (a *FlatArena) Get(offset uint64, size uint64) []byte {
 	return a.buf[offset : offset+size]
 }
 
@@ -80,12 +80,12 @@ func (a *FlatArena) Buffer() []byte {
 }
 
 // Size returns the current used size.
-func (a *FlatArena) Size() uint32 {
+func (a *FlatArena) Size() uint64 {
 	return a.ptr.Load()
 }
 
 // SetSize sets the current used size.
-func (a *FlatArena) SetSize(size uint32) {
+func (a *FlatArena) SetSize(size uint64) {
 	a.ptr.Store(size)
 }
 

@@ -26,7 +26,7 @@ func BenchmarkWALInsert(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; b.Loop(); i++ {
-		err := wal.LogInsert(uint32(i), vector, data, nil)
+		err := wal.LogInsert(uint64(i), vector, data, nil)
 		if err != nil {
 			b.Fatalf("LogInsert failed: %v", err)
 		}
@@ -53,7 +53,7 @@ func BenchmarkWALInsertCompressed(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; b.Loop(); i++ {
-		err := wal.LogInsert(uint32(i), vector, data, nil)
+		err := wal.LogInsert(uint64(i), vector, data, nil)
 		if err != nil {
 			b.Fatalf("LogInsert failed: %v", err)
 		}
@@ -73,13 +73,13 @@ func BenchmarkWALBatchInsert(b *testing.B) {
 	defer wal.Close()
 
 	batchSize := 100
-	ids := make([]uint32, batchSize)
+	ids := make([]uint64, batchSize)
 	vectors := make([][]float32, batchSize)
 	dataSlice := make([][]byte, batchSize)
 	metadataSlice := make([]metadata.Metadata, batchSize)
 
 	for i := 0; i < batchSize; i++ {
-		ids[i] = uint32(i)
+		ids[i] = uint64(i)
 		vectors[i] = make([]float32, 128)
 		for j := range vectors[i] {
 			vectors[i][j] = float32(j)
@@ -115,7 +115,7 @@ func BenchmarkWALReplay(b *testing.B) {
 	}
 	data := make([]byte, 100)
 
-	for i := uint32(0); i < 1000; i++ {
+	for i := uint64(0); i < 1000; i++ {
 		wal.LogInsert(i, vector, data, nil)
 	}
 	wal.Close()

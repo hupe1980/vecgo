@@ -8,7 +8,7 @@ var _ heap.Interface = (*PriorityQueue)(nil)
 // PriorityQueueItem represents an item in the priority queue.
 // Optimized: value-based (no pointers), removed Index field (not needed)
 type PriorityQueueItem struct {
-	Node     uint32  // Node is the value of the item, which can be arbitrary.
+	Node     uint64  // Node is the value of the item, which can be arbitrary.
 	Distance float32 // Distance is the priority of the item in the queue.
 }
 

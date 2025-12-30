@@ -281,7 +281,7 @@ func BenchmarkFlatUpdate(b *testing.B) {
 	ctx := context.Background()
 
 	// Build index
-	ids := make([]uint32, indexSize)
+	ids := make([]uint64, indexSize)
 	for i := 0; i < indexSize; i++ {
 		v := generateRandomVector(dim)
 		id, _ := f.Insert(ctx, v)
@@ -317,7 +317,7 @@ func BenchmarkFlatDelete(b *testing.B) {
 		ctx := context.Background()
 
 		// Insert vectors to delete
-		ids := make([]uint32, 1000)
+		ids := make([]uint64, 1000)
 		for j := 0; j < 1000; j++ {
 			v := generateRandomVector(dim)
 			id, _ := f.Insert(ctx, v)

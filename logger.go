@@ -65,7 +65,7 @@ func (l *Logger) WithContext(ctx context.Context) *Logger {
 }
 
 // WithID adds an ID field to the logger (useful for tagging operations).
-func (l *Logger) WithID(id uint32) *Logger {
+func (l *Logger) WithID(id uint64) *Logger {
 	return &Logger{
 		Logger: l.Logger.With("id", id),
 	}
@@ -93,7 +93,7 @@ func (l *Logger) WithCount(count int) *Logger {
 }
 
 // LogInsert logs an insert operation.
-func (l *Logger) LogInsert(ctx context.Context, id uint32, dimension int, err error) {
+func (l *Logger) LogInsert(ctx context.Context, id uint64, dimension int, err error) {
 	if err != nil {
 		l.ErrorContext(ctx, "insert failed",
 			"id", id,
@@ -139,7 +139,7 @@ func (l *Logger) LogSearch(ctx context.Context, k, resultsFound int, err error) 
 }
 
 // LogDelete logs a delete operation.
-func (l *Logger) LogDelete(ctx context.Context, id uint32, err error) {
+func (l *Logger) LogDelete(ctx context.Context, id uint64, err error) {
 	if err != nil {
 		l.ErrorContext(ctx, "delete failed",
 			"id", id,
@@ -153,7 +153,7 @@ func (l *Logger) LogDelete(ctx context.Context, id uint32, err error) {
 }
 
 // LogUpdate logs an update operation.
-func (l *Logger) LogUpdate(ctx context.Context, id uint32, err error) {
+func (l *Logger) LogUpdate(ctx context.Context, id uint64, err error) {
 	if err != nil {
 		l.ErrorContext(ctx, "update failed",
 			"id", id,

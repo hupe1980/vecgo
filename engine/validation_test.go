@@ -21,35 +21,35 @@ type mockCoordinator[T any] struct {
 	deleteCount int
 }
 
-func (m *mockCoordinator[T]) Insert(ctx context.Context, vector []float32, data T, meta metadata.Metadata) (uint32, error) {
+func (m *mockCoordinator[T]) Insert(ctx context.Context, vector []float32, data T, meta metadata.Metadata) (uint64, error) {
 	m.insertCount++
-	return uint32(m.insertCount), nil
+	return uint64(m.insertCount), nil
 }
 
-func (m *mockCoordinator[T]) BatchInsert(ctx context.Context, vectors [][]float32, data []T, meta []metadata.Metadata) ([]uint32, error) {
-	ids := make([]uint32, len(vectors))
+func (m *mockCoordinator[T]) BatchInsert(ctx context.Context, vectors [][]float32, data []T, meta []metadata.Metadata) ([]uint64, error) {
+	ids := make([]uint64, len(vectors))
 	for i := range vectors {
 		m.insertCount++
-		ids[i] = uint32(m.insertCount)
+		ids[i] = uint64(m.insertCount)
 	}
 	return ids, nil
 }
 
-func (m *mockCoordinator[T]) Update(ctx context.Context, id uint32, vector []float32, data T, meta metadata.Metadata) error {
+func (m *mockCoordinator[T]) Update(ctx context.Context, id uint64, vector []float32, data T, meta metadata.Metadata) error {
 	return nil
 }
 
-func (m *mockCoordinator[T]) Delete(ctx context.Context, id uint32) error {
+func (m *mockCoordinator[T]) Delete(ctx context.Context, id uint64) error {
 	m.deleteCount++
 	return nil
 }
 
-func (m *mockCoordinator[T]) Get(id uint32) (T, bool) {
+func (m *mockCoordinator[T]) Get(id uint64) (T, bool) {
 	var zero T
 	return zero, true
 }
 
-func (m *mockCoordinator[T]) GetMetadata(id uint32) (metadata.Metadata, bool) {
+func (m *mockCoordinator[T]) GetMetadata(id uint64) (metadata.Metadata, bool) {
 	return nil, false
 }
 
@@ -57,7 +57,7 @@ func (m *mockCoordinator[T]) KNNSearch(ctx context.Context, query []float32, k i
 	return []index.SearchResult{{ID: 1, Distance: 0.1}}, nil
 }
 
-func (m *mockCoordinator[T]) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint32) bool) ([]index.SearchResult, error) {
+func (m *mockCoordinator[T]) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint64) bool) ([]index.SearchResult, error) {
 	return []index.SearchResult{{ID: 1, Distance: 0.1}}, nil
 }
 
@@ -154,7 +154,7 @@ func TestValidation_ValidVector(t *testing.T) {
 	vec := []float32{1.0, 2.0, 3.0, 4.0}
 	id, err := coord.Insert(ctx, vec, "data", nil)
 	require.NoError(t, err)
-	assert.Equal(t, uint32(1), id)
+	assert.Equal(t, uint64(1), id)
 }
 
 func TestValidation_MaxK(t *testing.T) {

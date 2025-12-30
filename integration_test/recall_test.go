@@ -42,7 +42,7 @@ type RecallMetrics struct {
 // GroundTruth stores exact nearest neighbors for validation
 type GroundTruth struct {
 	QueryIdx int
-	TopK     []uint32  // Exact top-k neighbor IDs
+	TopK     []uint64  // Exact top-k neighbor IDs
 	Dists    []float32 // Exact distances
 }
 
@@ -53,13 +53,13 @@ func computeGroundTruth(vectors [][]float32, queries [][]float32, k int, distFun
 	for qi, query := range queries {
 		// Compute all distances
 		type idDist struct {
-			id   uint32
+			id   uint64
 			dist float32
 		}
 
 		dists := make([]idDist, len(vectors))
 		for vi, vec := range vectors {
-			dists[vi] = idDist{id: uint32(vi), dist: distFunc(query, vec)}
+			dists[vi] = idDist{id: uint64(vi), dist: distFunc(query, vec)}
 		}
 
 		// Sort by distance
@@ -75,7 +75,7 @@ func computeGroundTruth(vectors [][]float32, queries [][]float32, k int, distFun
 
 		groundTruth[qi] = GroundTruth{
 			QueryIdx: qi,
-			TopK:     make([]uint32, topK),
+			TopK:     make([]uint64, topK),
 			Dists:    make([]float32, topK),
 		}
 		for i := 0; i < topK; i++ {
@@ -88,13 +88,13 @@ func computeGroundTruth(vectors [][]float32, queries [][]float32, k int, distFun
 }
 
 // computeRecall calculates recall@k for a single query
-func computeRecall(predicted []uint32, groundTruth []uint32, k int) float64 {
+func computeRecall(predicted []uint64, groundTruth []uint64, k int) float64 {
 	if len(groundTruth) == 0 || k == 0 {
 		return 0
 	}
 
 	// Build ground truth set for top-k
-	gtSet := make(map[uint32]struct{})
+	gtSet := make(map[uint64]struct{})
 	topK := k
 	if topK > len(groundTruth) {
 		topK = len(groundTruth)
@@ -119,7 +119,7 @@ func computeRecall(predicted []uint32, groundTruth []uint32, k int) float64 {
 }
 
 // computeMRR calculates Mean Reciprocal Rank
-func computeMRR(predicted []uint32, groundTruth []uint32) float64 {
+func computeMRR(predicted []uint64, groundTruth []uint64) float64 {
 	if len(groundTruth) == 0 || len(predicted) == 0 {
 		return 0
 	}
@@ -275,23 +275,23 @@ func TestHNSW_Recall(t *testing.T) {
 			for i, vec := range vectors {
 				id, err := h.Insert(ctx, vec)
 				require.NoError(t, err)
-				assert.Equal(t, uint32(i), id)
+				assert.Equal(t, uint64(i), id)
 			}
 
 			// Create filter if needed
-			var filter func(uint32) bool
+			var filter func(uint64) bool
 			var filteredGT []GroundTruth
 
 			if cfg.FilterRatio > 0 {
 				// Filter out even IDs
-				filter = func(id uint32) bool {
+				filter = func(id uint64) bool {
 					return id%2 == 1 // Only odd IDs pass
 				}
 
 				// Recompute ground truth with filter
 				filteredGT = computeFilteredGroundTruth(vectors, queries, cfg.K, distFunc, filter)
 			} else {
-				filter = func(id uint32) bool { return true }
+				filter = func(id uint64) bool { return true }
 				filteredGT = groundTruth
 			}
 
@@ -308,7 +308,7 @@ func TestHNSW_Recall(t *testing.T) {
 				require.NoError(t, err)
 
 				// Extract IDs
-				predicted := make([]uint32, len(results))
+				predicted := make([]uint64, len(results))
 				for i, r := range results {
 					predicted[i] = r.ID
 				}
@@ -373,11 +373,11 @@ func TestHNSW_RecallVsEF(t *testing.T) {
 		for qi, query := range queries {
 			results, err := h.KNNSearch(ctx, query, k, &index.SearchOptions{
 				EFSearch: ef,
-				Filter:   func(id uint32) bool { return true },
+				Filter:   func(id uint64) bool { return true },
 			})
 			require.NoError(t, err)
 
-			predicted := make([]uint32, len(results))
+			predicted := make([]uint64, len(results))
 			for j, r := range results {
 				predicted[j] = r.ID
 			}
@@ -422,17 +422,17 @@ func TestFlat_Recall(t *testing.T) {
 			for i, vec := range vectors {
 				id, err := f.Insert(ctx, vec)
 				require.NoError(t, err)
-				assert.Equal(t, uint32(i), id)
+				assert.Equal(t, uint64(i), id)
 			}
 
 			totalRecall := 0.0
 			for qi, query := range queries {
 				results, err := f.KNNSearch(ctx, query, cfg.K, &index.SearchOptions{
-					Filter: func(id uint32) bool { return true },
+					Filter: func(id uint64) bool { return true },
 				})
 				require.NoError(t, err)
 
-				predicted := make([]uint32, len(results))
+				predicted := make([]uint64, len(results))
 				for i, r := range results {
 					predicted[i] = r.ID
 				}
@@ -522,11 +522,11 @@ func TestDiskANN_Recall(t *testing.T) {
 			totalRecall1 := 0.0
 			for qi, query := range queries {
 				results, err := idx.KNNSearch(ctx, query, cfg.K, &index.SearchOptions{
-					Filter: func(id uint32) bool { return true },
+					Filter: func(id uint64) bool { return true },
 				})
 				require.NoError(t, err)
 
-				predicted := make([]uint32, len(results))
+				predicted := make([]uint64, len(results))
 				for i, r := range results {
 					predicted[i] = r.ID
 				}
@@ -580,20 +580,20 @@ func TestHNSW_RecallAfterUpdates(t *testing.T) {
 	}
 
 	// Delete 20% of vectors
-	deleteIDs := make([]uint32, 0, numVectors/5)
-	for i := uint32(0); i < uint32(numVectors); i += 5 {
+	deleteIDs := make([]uint64, 0, numVectors/5)
+	for i := uint64(0); i < uint64(numVectors); i += 5 {
 		err := h.Delete(ctx, i)
 		require.NoError(t, err)
 		deleteIDs = append(deleteIDs, i)
 	}
 
 	// Compute ground truth excluding deleted vectors
-	deletedSet := make(map[uint32]struct{})
+	deletedSet := make(map[uint64]struct{})
 	for _, id := range deleteIDs {
 		deletedSet[id] = struct{}{}
 	}
 
-	filter := func(id uint32) bool {
+	filter := func(id uint64) bool {
 		_, deleted := deletedSet[id]
 		return !deleted
 	}
@@ -609,7 +609,7 @@ func TestHNSW_RecallAfterUpdates(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		predicted := make([]uint32, len(results))
+		predicted := make([]uint64, len(results))
 		for i, r := range results {
 			predicted[i] = r.ID
 		}
@@ -643,7 +643,7 @@ func TestHNSW_RecallAfterMixedOperations(t *testing.T) {
 	require.NoError(t, err)
 
 	// Track all vectors by their actual IDs
-	allVectors := make(map[uint32][]float32)
+	allVectors := make(map[uint64][]float32)
 
 	// Phase 1: Insert 500 vectors
 	vectors1 := rng.UniformVectors(500, dimension)
@@ -654,7 +654,7 @@ func TestHNSW_RecallAfterMixedOperations(t *testing.T) {
 	}
 
 	// Phase 2: Delete 100 vectors (IDs 0-99)
-	for i := uint32(0); i < 100; i++ {
+	for i := uint64(0); i < 100; i++ {
 		err := h.Delete(ctx, i)
 		require.NoError(t, err)
 		delete(allVectors, i)
@@ -670,7 +670,7 @@ func TestHNSW_RecallAfterMixedOperations(t *testing.T) {
 
 	// Build ground truth from the actual current state
 	currentVectors := make([][]float32, 0, len(allVectors))
-	currentIDs := make([]uint32, 0, len(allVectors))
+	currentIDs := make([]uint64, 0, len(allVectors))
 	for id, vec := range allVectors {
 		currentIDs = append(currentIDs, id)
 		currentVectors = append(currentVectors, vec)
@@ -686,7 +686,7 @@ func TestHNSW_RecallAfterMixedOperations(t *testing.T) {
 	for _, query := range queries {
 		// Compute ground truth
 		type idDist struct {
-			id   uint32
+			id   uint64
 			dist float32
 		}
 
@@ -706,7 +706,7 @@ func TestHNSW_RecallAfterMixedOperations(t *testing.T) {
 		if topK > len(dists) {
 			topK = len(dists)
 		}
-		gtTopK := make([]uint32, topK)
+		gtTopK := make([]uint64, topK)
 		for i := 0; i < topK; i++ {
 			gtTopK[i] = dists[i].id
 		}
@@ -714,11 +714,11 @@ func TestHNSW_RecallAfterMixedOperations(t *testing.T) {
 		// Search
 		results, err := h.KNNSearch(ctx, query, k, &index.SearchOptions{
 			EFSearch: 200,
-			Filter:   func(id uint32) bool { return true },
+			Filter:   func(id uint64) bool { return true },
 		})
 		require.NoError(t, err)
 
-		predicted := make([]uint32, len(results))
+		predicted := make([]uint64, len(results))
 		for i, r := range results {
 			predicted[i] = r.ID
 		}
@@ -758,12 +758,12 @@ func TestRecall_EdgeCases(t *testing.T) {
 		require.NoError(t, err)
 
 		results, err := h.KNNSearch(ctx, vec, 10, &index.SearchOptions{
-			Filter: func(id uint32) bool { return true },
+			Filter: func(id uint64) bool { return true },
 		})
 		require.NoError(t, err)
 
 		assert.Len(t, results, 1)
-		assert.Equal(t, uint32(0), results[0].ID)
+		assert.Equal(t, uint64(0), results[0].ID)
 	})
 
 	t.Run("DuplicateVectors", func(t *testing.T) {
@@ -786,7 +786,7 @@ func TestRecall_EdgeCases(t *testing.T) {
 		}
 
 		results, err := h.KNNSearch(ctx, vec, 5, &index.SearchOptions{
-			Filter: func(id uint32) bool { return true },
+			Filter: func(id uint64) bool { return true },
 		})
 		require.NoError(t, err)
 
@@ -816,7 +816,7 @@ func TestRecall_EdgeCases(t *testing.T) {
 		// Search with zero vector
 		zeroVec := make([]float32, 64)
 		results, err := h.KNNSearch(ctx, zeroVec, 10, &index.SearchOptions{
-			Filter: func(id uint32) bool { return true },
+			Filter: func(id uint64) bool { return true },
 		})
 		require.NoError(t, err)
 
@@ -840,7 +840,7 @@ func TestRecall_EdgeCases(t *testing.T) {
 
 		query := rng.UniformVectors(1, 64)[0]
 		results, err := h.KNNSearch(ctx, query, 100, &index.SearchOptions{
-			Filter: func(id uint32) bool { return true },
+			Filter: func(id uint64) bool { return true },
 		})
 		require.NoError(t, err)
 
@@ -852,19 +852,19 @@ func TestRecall_EdgeCases(t *testing.T) {
 // Helper functions
 // ===========================================================================
 
-func computeFilteredGroundTruth(vectors [][]float32, queries [][]float32, k int, distFunc func(a, b []float32) float32, filter func(uint32) bool) []GroundTruth {
+func computeFilteredGroundTruth(vectors [][]float32, queries [][]float32, k int, distFunc func(a, b []float32) float32, filter func(uint64) bool) []GroundTruth {
 	groundTruth := make([]GroundTruth, len(queries))
 
 	for qi, query := range queries {
 		type idDist struct {
-			id   uint32
+			id   uint64
 			dist float32
 		}
 
 		dists := make([]idDist, 0, len(vectors))
 		for vi, vec := range vectors {
-			if filter(uint32(vi)) {
-				dists = append(dists, idDist{id: uint32(vi), dist: distFunc(query, vec)})
+			if filter(uint64(vi)) {
+				dists = append(dists, idDist{id: uint64(vi), dist: distFunc(query, vec)})
 			}
 		}
 
@@ -879,7 +879,7 @@ func computeFilteredGroundTruth(vectors [][]float32, queries [][]float32, k int,
 
 		groundTruth[qi] = GroundTruth{
 			QueryIdx: qi,
-			TopK:     make([]uint32, topK),
+			TopK:     make([]uint64, topK),
 			Dists:    make([]float32, topK),
 		}
 		for i := 0; i < topK; i++ {
@@ -976,10 +976,10 @@ func computeIndexMetrics(ctx context.Context, h *hnsw.HNSW, queries [][]float32,
 	for qi, query := range queries {
 		results, _ := h.KNNSearch(ctx, query, k, &index.SearchOptions{
 			EFSearch: ef,
-			Filter:   func(id uint32) bool { return true },
+			Filter:   func(id uint64) bool { return true },
 		})
 
-		predicted := make([]uint32, len(results))
+		predicted := make([]uint64, len(results))
 		for i, r := range results {
 			predicted[i] = r.ID
 		}
@@ -1002,10 +1002,10 @@ func computeFlatMetrics(ctx context.Context, f *flat.Flat, queries [][]float32, 
 
 	for qi, query := range queries {
 		results, _ := f.KNNSearch(ctx, query, k, &index.SearchOptions{
-			Filter: func(id uint32) bool { return true },
+			Filter: func(id uint64) bool { return true },
 		})
 
-		predicted := make([]uint32, len(results))
+		predicted := make([]uint64, len(results))
 		for i, r := range results {
 			predicted[i] = r.ID
 		}

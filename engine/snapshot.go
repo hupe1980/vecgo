@@ -245,7 +245,7 @@ func LoadFromReaderWithCodec[T any](r io.ReadSeeker, c codec.Codec) (*Snapshot[T
 			Actual:   actualChecksum,
 		}
 	}
-	storeMap := make(map[uint32]T)
+	storeMap := make(map[uint64]T)
 	if err := c.Unmarshal(storeBytes, &storeMap); err != nil {
 		return nil, fmt.Errorf("failed to decode store: %w", err)
 	}
@@ -272,7 +272,7 @@ func LoadFromReaderWithCodec[T any](r io.ReadSeeker, c codec.Codec) (*Snapshot[T
 			Actual:   actualChecksum,
 		}
 	}
-	metadataMap := make(map[uint32]metadata.Metadata)
+	metadataMap := make(map[uint64]metadata.Metadata)
 	// Always use VecgoBinary for metadata persistence
 	metadataMap, err = metadata.UnmarshalMetadataMap(metaBytes)
 	if err != nil {

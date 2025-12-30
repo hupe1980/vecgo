@@ -49,7 +49,7 @@ func computeRecall[T any](groundTruth, approximate []vecgo.SearchResult[T]) floa
 		k = len(groundTruth)
 	}
 
-	truthSet := make(map[uint32]struct{}, k)
+	truthSet := make(map[uint64]struct{}, k)
 	for i := 0; i < k; i++ {
 		truthSet[groundTruth[i].ID] = struct{}{}
 	}
@@ -110,13 +110,13 @@ func groundTruthSearchFiltered(ctx context.Context, vectorsWithIDs map[uint32][]
 
 	// Compute distances directly and sort to get ground truth
 	type idDist struct {
-		id   uint32
+		id   uint64
 		dist float32
 	}
 	distances := make([]idDist, 0, len(vectorsWithIDs))
 	for id, vec := range vectorsWithIDs {
 		dist := squaredL2Distance(query, vec)
-		distances = append(distances, idDist{id: id, dist: dist})
+		distances = append(distances, idDist{id: uint64(id), dist: dist})
 	}
 
 	// Sort by distance (ascending)

@@ -174,7 +174,7 @@ func TestSearchBuilder_Filter(t *testing.T) {
 	filterCalled := false
 	results, err := db.Search([]float32{0, 0, 0, 0}).
 		KNN(10).
-		Filter(func(id uint32) bool {
+		Filter(func(id uint64) bool {
 			filterCalled = true
 			return true // Accept all for this test
 		}).

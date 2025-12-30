@@ -83,7 +83,7 @@ func (h *HNSW) WriteTo(w io.Writer) (int64, error) {
 
 	// Write file header
 	header := &persistence.FileHeader{
-		VectorCount: uint32(int64(nextID) - int64(len(h.freeList))),
+		VectorCount: uint64(int64(nextID) - int64(len(h.freeList))),
 		Dimension:   uint32(h.dimensionAtomic.Load()),
 		IndexType:   persistence.IndexTypeHNSW,
 		DataOffset:  64, // After header
@@ -116,12 +116,12 @@ func (h *HNSW) WriteTo(w io.Writer) (int64, error) {
 	}
 
 	// Write freeList
-	freeListLen := uint32(len(h.freeList))
+	freeListLen := uint64(len(h.freeList))
 	if err := binary.Write(cw, binary.LittleEndian, freeListLen); err != nil {
 		return cw.n, err
 	}
 	if freeListLen > 0 {
-		if err := writer.WriteUint32Slice(h.freeList); err != nil {
+		if err := writer.WriteUint64Slice(h.freeList); err != nil {
 			return cw.n, err
 		}
 	}
@@ -142,8 +142,8 @@ func (h *HNSW) WriteTo(w io.Writer) (int64, error) {
 		return cw.n, err
 	}
 
-	// Padding for 4-byte alignment of Offsets
-	padding := (4 - (arenaSize % 4)) % 4
+	// Padding for 8-byte alignment of Offsets
+	padding := (8 - (arenaSize % 8)) % 8
 	if padding > 0 {
 		if _, err := cw.Write(make([]byte, padding)); err != nil {
 			return cw.n, err
@@ -151,7 +151,7 @@ func (h *HNSW) WriteTo(w io.Writer) (int64, error) {
 	}
 
 	// Write Offsets
-	for id := uint32(0); id < nextID; id++ {
+	for id := uint64(0); id < nextID; id++ {
 		offset := h.getNodeOffset(id)
 		if err := binary.Write(cw, binary.LittleEndian, offset); err != nil {
 			return cw.n, err
@@ -162,13 +162,17 @@ func (h *HNSW) WriteTo(w io.Writer) (int64, error) {
 	// We write vectors contiguously without length prefix for mmap compatibility.
 	// Missing vectors (freed IDs) are written as zeros.
 	zeroVec := make([]float32, h.opts.Dimension)
-	for id := uint32(0); id < nextID; id++ {
+	for id := uint64(0); id < nextID; id++ {
 		vec, ok := h.vectors.GetVector(id)
 		if !ok {
-			writer.WriteFloat32Slice(zeroVec)
+			if err := writer.WriteFloat32Slice(zeroVec); err != nil {
+				return cw.n, err
+			}
 			continue
 		}
-		writer.WriteFloat32Slice(vec)
+		if err := writer.WriteFloat32Slice(vec); err != nil {
+			return cw.n, err
+		}
 	}
 
 	return cw.n, nil
@@ -252,26 +256,26 @@ func (h *HNSW) ReadFromWithOptions(r io.Reader, opts Options) error {
 	}
 
 	// Read nextID
-	nextIDSlice, err := reader.ReadUint32Slice(1)
+	nextIDSlice, err := reader.ReadUint64Slice(1)
 	if err != nil {
 		return err
 	}
 	h.nextIDAtomic.Store(nextIDSlice[0])
-	h.tombstones.Grow(int(nextIDSlice[0]))
+	h.tombstones.Grow(nextIDSlice[0])
 
 	// Read freeList
-	freeListLenSlice, err := reader.ReadUint32Slice(1)
+	freeListLenSlice, err := reader.ReadUint64Slice(1)
 	if err != nil {
 		return err
 	}
 	freeListLen := freeListLenSlice[0]
 	if freeListLen > 0 {
-		h.freeList, err = reader.ReadUint32Slice(int(freeListLen))
+		h.freeList, err = reader.ReadUint64Slice(int(freeListLen))
 		if err != nil {
 			return err
 		}
 	} else {
-		h.freeList = []uint32{}
+		h.freeList = []uint64{}
 	}
 
 	// Read Tombstones
@@ -283,7 +287,7 @@ func (h *HNSW) ReadFromWithOptions(r io.Reader, opts Options) error {
 	h.countAtomic.Store(int64(h.nextIDAtomic.Load()) - int64(len(h.freeList)) - int64(h.tombstones.Count()))
 
 	// Read Arena Size
-	var arenaSize uint32
+	var arenaSize uint64
 	if err := binary.Read(r, binary.LittleEndian, &arenaSize); err != nil {
 		return err
 	}
@@ -297,7 +301,7 @@ func (h *HNSW) ReadFromWithOptions(r io.Reader, opts Options) error {
 	h.arena.SetSize(arenaSize)
 
 	// Skip padding
-	padding := (4 - (arenaSize % 4)) % 4
+	padding := (8 - (arenaSize % 8)) % 8
 	if padding > 0 {
 		if _, err := io.ReadFull(r, make([]byte, padding)); err != nil {
 			return err
@@ -306,8 +310,8 @@ func (h *HNSW) ReadFromWithOptions(r io.Reader, opts Options) error {
 
 	// Read Offsets
 	nextID := h.nextIDAtomic.Load()
-	for id := uint32(0); id < nextID; id++ {
-		var offset uint32
+	for id := uint64(0); id < nextID; id++ {
+		var offset uint64
 		if err := binary.Read(r, binary.LittleEndian, &offset); err != nil {
 			return err
 		}
@@ -326,14 +330,16 @@ func (h *HNSW) ReadFromWithOptions(r io.Reader, opts Options) error {
 	// But h.vectors is an interface.
 
 	vec := make([]float32, vecSize)
-	for id := uint32(0); id < nextID; id++ {
-		if err := binary.Read(r, binary.LittleEndian, vec); err != nil {
+	for id := uint64(0); id < nextID; id++ {
+		if err := reader.ReadFloat32SliceInto(vec); err != nil {
 			return err
 		}
 		// We need to copy because vec is reused
 		vecCopy := make([]float32, vecSize)
 		copy(vecCopy, vec)
-		h.vectors.SetVector(id, vecCopy)
+		if err := h.vectors.SetVector(id, vecCopy); err != nil {
+			return err
+		}
 	}
 
 	// Initialize layout

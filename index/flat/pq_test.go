@@ -44,7 +44,7 @@ func TestFlat_ProductQuantization_EnableDisable(t *testing.T) {
 	require.NotNil(t, pq)
 	expected := pq.ComputeAsymmetricDistance(query, st.pqCodes[id0])
 
-	res, err := f.BruteSearch(context.Background(), query, 1, func(id uint32) bool { return id == id0 })
+	res, err := f.BruteSearch(context.Background(), query, 1, func(id uint64) bool { return id == id0 })
 	require.NoError(t, err)
 	require.Len(t, res, 1)
 	assert.Equal(t, id0, res[0].ID)

@@ -114,12 +114,12 @@ type Builder struct {
 
 	// In-memory data during construction
 	vectors    [][]float32 // All vectors (temporary)
-	graph      [][]uint32  // Adjacency lists
+	graph      [][]uint64  // Adjacency lists
 	pq         *quantization.ProductQuantizer
 	pqCodes    [][]byte // PQ codes for all vectors
 	bq         *quantization.BinaryQuantizer
 	bqCodes    [][]uint64 // BQ codes (uint64 words) for all vectors (optional)
-	entryPoint uint32     // Entry point for search
+	entryPoint uint64     // Entry point for search
 
 	mu sync.Mutex
 }
@@ -160,12 +160,12 @@ func NewBuilder(dim int, distType index.DistanceType, indexPath string, opts *Op
 		distFunc:  index.NewDistanceFunc(distType),
 		indexPath: indexPath,
 		vectors:   make([][]float32, 0, 10000),
-		graph:     make([][]uint32, 0, 10000),
+		graph:     make([][]uint64, 0, 10000),
 	}, nil
 }
 
 // Add adds a single vector to the index.
-func (b *Builder) Add(vec []float32) (uint32, error) {
+func (b *Builder) Add(vec []float32) (uint64, error) {
 	if len(vec) != b.dim {
 		return 0, &index.ErrDimensionMismatch{Expected: b.dim, Actual: len(vec)}
 	}
@@ -173,7 +173,7 @@ func (b *Builder) Add(vec []float32) (uint32, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	id := uint32(len(b.vectors))
+	id := uint64(len(b.vectors))
 
 	// Copy vector
 	v := make([]float32, len(vec))
@@ -181,14 +181,14 @@ func (b *Builder) Add(vec []float32) (uint32, error) {
 	b.vectors = append(b.vectors, v)
 
 	// Initialize empty adjacency list
-	b.graph = append(b.graph, make([]uint32, 0, b.opts.R))
+	b.graph = append(b.graph, make([]uint64, 0, b.opts.R))
 
 	return id, nil
 }
 
 // AddBatch adds multiple vectors to the index.
-func (b *Builder) AddBatch(vectors [][]float32) ([]uint32, error) {
-	ids := make([]uint32, len(vectors))
+func (b *Builder) AddBatch(vectors [][]float32) ([]uint64, error) {
+	ids := make([]uint64, len(vectors))
 	for i, vec := range vectors {
 		id, err := b.Add(vec)
 		if err != nil {
@@ -276,14 +276,14 @@ func (b *Builder) buildVamanaGraph(ctx context.Context) error {
 	rng := rand.New(rand.NewSource(42))
 	for i := 0; i < n; i++ {
 		// Add R/2 random edges initially
-		edges := make(map[uint32]struct{})
+		edges := make(map[uint64]struct{})
 		for len(edges) < R/2 && len(edges) < n-1 {
-			j := uint32(rng.Intn(n))
-			if j != uint32(i) {
+			j := uint64(rng.Intn(n))
+			if j != uint64(i) {
 				edges[j] = struct{}{}
 			}
 		}
-		b.graph[i] = make([]uint32, 0, len(edges))
+		b.graph[i] = make([]uint64, 0, len(edges))
 		for j := range edges {
 			b.graph[i] = append(b.graph[i], j)
 		}
@@ -299,15 +299,15 @@ func (b *Builder) buildVamanaGraph(ctx context.Context) error {
 		}
 
 		// Greedy search from entry point to find neighbors
-		neighbors := b.greedySearch(uint32(i), L)
+		neighbors := b.greedySearch(uint64(i), L)
 
 		// Robust prune to select R neighbors
-		pruned := b.robustPrune(uint32(i), neighbors, R, alpha)
+		pruned := b.robustPrune(uint64(i), neighbors, R, alpha)
 		b.graph[i] = pruned
 
 		// Add reverse edges
 		for _, neighbor := range pruned {
-			b.addEdge(neighbor, uint32(i), R, alpha)
+			b.addEdge(neighbor, uint64(i), R, alpha)
 		}
 	}
 
@@ -315,7 +315,7 @@ func (b *Builder) buildVamanaGraph(ctx context.Context) error {
 }
 
 // selectEntryPoint finds a central node as the entry point.
-func (b *Builder) selectEntryPoint() uint32 {
+func (b *Builder) selectEntryPoint() uint64 {
 	n := len(b.vectors)
 	if n == 0 {
 		return 0
@@ -334,12 +334,12 @@ func (b *Builder) selectEntryPoint() uint32 {
 
 	// Find nearest vector to centroid
 	minDist := float32(math.MaxFloat32)
-	entry := uint32(0)
+	entry := uint64(0)
 	for i, vec := range b.vectors {
 		dist := b.distFunc(centroid, vec)
 		if dist < minDist {
 			minDist = dist
-			entry = uint32(i)
+			entry = uint64(i)
 		}
 	}
 
@@ -347,7 +347,7 @@ func (b *Builder) selectEntryPoint() uint32 {
 }
 
 // greedySearch performs greedy search from entry point to target.
-func (b *Builder) greedySearch(target uint32, L int) []uint32 {
+func (b *Builder) greedySearch(target uint64, L int) []uint64 {
 	targetVec := b.vectors[target]
 
 	// Min-heap for candidates
@@ -355,7 +355,7 @@ func (b *Builder) greedySearch(target uint32, L int) []uint32 {
 	heap.Init(candidates)
 
 	// Visited set
-	visited := make(map[uint32]bool)
+	visited := make(map[uint64]bool)
 
 	// Start from entry point
 	entryDist := b.distFunc(b.vectors[b.entryPoint], targetVec)
@@ -402,7 +402,7 @@ func (b *Builder) greedySearch(target uint32, L int) []uint32 {
 		result = result[:L]
 	}
 
-	ids := make([]uint32, len(result))
+	ids := make([]uint64, len(result))
 	for i, r := range result {
 		ids[i] = r.id
 	}
@@ -410,12 +410,12 @@ func (b *Builder) greedySearch(target uint32, L int) []uint32 {
 }
 
 // robustPrune implements the Vamana robust pruning algorithm.
-func (b *Builder) robustPrune(node uint32, candidates []uint32, R int, alpha float32) []uint32 {
+func (b *Builder) robustPrune(node uint64, candidates []uint64, R int, alpha float32) []uint64 {
 	nodeVec := b.vectors[node]
 
 	// Compute distances to all candidates
 	type candidate struct {
-		id   uint32
+		id   uint64
 		dist float32
 	}
 	cands := make([]candidate, 0, len(candidates))
@@ -437,7 +437,7 @@ func (b *Builder) robustPrune(node uint32, candidates []uint32, R int, alpha flo
 	}
 
 	// Greedy selection with diversity
-	selected := make([]uint32, 0, R)
+	selected := make([]uint64, 0, R)
 	for _, c := range cands {
 		if len(selected) >= R {
 			break
@@ -462,7 +462,7 @@ func (b *Builder) robustPrune(node uint32, candidates []uint32, R int, alpha flo
 }
 
 // addEdge adds an edge from src to dst, pruning if necessary.
-func (b *Builder) addEdge(src, dst uint32, R int, alpha float32) {
+func (b *Builder) addEdge(src, dst uint64, R int, alpha float32) {
 	// Check if edge already exists
 	for _, neighbor := range b.graph[src] {
 		if neighbor == dst {
@@ -475,7 +475,7 @@ func (b *Builder) addEdge(src, dst uint32, R int, alpha float32) {
 
 	// Prune if over capacity
 	if len(b.graph[src]) > R {
-		candidates := make([]uint32, len(b.graph[src]))
+		candidates := make([]uint64, len(b.graph[src]))
 		copy(candidates, b.graph[src])
 		b.graph[src] = b.robustPrune(src, candidates, R, alpha)
 	}
@@ -521,7 +521,7 @@ func (b *Builder) writeMetaToWriter(w io.Writer) error {
 	}
 
 	// Write entry point
-	if err := writeUint32ToWriter(w, b.entryPoint); err != nil {
+	if err := writeUint64ToWriter(w, b.entryPoint); err != nil {
 		return err
 	}
 
@@ -563,7 +563,7 @@ func (b *Builder) writeGraphToWriter(w io.Writer) error {
 		}
 		// Write neighbors
 		for _, neighbor := range neighbors {
-			if err := writeUint32ToWriter(w, neighbor); err != nil {
+			if err := writeUint64ToWriter(w, neighbor); err != nil {
 				return err
 			}
 		}
@@ -632,7 +632,7 @@ func (b *Builder) writeVectorsFile() error {
 
 // distNode is a node with distance for heap operations.
 type distNode struct {
-	id   uint32
+	id   uint64
 	dist float32
 }
 
@@ -688,4 +688,12 @@ func writeUint32(f *os.File, v uint32) error {
 // writeFloat32 writes a float32 to a file (legacy, for backward compatibility).
 func writeFloat32(f *os.File, v float32) error {
 	return writeFloat32ToWriter(f, v)
+}
+
+// writeUint64ToWriter writes a uint64 to an io.Writer in little-endian format.
+func writeUint64ToWriter(w io.Writer, v uint64) error {
+	var buf [8]byte
+	binary.LittleEndian.PutUint64(buf[:], v)
+	_, err := w.Write(buf[:])
+	return err
 }

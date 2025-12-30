@@ -192,7 +192,7 @@ func (wp *WorkerPool[T]) Submit(ctx context.Context, req WorkRequest[T]) error {
 // in a closure following the same pattern.
 //
 // Thread-safety: Safe for concurrent calls from multiple goroutines.
-func (wp *WorkerPool[T]) SubmitBrute(ctx context.Context, req WorkRequest[T], filter func(id uint32) bool) error {
+func (wp *WorkerPool[T]) SubmitBrute(ctx context.Context, req WorkRequest[T], filter func(id uint64) bool) error {
 	wp.submitMu.RLock()
 	defer wp.submitMu.RUnlock()
 

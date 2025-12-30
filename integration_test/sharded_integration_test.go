@@ -290,7 +290,7 @@ func TestShardedSearchWithFilter(t *testing.T) {
 
 	// Query for k=10 with filter that only accepts specific IDs
 	// Since sharding uses local ID spaces, we filter based on assigned IDs
-	acceptedIDs := make(map[uint32]bool)
+	acceptedIDs := make(map[uint64]bool)
 	for i := 0; i < len(assignedIDs); i += 2 {
 		acceptedIDs[assignedIDs[i]] = true
 	}
@@ -301,7 +301,7 @@ func TestShardedSearchWithFilter(t *testing.T) {
 	}
 
 	results, err := vg.KNNSearch(ctx, query, 10, func(o *vecgo.KNNSearchOptions) {
-		o.FilterFunc = func(id uint32) bool {
+		o.FilterFunc = func(id uint64) bool {
 			return acceptedIDs[id]
 		}
 	})

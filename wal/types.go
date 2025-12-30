@@ -51,7 +51,7 @@ const (
 // Entry represents a single entry in the WAL.
 type Entry struct {
 	Type     OperationType
-	ID       uint32
+	ID       uint64
 	Vector   []float32
 	Data     []byte // Serialized user data
 	Metadata metadata.Metadata

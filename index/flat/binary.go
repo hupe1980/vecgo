@@ -77,7 +77,7 @@ func (f *Flat) WriteTo(w io.Writer) (int64, error) {
 
 	// Write file header
 	header := &persistence.FileHeader{
-		VectorCount: uint32(len(st.nodes) - len(st.freeList)),
+		VectorCount: uint64(len(st.nodes) - len(st.freeList)),
 		Dimension:   uint32(f.dimension.Load()),
 		IndexType:   persistence.IndexTypeFlat,
 		DataOffset:  64, // After header
@@ -99,22 +99,22 @@ func (f *Flat) WriteTo(w io.Writer) (int64, error) {
 	}
 
 	// Write freeList length and data
-	freeListLen := uint32(len(st.freeList))
-	buf4 := make([]byte, 4)
-	binary.LittleEndian.PutUint32(buf4, freeListLen)
-	if _, err := cw.Write(buf4); err != nil {
+	freeListLen := uint64(len(st.freeList))
+	buf8 := make([]byte, 8)
+	binary.LittleEndian.PutUint64(buf8, freeListLen)
+	if _, err := cw.Write(buf8); err != nil {
 		return cw.n, err
 	}
 	if freeListLen > 0 {
-		if err := writer.WriteUint32Slice(st.freeList); err != nil {
+		if err := writer.WriteUint64Slice(st.freeList); err != nil {
 			return cw.n, err
 		}
 	}
 
 	// Write node count
-	nodeCount := uint32(len(st.nodes))
-	binary.LittleEndian.PutUint32(buf4, nodeCount)
-	if _, err := cw.Write(buf4); err != nil {
+	nodeCount := uint64(len(st.nodes))
+	binary.LittleEndian.PutUint64(buf8, nodeCount)
+	if _, err := cw.Write(buf8); err != nil {
 		return cw.n, err
 	}
 
@@ -212,24 +212,24 @@ func (f *Flat) ReadFromWithOptions(r io.Reader, opts Options) error {
 	f.vectors = columnar.New(int(header.Dimension))
 
 	// Read freeList
-	freeListLenSlice, err := reader.ReadUint32Slice(1)
+	freeListLenSlice, err := reader.ReadUint64Slice(1)
 	if err != nil {
 		return err
 	}
 	freeListLen := freeListLenSlice[0]
 
-	var freeList []uint32
+	var freeList []uint64
 	if freeListLen > 0 {
-		freeList, err = reader.ReadUint32Slice(int(freeListLen))
+		freeList, err = reader.ReadUint64Slice(int(freeListLen))
 		if err != nil {
 			return err
 		}
 	} else {
-		freeList = []uint32{}
+		freeList = []uint64{}
 	}
 
 	// Read node count
-	nodeCountSlice, err := reader.ReadUint32Slice(1)
+	nodeCountSlice, err := reader.ReadUint64Slice(1)
 	if err != nil {
 		return err
 	}
@@ -256,9 +256,9 @@ func (f *Flat) ReadFromWithOptions(r io.Reader, opts Options) error {
 	vecSize := int(header.Dimension)
 	vec := make([]float32, vecSize)
 
-	for i := uint32(0); i < nodeCount; i++ {
+	for i := uint64(0); i < nodeCount; i++ {
 		// Read vector
-		if err := binary.Read(r, binary.LittleEndian, vec); err != nil {
+		if err := reader.ReadFloat32SliceInto(vec); err != nil {
 			return fmt.Errorf("failed to read node vector: %w", err)
 		}
 

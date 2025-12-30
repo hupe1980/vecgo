@@ -50,7 +50,7 @@ var _ index.Index = (*HNSW)(nil)
 var _ index.TransactionalIndex = (*HNSW)(nil)
 
 // OffsetSegment is a fixed-size array of node offsets.
-type OffsetSegment [nodeSegmentSize]atomic.Uint32
+type OffsetSegment [nodeSegmentSize]atomic.Uint64
 
 // Options represents the options for configuring HNSW.
 type Options struct {
@@ -77,17 +77,17 @@ var DefaultOptions = Options{
 // HNSW represents the Hierarchical Navigable Small World graph.
 type HNSW struct {
 	// Hot path: Atomic fields
-	entryPointAtomic atomic.Uint32
+	entryPointAtomic atomic.Uint64
 	maxLevelAtomic   atomic.Int32
 	dimensionAtomic  atomic.Int32
-	nextIDAtomic     atomic.Uint32
+	nextIDAtomic     atomic.Uint64
 	countAtomic      atomic.Int64 // Track live count
 
 	// Node storage: Segmented array of offsets
 	segments atomic.Pointer[[]*OffsetSegment]
 	// mmapOffsets is used for read-only mmap'd indexes to avoid indirection overhead.
 	// If non-nil, it takes precedence over segments.
-	mmapOffsets []uint32
+	mmapOffsets []uint64
 
 	// Arena for node data
 	arena  *arena.FlatArena
@@ -117,7 +117,7 @@ type HNSW struct {
 	freeListMu sync.Mutex   // Protects freeList
 
 	// State
-	freeList   []uint32
+	freeList   []uint64
 	tombstones *bitset.BitSet
 
 	// Resources
@@ -166,7 +166,7 @@ func New(optFns ...func(o *Options)) (*HNSW, error) {
 		opts:                   opts,
 		rng:                    rng,
 		// segments initialized to nil (atomic.Pointer zero value)
-		freeList:     make([]uint32, 0),
+		freeList:     make([]uint64, 0),
 		vectors:      opts.Vectors,
 		shardID:      0,
 		numShards:    1,
@@ -197,10 +197,10 @@ func New(optFns ...func(o *Options)) (*HNSW, error) {
 }
 
 // getNodeOffset returns the offset for the given ID, or 0 if not found.
-func (h *HNSW) getNodeOffset(id uint32) uint32 {
+func (h *HNSW) getNodeOffset(id uint64) uint64 {
 	// Fast path for mmap'd index
 	if len(h.mmapOffsets) > 0 {
-		if id >= uint32(len(h.mmapOffsets)) {
+		if id >= uint64(len(h.mmapOffsets)) {
 			return 0
 		}
 		return h.mmapOffsets[id]
@@ -225,7 +225,7 @@ func (h *HNSW) getNodeOffset(id uint32) uint32 {
 }
 
 // setNodeOffset sets the offset for the given ID.
-func (h *HNSW) setNodeOffset(id uint32, offset uint32) {
+func (h *HNSW) setNodeOffset(id uint64, offset uint64) {
 	h.growSegments(id)
 
 	segments := h.segments.Load()
@@ -237,7 +237,7 @@ func (h *HNSW) setNodeOffset(id uint32, offset uint32) {
 
 // growSegments ensures capacity for the given ID.
 // Uses Copy-On-Write (COW) for lock-free growth.
-func (h *HNSW) growSegments(id uint32) {
+func (h *HNSW) growSegments(id uint64) {
 	segmentIdx := int(id >> nodeSegmentBits)
 
 	// Fast path: check if segment exists
@@ -290,48 +290,48 @@ func (h *HNSW) growSegments(id uint32) {
 
 // Helper methods for node access
 
-func (h *HNSW) getLevel(id uint32) int {
+func (h *HNSW) getLevel(id uint64) int {
 	offset := h.getNodeOffset(id)
 	if offset == 0 {
 		return -1
 	}
 	buf := h.arena.Buffer()
-	return h.layout.getLevel(buf[offset:])
+	return h.layout.getLevel(buf[int(offset):])
 }
 
-func (h *HNSW) getConnections(id uint32, layer int) []uint32 {
-	h.shardedLocks[id%uint32(len(h.shardedLocks))].RLock()
-	defer h.shardedLocks[id%uint32(len(h.shardedLocks))].RUnlock()
+func (h *HNSW) getConnections(id uint64, layer int) []uint64 {
+	h.shardedLocks[id%uint64(len(h.shardedLocks))].RLock()
+	defer h.shardedLocks[id%uint64(len(h.shardedLocks))].RUnlock()
 
 	offset := h.getNodeOffset(id)
 	if offset == 0 {
 		return nil
 	}
 	buf := h.arena.Buffer()
-	level := h.layout.getLevel(buf[offset:])
-	return h.layout.getNeighbors(buf[offset:], level, layer)
+	level := h.layout.getLevel(buf[int(offset):])
+	return h.layout.getNeighbors(buf[int(offset):], level, layer)
 }
 
-func (h *HNSW) setConnections(id uint32, layer int, conns []uint32) {
+func (h *HNSW) setConnections(id uint64, layer int, conns []uint64) {
 	offset := h.getNodeOffset(id)
 	if offset == 0 {
 		return
 	}
 	buf := h.arena.Buffer()
 
-	h.layout.setLayerCount(buf[offset:], layer, uint32(len(conns)))
+	h.layout.setLayerCount(buf[int(offset):], layer, uint32(len(conns)))
 
 	_, neighborsOff := h.layout.layerOffsets(0, layer)
-	dest := buf[offset+neighborsOff:]
+	dest := buf[int(offset)+int(neighborsOff):]
 
 	for i, c := range conns {
-		binary.LittleEndian.PutUint32(dest[i*4:], c)
+		binary.LittleEndian.PutUint64(dest[i*8:], c)
 	}
 }
 
-func (h *HNSW) addConnection(sourceID, targetID uint32, level int) {
-	h.shardedLocks[sourceID%uint32(len(h.shardedLocks))].Lock()
-	defer h.shardedLocks[sourceID%uint32(len(h.shardedLocks))].Unlock()
+func (h *HNSW) addConnection(sourceID, targetID uint64, level int) {
+	h.shardedLocks[sourceID%uint64(len(h.shardedLocks))].Lock()
+	defer h.shardedLocks[sourceID%uint64(len(h.shardedLocks))].Unlock()
 
 	offset := h.getNodeOffset(sourceID)
 	if offset == 0 {
@@ -339,12 +339,12 @@ func (h *HNSW) addConnection(sourceID, targetID uint32, level int) {
 	}
 
 	buf := h.arena.Buffer()
-	sourceLevel := h.layout.getLevel(buf[offset:])
+	sourceLevel := h.layout.getLevel(buf[int(offset):])
 	if level > sourceLevel {
 		return // Should not happen
 	}
 
-	conns := h.layout.getNeighbors(buf[offset:], sourceLevel, level)
+	conns := h.layout.getNeighbors(buf[int(offset):], sourceLevel, level)
 
 	// Check if already connected
 	for _, c := range conns {
@@ -390,7 +390,7 @@ func (h *HNSW) addConnection(sourceID, targetID uint32, level int) {
 }
 
 // AllocateID returns a new ID.
-func (h *HNSW) AllocateID() uint32 {
+func (h *HNSW) AllocateID() uint64 {
 	h.freeListMu.Lock()
 	if n := len(h.freeList); n > 0 {
 		id := h.freeList[n-1]
@@ -403,7 +403,7 @@ func (h *HNSW) AllocateID() uint32 {
 }
 
 // ReleaseID releases an ID.
-func (h *HNSW) ReleaseID(id uint32) {
+func (h *HNSW) ReleaseID(id uint64) {
 	if h.getNodeOffset(id) != 0 {
 		return // Don't release live IDs
 	}
@@ -413,7 +413,7 @@ func (h *HNSW) ReleaseID(id uint32) {
 }
 
 // Insert inserts a vector.
-func (h *HNSW) Insert(ctx context.Context, v []float32) (uint32, error) {
+func (h *HNSW) Insert(ctx context.Context, v []float32) (uint64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
@@ -421,7 +421,7 @@ func (h *HNSW) Insert(ctx context.Context, v []float32) (uint32, error) {
 }
 
 // ApplyInsert inserts a vector with a specific ID (for WAL replay).
-func (h *HNSW) ApplyInsert(ctx context.Context, id uint32, v []float32) error {
+func (h *HNSW) ApplyInsert(ctx context.Context, id uint64, v []float32) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -430,19 +430,19 @@ func (h *HNSW) ApplyInsert(ctx context.Context, id uint32, v []float32) error {
 }
 
 // ApplyDelete deletes a node with a specific ID (for WAL replay).
-func (h *HNSW) ApplyDelete(ctx context.Context, id uint32) error {
+func (h *HNSW) ApplyDelete(ctx context.Context, id uint64) error {
 	return h.Delete(ctx, id)
 }
 
 // ApplyUpdate updates a node with a specific ID (for WAL replay).
-func (h *HNSW) ApplyUpdate(ctx context.Context, id uint32, v []float32) error {
+func (h *HNSW) ApplyUpdate(ctx context.Context, id uint64, v []float32) error {
 	return h.Update(ctx, id, v)
 }
 
 // BatchInsert inserts multiple vectors.
 func (h *HNSW) BatchInsert(ctx context.Context, vectors [][]float32) index.BatchInsertResult {
 	result := index.BatchInsertResult{
-		IDs:    make([]uint32, len(vectors)),
+		IDs:    make([]uint64, len(vectors)),
 		Errors: make([]error, len(vectors)),
 	}
 	if err := ctx.Err(); err != nil {
@@ -460,7 +460,7 @@ func (h *HNSW) BatchInsert(ctx context.Context, vectors [][]float32) index.Batch
 }
 
 // insert is the unified insertion logic.
-func (h *HNSW) insert(v []float32, id uint32, layer int, useProvidedID bool) (uint32, error) {
+func (h *HNSW) insert(v []float32, id uint64, layer int, useProvidedID bool) (uint64, error) {
 	if len(v) == 0 {
 		return 0, index.ErrEmptyVector
 	}
@@ -521,15 +521,15 @@ func (h *HNSW) insert(v []float32, id uint32, layer int, useProvidedID bool) (ui
 
 	// Create Node using Arena
 	nodeSize := h.layout.Size(layer)
-	offset, err := h.arena.Alloc(nodeSize)
+	offset, err := h.arena.Alloc(uint64(nodeSize))
 	if err != nil {
 		return 0, err
 	}
 
 	// Initialize fields
 	buf := h.arena.Buffer()
-	binary.LittleEndian.PutUint32(buf[offset+nodeIDOffset:], id)
-	binary.LittleEndian.PutUint32(buf[offset+nodeLevelOffset:], uint32(layer))
+	binary.LittleEndian.PutUint64(buf[int(offset)+nodeIDOffset:], id)
+	binary.LittleEndian.PutUint32(buf[int(offset)+nodeLevelOffset:], uint32(layer))
 
 	// Store Vector
 	if err := h.vectors.SetVector(id, vec); err != nil {
@@ -578,7 +578,7 @@ func (h *HNSW) insert(v []float32, id uint32, layer int, useProvidedID bool) (ui
 }
 
 // insertNode performs the graph traversal and linking.
-func (h *HNSW) insertNode(id uint32, vec []float32, layer int) error {
+func (h *HNSW) insertNode(id uint64, vec []float32, layer int) error {
 	epID := h.entryPointAtomic.Load()
 
 	// Handle case where entry point was deleted concurrently
@@ -634,9 +634,9 @@ func (h *HNSW) insertNode(id uint32, vec []float32, layer int) error {
 		h.maxQueuePool.Put(candidates)
 
 		// Add bidirectional connections
-		h.shardedLocks[id%uint32(len(h.shardedLocks))].Lock()
+		h.shardedLocks[id%uint64(len(h.shardedLocks))].Lock()
 		h.setConnections(id, level, neighbors)
-		h.shardedLocks[id%uint32(len(h.shardedLocks))].Unlock()
+		h.shardedLocks[id%uint64(len(h.shardedLocks))].Unlock()
 
 		for _, neighborID := range neighbors {
 			h.addConnection(neighborID, id, level)
@@ -647,20 +647,20 @@ func (h *HNSW) insertNode(id uint32, vec []float32, layer int) error {
 }
 
 // selectNeighbors selects the best neighbors from candidates.
-func (h *HNSW) selectNeighbors(candidates *queue.PriorityQueue, m int) []uint32 {
+func (h *HNSW) selectNeighbors(candidates *queue.PriorityQueue, m int) []uint64 {
 	if h.opts.Heuristic {
 		return h.selectNeighborsHeuristic(candidates, m)
 	}
 	return h.selectNeighborsSimple(candidates, m)
 }
 
-func (h *HNSW) selectNeighborsSimple(candidates *queue.PriorityQueue, m int) []uint32 {
+func (h *HNSW) selectNeighborsSimple(candidates *queue.PriorityQueue, m int) []uint64 {
 	// Simple selection (keep top M)
 	for candidates.Len() > m {
 		_, _ = candidates.PopItem()
 	}
 
-	res := make([]uint32, 0, candidates.Len())
+	res := make([]uint64, 0, candidates.Len())
 	for candidates.Len() > 0 {
 		item, _ := candidates.PopItem()
 		res = append(res, item.Node)
@@ -672,7 +672,7 @@ func (h *HNSW) selectNeighborsSimple(candidates *queue.PriorityQueue, m int) []u
 	return res
 }
 
-func (h *HNSW) selectNeighborsHeuristic(candidates *queue.PriorityQueue, m int) []uint32 {
+func (h *HNSW) selectNeighborsHeuristic(candidates *queue.PriorityQueue, m int) []uint64 {
 	if candidates.Len() <= m {
 		return h.selectNeighborsSimple(candidates, m) // Fallback to simple if few candidates
 	}
@@ -686,7 +686,7 @@ func (h *HNSW) selectNeighborsHeuristic(candidates *queue.PriorityQueue, m int) 
 		temp[i], _ = candidates.PopItem()
 	}
 
-	result := make([]uint32, 0, m)
+	result := make([]uint64, 0, m)
 	resultVecs := make([][]float32, 0, m)
 
 	for _, cand := range temp {
@@ -745,7 +745,7 @@ func (h *HNSW) selectNeighborsHeuristic(candidates *queue.PriorityQueue, m int) 
 // 1. Correct recall (returns k results if available, not fewer)
 // 2. Less wasted computation (skips filtered regions)
 // 3. Matches exact search behavior
-func (h *HNSW) searchLayer(query []float32, epID uint32, epDist float32, level int, ef int, filter func(uint32) bool) (*queue.PriorityQueue, error) {
+func (h *HNSW) searchLayer(query []float32, epID uint64, epDist float32, level int, ef int, filter func(uint64) bool) (*queue.PriorityQueue, error) {
 	visited := h.visitedPool.Get().(*visited.VisitedSet)
 	visited.Reset()
 	defer h.visitedPool.Put(visited)
@@ -767,7 +767,7 @@ func (h *HNSW) searchLayer(query []float32, epID uint32, epDist float32, level i
 	candidates.PushItem(queue.PriorityQueueItem{Node: epID, Distance: epDist})
 
 	// Only add to results if it passes the filter AND is not deleted
-	if (filter == nil || filter(epID)) && !h.tombstones.Test(int(epID)) {
+	if (filter == nil || filter(epID)) && !h.tombstones.Test(epID) {
 		results.PushItem(queue.PriorityQueueItem{Node: epID, Distance: epDist})
 	}
 
@@ -802,23 +802,15 @@ func (h *HNSW) searchLayer(query []float32, epID uint32, epDist float32, level i
 						shouldExplore = false
 					}
 				}
+
 				if shouldExplore {
 					candidates.PushItem(queue.PriorityQueueItem{Node: nextID, Distance: nextDist})
-				}
 
-				// PRE-FILTER: Only add to results if passes filter AND is not deleted
-				if (filter == nil || filter(nextID)) && !h.tombstones.Test(int(nextID)) {
-					// Check if we should add to results
-					if results.Len() == 0 {
+					// Only add to results if it passes the filter AND is not deleted
+					if (filter == nil || filter(nextID)) && !h.tombstones.Test(nextID) {
 						results.PushItem(queue.PriorityQueueItem{Node: nextID, Distance: nextDist})
-					} else {
-						worst, _ := results.TopItem()
-						if results.Len() < ef || nextDist < worst.Distance {
-							results.PushItem(queue.PriorityQueueItem{Node: nextID, Distance: nextDist})
-
-							if results.Len() > ef {
-								_, _ = results.PopItem()
-							}
+						if results.Len() > ef {
+							_, _ = results.PopItem()
 						}
 					}
 				}
@@ -830,7 +822,7 @@ func (h *HNSW) searchLayer(query []float32, epID uint32, epDist float32, level i
 }
 
 // dist computes distance between vector and node ID.
-func (h *HNSW) dist(v []float32, id uint32) float32 {
+func (h *HNSW) dist(v []float32, id uint64) float32 {
 	vec, ok := h.vectors.GetVector(id)
 	if !ok {
 		return math.MaxFloat32
@@ -840,14 +832,17 @@ func (h *HNSW) dist(v []float32, id uint32) float32 {
 
 // Delete marks a node as deleted (logical delete).
 // This is O(1) and avoids graph instability.
-func (h *HNSW) Delete(ctx context.Context, id uint32) error {
+func (h *HNSW) Delete(ctx context.Context, id uint64) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
 	// Ensure bitset capacity
-	h.tombstones.Grow(int(id) + 1)
-	h.tombstones.Set(int(id))
+	h.tombstones.Grow(id + 1)
+	if h.tombstones.Test(id) {
+		return nil
+	}
+	h.tombstones.Set(id)
 
 	// We do NOT remove from graph or release ID.
 	// This preserves graph connectivity and avoids O(N) entry point scans.
@@ -861,17 +856,17 @@ func (h *HNSW) Delete(ctx context.Context, id uint32) error {
 	return nil
 }
 
-func (h *HNSW) removeLink(id uint32, neighborID uint32, layer int) {
-	h.shardedLocks[id%uint32(len(h.shardedLocks))].Lock()
-	defer h.shardedLocks[id%uint32(len(h.shardedLocks))].Unlock()
+func (h *HNSW) removeLink(id uint64, neighborID uint64, layer int) {
+	h.shardedLocks[id%uint64(len(h.shardedLocks))].Lock()
+	defer h.shardedLocks[id%uint64(len(h.shardedLocks))].Unlock()
 
 	offset := h.getNodeOffset(id)
 	if offset == 0 {
 		return
 	}
 	buf := h.arena.Buffer()
-	level := h.layout.getLevel(buf[offset:])
-	conns := h.layout.getNeighbors(buf[offset:], level, layer)
+	level := h.layout.getLevel(buf[int(offset):])
+	conns := h.layout.getNeighbors(buf[int(offset):], level, layer)
 
 	for i, c := range conns {
 		if c == neighborID {
@@ -886,14 +881,14 @@ func (h *HNSW) removeLink(id uint32, neighborID uint32, layer int) {
 }
 
 // Update updates a vector.
-func (h *HNSW) Update(ctx context.Context, id uint32, v []float32) error {
+func (h *HNSW) Update(ctx context.Context, id uint64, v []float32) error {
 	offset := h.getNodeOffset(id)
 	if offset == 0 {
 		return &index.ErrNodeNotFound{ID: id}
 	}
 	// Read layer
 	buf := h.arena.Buffer()
-	layer := h.layout.getLevel(buf[offset:])
+	layer := h.layout.getLevel(buf[int(offset):])
 
 	if err := h.Delete(ctx, id); err != nil {
 		return err
@@ -955,7 +950,7 @@ func (h *HNSW) KNNSearch(ctx context.Context, q []float32, k int, opts *index.Se
 	}
 
 	// 2. Search layer 0 with pre-filtering
-	var filter func(uint32) bool
+	var filter func(uint64) bool
 	if opts != nil && opts.Filter != nil {
 		filter = opts.Filter
 	}
@@ -1004,7 +999,7 @@ func (h *HNSW) KNNSearchStream(ctx context.Context, q []float32, k int, opts *in
 }
 
 // BruteSearch implements brute force search.
-func (h *HNSW) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint32) bool) ([]index.SearchResult, error) {
+func (h *HNSW) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint64) bool) ([]index.SearchResult, error) {
 	// Simple scan
 	pq := queue.NewMax(k)
 
@@ -1019,7 +1014,7 @@ func (h *HNSW) BruteSearch(ctx context.Context, query []float32, k int, filter f
 				if offset == 0 {
 					continue
 				}
-				nodeID := uint32(i)*nodeSegmentSize + uint32(j)
+				nodeID := uint64(i)*nodeSegmentSize + uint64(j)
 				if filter != nil && !filter(nodeID) {
 					continue
 				}
@@ -1047,8 +1042,8 @@ func (h *HNSW) BruteSearch(ctx context.Context, query []float32, k int, filter f
 }
 
 // Helper for layer generation
-func (h *HNSW) layerForApplyInsert(id uint32) int {
-	x := uint64(id) + 0x9e3779b97f4a7c15
+func (h *HNSW) layerForApplyInsert(id uint64) int {
+	x := id + 0x9e3779b97f4a7c15
 	x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9
 	x = (x ^ (x >> 27)) * 0x94d049bb133111eb
 	x ^= x >> 31
@@ -1063,8 +1058,8 @@ func (h *HNSW) layerForApplyInsert(id uint32) int {
 
 // Sharding stubs
 func (h *HNSW) VectorCount() int { return int(h.countAtomic.Load()) }
-func (h *HNSW) ContainsID(id uint32) bool {
-	if h.tombstones.Test(int(id)) {
+func (h *HNSW) ContainsID(id uint64) bool {
+	if h.tombstones.Test(id) {
 		return false
 	}
 	return h.getNodeOffset(id) != 0
@@ -1076,7 +1071,7 @@ func NewSharded(shardID, numShards int, optFns ...func(o *Options)) (*HNSW, erro
 }
 
 // VectorByID returns vector.
-func (h *HNSW) VectorByID(ctx context.Context, id uint32) ([]float32, error) {
+func (h *HNSW) VectorByID(ctx context.Context, id uint64) ([]float32, error) {
 	vec, ok := h.vectors.GetVector(id)
 	if !ok {
 		return nil, &index.ErrNodeNotFound{ID: id}

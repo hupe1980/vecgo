@@ -302,7 +302,7 @@ func (w *WAL) scanForSeqNum() error {
 // LogInsert logs an insert operation.
 //
 // This uses the prepare/commit protocol (two entries) so recovery is atomic.
-func (w *WAL) LogInsert(id uint32, vector []float32, data []byte, meta metadata.Metadata) error {
+func (w *WAL) LogInsert(id uint64, vector []float32, data []byte, meta metadata.Metadata) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -329,7 +329,7 @@ func (w *WAL) LogInsert(id uint32, vector []float32, data []byte, meta metadata.
 // LogUpdate logs an update operation.
 //
 // This uses the prepare/commit protocol (two entries) so recovery is atomic.
-func (w *WAL) LogUpdate(id uint32, vector []float32, data []byte, meta metadata.Metadata) error {
+func (w *WAL) LogUpdate(id uint64, vector []float32, data []byte, meta metadata.Metadata) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -356,7 +356,7 @@ func (w *WAL) LogUpdate(id uint32, vector []float32, data []byte, meta metadata.
 // LogDelete logs a delete operation.
 //
 // This uses the prepare/commit protocol (two entries) so recovery is atomic.
-func (w *WAL) LogDelete(id uint32) error {
+func (w *WAL) LogDelete(id uint64) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -382,7 +382,7 @@ func (w *WAL) LogDelete(id uint32) error {
 
 // LogPrepareInsert writes a prepare entry for an insert.
 // Prepare entries are NOT durability boundaries; Commit entries are.
-func (w *WAL) LogPrepareInsert(id uint32, vector []float32, data []byte, meta metadata.Metadata) error {
+func (w *WAL) LogPrepareInsert(id uint64, vector []float32, data []byte, meta metadata.Metadata) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -395,7 +395,7 @@ func (w *WAL) LogPrepareInsert(id uint32, vector []float32, data []byte, meta me
 }
 
 // LogCommitInsert writes a commit entry for an insert and fsyncs the WAL.
-func (w *WAL) LogCommitInsert(id uint32) error {
+func (w *WAL) LogCommitInsert(id uint64) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -415,7 +415,7 @@ func (w *WAL) LogCommitInsert(id uint32) error {
 }
 
 // LogPrepareUpdate writes a prepare entry for an update.
-func (w *WAL) LogPrepareUpdate(id uint32, vector []float32, data []byte, meta metadata.Metadata) error {
+func (w *WAL) LogPrepareUpdate(id uint64, vector []float32, data []byte, meta metadata.Metadata) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -428,7 +428,7 @@ func (w *WAL) LogPrepareUpdate(id uint32, vector []float32, data []byte, meta me
 }
 
 // LogCommitUpdate writes a commit entry for an update and fsyncs the WAL.
-func (w *WAL) LogCommitUpdate(id uint32) error {
+func (w *WAL) LogCommitUpdate(id uint64) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -448,7 +448,7 @@ func (w *WAL) LogCommitUpdate(id uint32) error {
 }
 
 // LogPrepareDelete writes a prepare entry for a delete.
-func (w *WAL) LogPrepareDelete(id uint32) error {
+func (w *WAL) LogPrepareDelete(id uint64) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -461,7 +461,7 @@ func (w *WAL) LogPrepareDelete(id uint32) error {
 }
 
 // LogCommitDelete writes a commit entry for a delete and fsyncs the WAL.
-func (w *WAL) LogCommitDelete(id uint32) error {
+func (w *WAL) LogCommitDelete(id uint64) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -481,7 +481,7 @@ func (w *WAL) LogCommitDelete(id uint32) error {
 }
 
 // LogPrepareBatchInsert writes prepare entries for a batch insert.
-func (w *WAL) LogPrepareBatchInsert(ids []uint32, vectors [][]float32, dataSlice [][]byte, metadataSlice []metadata.Metadata) error {
+func (w *WAL) LogPrepareBatchInsert(ids []uint64, vectors [][]float32, dataSlice [][]byte, metadataSlice []metadata.Metadata) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -496,7 +496,7 @@ func (w *WAL) LogPrepareBatchInsert(ids []uint32, vectors [][]float32, dataSlice
 }
 
 // LogCommitBatchInsert writes commit entries for a batch insert and fsyncs once.
-func (w *WAL) LogCommitBatchInsert(ids []uint32) error {
+func (w *WAL) LogCommitBatchInsert(ids []uint64) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -520,7 +520,7 @@ func (w *WAL) LogCommitBatchInsert(ids []uint32) error {
 // LogBatchInsert logs multiple insert operations efficiently.
 //
 // This uses the prepare/commit protocol and fsyncs once at the end (depending on Options.Sync).
-func (w *WAL) LogBatchInsert(ids []uint32, vectors [][]float32, dataSlice [][]byte, metadataSlice []metadata.Metadata) error {
+func (w *WAL) LogBatchInsert(ids []uint64, vectors [][]float32, dataSlice [][]byte, metadataSlice []metadata.Metadata) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 

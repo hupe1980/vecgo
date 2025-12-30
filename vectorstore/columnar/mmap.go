@@ -18,8 +18,8 @@ import (
 // Thread safety: all read operations are safe for concurrent access.
 type MmapStore struct {
 	dim     uint32
-	count   uint32
-	live    uint32
+	count   uint64
+	live    uint64
 	data    []float32 // vector data (copied from mmap)
 	deleted []uint64  // deletion bitmap (copied from mmap)
 	reader  *mmap.File
@@ -75,8 +75,8 @@ func OpenMmap(filename string) (*MmapStore, io.Closer, error) {
 
 	store := &MmapStore{
 		dim:    header.Dimension,
-		count:  uint32(header.Count),
-		live:   uint32(header.LiveCount),
+		count:  header.Count,
+		live:   header.LiveCount,
 		reader: reader,
 	}
 
@@ -138,19 +138,19 @@ func (s *MmapStore) Dimension() int {
 }
 
 // Count returns the total number of vectors (including deleted).
-func (s *MmapStore) Count() uint32 {
+func (s *MmapStore) Count() uint64 {
 	return s.count
 }
 
 // LiveCount returns the number of non-deleted vectors.
-func (s *MmapStore) LiveCount() uint32 {
+func (s *MmapStore) LiveCount() uint64 {
 	return s.live
 }
 
 // GetVector returns the vector at the given ID.
 // Returns nil, false if the ID is out of bounds or the vector is deleted.
 // The returned slice aliases mmap'd memory; do not modify.
-func (s *MmapStore) GetVector(id uint32) ([]float32, bool) {
+func (s *MmapStore) GetVector(id uint64) ([]float32, bool) {
 	if id >= s.count {
 		return nil, false
 	}
@@ -172,7 +172,7 @@ func (s *MmapStore) GetVector(id uint32) ([]float32, bool) {
 }
 
 // GetVectorUnsafe returns the vector without checking deletion status.
-func (s *MmapStore) GetVectorUnsafe(id uint32) ([]float32, bool) {
+func (s *MmapStore) GetVectorUnsafe(id uint64) ([]float32, bool) {
 	if id >= s.count {
 		return nil, false
 	}
@@ -189,21 +189,21 @@ func (s *MmapStore) GetVectorUnsafe(id uint32) ([]float32, bool) {
 }
 
 // SetVector is not supported on read-only mmap stores.
-func (s *MmapStore) SetVector(id uint32, v []float32) error {
+func (s *MmapStore) SetVector(id uint64, v []float32) error {
 	return fmt.Errorf("columnar: mmap store is read-only")
 }
 
 // DeleteVector is not supported on read-only mmap stores.
-func (s *MmapStore) DeleteVector(id uint32) error {
+func (s *MmapStore) DeleteVector(id uint64) error {
 	return fmt.Errorf("columnar: mmap store is read-only")
 }
 
 // IsDeleted returns true if the vector at id is deleted.
-func (s *MmapStore) IsDeleted(id uint32) bool {
+func (s *MmapStore) IsDeleted(id uint64) bool {
 	return s.isDeleted(id)
 }
 
-func (s *MmapStore) isDeleted(id uint32) bool {
+func (s *MmapStore) isDeleted(id uint64) bool {
 	bitmapIdx := id / 64
 	if int(bitmapIdx) >= len(s.deleted) {
 		return false
@@ -213,10 +213,10 @@ func (s *MmapStore) isDeleted(id uint32) bool {
 }
 
 // Iterate calls fn for each live vector. Return false from fn to stop iteration.
-func (s *MmapStore) Iterate(fn func(id uint32, vec []float32) bool) {
+func (s *MmapStore) Iterate(fn func(id uint64, vec []float32) bool) {
 	dim := int(s.dim)
 
-	for id := uint32(0); id < s.count; id++ {
+	for id := uint64(0); id < s.count; id++ {
 		if s.isDeleted(id) {
 			continue
 		}

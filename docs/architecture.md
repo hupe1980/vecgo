@@ -78,18 +78,18 @@ The coordinator is a **proper interface** that orchestrates all mutation operati
 ```go
 type Coordinator[T any] interface {
     // Mutations
-    Insert(ctx context.Context, vector []float32, data T, meta metadata.Metadata) (uint32, error)
-    BatchInsert(ctx context.Context, vectors [][]float32, data []T, meta []metadata.Metadata) ([]uint32, error)
-    Update(ctx context.Context, id uint32, vector []float32, data T, meta metadata.Metadata) error
-    Delete(ctx context.Context, id uint32) error
+    Insert(ctx context.Context, vector []float32, data T, meta metadata.Metadata) (uint64, error)
+    BatchInsert(ctx context.Context, vectors [][]float32, data []T, meta []metadata.Metadata) ([]uint64, error)
+    Update(ctx context.Context, id uint64, vector []float32, data T, meta metadata.Metadata) error
+    Delete(ctx context.Context, id uint64) error
 
     // Retrieval
-    Get(id uint32) (T, bool)
-    GetMetadata(id uint32) (metadata.Metadata, bool)
+    Get(id uint64) (T, bool)
+    GetMetadata(id uint64) (metadata.Metadata, bool)
 
     // Search
     KNNSearch(ctx context.Context, query []float32, k int, opts *index.SearchOptions) ([]index.SearchResult, error)
-    BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint32) bool) ([]index.SearchResult, error)
+    BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint64) bool) ([]index.SearchResult, error)
     HybridSearch(ctx context.Context, query []float32, k int, opts *HybridSearchOptions) ([]index.SearchResult, error)
     KNNSearchStream(ctx context.Context, query []float32, k int, opts *index.SearchOptions) iter.Seq2[index.SearchResult, error]
 
@@ -125,7 +125,7 @@ type Coordinator[T any] interface {
    - Timeout handling: Respects ctx.Done() during parallel search operations
    - **Worker Pool**: Fixed goroutine pool for parallel searches (zero goroutine creation per search)
    - Fan-out search to all shards via worker pool, merge results
-   - **GlobalID encoding**: `[ShardID:8 bits][LocalID:24 bits]`
+   - **GlobalID encoding**: `[ShardID:8 bits][LocalID:56 bits]`
    - O(1) routing for Update/Delete/Get operations
    - **Performance**: Linear write scaling with number of shards
 
@@ -166,21 +166,34 @@ To scale beyond a single core's capacity, Vecgo implements a **Shared-Nothing Sh
     *   **RWMutex** (Lock contention is isolated to the shard)
 
 *   **Global ID Encoding**:
-    Vecgo uses a 32-bit `GlobalID` that encodes routing information directly into the ID:
+    Vecgo uses a 64-bit `GlobalID` that encodes routing information directly into the ID:
     ```
-    | Shard Index (8 bits) | Local ID (24 bits) |
+    | Shard Index (8 bits) | Local ID (56 bits) |
     |----------------------|--------------------|
     ```
     *   **Max Shards**: 256
-    *   **Max Vectors per Shard**: ~16.7 Million
-    *   **Total Capacity**: ~4.2 Billion vectors
+    *   **Max Vectors per Shard**: ~72 Quadrillion (effectively infinite)
+    *   **Total Capacity**: Infinite for all practical purposes
+    *   **Why 64-bit?**: Prevents ID exhaustion in long-running systems and aligns with DiskANN's native storage format.
 
 *   **Routing**:
     *   **Insert**: Round-robin distribution ensures balanced load.
-    *   **Update/Delete**: $O(1)$ routing. The shard index is extracted from the ID `(id >> 24)`, allowing direct access to the correct shard without a lookup table.
+    *   **Update/Delete**: $O(1)$ routing. The shard index is extracted from the ID `(id >> 56)`, allowing direct access to the correct shard without a lookup table.
     *   **Search**: Scatter-Gather. The request is fanned out to all shards in parallel using a worker pool. Results are merged (Top-K) at the coordinator level.
 
-#### B. Unified Metadata Index (Hybrid Search)
+#### B. Update Semantics
+
+Updates in vector databases are complex due to graph topology maintenance. Vecgo enforces strict update strategies per index type:
+
+| Index Type | Update Strategy | Description |
+|------------|-----------------|-------------|
+| **Flat** | **In-Place** | Direct overwrite of the vector in the columnar store. Safe and fast ($O(1)$). |
+| **HNSW** | **Delete + Insert** | The old node is soft-deleted (tombstone), and the new vector is inserted as a fresh node. This prevents graph degradation over time. |
+| **DiskANN** | **Tombstone + MemTable** | The on-disk vector is marked deleted. The new vector is inserted into the in-memory MemTable (LSM-style). |
+
+**Default Behavior**: `UpdateModeDeleteInsert` is the default for graph-based indexes to guarantee recall.
+
+#### C. Unified Metadata Index (Hybrid Search)
 
 Metadata filtering is often a bottleneck in vector databases. Vecgo solves this with a **Unified Index** (`metadata/unified.go`).
 
@@ -436,6 +449,47 @@ The WAL ensures durability and crash recovery.
 │   - segment-000002.wal                            │
 └────────────────────────────────────────────────────┘
 ```
+
+### Correctness & Ordering
+
+To guarantee consistency, Vecgo enforces strict ordering between the WAL and the Index:
+
+1.  **WAL First**: `WAL.Append()` is called *before* any modification to the in-memory index.
+2.  **Index Second**: `Index.Apply()` is called only after the WAL entry is successfully written (and fsync'd, depending on durability mode).
+3.  **Failure Handling**: If the WAL write fails, the operation returns an error, and the index remains untouched. If the process crashes after the WAL write but before the index update, the Replay mechanism restores the state.
+
+### Replay Mechanism
+
+On startup, the system performs a crash recovery:
+1.  **Load Snapshot**: The latest valid snapshot is loaded into memory.
+2.  **Replay WAL**: The WAL is replayed from the point of the last snapshot.
+3.  **Idempotency**: Operations are applied to the MemTable/Index to restore the state to the moment of the crash.
+
+---
+
+## MemTable Lifecycle (LSM-Tree)
+
+For high-throughput writes (especially in DiskANN), Vecgo uses an LSM-tree inspired lifecycle for MemTables:
+
+1.  **Hot (Mutable)**:
+    *   Active MemTable receiving new writes.
+    *   Stored in `internal/arena` for fast allocation.
+    *   Concurrent reads allowed; single writer.
+
+2.  **Flushing (Immutable)**:
+    *   When the Hot MemTable fills up, it is rotated to "Flushing" state.
+    *   It becomes immutable (read-only).
+    *   A background worker writes it to disk (creating a new disk segment).
+
+3.  **Cold (On-Disk)**:
+    *   Data is now persisted in a disk segment (e.g., SSTable or DiskANN segment).
+    *   The in-memory MemTable is discarded.
+    *   Reads are served via mmap or cached I/O.
+
+4.  **Garbage Collection (Compaction)**:
+    *   Background process merges small disk segments into larger ones.
+    *   Tombstones (deleted items) are purged.
+    *   Ensures read performance doesn't degrade over time.
 
 ### Durability Modes
 

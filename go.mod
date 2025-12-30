@@ -3,7 +3,7 @@ module github.com/hupe1980/vecgo
 go 1.24.11
 
 require (
-	github.com/RoaringBitmap/roaring v1.9.4
+	github.com/RoaringBitmap/roaring/v2 v2.14.4
 	github.com/goccy/go-json v0.10.5
 	github.com/klauspost/compress v1.18.2
 	github.com/stretchr/testify v1.11.1

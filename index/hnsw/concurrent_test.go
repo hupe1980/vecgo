@@ -190,7 +190,7 @@ func TestConcurrentDeletes(t *testing.T) {
 	const numVectors = 1000
 
 	// Insert vectors
-	ids := make([]uint32, numVectors)
+	ids := make([]uint64, numVectors)
 	for i := 0; i < numVectors; i++ {
 		vector := make([]float32, dim)
 		for j := range vector {

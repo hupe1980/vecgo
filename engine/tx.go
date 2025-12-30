@@ -48,40 +48,40 @@ type Tx[T any] struct {
 }
 
 // allocateID allocates a new ID from the index
-func (tx *Tx[T]) allocateID() uint32 {
+func (tx *Tx[T]) allocateID() uint64 {
 	return tx.txIndex.AllocateID()
 }
 
 // releaseID releases an ID back to the index
-func (tx *Tx[T]) releaseID(id uint32) {
+func (tx *Tx[T]) releaseID(id uint64) {
 	tx.txIndex.ReleaseID(id)
 }
 
 // applyInsert applies an insert operation to the index
-func (tx *Tx[T]) applyInsert(ctx context.Context, id uint32, vector []float32) error {
+func (tx *Tx[T]) applyInsert(ctx context.Context, id uint64, vector []float32) error {
 	return tx.txIndex.ApplyInsert(ctx, id, vector)
 }
 
 // applyUpdate applies an update operation to the index
-func (tx *Tx[T]) applyUpdate(ctx context.Context, id uint32, vector []float32) error {
+func (tx *Tx[T]) applyUpdate(ctx context.Context, id uint64, vector []float32) error {
 	return tx.txIndex.ApplyUpdate(ctx, id, vector)
 }
 
 // applyDelete applies a delete operation to the index
-func (tx *Tx[T]) applyDelete(ctx context.Context, id uint32) error {
+func (tx *Tx[T]) applyDelete(ctx context.Context, id uint64) error {
 	return tx.txIndex.ApplyDelete(ctx, id)
 }
 
 // vectorByIDLocked retrieves a vector from the index by ID.
 // vectorByID retrieves a vector from the index by ID
-func (tx *Tx[T]) vectorByID(ctx context.Context, id uint32) ([]float32, error) {
+func (tx *Tx[T]) vectorByID(ctx context.Context, id uint64) ([]float32, error) {
 	tx.mu.Lock()
 	defer tx.mu.Unlock()
 	return tx.vectorByIDLocked(ctx, id)
 }
 
 // Caller must hold tx.mu.
-func (tx *Tx[T]) vectorByIDLocked(ctx context.Context, id uint32) ([]float32, error) {
+func (tx *Tx[T]) vectorByIDLocked(ctx context.Context, id uint64) ([]float32, error) {
 	// Check MemTable first
 	if vec, found, isDeleted := tx.memTable.Get(id); found {
 		if isDeleted {
@@ -108,7 +108,7 @@ func (tx *Tx[T]) encodePayload(data T) ([]byte, error) {
 }
 
 // Insert inserts a new vector+payload+(optional) metadata atomically.
-func (tx *Tx[T]) Insert(ctx context.Context, vector []float32, data T, meta metadata.Metadata) (uint32, error) {
+func (tx *Tx[T]) Insert(ctx context.Context, vector []float32, data T, meta metadata.Metadata) (uint64, error) {
 	tx.mu.Lock()
 	defer tx.mu.Unlock()
 
@@ -184,7 +184,7 @@ func (tx *Tx[T]) Insert(ctx context.Context, vector []float32, data T, meta meta
 }
 
 // BatchInsert inserts multiple vectors+payloads+(optional) metadata atomically.
-func (tx *Tx[T]) BatchInsert(ctx context.Context, vectors [][]float32, dataSlice []T, metadataSlice []metadata.Metadata) ([]uint32, error) {
+func (tx *Tx[T]) BatchInsert(ctx context.Context, vectors [][]float32, dataSlice []T, metadataSlice []metadata.Metadata) ([]uint64, error) {
 	tx.mu.Lock()
 	defer tx.mu.Unlock()
 
@@ -198,7 +198,7 @@ func (tx *Tx[T]) BatchInsert(ctx context.Context, vectors [][]float32, dataSlice
 		return nil, nil
 	}
 
-	ids := make([]uint32, len(vectors))
+	ids := make([]uint64, len(vectors))
 	payloads := make([][]byte, len(vectors))
 	for i := range vectors {
 		ids[i] = tx.allocateID()
@@ -245,7 +245,7 @@ func (tx *Tx[T]) BatchInsert(ctx context.Context, vectors [][]float32, dataSlice
 		}
 	}
 
-	items := make(map[uint32]T, len(ids))
+	items := make(map[uint64]T, len(ids))
 	for i := range ids {
 		items[ids[i]] = dataSlice[i]
 	}
@@ -262,7 +262,7 @@ func (tx *Tx[T]) BatchInsert(ctx context.Context, vectors [][]float32, dataSlice
 	}
 
 	// Safe-by-default: clone metadata to prevent external mutation
-	metaItems := make(map[uint32]metadata.Metadata)
+	metaItems := make(map[uint64]metadata.Metadata)
 	for i := range ids {
 		if metadataSlice[i] != nil {
 			safeMeta := metadata.CloneIfNeeded(metadataSlice[i])
@@ -294,7 +294,7 @@ func (tx *Tx[T]) BatchInsert(ctx context.Context, vectors [][]float32, dataSlice
 
 // Update updates vector+payload and optionally metadata.
 // If meta is nil, metadata is left unchanged (matches Vecgo.Update behavior).
-func (tx *Tx[T]) Update(ctx context.Context, id uint32, vector []float32, data T, meta metadata.Metadata) error {
+func (tx *Tx[T]) Update(ctx context.Context, id uint64, vector []float32, data T, meta metadata.Metadata) error {
 	tx.mu.Lock()
 	defer tx.mu.Unlock()
 
@@ -369,7 +369,7 @@ func (tx *Tx[T]) Update(ctx context.Context, id uint32, vector []float32, data T
 }
 
 // Delete removes a vector and associated data from the database.
-func (tx *Tx[T]) Delete(ctx context.Context, id uint32) error {
+func (tx *Tx[T]) Delete(ctx context.Context, id uint64) error {
 	tx.mu.Lock()
 	defer tx.mu.Unlock()
 
@@ -424,12 +424,12 @@ func (tx *Tx[T]) Delete(ctx context.Context, id uint32) error {
 
 // flushMemTableLocked flushes the MemTable to the main index (caller must hold lock).
 // Get retrieves the data associated with an ID from the data store.
-func (tx *Tx[T]) Get(id uint32) (T, bool) {
+func (tx *Tx[T]) Get(id uint64) (T, bool) {
 	return tx.dataStore.Get(id)
 }
 
 // GetMetadata retrieves the metadata associated with an ID from the metadata store.
-func (tx *Tx[T]) GetMetadata(id uint32) (metadata.Metadata, bool) {
+func (tx *Tx[T]) GetMetadata(id uint64) (metadata.Metadata, bool) {
 	return tx.metaStore.Get(id)
 }
 
@@ -465,9 +465,11 @@ func (tx *Tx[T]) KNNSearch(ctx context.Context, query []float32, k int, opts *in
 	}
 
 	// 3. Search MemTables
-	var filter func(uint32) bool
-	if opts != nil {
-		filter = opts.Filter
+	var filter func(uint64) bool
+	if opts != nil && opts.Filter != nil {
+		filter = func(id uint64) bool {
+			return opts.Filter(id)
+		}
 	}
 	memResults := memT.Search(query, k, filter)
 
@@ -485,7 +487,7 @@ func (tx *Tx[T]) KNNSearch(ctx context.Context, query []float32, k int, opts *in
 
 // BruteSearch performs a brute-force search on the underlying index.
 // This method is added to satisfy the coordinator[T] interface.
-func (tx *Tx[T]) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint32) bool) ([]index.SearchResult, error) {
+func (tx *Tx[T]) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint64) bool) ([]index.SearchResult, error) {
 	// 1. Search Main Index
 	indexResults, err := tx.txIndex.BruteSearch(ctx, query, k, filter)
 	if err != nil {
@@ -513,11 +515,17 @@ func (tx *Tx[T]) BruteSearch(ctx context.Context, query []float32, k int, filter
 	}
 
 	// 3. Search MemTables
-	memResults := memT.Search(query, k, filter)
+	var memFilter func(uint64) bool
+	if filter != nil {
+		memFilter = func(id uint64) bool {
+			return filter(id)
+		}
+	}
+	memResults := memT.Search(query, k, memFilter)
 
 	var frozenResults []index.SearchResult
 	if frozenT != nil {
-		frozenResults = frozenT.Search(query, k, filter)
+		frozenResults = frozenT.Search(query, k, memFilter)
 	}
 
 	// 4. Merge Results
@@ -588,10 +596,11 @@ func (tx *Tx[T]) flushMemTable() {
 
 	for _, item := range items {
 		// Retry loop for ErrEntryPointDeleted
+		retries := 0
 		for {
 			var err error
 			if item.IsDeleted {
-				err = tx.txIndex.ApplyDelete(ctx, item.ID)
+				err = tx.txIndex.ApplyDelete(ctx, uint64(item.ID))
 				// Ignore if node already deleted or not found
 				if err != nil {
 					errMsg := err.Error()
@@ -600,11 +609,19 @@ func (tx *Tx[T]) flushMemTable() {
 					}
 				}
 			} else {
-				err = tx.txIndex.ApplyInsert(ctx, item.ID, item.Vector)
+				err = tx.txIndex.ApplyInsert(ctx, uint64(item.ID), item.Vector)
 			}
 
 			if err == index.ErrEntryPointDeleted {
 				// Entry point was deleted concurrently, retry after a short backoff
+				retries++
+				if retries > 10 {
+					// If we can't resolve it after multiple retries, we log and skip.
+					// In a single-threaded flush, this error shouldn't persist unless the index is broken.
+					// We choose to skip this item to avoid blocking the flush worker forever.
+					// TODO: Log this error properly
+					break
+				}
 				time.Sleep(1 * time.Millisecond)
 				continue
 			}
@@ -685,7 +702,7 @@ func (tx *Tx[T]) HybridSearch(ctx context.Context, query []float32, k int, opts 
 	}
 
 	// Create metadata filter function
-	metadataFilter := func(id uint32) bool {
+	metadataFilter := func(id uint64) bool {
 		meta, ok := tx.metaStore.Get(id)
 		if !ok {
 			return false
@@ -759,7 +776,7 @@ func (tx *Tx[T]) KNNSearchStream(ctx context.Context, query []float32, k int, op
 	}
 
 	// 2. Search MemTables (returns slice)
-	var filter func(uint32) bool
+	var filter func(uint64) bool
 	if opts != nil {
 		filter = opts.Filter
 	}

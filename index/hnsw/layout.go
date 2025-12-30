@@ -8,8 +8,8 @@ import (
 // Node layout constants
 const (
 	nodeIDOffset    = 0
-	nodeLevelOffset = 4
-	nodeHeaderSize  = 8
+	nodeLevelOffset = 8
+	nodeHeaderSize  = 12
 )
 
 // nodeLayout manages the memory layout of nodes in the flat arena.
@@ -27,15 +27,15 @@ func newNodeLayout(M int) *nodeLayout {
 
 // Size returns the total size in bytes required for a node of the given level.
 func (l *nodeLayout) Size(level int) uint32 {
-	// Header: ID (4) + Level (4)
+	// Header: ID (8) + Level (4)
 	size := uint32(nodeHeaderSize)
 
-	// Layer 0: Count (4) + Neighbors (M0 * 4)
-	size += 4 + uint32(l.M0)*4
+	// Layer 0: Count (4) + Neighbors (M0 * 8)
+	size += 4 + uint32(l.M0)*8
 
-	// Layers 1..level: Count (4) + Neighbors (M * 4)
+	// Layers 1..level: Count (4) + Neighbors (M * 8)
 	if level > 0 {
-		size += uint32(level) * (4 + uint32(l.M)*4)
+		size += uint32(level) * (4 + uint32(l.M)*8)
 	}
 
 	return size
@@ -52,11 +52,11 @@ func (l *nodeLayout) layerOffsets(level int, layer int) (countOffset uint32, nei
 	}
 
 	// Skip Layer 0
-	offset += 4 + uint32(l.M0)*4
+	offset += 4 + uint32(l.M0)*8
 
 	// Skip intermediate layers
-	// Each intermediate layer is: 4 + M*4
-	layerSize := 4 + uint32(l.M)*4
+	// Each intermediate layer is: 4 + M*8
+	layerSize := 4 + uint32(l.M)*8
 	offset += uint32(layer-1) * layerSize
 
 	return offset, offset + 4
@@ -65,8 +65,8 @@ func (l *nodeLayout) layerOffsets(level int, layer int) (countOffset uint32, nei
 // Accessor helpers (using unsafe for speed, or binary.LittleEndian)
 // We'll use binary.LittleEndian for safety first, optimize later.
 
-func (l *nodeLayout) getID(data []byte) uint32 {
-	return binary.LittleEndian.Uint32(data[nodeIDOffset:])
+func (l *nodeLayout) getID(data []byte) uint64 {
+	return binary.LittleEndian.Uint64(data[nodeIDOffset:])
 }
 
 func (l *nodeLayout) getLevel(data []byte) int {
@@ -89,13 +89,13 @@ func (l *nodeLayout) setLayerCount(data []byte, layer int, count uint32) {
 	binary.LittleEndian.PutUint32(data[countOff:], count)
 }
 
-func (l *nodeLayout) getNeighbors(data []byte, level int, layer int) []uint32 {
+func (l *nodeLayout) getNeighbors(data []byte, level int, layer int) []uint64 {
 	count := l.getLayerCount(data, layer)
 	_, neighborsOff := l.layerOffsets(level, layer)
 
-	res := make([]uint32, count)
+	res := make([]uint64, count)
 	for i := uint32(0); i < count; i++ {
-		res[i] = binary.LittleEndian.Uint32(data[neighborsOff+i*4:])
+		res[i] = binary.LittleEndian.Uint64(data[neighborsOff+i*8:])
 	}
 	return res
 }

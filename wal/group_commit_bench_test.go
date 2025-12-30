@@ -41,7 +41,7 @@ func benchmarkDurability(b *testing.B, mode DurabilityMode) {
 
 	b.ResetTimer()
 	for i := 0; b.Loop(); i++ {
-		id := uint32(i)
+		id := uint64(i)
 		if err := w.LogPrepareInsert(id, vec, data, meta); err != nil {
 			b.Fatal(err)
 		}
@@ -89,7 +89,7 @@ func benchmarkGroupCommitBatchSize(b *testing.B, batchSize int) {
 
 	b.ResetTimer()
 	for i := 0; b.Loop(); i++ {
-		id := uint32(i)
+		id := uint64(i)
 		if err := w.LogPrepareInsert(id, vec, data, meta); err != nil {
 			b.Fatal(err)
 		}
@@ -137,7 +137,7 @@ func benchmarkGroupCommitInterval(b *testing.B, interval time.Duration) {
 
 	b.ResetTimer()
 	for i := 0; b.Loop(); i++ {
-		id := uint32(i)
+		id := uint64(i)
 		if err := w.LogPrepareInsert(id, vec, data, meta); err != nil {
 			b.Fatal(err)
 		}
@@ -181,7 +181,7 @@ func benchmarkParallelWrites(b *testing.B, mode DurabilityMode) {
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
-		var i uint32
+		var i uint64
 		for pb.Next() {
 			i++
 			id := i
@@ -215,7 +215,7 @@ func BenchmarkRecoveryWithGroupCommit(b *testing.B) {
 		meta := metadata.Metadata{"key": metadata.String("value")}
 
 		for i := 0; i < 10000; i++ {
-			id := uint32(i)
+			id := uint64(i)
 			_ = w.LogPrepareInsert(id, vec, data, meta)
 			_ = w.LogCommitInsert(id)
 		}

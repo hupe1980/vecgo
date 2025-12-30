@@ -57,32 +57,32 @@ type HybridSearchOptions struct {
 type Coordinator[T any] interface {
 	// Insert adds a vector with associated data and metadata atomically.
 	// Returns the assigned ID (global ID in sharded mode).
-	Insert(ctx context.Context, vector []float32, data T, meta metadata.Metadata) (uint32, error)
+	Insert(ctx context.Context, vector []float32, data T, meta metadata.Metadata) (uint64, error)
 
 	// BatchInsert adds multiple vectors atomically.
 	// Returns assigned IDs in the same order as input vectors.
-	BatchInsert(ctx context.Context, vectors [][]float32, data []T, meta []metadata.Metadata) ([]uint32, error)
+	BatchInsert(ctx context.Context, vectors [][]float32, data []T, meta []metadata.Metadata) ([]uint64, error)
 
 	// Update modifies an existing vector, data, and optionally metadata.
 	// If meta is nil, existing metadata is preserved.
-	Update(ctx context.Context, id uint32, vector []float32, data T, meta metadata.Metadata) error
+	Update(ctx context.Context, id uint64, vector []float32, data T, meta metadata.Metadata) error
 
 	// Delete removes a vector and its associated data/metadata.
-	Delete(ctx context.Context, id uint32) error
+	Delete(ctx context.Context, id uint64) error
 
 	// Get retrieves the data associated with an ID.
 	// Returns the data and true if found, or zero value and false if not found.
-	Get(id uint32) (T, bool)
+	Get(id uint64) (T, bool)
 
 	// GetMetadata retrieves the metadata associated with an ID.
 	// Returns the metadata and true if found, or nil and false if not found.
-	GetMetadata(id uint32) (metadata.Metadata, bool)
+	GetMetadata(id uint64) (metadata.Metadata, bool)
 
 	// KNNSearch performs approximate K-nearest neighbor search.
 	KNNSearch(ctx context.Context, query []float32, k int, opts *index.SearchOptions) ([]index.SearchResult, error)
 
 	// BruteSearch performs exact brute-force search with optional filter.
-	BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint32) bool) ([]index.SearchResult, error)
+	BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint64) bool) ([]index.SearchResult, error)
 
 	// HybridSearch performs a hybrid search combining vector similarity and metadata filtering.
 	HybridSearch(ctx context.Context, query []float32, k int, opts *HybridSearchOptions) ([]index.SearchResult, error)

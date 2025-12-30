@@ -27,9 +27,9 @@ func (w *WAL) ReplayCommitted(callback func(entry Entry) error) error {
 		reader = bufio.NewReader(w.file)
 	}
 
-	pendingInsert := map[uint32]Entry{}
-	pendingUpdate := map[uint32]Entry{}
-	pendingDelete := map[uint32]struct{}{}
+	pendingInsert := map[uint64]Entry{}
+	pendingUpdate := map[uint64]Entry{}
+	pendingDelete := map[uint64]struct{}{}
 
 	for {
 		var entry Entry

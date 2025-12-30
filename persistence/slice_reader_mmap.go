@@ -107,3 +107,24 @@ func (r *SliceReader) ReadFloat32SliceView(n int) ([]float32, error) {
 	// bb comes from a mmapped region; we return a view into it.
 	return unsafe.Slice((*float32)(unsafe.Pointer(&bb[0])), n), nil
 }
+
+func (r *SliceReader) ReadUint64() (uint64, error) {
+	b, err := r.ReadBytes(8)
+	if err != nil {
+		return 0, err
+	}
+	return binary.LittleEndian.Uint64(b), nil
+}
+
+func (r *SliceReader) ReadUint64SliceCopy(n int) ([]uint64, error) {
+	if n == 0 {
+		return nil, nil
+	}
+	bb, err := r.ReadBytes(n * 8)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]uint64, n)
+	copy(unsafe.Slice((*byte)(unsafe.Pointer(&out[0])), n*8), bb)
+	return out, nil
+}

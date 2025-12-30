@@ -22,7 +22,7 @@ func TestFlat(t *testing.T) {
 		// Insert a vector
 		id, err := f.Insert(context.Background(), []float32{1.0, 2.0, 3.0})
 		require.NoError(t, err)
-		assert.Equal(t, uint32(0), id)
+		assert.Equal(t, uint64(0), id)
 
 		// Test dimension mismatch error
 		_, err = f.Insert(context.Background(), []float32{1.0, 2.0})
@@ -45,12 +45,12 @@ func TestFlat(t *testing.T) {
 
 		// Perform brute-force search
 		results, err := f.KNNSearch(context.Background(), []float32{0.0, 0.0, 0.0}, 2, &index.SearchOptions{
-			Filter: func(id uint32) bool { return true },
+			Filter: func(id uint64) bool { return true },
 		})
 		require.NoError(t, err)
 		assert.Equal(t, 2, len(results))
-		assert.Equal(t, uint32(0), results[0].ID)
-		assert.Equal(t, uint32(1), results[1].ID)
+		assert.Equal(t, uint64(0), results[0].ID)
+		assert.Equal(t, uint64(1), results[1].ID)
 	})
 
 	t.Run("KNNSearch_DotProduct", func(t *testing.T) {
@@ -69,7 +69,7 @@ func TestFlat(t *testing.T) {
 		require.NoError(t, err)
 
 		query := []float32{1, 0, 0}
-		results, err := f.KNNSearch(ctx, query, 3, &index.SearchOptions{Filter: func(id uint32) bool { return true }})
+		results, err := f.KNNSearch(ctx, query, 3, &index.SearchOptions{Filter: func(id uint64) bool { return true }})
 		require.NoError(t, err)
 		require.Len(t, results, 3)
 
@@ -99,10 +99,10 @@ func TestFlat(t *testing.T) {
 		_, _ = f.Insert(context.Background(), []float32{7.0, 8.0, 9.0})
 
 		// Perform brute-force search
-		results, err := f.BruteSearch(context.Background(), []float32{0.0, 0.0, 0.0}, 2, func(id uint32) bool { return true })
+		results, err := f.BruteSearch(context.Background(), []float32{0.0, 0.0, 0.0}, 2, func(id uint64) bool { return true })
 		require.NoError(t, err)
 		assert.Equal(t, 2, len(results))
-		assert.Equal(t, uint32(0), results[0].ID)
-		assert.Equal(t, uint32(1), results[1].ID)
+		assert.Equal(t, uint64(0), results[0].ID)
+		assert.Equal(t, uint64(1), results[1].ID)
 	})
 }

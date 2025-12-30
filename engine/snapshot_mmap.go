@@ -88,7 +88,7 @@ func LoadFromFileMmapWithCodec[T any](filename string, c codec.Codec) (*Snapshot
 			Actual:   actualChecksum,
 		}
 	}
-	storeMap := make(map[uint32]T)
+	storeMap := make(map[uint64]T)
 	if err := c.Unmarshal(storeBytes, &storeMap); err != nil {
 		_ = mf.Close()
 		return nil, fmt.Errorf("failed to decode store: %w", err)
@@ -117,7 +117,7 @@ func LoadFromFileMmapWithCodec[T any](filename string, c codec.Codec) (*Snapshot
 			Actual:   actualChecksum,
 		}
 	}
-	metadataMap := make(map[uint32]metadata.Metadata)
+	metadataMap := make(map[uint64]metadata.Metadata)
 	// Always use VecgoBinary for metadata persistence
 	metadataMap, err = metadata.UnmarshalMetadataMap(metadataBytes)
 	if err != nil {

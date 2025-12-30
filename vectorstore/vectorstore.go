@@ -18,7 +18,7 @@ var (
 // implementation documents otherwise.
 type Store interface {
 	Dimension() int
-	GetVector(id uint32) ([]float32, bool)
-	SetVector(id uint32, v []float32) error
-	DeleteVector(id uint32) error
+	GetVector(id uint64) ([]float32, bool)
+	SetVector(id uint64, v []float32) error
+	DeleteVector(id uint64) error
 }

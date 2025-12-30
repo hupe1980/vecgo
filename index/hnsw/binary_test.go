@@ -61,7 +61,7 @@ func TestBinaryPersistence_SaveLoad(t *testing.T) {
 
 	// Verify each vector
 	nextID := h.nextIDAtomic.Load()
-	for i := uint32(0); i < nextID; i++ {
+	for i := uint64(0); i < nextID; i++ {
 		originalOffset := h.getNodeOffset(i)
 		if originalOffset == 0 {
 			if loaded.getNodeOffset(i) != 0 {
@@ -213,7 +213,7 @@ func TestBinaryPersistence_MmapLoad(t *testing.T) {
 
 	// Verify each vector
 	nextID := h.nextIDAtomic.Load()
-	for i := uint32(0); i < nextID; i++ {
+	for i := uint64(0); i < nextID; i++ {
 		originalOffset := h.getNodeOffset(i)
 		if originalOffset == 0 {
 			if loaded.getNodeOffset(i) != 0 {

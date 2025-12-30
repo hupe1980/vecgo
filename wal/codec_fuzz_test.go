@@ -14,11 +14,11 @@ import (
 // It ensures that any entry can be written and read back correctly.
 func FuzzWALEntry(f *testing.F) {
 	// Seed with some typical patterns
-	f.Add(uint32(1), float32(1.0), float32(2.0), []byte("data1"), []byte(`{"key":"value"}`))
-	f.Add(uint32(0), float32(0.0), float32(0.0), []byte(""), []byte("{}"))
-	f.Add(uint32(999), float32(-1.5), float32(3.14), []byte("test"), []byte(`{}`))
+	f.Add(uint64(1), float32(1.0), float32(2.0), []byte("data1"), []byte(`{"key":"value"}`))
+	f.Add(uint64(0), float32(0.0), float32(0.0), []byte(""), []byte("{}"))
+	f.Add(uint64(999), float32(-1.5), float32(3.14), []byte("test"), []byte(`{}`))
 
-	f.Fuzz(func(t *testing.T, id uint32, v1, v2 float32, data, metaJSON []byte) {
+	f.Fuzz(func(t *testing.T, id uint64, v1, v2 float32, data, metaJSON []byte) {
 		// Skip extremely large inputs to avoid timeout
 		if len(data) > 100000 || len(metaJSON) > 10000 {
 			t.Skip()
@@ -72,7 +72,7 @@ func FuzzWALEntry(f *testing.F) {
 
 		// Replay committed operations
 		var readOps []struct {
-			id     uint32
+			id     uint64
 			vector []float32
 			data   []byte
 		}
@@ -80,7 +80,7 @@ func FuzzWALEntry(f *testing.F) {
 		if err := walRead.ReplayCommitted(func(entry Entry) error {
 			if entry.Type == OpInsert {
 				readOps = append(readOps, struct {
-					id     uint32
+					id     uint64
 					vector []float32
 					data   []byte
 				}{entry.ID, entry.Vector, entry.Data})
@@ -161,10 +161,10 @@ func FuzzWALReplay(f *testing.F) {
 
 // FuzzWALMultipleOperations tests WAL with various operation sequences.
 func FuzzWALMultipleOperations(f *testing.F) {
-	f.Add(uint8(1), uint32(100))
-	f.Add(uint8(5), uint32(1))
+	f.Add(uint8(1), uint64(100))
+	f.Add(uint8(5), uint64(1))
 
-	f.Fuzz(func(t *testing.T, opCount uint8, baseID uint32) {
+	f.Fuzz(func(t *testing.T, opCount uint8, baseID uint64) {
 		// Limit operation count
 		if opCount == 0 || opCount > 50 {
 			t.Skip()
@@ -186,7 +186,7 @@ func FuzzWALMultipleOperations(f *testing.F) {
 		// Write multiple operations
 		for i := uint8(0); i < opCount; i++ {
 			if err := wal.LogInsert(
-				baseID+uint32(i),
+				baseID+uint64(i),
 				[]float32{float32(i), float32(i + 1)},
 				[]byte{byte(i)},
 				nil,

@@ -19,7 +19,7 @@ func TestBinaryFormat_WriteRead(t *testing.T) {
 	writer := NewBinaryIndexWriter(&buf)
 
 	header := &FileHeader{
-		VectorCount: uint32(len(vectors)),
+		VectorCount: uint64(len(vectors)),
 		Dimension:   4,
 		IndexType:   IndexTypeFlat,
 	}
@@ -147,7 +147,7 @@ func TestHNSWMetadata_WriteRead(t *testing.T) {
 func TestConnections_WriteRead(t *testing.T) {
 	var buf bytes.Buffer
 
-	connections := [][]uint32{
+	connections := [][]uint64{
 		{1, 2, 3},
 		{4, 5},
 		{6, 7, 8, 9},

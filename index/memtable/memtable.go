@@ -13,7 +13,7 @@ import (
 
 // Item represents a vector in the memtable.
 type Item struct {
-	ID        uint32
+	ID        uint64
 	Vector    []float32
 	IsDeleted bool
 }
@@ -23,7 +23,7 @@ type Item struct {
 type MemTable struct {
 	mu        sync.RWMutex
 	items     []Item
-	idToIdx   map[uint32]int
+	idToIdx   map[uint64]int
 	distFunc  index.DistanceFunc
 	dimension int
 	hnswIndex *hnsw.HNSW
@@ -33,7 +33,7 @@ type MemTable struct {
 func New(dimension int, distFunc index.DistanceFunc) *MemTable {
 	m := &MemTable{
 		items:     make([]Item, 0, 1024), // Initial capacity
-		idToIdx:   make(map[uint32]int),
+		idToIdx:   make(map[uint64]int),
 		distFunc:  distFunc,
 		dimension: dimension,
 	}
@@ -48,7 +48,7 @@ func (m *MemTable) resetHNSW() {
 		o.Dimension = m.dimension
 		o.M = 8
 		o.EF = 64
-		o.InitialArenaSize = 1 * 1024 * 1024 // 1MB
+		o.InitialArenaSize = 32 * 1024 * 1024 // 32MB
 		o.Vectors = columnar.New(m.dimension)
 	})
 	if err != nil {
@@ -58,7 +58,7 @@ func (m *MemTable) resetHNSW() {
 }
 
 // Insert adds a vector to the memtable.
-func (m *MemTable) Insert(id uint32, vector []float32) {
+func (m *MemTable) Insert(id uint64, vector []float32) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -90,7 +90,7 @@ func (m *MemTable) Insert(id uint32, vector []float32) {
 
 // Get retrieves a vector from the memtable.
 // Returns (vector, found, isDeleted).
-func (m *MemTable) Get(id uint32) ([]float32, bool, bool) {
+func (m *MemTable) Get(id uint64) ([]float32, bool, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	idx, ok := m.idToIdx[id]
@@ -102,7 +102,7 @@ func (m *MemTable) Get(id uint32) ([]float32, bool, bool) {
 }
 
 // Delete marks a vector as deleted in the memtable (Tombstone).
-func (m *MemTable) Delete(id uint32) {
+func (m *MemTable) Delete(id uint64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -137,7 +137,7 @@ func (m *MemTable) Flush() []Item {
 
 	flushed := m.items
 	m.items = make([]Item, 0, 1024) // Reset with fresh buffer
-	m.idToIdx = make(map[uint32]int)
+	m.idToIdx = make(map[uint64]int)
 	m.resetHNSW() // Reset HNSW
 	return flushed
 }
@@ -150,7 +150,7 @@ func (m *MemTable) Size() int {
 }
 
 // Search performs a search on the memtable using the internal HNSW index.
-func (m *MemTable) Search(query []float32, k int, filter func(uint32) bool) []index.SearchResult {
+func (m *MemTable) Search(query []float32, k int, filter func(uint64) bool) []index.SearchResult {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -176,7 +176,7 @@ func (m *MemTable) Search(query []float32, k int, filter func(uint32) bool) []in
 }
 
 // linearSearch performs a brute-force search on the memtable.
-func (m *MemTable) linearSearch(query []float32, k int, filter func(uint32) bool) []index.SearchResult {
+func (m *MemTable) linearSearch(query []float32, k int, filter func(uint64) bool) []index.SearchResult {
 	// Use a max-heap to keep track of the top-k results
 	h := &resultHeap{}
 	heap.Init(h)

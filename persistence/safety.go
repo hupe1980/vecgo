@@ -77,6 +77,20 @@ func validateUint32SliceAlignment(slice []uint32) error {
 	return nil
 }
 
+// validateUint64SliceAlignment checks if a uint64 slice is properly aligned
+func validateUint64SliceAlignment(slice []uint64) error {
+	if len(slice) == 0 {
+		return nil
+	}
+
+	ptr := uintptr(unsafe.Pointer(&slice[0]))
+	if ptr%8 != 0 {
+		return fmt.Errorf("%w: uint64 slice at address 0x%x", ErrUnalignedAccess, ptr)
+	}
+
+	return nil
+}
+
 // validateUint64Alignment checks if a uint64 pointer is properly aligned
 func validateUint64Alignment(ptr unsafe.Pointer) error {
 	addr := uintptr(ptr)

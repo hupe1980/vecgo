@@ -90,7 +90,7 @@ func TestUnifiedIndex_CompileFilter_Equal(t *testing.T) {
 
 	bitmap := ui.CompileFilter(fs)
 	require.NotNil(t, bitmap)
-	assert.Equal(t, uint64(2), bitmap.GetCardinality())
+	assert.Equal(t, uint64(2), bitmap.Cardinality())
 	assert.True(t, bitmap.Contains(1))
 	assert.False(t, bitmap.Contains(2))
 	assert.True(t, bitmap.Contains(3))
@@ -113,7 +113,7 @@ func TestUnifiedIndex_CompileFilter_In(t *testing.T) {
 
 	bitmap := ui.CompileFilter(fs)
 	require.NotNil(t, bitmap)
-	assert.Equal(t, uint64(3), bitmap.GetCardinality())
+	assert.Equal(t, uint64(3), bitmap.Cardinality())
 	assert.True(t, bitmap.Contains(1))
 	assert.True(t, bitmap.Contains(2))
 	assert.False(t, bitmap.Contains(3))
@@ -137,7 +137,7 @@ func TestUnifiedIndex_CompileFilter_MultipleConditions(t *testing.T) {
 
 	bitmap := ui.CompileFilter(fs)
 	require.NotNil(t, bitmap)
-	assert.Equal(t, uint64(1), bitmap.GetCardinality())
+	assert.Equal(t, uint64(1), bitmap.Cardinality())
 	assert.True(t, bitmap.Contains(1))
 	assert.False(t, bitmap.Contains(2))
 	assert.False(t, bitmap.Contains(3))
@@ -181,8 +181,8 @@ func TestUnifiedIndex_ScanFilter(t *testing.T) {
 	// ScanFilter should work
 	ids := ui.ScanFilter(fs)
 	assert.Len(t, ids, 2)
-	assert.Contains(t, ids, uint32(1))
-	assert.Contains(t, ids, uint32(3))
+	assert.Contains(t, ids, uint64(1))
+	assert.Contains(t, ids, uint64(3))
 }
 
 func TestUnifiedIndex_CreateFilterFunc(t *testing.T) {
@@ -257,7 +257,7 @@ func TestUnifiedIndex_InvertedIndexDelete(t *testing.T) {
 	}
 	bitmap := ui.CompileFilter(fs)
 	require.NotNil(t, bitmap)
-	assert.Equal(t, uint64(2), bitmap.GetCardinality())
+	assert.Equal(t, uint64(2), bitmap.Cardinality())
 
 	// Delete one
 	ui.Delete(1)
@@ -265,7 +265,7 @@ func TestUnifiedIndex_InvertedIndexDelete(t *testing.T) {
 	// Only one should remain
 	bitmap = ui.CompileFilter(fs)
 	require.NotNil(t, bitmap)
-	assert.Equal(t, uint64(1), bitmap.GetCardinality())
+	assert.Equal(t, uint64(1), bitmap.Cardinality())
 	assert.False(t, bitmap.Contains(1))
 	assert.True(t, bitmap.Contains(2))
 
@@ -320,7 +320,7 @@ func BenchmarkUnifiedIndex_CompileFilter(b *testing.B) {
 	ui := NewUnifiedIndex()
 
 	// Add 10k documents
-	for i := uint32(0); i < 10000; i++ {
+	for i := uint64(0); i < 10000; i++ {
 		category := "tech"
 		if i%3 == 0 {
 			category = "science"
@@ -337,7 +337,7 @@ func BenchmarkUnifiedIndex_CompileFilter(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
 		bitmap := ui.CompileFilter(fs)
-		_ = bitmap.GetCardinality()
+		_ = bitmap.Cardinality()
 	}
 }
 
@@ -345,7 +345,7 @@ func BenchmarkUnifiedIndex_ScanFilter(b *testing.B) {
 	ui := NewUnifiedIndex()
 
 	// Add 10k documents
-	for i := uint32(0); i < 10000; i++ {
+	for i := uint64(0); i < 10000; i++ {
 		score := int64(i % 100)
 		ui.Set(i, Document{"score": Int(score)})
 	}

@@ -50,16 +50,16 @@ func loadFlatMmap(data []byte) (index.Index, int, error) {
 	f.distanceFunc = index.NewDistanceFunc(f.opts.DistanceType)
 	f.vectors = zerocopy.New(int(h.Dimension))
 
-	freeListLen, err := r.ReadUint32()
+	freeListLen, err := r.ReadUint64()
 	if err != nil {
 		return nil, 0, err
 	}
-	freeList, err := r.ReadUint32SliceCopy(int(freeListLen))
+	freeList, err := r.ReadUint64SliceCopy(int(freeListLen))
 	if err != nil {
 		return nil, 0, err
 	}
 
-	nodeCount, err := r.ReadUint32()
+	nodeCount, err := r.ReadUint64()
 	if err != nil {
 		return nil, 0, err
 	}
@@ -99,7 +99,7 @@ func loadFlatMmap(data []byte) (index.Index, int, error) {
 	nodes := make([]*Node, int(nodeCount))
 	for i := 0; i < int(nodeCount); i++ {
 		if markers[i] != 0 {
-			nodes[i] = &Node{ID: uint32(i)}
+			nodes[i] = &Node{ID: uint64(i)}
 		}
 	}
 

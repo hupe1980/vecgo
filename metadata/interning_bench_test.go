@@ -105,7 +105,7 @@ func TestMemoryUsageComparison(t *testing.T) {
 				v := string([]byte(values[(i+j)%uniqueValues])) // Force allocation
 				doc[k] = metadata.String(v)
 			}
-			idx.Set(uint32(i), doc)
+			idx.Set(uint64(i), doc)
 		}
 
 		endMem := getHeapUsage()

@@ -54,7 +54,7 @@ func (h *HNSW) Stats() index.Stats {
 					continue
 				}
 
-				level := int(h.layout.getLevel(buf[offset:]))
+				level := int(h.layout.getLevel(buf[int(offset):]))
 				if level < len(levelStats) {
 					levelStats[level]++
 				}
@@ -62,7 +62,7 @@ func (h *HNSW) Stats() index.Stats {
 				// Loop through each connection
 				for i2 := level; i2 >= 0; i2-- {
 					// Read connections
-					connections := h.layout.getNeighbors(buf[offset:], level, int(i2))
+					connections := h.layout.getNeighbors(buf[int(offset):], level, int(i2))
 					if len(connections) > 0 {
 						total := len(connections)
 						connectionStats[i2] += total

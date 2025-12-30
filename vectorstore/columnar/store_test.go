@@ -250,8 +250,8 @@ func TestIterate(t *testing.T) {
 	s.Append([]float32{7.0, 8.0, 9.0})
 	s.DeleteVector(1)
 
-	var visited []uint32
-	s.Iterate(func(id uint32, vec []float32) bool {
+	var visited []uint64
+	s.Iterate(func(id uint64, vec []float32) bool {
 		visited = append(visited, id)
 		return true
 	})
@@ -271,7 +271,7 @@ func TestIterate_EarlyStop(t *testing.T) {
 	}
 
 	count := 0
-	s.Iterate(func(id uint32, vec []float32) bool {
+	s.Iterate(func(id uint64, vec []float32) bool {
 		count++
 		return count < 3
 	})
@@ -374,12 +374,12 @@ func TestMmap(t *testing.T) {
 
 	for i := 0; i < 100; i++ {
 		if i == 50 {
-			if _, ok := ms.GetVector(uint32(i)); ok {
+			if _, ok := ms.GetVector(uint64(i)); ok {
 				t.Errorf("GetVector(%d) should return false for deleted vector", i)
 			}
 			continue
 		}
-		got, ok := ms.GetVector(uint32(i))
+		got, ok := ms.GetVector(uint64(i))
 		if !ok {
 			t.Errorf("GetVector(%d) returned false", i)
 			continue
@@ -413,7 +413,7 @@ func TestConcurrentRead(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for i := 0; i < 100; i++ {
-				id := uint32(rand.Intn(1000))
+				id := uint64(rand.Intn(1000))
 				s.GetVector(id)
 			}
 		}()
@@ -455,12 +455,12 @@ func TestLargeStore(t *testing.T) {
 		}
 	}
 
-	if s.Count() != uint32(count) {
+	if s.Count() != uint64(count) {
 		t.Errorf("Count() = %v, want %v", s.Count(), count)
 	}
 
 	for i := 0; i < 100; i++ {
-		id := uint32(rand.Intn(count))
+		id := uint64(rand.Intn(count))
 		got, ok := s.GetVector(id)
 		if !ok {
 			t.Errorf("GetVector(%d) returned false", id)
@@ -512,7 +512,7 @@ func BenchmarkGetVector(b *testing.B) {
 	b.ResetTimer()
 	var i int
 	for b.Loop() {
-		s.GetVector(uint32(i % 10000))
+		s.GetVector(uint64(i % 10000))
 		i++
 	}
 }
@@ -527,7 +527,7 @@ func BenchmarkIterate(b *testing.B) {
 
 	b.ResetTimer()
 	for b.Loop() {
-		s.Iterate(func(id uint32, vec []float32) bool {
+		s.Iterate(func(id uint64, vec []float32) bool {
 			return true
 		})
 	}

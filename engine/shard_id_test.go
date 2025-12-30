@@ -9,7 +9,7 @@ import (
 func TestGlobalID_RoundTrip(t *testing.T) {
 	tests := []struct {
 		shardIdx int
-		localID  uint32
+		localID  uint64
 	}{
 		{0, 0},
 		{0, 1},
@@ -29,9 +29,9 @@ func TestGlobalID_RoundTrip(t *testing.T) {
 }
 
 func TestGlobalID_Overflow(t *testing.T) {
-	// Local ID should be masked to 24 bits
-	gid := NewGlobalID(0, 0xFFFFFFFF)
-	assert.Equal(t, uint32(0xFFFFFF), gid.LocalID())
+	// Local ID should be masked to 56 bits
+	gid := NewGlobalID(0, 0xFFFFFFFFFFFFFFFF)
+	assert.Equal(t, uint64(0xFFFFFFFFFFFFFF), gid.LocalID())
 	assert.Equal(t, 0, gid.ShardIndex())
 }
 
@@ -44,18 +44,18 @@ func TestGlobalID_IsValid(t *testing.T) {
 }
 
 func TestGlobalID_BitLayout(t *testing.T) {
-	// Verify exact bit layout: [ShardID:8][LocalID:24]
+	// Verify exact bit layout: [ShardID:8][LocalID:56]
 	gid := NewGlobalID(1, 0x42)
-	assert.Equal(t, GlobalID(0x01000042), gid)
+	assert.Equal(t, GlobalID(0x0100000000000042), gid)
 
 	gid2 := NewGlobalID(0xFF, 0xABCDEF)
-	assert.Equal(t, GlobalID(0xFFABCDEF), gid2)
+	assert.Equal(t, GlobalID(0xFF00000000ABCDEF), gid2)
 }
 
 func BenchmarkGlobalID_Encode(b *testing.B) {
 	var i int
 	for b.Loop() {
-		_ = NewGlobalID(i%256, uint32(i))
+		_ = NewGlobalID(i%256, uint64(i))
 		i++
 	}
 }

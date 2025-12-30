@@ -130,7 +130,7 @@ func TestHNSW_DotProduct_DistanceOrdering(t *testing.T) {
 
 	query := []float32{1, 0, 0}
 
-	brute, err := h.BruteSearch(ctx, query, 3, func(id uint32) bool { return true })
+	brute, err := h.BruteSearch(ctx, query, 3, func(id uint64) bool { return true })
 	if !assert.NoError(t, err) {
 		return
 	}
@@ -146,7 +146,7 @@ func TestHNSW_DotProduct_DistanceOrdering(t *testing.T) {
 	assert.InDelta(t, -distance.Dot(query, []float32{1, 0, 0}), brute[1].Distance, 1e-6)
 	assert.InDelta(t, -distance.Dot(query, []float32{-1, 0, 0}), brute[2].Distance, 1e-6)
 
-	knn, err := h.KNNSearch(ctx, query, 3, &index.SearchOptions{EFSearch: 100, Filter: func(id uint32) bool { return true }})
+	knn, err := h.KNNSearch(ctx, query, 3, &index.SearchOptions{EFSearch: 100, Filter: func(id uint64) bool { return true }})
 	if !assert.NoError(t, err) {
 		return
 	}
@@ -213,13 +213,13 @@ func runValidateInsertSearchCase(t *testing.T, ctx context.Context, tc TestCases
 		}
 	}
 
-	groundResults := make(map[int][]uint32, len(queryIndices))
+	groundResults := make(map[int][]uint64, len(queryIndices))
 	for _, qi := range queryIndices {
-		bestCandidatesBrute, err := h.BruteSearch(ctx, vecs[qi], tc.K, func(id uint32) bool { return true })
+		bestCandidatesBrute, err := h.BruteSearch(ctx, vecs[qi], tc.K, func(id uint64) bool { return true })
 		if err != nil {
 			t.Fatalf("BruteSearch failed: %v", err)
 		}
-		groundResults[qi] = make([]uint32, tc.K)
+		groundResults[qi] = make([]uint64, tc.K)
 		for i2, item := range bestCandidatesBrute {
 			groundResults[qi][i2] = item.ID
 		}
@@ -231,7 +231,7 @@ func runValidateInsertSearchCase(t *testing.T, ctx context.Context, tc TestCases
 	for _, qi := range queryIndices {
 		bestCandidates, err := h.KNNSearch(ctx, vecs[qi], tc.K, &index.SearchOptions{
 			EFSearch: tc.EF,
-			Filter:   func(id uint32) bool { return true },
+			Filter:   func(id uint64) bool { return true },
 		})
 		if err != nil {
 			t.Fatalf("KNNSearch failed: %v", err)

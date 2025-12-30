@@ -137,7 +137,7 @@ func BenchmarkKNNSearch(b *testing.B) {
 	for i := 0; b.Loop(); i++ {
 		_, err := h.KNNSearch(ctx, query, 10, &index.SearchOptions{
 			EFSearch: 50,
-			Filter:   func(id uint32) bool { return true },
+			Filter:   func(id uint64) bool { return true },
 		})
 		if err != nil {
 			b.Fatalf("KNNSearch failed: %v", err)
@@ -185,7 +185,7 @@ func BenchmarkConcurrentSearchAndInsert(b *testing.B) {
 					queryIdx := (workerID*25 + j) % len(queries)
 					_, err := h.KNNSearch(ctx, queries[queryIdx], 10, &index.SearchOptions{
 						EFSearch: 50,
-						Filter:   func(id uint32) bool { return true },
+						Filter:   func(id uint64) bool { return true },
 					})
 					if err != nil {
 						b.Errorf("KNNSearch failed: %v", err)
@@ -234,7 +234,7 @@ func BenchmarkIDReuse(b *testing.B) {
 		}
 
 		// Insert 1000 vectors
-		ids := make([]uint32, 1000)
+		ids := make([]uint64, 1000)
 		for j := 0; j < 1000; j++ {
 			id, err := h.Insert(ctx, vectors[j])
 			if err != nil {

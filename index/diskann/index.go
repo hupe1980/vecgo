@@ -15,9 +15,9 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/bits-and-blooms/bitset"
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/index/hnsw"
+	"github.com/hupe1980/vecgo/internal/bitset"
 	"github.com/hupe1980/vecgo/internal/mmap"
 	"github.com/hupe1980/vecgo/quantization"
 	"github.com/hupe1980/vecgo/vectorstore"
@@ -47,9 +47,9 @@ type Index struct {
 
 	// Graph navigation (in RAM)
 	// INVARIANT: graphMu protects both graph and incomingEdges
-	entryPointAtomic atomic.Uint32
-	graph            [][]uint32          // Adjacency lists (mutable)
-	incomingEdges    map[uint32][]uint32 // Reverse index for O(1) incoming edge removal (protected by graphMu)
+	entryPointAtomic atomic.Uint64
+	graph            [][]uint64          // Adjacency lists (mutable)
+	incomingEdges    map[uint64][]uint64 // Reverse index for O(1) incoming edge removal (protected by graphMu)
 	graphMu          sync.RWMutex
 
 	// PQ for approximate distances (in RAM)
@@ -70,8 +70,8 @@ type Index struct {
 	memTable *hnsw.HNSW
 
 	// ID management (for TransactionalIndex)
-	nextIDAtomic atomic.Uint32
-	freeList     []uint32
+	nextIDAtomic atomic.Uint64
+	freeList     []uint64
 	freeListMu   sync.Mutex
 
 	// Deletion tracking
@@ -93,7 +93,7 @@ type Index struct {
 
 	// Mode flag
 	isReadOnly bool
-	count      int // For read-only mode, total vector count
+	count      uint64 // For read-only mode, total vector count
 
 	mu sync.RWMutex
 }
@@ -139,14 +139,14 @@ func New(dim int, distType index.DistanceType, indexPath string, opts *Options) 
 		distFunc:       index.NewDistanceFunc(distType),
 		opts:           opts,
 		pq:             pq,
-		graph:          make([][]uint32, 0, 1024),
-		incomingEdges:  make(map[uint32][]uint32),
+		graph:          make([][]uint64, 0, 1024),
+		incomingEdges:  make(map[uint64][]uint64),
 		pqCodes:        make([]byte, 0, 1024*opts.PQSubvectors),
 		bq:             nil,
 		bqCodes:        nil,
 		vectors:        columnar.New(dim),
 		deleted:        bitset.New(1024),
-		freeList:       make([]uint32, 0),
+		freeList:       make([]uint64, 0),
 		indexPath:      indexPath,
 		isReadOnly:     false,
 		stopCompaction: make(chan struct{}),
@@ -203,8 +203,8 @@ func Open(indexPath string, opts *Options) (*Index, error) {
 		indexPath:     indexPath,
 		isReadOnly:    true,
 		deleted:       bitset.New(1024),
-		freeList:      make([]uint32, 0),
-		incomingEdges: make(map[uint32][]uint32),
+		freeList:      make([]uint64, 0),
+		incomingEdges: make(map[uint64][]uint64),
 	}
 
 	// Load metadata (sets dim, count, distType, distFunc, entryPoint, pq)
@@ -242,7 +242,7 @@ func Open(indexPath string, opts *Options) (*Index, error) {
 	idx.mmapReader = reader
 
 	// Set nextID for potential future mutations (not used in read-only mode)
-	idx.nextIDAtomic.Store(uint32(idx.count))
+	idx.nextIDAtomic.Store(idx.count)
 
 	// Initialize visited pool for performance
 	idx.visitedPool = sync.Pool{
@@ -303,7 +303,7 @@ func (idx *Index) loadMeta(indexPath string) error {
 	idx.fileFlags = header.Flags
 
 	idx.dim = int(header.Dimension)
-	idx.count = int(header.Count)
+	idx.count = header.Count
 	idx.distType = header.DistType()
 	idx.distFunc = index.NewDistanceFunc(idx.distType)
 
@@ -315,11 +315,11 @@ func (idx *Index) loadMeta(indexPath string) error {
 	idx.opts.PQCentroids = int(header.PQCentroids)
 
 	// Read entry point
-	var entryBuf [4]byte
+	var entryBuf [8]byte
 	if _, err := io.ReadFull(f, entryBuf[:]); err != nil {
 		return err
 	}
-	idx.entryPointAtomic.Store(binary.LittleEndian.Uint32(entryBuf[:]))
+	idx.entryPointAtomic.Store(binary.LittleEndian.Uint64(entryBuf[:]))
 
 	// Load PQ codebooks
 	return idx.loadPQCodebooks(f, &header)
@@ -334,7 +334,7 @@ func (idx *Index) loadBQCodes(indexPath string) error {
 	defer f.Close()
 
 	words := (idx.dim + 63) / 64
-	idx.bqCodes = make([]uint64, idx.count*words)
+	idx.bqCodes = make([]uint64, int(idx.count)*words)
 	buf := make([]byte, 8)
 	for i := 0; i < len(idx.bqCodes); i++ {
 		if _, err := io.ReadFull(f, buf); err != nil {
@@ -384,28 +384,29 @@ func (idx *Index) loadGraph(indexPath string) error {
 	}
 	defer f.Close()
 
-	idx.graph = make([][]uint32, idx.count)
-	buf := make([]byte, 4)
+	idx.graph = make([][]uint64, idx.count)
+	buf := make([]byte, 8)    // 8 bytes for neighbors
+	degBuf := make([]byte, 4) // 4 bytes for degree
 
-	for i := 0; i < idx.count; i++ {
+	for i := 0; i < int(idx.count); i++ {
 		// Read degree
-		if _, err := io.ReadFull(f, buf); err != nil {
+		if _, err := io.ReadFull(f, degBuf); err != nil {
 			return err
 		}
-		degree := binary.LittleEndian.Uint32(buf)
+		degree := binary.LittleEndian.Uint32(degBuf)
 
 		// Read neighbors
-		idx.graph[i] = make([]uint32, degree)
+		idx.graph[i] = make([]uint64, degree)
 		for j := uint32(0); j < degree; j++ {
 			if _, err := io.ReadFull(f, buf); err != nil {
 				return err
 			}
-			idx.graph[i][j] = binary.LittleEndian.Uint32(buf)
+			idx.graph[i][j] = binary.LittleEndian.Uint64(buf)
 		}
 	}
 
 	// Build incoming edges reverse index
-	for nodeID := uint32(0); nodeID < uint32(idx.count); nodeID++ {
+	for nodeID := uint64(0); nodeID < idx.count; nodeID++ {
 		for _, neighbor := range idx.graph[nodeID] {
 			idx.incomingEdges[neighbor] = append(idx.incomingEdges[neighbor], nodeID)
 		}
@@ -423,7 +424,7 @@ func (idx *Index) loadPQCodes(indexPath string) error {
 	defer f.Close()
 
 	M := idx.opts.PQSubvectors
-	idx.pqCodes = make([]byte, idx.count*M)
+	idx.pqCodes = make([]byte, int(idx.count)*M)
 
 	if _, err := io.ReadFull(f, idx.pqCodes); err != nil {
 		return err
@@ -437,7 +438,7 @@ func (idx *Index) loadPQCodes(indexPath string) error {
 // ============================================================================
 
 // AllocateID reserves a new ID for insertion.
-func (idx *Index) AllocateID() uint32 {
+func (idx *Index) AllocateID() uint64 {
 	idx.freeListMu.Lock()
 	defer idx.freeListMu.Unlock()
 
@@ -451,7 +452,7 @@ func (idx *Index) AllocateID() uint32 {
 }
 
 // ReleaseID returns a previously allocated but unused ID.
-func (idx *Index) ReleaseID(id uint32) {
+func (idx *Index) ReleaseID(id uint64) {
 	idx.freeListMu.Lock()
 	defer idx.freeListMu.Unlock()
 	idx.freeList = append(idx.freeList, id)
@@ -462,7 +463,7 @@ func (idx *Index) ReleaseID(id uint32) {
 // ============================================================================
 
 // Insert adds a vector to the index using incremental Vamana construction.
-func (idx *Index) Insert(ctx context.Context, v []float32) (uint32, error) {
+func (idx *Index) Insert(ctx context.Context, v []float32) (uint64, error) {
 	if idx.isReadOnly {
 		return 0, fmt.Errorf("diskann: cannot insert into read-only index")
 	}
@@ -481,7 +482,7 @@ func (idx *Index) Insert(ctx context.Context, v []float32) (uint32, error) {
 }
 
 // ApplyInsert performs the actual insert (used by transactions and recovery).
-func (idx *Index) ApplyInsert(ctx context.Context, id uint32, v []float32) error {
+func (idx *Index) ApplyInsert(ctx context.Context, id uint64, v []float32) error {
 	if len(v) != idx.dim {
 		return &index.ErrDimensionMismatch{Expected: idx.dim, Actual: len(v)}
 	}
@@ -505,28 +506,28 @@ func (idx *Index) ApplyInsert(ctx context.Context, id uint32, v []float32) error
 
 	// Clear deletion bit
 	idx.deletedMu.Lock()
-	idx.deleted.Clear(uint(id))
+	idx.deleted.Unset(id)
 	idx.deletedMu.Unlock()
 
 	return nil
 }
 
 // findNeighborsForInsert finds the best neighbors for a new vector using greedy search.
-func (idx *Index) findNeighborsForInsert(v []float32, excludeID uint32, R, L int) []uint32 {
+func (idx *Index) findNeighborsForInsert(v []float32, excludeID uint64, R, L int) []uint64 {
 	return idx.findNeighborsForInsertWithGraph(v, excludeID, R, L, idx.graph)
 }
 
 // findNeighborsForInsertWithGraph finds the best neighbors using a specified graph.
 // This is critical for updates: the graph parameter must be a pre-mutation snapshot,
 // otherwise greedy search navigates a partially disconnected graph (Vamana violation).
-func (idx *Index) findNeighborsForInsertWithGraph(v []float32, excludeID uint32, R, L int, graph [][]uint32) []uint32 {
+func (idx *Index) findNeighborsForInsertWithGraph(v []float32, excludeID uint64, R, L int, graph [][]uint64) []uint64 {
 	if idx.count == 0 {
 		return nil
 	}
 
 	// Greedy search from entry point
 	entryPoint := idx.entryPointAtomic.Load()
-	if entryPoint >= uint32(len(graph)) {
+	if entryPoint >= uint64(len(graph)) {
 		return nil
 	}
 
@@ -537,8 +538,8 @@ func (idx *Index) findNeighborsForInsertWithGraph(v []float32, excludeID uint32,
 
 	// BFS/greedy search to find L nearest candidates
 	// Use bitset for visited tracking (memory efficient, faster than map at scale)
-	maxID := uint32(len(graph))
-	visited := idx.getVisitedBitset(uint(maxID))
+	maxID := uint64(len(graph))
+	visited := idx.getVisitedBitset(maxID)
 	defer idx.putVisitedBitset(visited)
 
 	candidates := &distHeap{}
@@ -546,7 +547,7 @@ func (idx *Index) findNeighborsForInsertWithGraph(v []float32, excludeID uint32,
 
 	entryDist := idx.computeDistance(v, entryPoint, distTable)
 	heap.Push(candidates, distNode{id: entryPoint, dist: entryDist})
-	visited.Set(uint(entryPoint))
+	visited.Set(entryPoint)
 
 	results := make([]distNode, 0, L)
 	results = append(results, distNode{id: entryPoint, dist: entryDist})
@@ -568,16 +569,16 @@ func (idx *Index) findNeighborsForInsertWithGraph(v []float32, excludeID uint32,
 			}
 		}
 
-		if curr.id < uint32(len(graph)) && graph[curr.id] != nil {
+		if curr.id < uint64(len(graph)) && graph[curr.id] != nil {
 			for _, neighbor := range graph[curr.id] {
-				if neighbor >= maxID || visited.Test(uint(neighbor)) || neighbor == excludeID {
+				if neighbor >= maxID || visited.Test(neighbor) || neighbor == excludeID {
 					continue
 				}
-				visited.Set(uint(neighbor))
+				visited.Set(neighbor)
 
 				// Skip deleted vectors
 				idx.deletedMu.RLock()
-				isDeleted := idx.deleted.Test(uint(neighbor))
+				isDeleted := idx.deleted.Test(neighbor)
 				idx.deletedMu.RUnlock()
 				if isDeleted {
 					continue
@@ -597,13 +598,13 @@ func (idx *Index) findNeighborsForInsertWithGraph(v []float32, excludeID uint32,
 
 // robustPrune applies the Vamana pruning strategy to select diverse neighbors.
 // Uses exact distances for correct α-RNG geometry during graph construction.
-func (idx *Index) robustPrune(center []float32, candidates []distNode, R int) []uint32 {
+func (idx *Index) robustPrune(center []float32, candidates []distNode, R int) []uint64 {
 	if len(candidates) == 0 {
 		return nil
 	}
 
 	alpha := idx.opts.Alpha
-	result := make([]uint32, 0, R)
+	result := make([]uint64, 0, R)
 
 	for _, cand := range candidates {
 		if len(result) >= R {
@@ -643,9 +644,9 @@ func (idx *Index) robustPrune(center []float32, candidates []distNode, R int) []
 //  1. Add id as a candidate to v's adjacency list
 //  2. Re-prune v's list to maintain α-RNG property
 //  3. Track incoming edges for O(1) removal during updates
-func (idx *Index) repairReverseEdges(id uint32, v []float32, neighbors []uint32) {
+func (idx *Index) repairReverseEdges(id uint64, v []float32, neighbors []uint64) {
 	for _, neighbor := range neighbors {
-		if neighbor >= uint32(len(idx.graph)) {
+		if neighbor >= uint64(len(idx.graph)) {
 			continue
 		}
 
@@ -713,7 +714,7 @@ func (idx *Index) repairReverseEdges(id uint32, v []float32, neighbors []uint32)
 }
 
 // computeDistance computes distance using PQ (if trained) or exact distance.
-func (idx *Index) computeDistance(v []float32, id uint32, distTable []float32) float32 {
+func (idx *Index) computeDistance(v []float32, id uint64, distTable []float32) float32 {
 	M := idx.opts.PQSubvectors
 	offset := int(id) * M
 	if distTable != nil && offset+M <= len(idx.pqCodes) {
@@ -730,7 +731,7 @@ func (idx *Index) computeDistance(v []float32, id uint32, distTable []float32) f
 // BatchInsert adds multiple vectors in a single operation.
 func (idx *Index) BatchInsert(ctx context.Context, vectors [][]float32) index.BatchInsertResult {
 	result := index.BatchInsertResult{
-		IDs:    make([]uint32, len(vectors)),
+		IDs:    make([]uint64, len(vectors)),
 		Errors: make([]error, len(vectors)),
 	}
 
@@ -744,7 +745,7 @@ func (idx *Index) BatchInsert(ctx context.Context, vectors [][]float32) index.Ba
 }
 
 // Delete removes a vector from the index using soft delete.
-func (idx *Index) Delete(ctx context.Context, id uint32) error {
+func (idx *Index) Delete(ctx context.Context, id uint64) error {
 	if idx.isReadOnly {
 		return fmt.Errorf("diskann: cannot delete from read-only index")
 	}
@@ -752,20 +753,20 @@ func (idx *Index) Delete(ctx context.Context, id uint32) error {
 }
 
 // ApplyDelete performs the actual delete (used by transactions and recovery).
-func (idx *Index) ApplyDelete(ctx context.Context, id uint32) error {
+func (idx *Index) ApplyDelete(ctx context.Context, id uint64) error {
 	idx.deletedMu.Lock()
 	defer idx.deletedMu.Unlock()
 
-	if id >= uint32(idx.count) {
+	if id >= idx.count {
 		return &index.ErrNodeNotFound{ID: id}
 	}
 
-	idx.deleted.Set(uint(id))
+	idx.deleted.Set(id)
 	return nil
 }
 
 // Update updates a vector in the index.
-func (idx *Index) Update(ctx context.Context, id uint32, v []float32) error {
+func (idx *Index) Update(ctx context.Context, id uint64, v []float32) error {
 	if idx.isReadOnly {
 		return fmt.Errorf("diskann: cannot update read-only index")
 	}
@@ -773,7 +774,7 @@ func (idx *Index) Update(ctx context.Context, id uint32, v []float32) error {
 }
 
 // ApplyUpdate performs the actual update (used by transactions and recovery).
-func (idx *Index) ApplyUpdate(ctx context.Context, id uint32, v []float32) error {
+func (idx *Index) ApplyUpdate(ctx context.Context, id uint64, v []float32) error {
 	// Soft delete old, then insert with same ID
 	if err := idx.ApplyDelete(ctx, id); err != nil {
 		return err
@@ -794,14 +795,14 @@ func (idx *Index) ApplyUpdate(ctx context.Context, id uint32, v []float32) error
 	idx.graphMu.Lock()
 	defer idx.graphMu.Unlock()
 
-	if id >= uint32(len(idx.graph)) {
+	if id >= uint64(len(idx.graph)) {
 		// Update MemTable
 		if err := idx.memTable.ApplyInsert(ctx, id, v); err != nil {
 			return fmt.Errorf("diskann: memtable update: %w", err)
 		}
 
 		idx.deletedMu.Lock()
-		idx.deleted.Clear(uint(id))
+		idx.deleted.Unset(id)
 		idx.deletedMu.Unlock()
 
 		return nil
@@ -810,16 +811,16 @@ func (idx *Index) ApplyUpdate(ctx context.Context, id uint32, v []float32) error
 	// CRITICAL: Snapshot graph BEFORE any mutations
 	// findNeighborsForInsert must search a fully connected graph,
 	// otherwise greedy search explores damaged neighborhoods (Vamana violation)
-	snapshot := make([][]uint32, len(idx.graph))
+	snapshot := make([][]uint64, len(idx.graph))
 	for i := range idx.graph {
 		if idx.graph[i] != nil {
-			snapshot[i] = append([]uint32(nil), idx.graph[i]...)
+			snapshot[i] = append([]uint64(nil), idx.graph[i]...)
 		}
 	}
 
 	// Remove incoming edges using reverse index (O(R) instead of O(N*R))
 	for _, incoming := range idx.incomingEdges[id] {
-		if incoming >= uint32(len(idx.graph)) {
+		if incoming >= uint64(len(idx.graph)) {
 			continue
 		}
 		filtered := idx.graph[incoming][:0]
@@ -846,16 +847,16 @@ func (idx *Index) ApplyUpdate(ctx context.Context, id uint32, v []float32) error
 
 	// Clear deletion bit AFTER graph is fully repaired
 	idx.deletedMu.Lock()
-	idx.deleted.Clear(uint(id))
+	idx.deleted.Unset(id)
 	idx.deletedMu.Unlock()
 
 	return nil
 }
 
 // VectorByID retrieves a vector by its ID.
-func (idx *Index) VectorByID(ctx context.Context, id uint32) ([]float32, error) {
+func (idx *Index) VectorByID(ctx context.Context, id uint64) ([]float32, error) {
 	idx.deletedMu.RLock()
-	isDeleted := idx.deleted.Test(uint(id))
+	isDeleted := idx.deleted.Test(id)
 	idx.deletedMu.RUnlock()
 
 	if isDeleted {
@@ -871,7 +872,7 @@ func (idx *Index) VectorByID(ctx context.Context, id uint32) ([]float32, error) 
 }
 
 // getVector retrieves a vector from either columnar store or mmap.
-func (idx *Index) getVector(id uint32) []float32 {
+func (idx *Index) getVector(id uint64) []float32 {
 	if idx.isReadOnly {
 		return idx.readVectorMmap(id)
 	}
@@ -884,7 +885,7 @@ func (idx *Index) getVector(id uint32) []float32 {
 }
 
 // readVectorMmap reads a vector from the mmap'd file.
-func (idx *Index) readVectorMmap(id uint32) []float32 {
+func (idx *Index) readVectorMmap(id uint64) []float32 {
 	if idx.mmapReader == nil {
 		return nil
 	}
@@ -934,13 +935,13 @@ func (idx *Index) KNNSearch(ctx context.Context, query []float32, k int, opts *i
 	}
 
 	// Wrap filter to exclude deleted items
-	var userFilter func(uint32) bool
+	var userFilter func(uint64) bool
 	if opts != nil {
 		userFilter = opts.Filter
 	}
-	filter := func(id uint32) bool {
+	filter := func(id uint64) bool {
 		idx.deletedMu.RLock()
-		isDeleted := idx.deleted.Test(uint(id))
+		isDeleted := idx.deleted.Test(id)
 		idx.deletedMu.RUnlock()
 		if isDeleted {
 			return false
@@ -1001,12 +1002,67 @@ func (idx *Index) KNNSearch(ctx context.Context, query []float32, k int, opts *i
 	return idx.mergeResults(memResults, diskResults, k), nil
 }
 
+// BruteSearch performs a brute-force search on the index.
+func (idx *Index) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint64) bool) ([]index.SearchResult, error) {
+	if len(query) != idx.dim {
+		return nil, &index.ErrDimensionMismatch{Expected: idx.dim, Actual: len(query)}
+	}
+	if k <= 0 {
+		return nil, index.ErrInvalidK
+	}
+
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	// Use a max-heap to keep track of the top-k results
+	h := &maxDistHeap{}
+	heap.Init(h)
+
+	for id := uint64(0); id < idx.count; id++ {
+		// Check deleted
+		idx.deletedMu.RLock()
+		isDeleted := idx.deleted.Test(id)
+		idx.deletedMu.RUnlock()
+		if isDeleted {
+			continue
+		}
+
+		// Check filter
+		if filter != nil && !filter(id) {
+			continue
+		}
+
+		vec := idx.getVector(id)
+		if vec == nil {
+			continue
+		}
+
+		dist := idx.distFunc(query, vec)
+
+		if h.Len() < k {
+			heap.Push(h, distNode{id: id, dist: dist})
+		} else if dist < (*h)[0].dist {
+			heap.Pop(h)
+			heap.Push(h, distNode{id: id, dist: dist})
+		}
+	}
+
+	// Convert to SearchResult
+	results := make([]index.SearchResult, h.Len())
+	for i := h.Len() - 1; i >= 0; i-- {
+		node := heap.Pop(h).(distNode)
+		results[i] = index.SearchResult{ID: node.id, Distance: node.dist}
+	}
+
+	return results, nil
+}
+
 func (idx *Index) mergeResults(r1, r2 []index.SearchResult, k int) []index.SearchResult {
 	total := len(r1) + len(r2)
 	merged := make([]index.SearchResult, 0, total)
 
 	i, j := 0, 0
-	seen := make(map[uint32]bool)
+	seen := make(map[uint64]bool)
 
 	for i < len(r1) && j < len(r2) {
 		if r1[i].Distance < r2[j].Distance {
@@ -1049,7 +1105,7 @@ func (idx *Index) mergeResults(r1, r2 []index.SearchResult, k int) []index.Searc
 // filter: if not nil, nodes are filtered DURING graph traversal (not after).
 // This ensures correct recall and reduces wasted distance computations.
 // Uses proper DiskANN termination: stop when current candidate is worse than worst in beam.
-func (idx *Index) beamSearch(query []float32, distTable []float32, queryBQ []uint64, topK int, filter func(uint32) bool) []distNode {
+func (idx *Index) beamSearch(query []float32, distTable []float32, queryBQ []uint64, topK int, filter func(uint64) bool) []distNode {
 	idx.graphMu.RLock()
 	defer idx.graphMu.RUnlock()
 
@@ -1066,7 +1122,7 @@ func (idx *Index) beamSearch(query []float32, distTable []float32, queryBQ []uin
 	// (deleted nodes are skipped when adding to results). Compaction resets
 	// entry point to a live node. This matches DiskANN behavior.
 	entryPoint := idx.entryPointAtomic.Load()
-	if entryPoint >= uint32(len(idx.graph)) {
+	if entryPoint >= uint64(len(idx.graph)) {
 		return nil
 	}
 
@@ -1074,17 +1130,17 @@ func (idx *Index) beamSearch(query []float32, distTable []float32, queryBQ []uin
 	heap.Push(candidates, distNode{id: entryPoint, dist: entryDist})
 
 	// Use bitset for visited tracking (memory efficient, faster than map at scale)
-	maxID := uint32(len(idx.graph))
-	visited := idx.getVisitedBitset(uint(maxID))
+	maxID := uint64(len(idx.graph))
+	visited := idx.getVisitedBitset(maxID)
 	defer idx.putVisitedBitset(visited)
-	visited.Set(uint(entryPoint))
+	visited.Set(entryPoint)
 
 	// Result list (sorted by distance, worst at end)
 	results := make([]distNode, 0, topK*2)
 
 	// Skip deleted entry point (and apply filter)
 	idx.deletedMu.RLock()
-	isDeleted := idx.deleted.Test(uint(entryPoint))
+	isDeleted := idx.deleted.Test(entryPoint)
 	idx.deletedMu.RUnlock()
 
 	// PRE-FILTER: Only add to results if passes filter
@@ -1107,16 +1163,16 @@ func (idx *Index) beamSearch(query []float32, distTable []float32, queryBQ []uin
 		}
 
 		// Expand neighbors
-		if curr.id < uint32(len(idx.graph)) && idx.graph[curr.id] != nil {
+		if curr.id < uint64(len(idx.graph)) && idx.graph[curr.id] != nil {
 			for _, neighbor := range idx.graph[curr.id] {
-				if neighbor >= maxID || visited.Test(uint(neighbor)) {
+				if neighbor >= maxID || visited.Test(neighbor) {
 					continue
 				}
-				visited.Set(uint(neighbor))
+				visited.Set(neighbor)
 
 				// Skip deleted vectors
 				idx.deletedMu.RLock()
-				isDeleted := idx.deleted.Test(uint(neighbor))
+				isDeleted := idx.deleted.Test(neighbor)
 				idx.deletedMu.RUnlock()
 
 				// PRE-FILTER: Skip filtered nodes BEFORE computing distance
@@ -1168,7 +1224,7 @@ func (idx *Index) pqDistance(distTable []float32, codes []byte) float32 {
 // rerank fetches vectors and computes exact distances.
 // filter: Optional post-filtering (but should be nil since pre-filtering is done in beamSearch).
 // Kept for backward compatibility, but pre-filtering is the recommended approach.
-func (idx *Index) rerank(query []float32, candidates []distNode, k int, filter func(uint32) bool) []index.SearchResult {
+func (idx *Index) rerank(query []float32, candidates []distNode, k int, filter func(uint64) bool) []index.SearchResult {
 	// Fetch vectors and compute exact distances
 	results := make([]distNode, 0, len(candidates))
 	for _, c := range candidates {
@@ -1218,65 +1274,6 @@ func (idx *Index) KNNSearchStream(ctx context.Context, query []float32, k int, o
 	}
 }
 
-// BruteSearch performs exact search by scanning all vectors.
-func (idx *Index) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint32) bool) ([]index.SearchResult, error) {
-	if len(query) != idx.dim {
-		return nil, &index.ErrDimensionMismatch{Expected: idx.dim, Actual: len(query)}
-	}
-	if k <= 0 {
-		return nil, index.ErrInvalidK
-	}
-
-	idx.mu.RLock()
-	count := idx.count
-	idx.mu.RUnlock()
-
-	// Max-heap for top k
-	h := &maxDistHeap{}
-	heap.Init(h)
-
-	for id := uint32(0); id < uint32(count); id++ {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-
-		// Skip deleted
-		idx.deletedMu.RLock()
-		isDeleted := idx.deleted.Test(uint(id))
-		idx.deletedMu.RUnlock()
-		if isDeleted {
-			continue
-		}
-
-		if filter != nil && !filter(id) {
-			continue
-		}
-
-		vec := idx.getVector(id)
-		if vec == nil {
-			continue
-		}
-
-		dist := idx.distFunc(query, vec)
-
-		if h.Len() < k {
-			heap.Push(h, distNode{id: id, dist: dist})
-		} else if dist < (*h)[0].dist {
-			heap.Pop(h)
-			heap.Push(h, distNode{id: id, dist: dist})
-		}
-	}
-
-	// Extract results
-	results := make([]index.SearchResult, h.Len())
-	for i := len(results) - 1; i >= 0; i-- {
-		node := heap.Pop(h).(distNode)
-		results[i] = index.SearchResult{ID: node.id, Distance: node.dist}
-	}
-
-	return results, nil
-}
-
 // ============================================================================
 // Statistics and Info
 // ============================================================================
@@ -1297,7 +1294,7 @@ func (idx *Index) Stats() index.Stats {
 	deletedCount := idx.deleted.Count()
 	idx.deletedMu.RUnlock()
 
-	liveCount := idx.count - int(deletedCount)
+	liveCount := int(idx.count) - deletedCount
 	avgDegree := 0
 	if liveCount > 0 {
 		avgDegree = totalEdges / liveCount
@@ -1348,7 +1345,7 @@ func (idx *Index) Count() int {
 	deletedCount := idx.deleted.Count()
 	idx.deletedMu.RUnlock()
 
-	return idx.count - int(deletedCount)
+	return int(idx.count) - int(deletedCount)
 }
 
 // ============================================================================
@@ -1378,7 +1375,7 @@ func (idx *Index) Compact(ctx context.Context) error {
 	graphLen := len(idx.graph)
 	idx.graphMu.RUnlock()
 
-	hasNewVectors := idx.count > graphLen
+	hasNewVectors := idx.count > uint64(graphLen)
 
 	if deletedCount == 0 && !hasNewVectors {
 		return nil // Nothing to compact
@@ -1389,18 +1386,18 @@ func (idx *Index) Compact(ctx context.Context) error {
 	defer idx.mu.Unlock()
 
 	// Build ID remapping (old ID -> new ID)
-	idMap := make(map[uint32]uint32)
-	newID := uint32(0)
-	liveVectors := make([][]float32, 0, idx.count-int(deletedCount))
+	idMap := make(map[uint64]uint64)
+	newID := uint64(0)
+	liveVectors := make([][]float32, 0, idx.count-uint64(deletedCount))
 
 	// Collect all live vectors
-	for oldID := uint32(0); oldID < uint32(idx.count); oldID++ {
+	for oldID := uint64(0); oldID < idx.count; oldID++ {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 
 		idx.deletedMu.RLock()
-		isDeleted := idx.deleted.Test(uint(oldID))
+		isDeleted := idx.deleted.Test(oldID)
 		idx.deletedMu.RUnlock()
 
 		if isDeleted {
@@ -1440,7 +1437,7 @@ func (idx *Index) Compact(ctx context.Context) error {
 		newBQCodes = make([]uint64, len(liveVectors)*words)
 	}
 	for i, vec := range liveVectors {
-		if err := newVectors.SetVector(uint32(i), vec); err != nil {
+		if err := newVectors.SetVector(uint64(i), vec); err != nil {
 			return fmt.Errorf("diskann: set vector %d: %w", i, err)
 		}
 		copy(newPQCodes[i*M:], idx.pq.Encode(vec))
@@ -1453,8 +1450,8 @@ func (idx *Index) Compact(ctx context.Context) error {
 	// Rebuild graph with remapped IDs
 	idx.graphMu.Lock()
 	oldGraphLen := len(idx.graph)
-	newGraph := make([][]uint32, len(liveVectors))
-	var newVectorIDs []uint32
+	newGraph := make([][]uint64, len(liveVectors))
+	var newVectorIDs []uint64
 
 	for oldID, newID := range idMap {
 		if int(oldID) >= oldGraphLen {
@@ -1463,7 +1460,7 @@ func (idx *Index) Compact(ctx context.Context) error {
 		}
 
 		oldNeighbors := idx.graph[oldID]
-		newNeighbors := make([]uint32, 0, len(oldNeighbors))
+		newNeighbors := make([]uint64, 0, len(oldNeighbors))
 
 		for _, oldNeighbor := range oldNeighbors {
 			if newNeighbor, ok := idMap[oldNeighbor]; ok {
@@ -1484,8 +1481,8 @@ func (idx *Index) Compact(ctx context.Context) error {
 
 	// Replace with new structures
 	idx.graph = newGraph
-	idx.incomingEdges = make(map[uint32][]uint32)
-	for nodeID := uint32(0); nodeID < uint32(len(newGraph)); nodeID++ {
+	idx.incomingEdges = make(map[uint64][]uint64)
+	for nodeID := uint64(0); nodeID < uint64(len(newGraph)); nodeID++ {
 		for _, neighbor := range newGraph[nodeID] {
 			idx.incomingEdges[neighbor] = append(idx.incomingEdges[neighbor], nodeID)
 		}
@@ -1496,7 +1493,7 @@ func (idx *Index) Compact(ctx context.Context) error {
 		idx.bqCodes = newBQCodes
 	}
 	idx.vectors = newVectors
-	idx.count = len(liveVectors)
+	idx.count = uint64(len(liveVectors))
 
 	// Insert new vectors (from MemTable) into the graph
 	for _, id := range newVectorIDs {
@@ -1525,13 +1522,13 @@ func (idx *Index) Compact(ctx context.Context) error {
 
 	// Reset deletion tracking
 	idx.deletedMu.Lock()
-	idx.deleted = bitset.New(uint(len(liveVectors)))
+	idx.deleted = bitset.New(uint64(len(liveVectors)))
 	idx.deletedMu.Unlock()
 
 	// Reset ID allocation
-	idx.nextIDAtomic.Store(uint32(len(liveVectors)))
+	idx.nextIDAtomic.Store(uint64(len(liveVectors)))
 	idx.freeListMu.Lock()
-	idx.freeList = make([]uint32, 0)
+	idx.freeList = make([]uint64, 0)
 	idx.freeListMu.Unlock()
 
 	// Update stats
@@ -1557,7 +1554,7 @@ func (idx *Index) ShouldCompact() bool {
 	deletedCount := idx.deleted.Count()
 	idx.deletedMu.RUnlock()
 
-	if idx.count < idx.opts.CompactionMinVectors {
+	if idx.count < uint64(idx.opts.CompactionMinVectors) {
 		return false
 	}
 
@@ -1631,7 +1628,7 @@ func newTicker(intervalSeconds int) *time.Ticker {
 }
 
 // getVisitedBitset gets a bitset from the pool, sized appropriately.
-func (idx *Index) getVisitedBitset(size uint) *bitset.BitSet {
+func (idx *Index) getVisitedBitset(size uint64) *bitset.BitSet {
 	bs := idx.visitedPool.Get().(*bitset.BitSet)
 	bs.ClearAll()
 	if bs.Len() < size {

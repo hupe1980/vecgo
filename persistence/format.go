@@ -26,19 +26,19 @@ type FileHeader struct {
 	Version     uint32 // File format version
 	IndexType   uint8  // 1=Flat, 2=HNSW
 	Padding1    [3]byte
-	VectorCount uint32 // Total number of vectors
+	VectorCount uint64 // Total number of vectors
 	Dimension   uint32 // Vector dimensionality
 	DataOffset  uint64 // Offset to vector data section
 	MetaOffset  uint64 // Offset to metadata section
 	Checksum    uint32 // CRC32 of entire file
 	Padding2    [4]byte
-	Reserved    [24]byte // Future use
+	Reserved    [16]byte // Future use
 }
 
 // NodeHeader is the 16-byte header for each HNSW node.
 type NodeHeader struct {
-	ID      uint32  // Node ID
+	ID      uint64  // Node ID
 	Layer   uint16  // Max layer
 	VecLen  uint16  // Vector length (dimensions)
-	Padding [8]byte // Align to 16 bytes
+	Padding [4]byte // Align to 16 bytes
 }

@@ -195,7 +195,7 @@ func ComputeRecall(groundTruth, approximate []index.SearchResult) float64 {
 		k = len(groundTruth)
 	}
 
-	truthSet := make(map[uint32]struct{}, k)
+	truthSet := make(map[uint64]struct{}, k)
 	for i := 0; i < k; i++ {
 		truthSet[groundTruth[i].ID] = struct{}{}
 	}
@@ -213,7 +213,7 @@ func ComputeRecall(groundTruth, approximate []index.SearchResult) float64 {
 // BruteForceSearch performs exact search for ground truth.
 func BruteForceSearch(vectors [][]float32, query []float32, k int) []index.SearchResult {
 	type result struct {
-		id   uint32
+		id   uint64
 		dist float32
 	}
 
@@ -222,7 +222,7 @@ func BruteForceSearch(vectors [][]float32, query []float32, k int) []index.Searc
 
 	for i, v := range vectors {
 		d := distFunc(query, v)
-		results[i] = result{id: uint32(i), dist: d}
+		results[i] = result{id: uint64(i), dist: d}
 	}
 
 	sort.Slice(results, func(i, j int) bool {

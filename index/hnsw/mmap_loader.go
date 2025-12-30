@@ -42,25 +42,25 @@ func loadHNSWMmap(data []byte) (index.Index, int, error) {
 	maxLayers := int(binary.LittleEndian.Uint16(metaBytes[0:2]))
 	m := int(binary.LittleEndian.Uint16(metaBytes[2:4]))
 	ml := math.Float32frombits(binary.LittleEndian.Uint32(metaBytes[4:8]))
-	entryPoint := binary.LittleEndian.Uint32(metaBytes[8:12])
-	dt := index.DistanceType(metaBytes[12])
-	flags := metaBytes[13]
+	entryPoint := binary.LittleEndian.Uint64(metaBytes[8:16])
+	dt := index.DistanceType(metaBytes[16])
+	flags := metaBytes[17]
 	if dt != index.DistanceTypeSquaredL2 && dt != index.DistanceTypeCosine && dt != index.DistanceTypeDotProduct {
-		return nil, 0, fmt.Errorf("unsupported distance type in HNSW index: %d", metaBytes[12])
+		return nil, 0, fmt.Errorf("unsupported distance type in HNSW index: %d", metaBytes[16])
 	}
 
 	// nextID
-	nextID, err := r.ReadUint32()
+	nextID, err := r.ReadUint64()
 	if err != nil {
 		return nil, 0, err
 	}
 
 	// freeList
-	freeListLen, err := r.ReadUint32()
+	freeListLen, err := r.ReadUint64()
 	if err != nil {
 		return nil, 0, err
 	}
-	freeList, err := r.ReadUint32SliceCopy(int(freeListLen))
+	freeList, err := r.ReadUint64SliceCopy(int(freeListLen))
 	if err != nil {
 		return nil, 0, err
 	}
@@ -73,12 +73,6 @@ func loadHNSWMmap(data []byte) (index.Index, int, error) {
 		return nil, 0, err
 	}
 	r.Advance(int(n))
-
-	// node count
-	// nodeCount, err := r.ReadUint32()
-	// if err != nil {
-	// 	return nil, 0, err
-	// }
 
 	h := &HNSW{}
 	h.opts = DefaultOptions
@@ -119,7 +113,7 @@ func loadHNSWMmap(data []byte) (index.Index, int, error) {
 	h.countAtomic.Store(int64(nextID) - int64(len(freeList)) - int64(ts.Count()))
 
 	// Read Arena Size
-	arenaSize, err := r.ReadUint32()
+	arenaSize, err := r.ReadUint64()
 	if err != nil {
 		return nil, 0, err
 	}
@@ -133,7 +127,7 @@ func loadHNSWMmap(data []byte) (index.Index, int, error) {
 	h.arena.SetSize(arenaSize)
 
 	// Skip padding
-	padding := (4 - (arenaSize % 4)) % 4
+	padding := (8 - (arenaSize % 8)) % 8
 	if padding > 0 {
 		if _, err := r.ReadBytes(int(padding)); err != nil {
 			return nil, 0, err
@@ -141,13 +135,13 @@ func loadHNSWMmap(data []byte) (index.Index, int, error) {
 	}
 
 	// Read Offsets (Zero-Copy)
-	offsetsData, err := r.ReadBytes(int(nextID) * 4)
+	offsetsData, err := r.ReadBytes(int(nextID) * 8)
 	if err != nil {
 		return nil, 0, err
 	}
 
 	if len(offsetsData) > 0 {
-		h.mmapOffsets = unsafe.Slice((*uint32)(unsafe.Pointer(&offsetsData[0])), int(nextID))
+		h.mmapOffsets = unsafe.Slice((*uint64)(unsafe.Pointer(&offsetsData[0])), int(nextID))
 	}
 
 	// Read Vectors (Zero-Copy, Contiguous)

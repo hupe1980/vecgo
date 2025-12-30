@@ -54,7 +54,7 @@ type SearchBuilder[T any] struct {
 	maxResults     int      // Maximum results for range queries
 
 	// Filters
-	filterFunc      func(id uint32) bool
+	filterFunc      func(id uint64) bool
 	metadataFilters *metadata.FilterSet
 
 	// Options
@@ -108,14 +108,14 @@ func (sb *SearchBuilder[T]) EF(ef int) *SearchBuilder[T] {
 
 // Filter sets a filter function for search results.
 // Only vectors where filter(id) returns true are considered.
-func (sb *SearchBuilder[T]) Filter(fn func(id uint32) bool) *SearchBuilder[T] {
+func (sb *SearchBuilder[T]) Filter(fn func(id uint64) bool) *SearchBuilder[T] {
 	sb.filterFunc = fn
 	return sb
 }
 
 // WhereID filters results by ID criteria.
 // Convenience method for common ID-based filtering patterns.
-func (sb *SearchBuilder[T]) WhereID(fn func(id uint32) bool) *SearchBuilder[T] {
+func (sb *SearchBuilder[T]) WhereID(fn func(id uint64) bool) *SearchBuilder[T] {
 	return sb.Filter(fn)
 }
 

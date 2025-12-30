@@ -72,7 +72,7 @@ func TestBinaryPersistence_SaveLoad(t *testing.T) {
 	results, err := loaded.KNNSearch(ctx, query, 1, nil)
 	require.NoError(t, err)
 	require.Len(t, results, 1)
-	assert.Equal(t, uint32(50), results[0].ID)
+	assert.Equal(t, uint64(50), results[0].ID)
 }
 
 func TestBinaryPersistence_MarshalUnmarshal(t *testing.T) {
@@ -137,7 +137,7 @@ func TestBinaryPersistence_MarshalUnmarshal(t *testing.T) {
 	results, err := loaded.KNNSearch(ctx, query, 1, nil)
 	require.NoError(t, err)
 	require.Len(t, results, 1)
-	assert.Equal(t, uint32(25), results[0].ID)
+	assert.Equal(t, uint64(25), results[0].ID)
 }
 
 func TestBinaryPersistence_WithDeletes(t *testing.T) {
@@ -151,7 +151,7 @@ func TestBinaryPersistence_WithDeletes(t *testing.T) {
 	ctx := context.Background()
 
 	// Insert 20 vectors
-	ids := make([]uint32, 20)
+	ids := make([]uint64, 20)
 	for i := 0; i < 20; i++ {
 		vec := make([]float32, 32)
 		for j := range vec {
@@ -200,7 +200,7 @@ func TestBinaryPersistence_WithDeletes(t *testing.T) {
 	results, err := loaded.KNNSearch(ctx, query, 1, nil)
 	require.NoError(t, err)
 	require.Len(t, results, 1)
-	assert.Equal(t, uint32(2), results[0].ID)
+	assert.Equal(t, uint64(2), results[0].ID)
 }
 
 func TestBinaryPersistence_LoadUsesPersistedDistanceType(t *testing.T) {

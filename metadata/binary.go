@@ -69,16 +69,16 @@ func (m *Metadata) UnmarshalBinary(data []byte) error {
 }
 
 // MarshalMetadataMap encodes a map of metadata documents (keyed by internal ID).
-func MarshalMetadataMap(m map[uint32]Metadata) ([]byte, error) {
-	// Estimate size: 4 bytes count + (4 bytes ID + avg metadata len 50) * count
-	buf := make([]byte, 0, 4+len(m)*54)
+func MarshalMetadataMap(m map[uint64]Metadata) ([]byte, error) {
+	// Estimate size: 4 bytes count + (8 bytes ID + avg metadata len 50) * count
+	buf := make([]byte, 0, 4+len(m)*58)
 
 	// Write map size (uvarint)
 	buf = binary.AppendUvarint(buf, uint64(len(m)))
 
 	for k, v := range m {
-		// Write ID (uint32)
-		buf = binary.LittleEndian.AppendUint32(buf, k)
+		// Write ID (uint64)
+		buf = binary.LittleEndian.AppendUint64(buf, k)
 
 		// Write Metadata
 		b, err := v.MarshalBinary()
@@ -92,22 +92,22 @@ func MarshalMetadataMap(m map[uint32]Metadata) ([]byte, error) {
 }
 
 // UnmarshalMetadataMap decodes a map of metadata documents.
-func UnmarshalMetadataMap(data []byte) (map[uint32]Metadata, error) {
+func UnmarshalMetadataMap(data []byte) (map[uint64]Metadata, error) {
 	count, n := binary.Uvarint(data)
 	if n <= 0 {
 		return nil, errors.New("invalid metadata map length")
 	}
 	data = data[n:]
 
-	m := make(map[uint32]Metadata, count)
+	m := make(map[uint64]Metadata, count)
 
 	for range count {
 		// Read ID
-		if len(data) < 4 {
+		if len(data) < 8 {
 			return nil, errors.New("short buffer for ID")
 		}
-		id := binary.LittleEndian.Uint32(data)
-		data = data[4:]
+		id := binary.LittleEndian.Uint64(data)
+		data = data[8:]
 
 		// Read Metadata
 		mLen, n := binary.Uvarint(data)

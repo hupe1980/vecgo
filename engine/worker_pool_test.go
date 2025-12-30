@@ -39,39 +39,39 @@ func (m *mockShard[T]) KNNSearch(ctx context.Context, query []float32, k int, op
 	results := make([]index.SearchResult, k)
 	for i := range results {
 		results[i] = index.SearchResult{
-			ID:       uint32(i),
+			ID:       uint64(i),
 			Distance: float32(i) * 0.1,
 		}
 	}
 	return results, nil
 }
 
-func (m *mockShard[T]) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint32) bool) ([]index.SearchResult, error) {
+func (m *mockShard[T]) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint64) bool) ([]index.SearchResult, error) {
 	return m.KNNSearch(ctx, query, k, nil)
 }
 
-func (m *mockShard[T]) Insert(ctx context.Context, vector []float32, data T, meta metadata.Metadata) (uint32, error) {
+func (m *mockShard[T]) Insert(ctx context.Context, vector []float32, data T, meta metadata.Metadata) (uint64, error) {
 	return 0, nil
 }
 
-func (m *mockShard[T]) BatchInsert(ctx context.Context, vectors [][]float32, data []T, meta []metadata.Metadata) ([]uint32, error) {
+func (m *mockShard[T]) BatchInsert(ctx context.Context, vectors [][]float32, data []T, meta []metadata.Metadata) ([]uint64, error) {
 	return nil, nil
 }
 
-func (m *mockShard[T]) Update(ctx context.Context, id uint32, vector []float32, data T, meta metadata.Metadata) error {
+func (m *mockShard[T]) Update(ctx context.Context, id uint64, vector []float32, data T, meta metadata.Metadata) error {
 	return nil
 }
 
-func (m *mockShard[T]) Delete(ctx context.Context, id uint32) error {
+func (m *mockShard[T]) Delete(ctx context.Context, id uint64) error {
 	return nil
 }
 
-func (m *mockShard[T]) Get(id uint32) (T, bool) {
+func (m *mockShard[T]) Get(id uint64) (T, bool) {
 	var zero T
 	return zero, false
 }
 
-func (m *mockShard[T]) GetMetadata(id uint32) (metadata.Metadata, bool) {
+func (m *mockShard[T]) GetMetadata(id uint64) (metadata.Metadata, bool) {
 	return nil, false
 }
 
@@ -401,7 +401,7 @@ func TestWorkerPoolBruteSearch(t *testing.T) {
 		resultCh: resultsCh,
 	}
 
-	filter := func(id uint32) bool {
+	filter := func(id uint64) bool {
 		return id%2 == 0 // Even IDs only
 	}
 

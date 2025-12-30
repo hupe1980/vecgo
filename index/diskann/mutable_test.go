@@ -43,7 +43,7 @@ func TestMutableIndex(t *testing.T) {
 
 	// Insert vectors one by one
 	vectors := make([][]float32, 100)
-	ids := make([]uint32, 100)
+	ids := make([]uint64, 100)
 	for i := 0; i < 100; i++ {
 		vectors[i] = make([]float32, 32)
 		for j := range vectors[i] {
@@ -255,7 +255,7 @@ func TestMutableStats(t *testing.T) {
 	}
 
 	// Delete some
-	for i := uint32(0); i < 5; i++ {
+	for i := uint64(0); i < 5; i++ {
 		if err := idx.Delete(ctx, i); err != nil {
 			t.Fatalf("Delete[%d]: %v", i, err)
 		}
@@ -363,7 +363,7 @@ func TestCompaction(t *testing.T) {
 
 	// Insert 100 vectors
 	vectors := make([][]float32, 100)
-	ids := make([]uint32, 100)
+	ids := make([]uint64, 100)
 	for i := 0; i < 100; i++ {
 		vectors[i] = make([]float32, 16)
 		for j := range vectors[i] {
@@ -478,7 +478,7 @@ func TestAutoCompaction(t *testing.T) {
 	}
 
 	// Delete 15 vectors (30% deletion rate - above threshold)
-	for i := uint32(0); i < 15; i++ {
+	for i := uint64(0); i < 15; i++ {
 		if err := idx.Delete(ctx, i); err != nil {
 			t.Fatalf("Delete[%d]: %v", i, err)
 		}
@@ -535,7 +535,7 @@ func TestCompactionConcurrency(t *testing.T) {
 	}
 
 	// Delete half
-	for i := uint32(0); i < 50; i++ {
+	for i := uint64(0); i < 50; i++ {
 		if err := idx.Delete(ctx, i); err != nil {
 			t.Fatalf("Delete[%d]: %v", i, err)
 		}

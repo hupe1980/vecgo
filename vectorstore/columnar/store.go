@@ -35,8 +35,8 @@ type Store struct {
 	mu sync.RWMutex
 	// deleted  []uint64 // Removed in favor of atomic.Pointer
 	versions []uint64 // Version numbers for each vector (optional)
-	count    uint32   // Total vectors (including deleted)
-	live     uint32   // Live (non-deleted) vectors
+	count    uint64   // Total vectors (including deleted)
+	live     uint64   // Live (non-deleted) vectors
 
 	// Mmap source (nil if in-memory)
 	mmapData []byte
@@ -92,7 +92,7 @@ func (s *Store) Dimension() int {
 }
 
 // Count returns the total number of vectors (including deleted).
-func (s *Store) Count() uint32 {
+func (s *Store) Count() uint64 {
 	s.mu.RLock()
 	c := s.count
 	s.mu.RUnlock()
@@ -100,7 +100,7 @@ func (s *Store) Count() uint32 {
 }
 
 // LiveCount returns the number of non-deleted vectors.
-func (s *Store) LiveCount() uint32 {
+func (s *Store) LiveCount() uint64 {
 	s.mu.RLock()
 	l := s.live
 	s.mu.RUnlock()
@@ -110,7 +110,7 @@ func (s *Store) LiveCount() uint32 {
 // GetVector returns the vector at the given ID.
 // Returns nil, false if the ID is out of bounds or the vector is deleted.
 // The returned slice may alias internal memory; do not modify.
-func (s *Store) GetVector(id uint32) ([]float32, bool) {
+func (s *Store) GetVector(id uint64) ([]float32, bool) {
 	data := s.data.Load()
 	if data == nil {
 		return nil, false
@@ -142,7 +142,7 @@ func (s *Store) GetVector(id uint32) ([]float32, bool) {
 
 // GetVectorUnsafe returns the vector without checking deletion status.
 // Use with caution - mainly for internal iteration during compaction.
-func (s *Store) GetVectorUnsafe(id uint32) ([]float32, bool) {
+func (s *Store) GetVectorUnsafe(id uint64) ([]float32, bool) {
 	data := s.data.Load()
 	if data == nil {
 		return nil, false
@@ -161,7 +161,7 @@ func (s *Store) GetVectorUnsafe(id uint32) ([]float32, bool) {
 
 // SetVector sets (or replaces) the vector at the given ID.
 // This is part of the vectorstore.Store interface.
-func (s *Store) SetVector(id uint32, v []float32) error {
+func (s *Store) SetVector(id uint64, v []float32) error {
 	if len(v) != int(s.dim) {
 		return vectorstore.ErrWrongDimension
 	}
@@ -217,7 +217,7 @@ func (s *Store) SetVector(id uint32, v []float32) error {
 }
 
 // Append adds a new vector and returns its ID.
-func (s *Store) Append(v []float32) (uint32, error) {
+func (s *Store) Append(v []float32) (uint64, error) {
 	if len(v) != int(s.dim) {
 		return 0, vectorstore.ErrWrongDimension
 	}
@@ -267,7 +267,7 @@ func (s *Store) Append(v []float32) (uint32, error) {
 }
 
 // DeleteVector marks a vector as deleted.
-func (s *Store) DeleteVector(id uint32) error {
+func (s *Store) DeleteVector(id uint64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -284,7 +284,7 @@ func (s *Store) DeleteVector(id uint32) error {
 }
 
 // IsDeleted returns true if the vector at id is deleted.
-func (s *Store) IsDeleted(id uint32) bool {
+func (s *Store) IsDeleted(id uint64) bool {
 	// Lock-free check
 	deletedPtr := s.deleted.Load()
 	if deletedPtr == nil {
@@ -298,11 +298,11 @@ func (s *Store) IsDeleted(id uint32) bool {
 	return atomic.LoadUint64(&(*deletedPtr)[bitmapIdx])&(1<<bitIdx) != 0
 }
 
-func (s *Store) isDeletedLocked(id uint32) bool {
+func (s *Store) isDeletedLocked(id uint64) bool {
 	return s.IsDeleted(id)
 }
 
-func (s *Store) setDeletedLocked(id uint32, deleted bool) {
+func (s *Store) setDeletedLocked(id uint64, deleted bool) {
 	bitmapIdx := id / 64
 	currentDeleted := *s.deleted.Load()
 
@@ -327,7 +327,7 @@ func (s *Store) setDeletedLocked(id uint32, deleted bool) {
 // Compact removes deleted vectors and defragments the store.
 // Returns a map from old IDs to new IDs for live vectors.
 // Deleted vectors are not included in the map.
-func (s *Store) Compact() map[uint32]uint32 {
+func (s *Store) Compact() map[uint64]uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -340,10 +340,10 @@ func (s *Store) Compact() map[uint32]uint32 {
 	oldData := *s.data.Load()
 	newData := mem.AllocAlignedFloat32(int(s.live) * dim)
 	newData = newData[:0]
-	idMap := make(map[uint32]uint32, s.live)
+	idMap := make(map[uint64]uint64, s.live)
 
-	var newID uint32
-	for oldID := uint32(0); oldID < s.count; oldID++ {
+	var newID uint64
+	for oldID := uint64(0); oldID < s.count; oldID++ {
 		if s.isDeletedLocked(oldID) {
 			continue
 		}
@@ -365,7 +365,7 @@ func (s *Store) Compact() map[uint32]uint32 {
 }
 
 // Iterate calls fn for each live vector. Return false from fn to stop iteration.
-func (s *Store) Iterate(fn func(id uint32, vec []float32) bool) {
+func (s *Store) Iterate(fn func(id uint64, vec []float32) bool) {
 	s.mu.RLock()
 	count := s.count
 	s.mu.RUnlock()
@@ -377,7 +377,7 @@ func (s *Store) Iterate(fn func(id uint32, vec []float32) bool) {
 
 	dim := int(s.dim)
 
-	for id := uint32(0); id < count; id++ {
+	for id := uint64(0); id < count; id++ {
 		s.mu.RLock()
 		deleted := s.isDeletedLocked(id)
 		s.mu.RUnlock()
@@ -458,7 +458,7 @@ func (s *Store) WriteTo(w io.Writer) (int64, error) {
 
 	// Pad bitmap to expected size
 	expectedBitmapBlocks := (s.count + 63) / 64
-	for i := uint32(len(currentDeleted)); i < expectedBitmapBlocks; i++ {
+	for i := uint64(len(currentDeleted)); i < expectedBitmapBlocks; i++ {
 		var buf [8]byte
 		n, err := mw.Write(buf[:])
 		written += int64(n)
@@ -492,8 +492,8 @@ func (s *Store) ReadFrom(r io.Reader) (int64, error) {
 	}
 
 	s.dim = header.Dimension
-	s.count = uint32(header.Count)
-	s.live = uint32(header.LiveCount)
+	s.count = header.Count
+	s.live = header.LiveCount
 
 	// Create checksummer
 	crc := crc32.NewIEEE()

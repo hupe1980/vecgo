@@ -15,13 +15,13 @@ func New(capacity int) *VisitedSet {
 }
 
 // Visit marks a node as visited.
-func (v *VisitedSet) Visit(id uint32) {
+func (v *VisitedSet) Visit(id uint64) {
 	v.ensureCapacity(int(id))
 	v.visited[id] = v.token
 }
 
 // Visited returns true if the node has been visited.
-func (v *VisitedSet) Visited(id uint32) bool {
+func (v *VisitedSet) Visited(id uint64) bool {
 	if int(id) >= len(v.visited) {
 		return false
 	}

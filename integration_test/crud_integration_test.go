@@ -248,7 +248,7 @@ func TestCRUDOperations(t *testing.T) {
 				vg := tc.factory(t)
 
 				// Insert multiple vectors
-				ids := make([]uint32, 0, 10)
+				ids := make([]uint64, 0, 10)
 				for i := 0; i < 10; i++ {
 					id, err := vg.Insert(context.Background(), vecgo.VectorWithData[string]{
 						Vector: []float32{float32(i), float32(i + 1), float32(i + 2)},
@@ -320,7 +320,7 @@ func TestConcurrentCRUDOperations(t *testing.T) {
 				n := 100
 
 				errs := make(chan error, n)
-				ids := make(chan uint32, n)
+				ids := make(chan uint64, n)
 
 				for i := 0; i < n; i++ {
 					go func(val int) {
@@ -337,7 +337,7 @@ func TestConcurrentCRUDOperations(t *testing.T) {
 				}
 
 				// Collect results
-				idSlice := make([]uint32, 0, n)
+				idSlice := make([]uint64, 0, n)
 				for i := 0; i < n; i++ {
 					select {
 					case err := <-errs:
@@ -387,7 +387,7 @@ func TestConcurrentCRUDOperations(t *testing.T) {
 				vg := tc.factory(t)
 
 				// Insert initial data
-				ids := make([]uint32, 10)
+				ids := make([]uint64, 10)
 				for i := 0; i < 10; i++ {
 					id, err := vg.Insert(context.Background(), vecgo.VectorWithData[int]{
 						Vector: []float32{float32(i), float32(i + 1), float32(i + 2)},
@@ -423,7 +423,7 @@ func TestConcurrentCRUDOperations(t *testing.T) {
 				vg := tc.factory(t)
 
 				// Insert initial data
-				ids := make([]uint32, 10)
+				ids := make([]uint64, 10)
 				for i := 0; i < 10; i++ {
 					id, err := vg.Insert(context.Background(), vecgo.VectorWithData[int]{
 						Vector: []float32{float32(i), float32(i + 1), float32(i + 2)},
@@ -438,7 +438,7 @@ func TestConcurrentCRUDOperations(t *testing.T) {
 				errs := make(chan error, len(deleteIds))
 
 				for i := 0; i < len(deleteIds); i++ {
-					go func(id uint32) {
+					go func(id uint64) {
 						errs <- vg.Delete(context.Background(), id)
 					}(deleteIds[i])
 				}

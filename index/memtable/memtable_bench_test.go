@@ -17,7 +17,7 @@ func BenchmarkMemTableSearch(b *testing.B) {
 
 	for i := 0; i < size; i++ {
 		vec := rng.UnitVector(dim)
-		m.Insert(uint32(i), vec)
+		m.Insert(uint64(i), vec)
 	}
 
 	query := rng.UnitVector(dim)

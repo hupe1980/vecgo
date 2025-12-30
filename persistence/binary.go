@@ -69,6 +69,23 @@ func (bw *BinaryIndexWriter) WriteUint32Slice(slice []uint32) error {
 	return err
 }
 
+// WriteUint64Slice writes a uint64 slice as raw bytes.
+// Safety: Validates alignment before unsafe conversion.
+func (bw *BinaryIndexWriter) WriteUint64Slice(slice []uint64) error {
+	if len(slice) == 0 {
+		return nil
+	}
+
+	// Verify alignment before unsafe operation
+	if err := validateUint64SliceAlignment(slice); err != nil {
+		return err
+	}
+
+	byteSlice := unsafe.Slice((*byte)(unsafe.Pointer(&slice[0])), len(slice)*8)
+	_, err := bw.w.Write(byteSlice)
+	return err
+}
+
 // BinaryIndexReader reads indexes from binary format.
 type BinaryIndexReader struct {
 	r         io.Reader
@@ -111,6 +128,18 @@ func (br *BinaryIndexReader) ReadFloat32Slice(count int) ([]float32, error) {
 	return vec, nil
 }
 
+// ReadFloat32SliceInto reads a float32 slice into the provided buffer.
+func (br *BinaryIndexReader) ReadFloat32SliceInto(vec []float32) error {
+	if len(vec) == 0 {
+		return nil
+	}
+	byteSlice := unsafe.Slice((*byte)(unsafe.Pointer(&vec[0])), len(vec)*4)
+	if _, err := io.ReadFull(br.r, byteSlice); err != nil {
+		return err
+	}
+	return nil
+}
+
 // ReadUint32Slice reads a uint32 slice.
 func (br *BinaryIndexReader) ReadUint32Slice(count int) ([]uint32, error) {
 	if count == 0 {
@@ -118,6 +147,19 @@ func (br *BinaryIndexReader) ReadUint32Slice(count int) ([]uint32, error) {
 	}
 	slice := make([]uint32, count)
 	byteSlice := unsafe.Slice((*byte)(unsafe.Pointer(&slice[0])), count*4)
+	if _, err := io.ReadFull(br.r, byteSlice); err != nil {
+		return nil, err
+	}
+	return slice, nil
+}
+
+// ReadUint64Slice reads a uint64 slice.
+func (br *BinaryIndexReader) ReadUint64Slice(count int) ([]uint64, error) {
+	if count == 0 {
+		return nil, nil
+	}
+	slice := make([]uint64, count)
+	byteSlice := unsafe.Slice((*byte)(unsafe.Pointer(&slice[0])), count*8)
 	if _, err := io.ReadFull(br.r, byteSlice); err != nil {
 		return nil, err
 	}

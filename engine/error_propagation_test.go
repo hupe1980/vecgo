@@ -30,28 +30,28 @@ type failingCoordinator[T any] struct {
 	err error
 }
 
-func (f *failingCoordinator[T]) Insert(ctx context.Context, vector []float32, data T, meta metadata.Metadata) (uint32, error) {
+func (f *failingCoordinator[T]) Insert(ctx context.Context, vector []float32, data T, meta metadata.Metadata) (uint64, error) {
 	return 0, f.err
 }
 
-func (f *failingCoordinator[T]) BatchInsert(ctx context.Context, vectors [][]float32, dataSlice []T, metadataSlice []metadata.Metadata) ([]uint32, error) {
+func (f *failingCoordinator[T]) BatchInsert(ctx context.Context, vectors [][]float32, dataSlice []T, metadataSlice []metadata.Metadata) ([]uint64, error) {
 	return nil, f.err
 }
 
-func (f *failingCoordinator[T]) Update(ctx context.Context, id uint32, vector []float32, data T, meta metadata.Metadata) error {
+func (f *failingCoordinator[T]) Update(ctx context.Context, id uint64, vector []float32, data T, meta metadata.Metadata) error {
 	return f.err
 }
 
-func (f *failingCoordinator[T]) Delete(ctx context.Context, id uint32) error {
+func (f *failingCoordinator[T]) Delete(ctx context.Context, id uint64) error {
 	return f.err
 }
 
-func (f *failingCoordinator[T]) Get(id uint32) (T, bool) {
+func (f *failingCoordinator[T]) Get(id uint64) (T, bool) {
 	var zero T
 	return zero, false
 }
 
-func (f *failingCoordinator[T]) GetMetadata(id uint32) (metadata.Metadata, bool) {
+func (f *failingCoordinator[T]) GetMetadata(id uint64) (metadata.Metadata, bool) {
 	return nil, false
 }
 
@@ -59,7 +59,7 @@ func (f *failingCoordinator[T]) KNNSearch(ctx context.Context, query []float32, 
 	return nil, f.err
 }
 
-func (f *failingCoordinator[T]) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint32) bool) ([]index.SearchResult, error) {
+func (f *failingCoordinator[T]) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint64) bool) ([]index.SearchResult, error) {
 	return nil, f.err
 }
 
@@ -108,32 +108,32 @@ type slowCoordinator[T any] struct {
 	delay time.Duration
 }
 
-func (s *slowCoordinator[T]) Insert(ctx context.Context, vector []float32, data T, meta metadata.Metadata) (uint32, error) {
+func (s *slowCoordinator[T]) Insert(ctx context.Context, vector []float32, data T, meta metadata.Metadata) (uint64, error) {
 	time.Sleep(s.delay)
 	return 1, nil
 }
 
-func (s *slowCoordinator[T]) BatchInsert(ctx context.Context, vectors [][]float32, dataSlice []T, metadataSlice []metadata.Metadata) ([]uint32, error) {
+func (s *slowCoordinator[T]) BatchInsert(ctx context.Context, vectors [][]float32, dataSlice []T, metadataSlice []metadata.Metadata) ([]uint64, error) {
 	time.Sleep(s.delay)
-	return make([]uint32, len(vectors)), nil
+	return make([]uint64, len(vectors)), nil
 }
 
-func (s *slowCoordinator[T]) Update(ctx context.Context, id uint32, vector []float32, data T, meta metadata.Metadata) error {
-	time.Sleep(s.delay)
-	return nil
-}
-
-func (s *slowCoordinator[T]) Delete(ctx context.Context, id uint32) error {
+func (s *slowCoordinator[T]) Update(ctx context.Context, id uint64, vector []float32, data T, meta metadata.Metadata) error {
 	time.Sleep(s.delay)
 	return nil
 }
 
-func (s *slowCoordinator[T]) Get(id uint32) (T, bool) {
+func (s *slowCoordinator[T]) Delete(ctx context.Context, id uint64) error {
+	time.Sleep(s.delay)
+	return nil
+}
+
+func (s *slowCoordinator[T]) Get(id uint64) (T, bool) {
 	var zero T
 	return zero, false
 }
 
-func (s *slowCoordinator[T]) GetMetadata(id uint32) (metadata.Metadata, bool) {
+func (s *slowCoordinator[T]) GetMetadata(id uint64) (metadata.Metadata, bool) {
 	return nil, false
 }
 
@@ -146,7 +146,7 @@ func (s *slowCoordinator[T]) KNNSearch(ctx context.Context, query []float32, k i
 	}
 }
 
-func (s *slowCoordinator[T]) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint32) bool) ([]index.SearchResult, error) {
+func (s *slowCoordinator[T]) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint64) bool) ([]index.SearchResult, error) {
 	select {
 	case <-time.After(s.delay):
 		return nil, nil
@@ -435,7 +435,7 @@ func (tsc *testShardedCoordinator[T]) KNNSearch(ctx context.Context, query []flo
 	return allResults, nil
 }
 
-func (tsc *testShardedCoordinator[T]) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint32) bool) ([]index.SearchResult, error) {
+func (tsc *testShardedCoordinator[T]) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint64) bool) ([]index.SearchResult, error) {
 	// Similar to KNNSearch
 	type shardResult struct {
 		shardIdx int

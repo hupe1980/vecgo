@@ -49,7 +49,7 @@ func (s *Store) SetData(data []float32) {
 
 func (s *Store) Dimension() int { return s.dim }
 
-func (s *Store) GetVector(id uint32) ([]float32, bool) {
+func (s *Store) GetVector(id uint64) ([]float32, bool) {
 	data := *s.data.Load()
 	idx := int(id) * s.dim
 	if idx < 0 || idx+s.dim > len(data) {
@@ -58,7 +58,7 @@ func (s *Store) GetVector(id uint32) ([]float32, bool) {
 	return data[idx : idx+s.dim], true
 }
 
-func (s *Store) SetVector(id uint32, v []float32) error {
+func (s *Store) SetVector(id uint64, v []float32) error {
 	if len(v) != s.dim {
 		return vectorstore.ErrWrongDimension
 	}
@@ -72,7 +72,7 @@ func (s *Store) SetVector(id uint32, v []float32) error {
 	return nil
 }
 
-func (s *Store) DeleteVector(id uint32) error {
+func (s *Store) DeleteVector(id uint64) error {
 	// Zero out the vector? Or just ignore?
 	// For mmap read-only, we can't really delete.
 	// But this store might be used for mutable buffers too.

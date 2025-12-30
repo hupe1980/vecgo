@@ -124,7 +124,7 @@ func TestAsyncIndex_Race_FlushAndDelete(t *testing.T) {
 	n := 1000
 
 	// Insert items
-	ids := make([]uint32, n)
+	ids := make([]uint64, n)
 	for i := 0; i < n; i++ {
 		vec := []float32{rand.Float32(), rand.Float32(), rand.Float32(), rand.Float32()}
 		id, err := tx.Insert(ctx, vec, fmt.Sprintf("item-%d", i), nil)

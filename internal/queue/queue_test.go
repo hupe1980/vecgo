@@ -17,7 +17,7 @@ func TestMaxValidation(t *testing.T) {
 
 	for k, v := range items {
 		v := PriorityQueueItem{
-			Node:     uint32(k),
+			Node:     uint64(k),
 			Distance: v,
 		}
 
@@ -28,7 +28,7 @@ func TestMaxValidation(t *testing.T) {
 	maxItem, _ := h.Top().(PriorityQueueItem)
 
 	assert.Equal(t, float32(10.030000), maxItem.Distance)
-	assert.Equal(t, uint32(15), maxItem.Node)
+	assert.Equal(t, uint64(15), maxItem.Node)
 	assert.Equal(t, float32(10.030000), items[maxItem.Node])
 	assert.Equal(t, 20, h.Len()) // Check len
 
@@ -45,7 +45,7 @@ func TestMaxValidation(t *testing.T) {
 	maxItem, _ = h.Top().(PriorityQueueItem)
 
 	assert.Equal(t, float32(1.000800), maxItem.Distance)
-	assert.Equal(t, uint32(17), maxItem.Node)
+	assert.Equal(t, uint64(17), maxItem.Node)
 	assert.Equal(t, float32(1.000800), items[maxItem.Node])
 
 	for h.Len() > 1 {
@@ -59,7 +59,7 @@ func TestMaxValidation(t *testing.T) {
 	maxItem, _ = h.Top().(PriorityQueueItem)
 
 	assert.Equal(t, float32(0.001000), maxItem.Distance)
-	assert.Equal(t, uint32(2), maxItem.Node)
+	assert.Equal(t, uint64(2), maxItem.Node)
 	assert.Equal(t, float32(0.001000), items[maxItem.Node])
 
 	// Remove the last element, should be empty
@@ -77,7 +77,7 @@ func TestMinValidation(t *testing.T) {
 
 	for k, v := range items {
 		v := PriorityQueueItem{
-			Node:     uint32(k),
+			Node:     uint64(k),
 			Distance: v,
 		}
 
@@ -88,7 +88,7 @@ func TestMinValidation(t *testing.T) {
 	maxItem, _ := h.Top().(PriorityQueueItem)
 
 	assert.Equal(t, float32(0.001), maxItem.Distance)
-	assert.Equal(t, uint32(2), maxItem.Node)
+	assert.Equal(t, uint64(2), maxItem.Node)
 	assert.Equal(t, float32(0.001), items[maxItem.Node])
 	assert.Equal(t, 20, h.Len()) // Check len
 
@@ -105,7 +105,7 @@ func TestMinValidation(t *testing.T) {
 	maxItem, _ = h.Top().(PriorityQueueItem)
 
 	assert.Equal(t, float32(1.000900), maxItem.Distance)
-	assert.Equal(t, uint32(8), maxItem.Node)
+	assert.Equal(t, uint64(8), maxItem.Node)
 	assert.Equal(t, float32(1.000900), items[maxItem.Node])
 
 	for h.Len() > 1 {
@@ -120,7 +120,7 @@ func TestMinValidation(t *testing.T) {
 
 	assert.Equal(t, float32(10.03), maxItem.Distance)
 
-	assert.Equal(t, uint32(15), maxItem.Node)
+	assert.Equal(t, uint64(15), maxItem.Node)
 
 	assert.Equal(t, float32(10.03), items[maxItem.Node])
 
