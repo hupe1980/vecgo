@@ -19,27 +19,26 @@ type Item struct {
 
 // MemTable is a thread-safe linear buffer for vectors.
 // It serves as the L0 (Level 0) store in the LSM tree architecture.
+// It uses a Struct of Arrays (SoA) layout for better cache locality.
 type MemTable struct {
 	mu        sync.RWMutex
-	items     []Item
+	ids       []uint64
+	vectors   []float32 // Flattened vectors
+	deleted   []bool
 	distFunc  index.DistanceFunc
 	dimension int
 	hnswIndex *hnsw.HNSW
-	vecPool   sync.Pool
 	heapPool  sync.Pool
 }
 
 // New creates a new MemTable.
 func New(dimension int, distFunc index.DistanceFunc) *MemTable {
 	m := &MemTable{
-		items:     make([]Item, 0, 1024), // Initial capacity
+		ids:       make([]uint64, 0, 1024),
+		vectors:   make([]float32, 0, 1024*dimension),
+		deleted:   make([]bool, 0, 1024),
 		distFunc:  distFunc,
 		dimension: dimension,
-		vecPool: sync.Pool{
-			New: func() any {
-				return make([]float32, dimension)
-			},
-		},
 		heapPool: sync.Pool{
 			New: func() any {
 				h := make(resultHeap, 0, 32)
@@ -72,18 +71,9 @@ func (m *MemTable) Reset() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Return vectors to pool
-	for i := range m.items {
-		if m.items[i].Vector != nil {
-			// Reset capacity to avoid holding large buffers if not needed?
-			// sync.Pool handles this naturally (GC can take them).
-			// We just Put them back.
-			m.vecPool.Put(m.items[i].Vector)
-		}
-		// Clear pointers to avoid memory leaks
-		m.items[i].Vector = nil
-	}
-	m.items = m.items[:0]
+	m.ids = m.ids[:0]
+	m.vectors = m.vectors[:0]
+	m.deleted = m.deleted[:0]
 	m.hnswIndex.Reset()
 }
 
@@ -92,26 +82,16 @@ func (m *MemTable) Insert(id uint64, vector []float32) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Use pooled allocator
-	vecCopy := m.vecPool.Get().([]float32)
-	if cap(vecCopy) < len(vector) {
-		vecCopy = make([]float32, len(vector))
-	}
-	vecCopy = vecCopy[:len(vector)]
-	copy(vecCopy, vector)
-
 	// Update HNSW
 	// We ignore errors here as HNSW insert should succeed in memory
-	if err := m.hnswIndex.ApplyInsert(context.Background(), id, vecCopy); err != nil {
-		// Log error but continue (HNSW might be out of sync but linear scan will work)
+	if err := m.hnswIndex.ApplyInsert(context.Background(), id, vector); err != nil {
+		// Log error but continue
 	}
 
-	// Append-only
-	m.items = append(m.items, Item{
-		ID:        id,
-		Vector:    vecCopy,
-		IsDeleted: false,
-	})
+	// Append-only (SoA)
+	m.ids = append(m.ids, id)
+	m.vectors = append(m.vectors, vector...)
+	m.deleted = append(m.deleted, false)
 }
 
 // Get retrieves a vector from the memtable.
@@ -121,9 +101,19 @@ func (m *MemTable) Get(id uint64) ([]float32, bool, bool) {
 	defer m.mu.RUnlock()
 
 	// Scan backwards for latest version
-	for i := len(m.items) - 1; i >= 0; i-- {
-		if m.items[i].ID == id {
-			return m.items[i].Vector, true, m.items[i].IsDeleted
+	// SoA scan is faster due to cache locality of ids slice
+	for i := len(m.ids) - 1; i >= 0; i-- {
+		if m.ids[i] == id {
+			if m.deleted[i] {
+				return nil, true, true
+			}
+			// Extract vector from flattened slice
+			start := i * m.dimension
+			end := start + m.dimension
+			// Return a copy to be safe
+			vec := make([]float32, m.dimension)
+			copy(vec, m.vectors[start:end])
+			return vec, true, false
 		}
 	}
 	return nil, false, false
@@ -138,11 +128,11 @@ func (m *MemTable) Delete(id uint64) {
 	_ = m.hnswIndex.ApplyDelete(context.Background(), id)
 
 	// Append tombstone
-	m.items = append(m.items, Item{
-		ID:        id,
-		Vector:    nil,
-		IsDeleted: true,
-	})
+	m.ids = append(m.ids, id)
+	// We need to append dummy vector data to keep alignment
+	zeros := make([]float32, m.dimension)
+	m.vectors = append(m.vectors, zeros...)
+	m.deleted = append(m.deleted, true)
 }
 
 // Flush returns all items in the memtable and clears it.
@@ -151,29 +141,40 @@ func (m *MemTable) Flush() []Item {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if len(m.items) == 0 {
+	if len(m.ids) == 0 {
 		return nil
 	}
 
-	flushed := m.items
-	// We don't reset HNSW here because we might reuse this MemTable instance
-	// via Reset() later. But wait, the original code did:
-	// m.items = make(...)
-	// m.resetHNSW()
-	// This implies MemTable stays alive and starts fresh.
-	// If we want to reuse MemTable in Tx, we should probably NOT reset here,
-	// but let Tx handle the lifecycle.
-	// However, to keep existing behavior for now:
-	m.items = make([]Item, 0, 1024)
+	// Reconstruct Items from SoA
+	items := make([]Item, len(m.ids))
+	for i := range m.ids {
+		items[i] = Item{
+			ID:        m.ids[i],
+			IsDeleted: m.deleted[i],
+		}
+		if !m.deleted[i] {
+			start := i * m.dimension
+			end := start + m.dimension
+			vec := make([]float32, m.dimension)
+			copy(vec, m.vectors[start:end])
+			items[i].Vector = vec
+		}
+	}
+
+	// Reset
+	m.ids = make([]uint64, 0, 1024)
+	m.vectors = make([]float32, 0, 1024*m.dimension)
+	m.deleted = make([]bool, 0, 1024)
 	m.hnswIndex.Reset()
-	return flushed
+
+	return items
 }
 
 // Size returns the number of items in the memtable.
 func (m *MemTable) Size() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return len(m.items)
+	return len(m.ids)
 }
 
 // Search performs a search on the memtable using the internal HNSW index.
@@ -223,45 +224,33 @@ func (m *MemTable) linearSearch(query []float32, k int, filter func(uint64) bool
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	// We need to handle duplicates (latest version wins)
-	// Use a map to track seen IDs? Or just scan backwards and ignore seen?
-	// Scanning backwards and keeping top-k is tricky because we need global top-k.
-	// Easier: Scan forwards, update map of ID -> (Vector, IsDeleted).
-	// Then compute distances.
-	// But that allocates a map.
-	// Given MemTable is small, maybe just scan all and filter duplicates?
-	// Or rely on HNSW which is the primary path.
-	// Linear search is fallback.
-	// Let's just scan all and deduplicate using a map for now, or assume HNSW works.
-	// If we scan backwards, we see the latest version first.
-	// We can keep a "seen" set.
+	seen := make(map[uint64]struct{})
 
-	// Optimization: If we assume HNSW is always up to date, we rarely hit this.
-	// But for correctness:
-	seen := make(map[uint64]struct{}) // Allocation!
-	// To avoid allocation, we could use a pooled map or just accept it for fallback.
-
-	for i := len(m.items) - 1; i >= 0; i-- {
-		item := m.items[i]
-		if _, ok := seen[item.ID]; ok {
+	for i := len(m.ids) - 1; i >= 0; i-- {
+		id := m.ids[i]
+		if _, ok := seen[id]; ok {
 			continue
 		}
-		seen[item.ID] = struct{}{}
+		seen[id] = struct{}{}
 
-		if item.IsDeleted {
+		if m.deleted[i] {
 			continue
 		}
-		if filter != nil && !filter(item.ID) {
+		if filter != nil && !filter(id) {
 			continue
 		}
 
-		dist := m.distFunc(query, item.Vector)
+		start := i * m.dimension
+		end := start + m.dimension
+		vec := m.vectors[start:end]
+
+		dist := m.distFunc(query, vec)
 
 		if h.Len() < k {
-			heap.Push(h, index.SearchResult{ID: item.ID, Distance: dist})
+			heap.Push(h, index.SearchResult{ID: id, Distance: dist})
 		} else if dist < (*h)[0].Distance {
 			heap.Pop(h)
-			heap.Push(h, index.SearchResult{ID: item.ID, Distance: dist})
+			heap.Push(h, index.SearchResult{ID: id, Distance: dist})
 		}
 	}
 
@@ -279,8 +268,20 @@ func (m *MemTable) Items() []Item {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	items := make([]Item, len(m.items))
-	copy(items, m.items)
+	items := make([]Item, len(m.ids))
+	for i := range m.ids {
+		items[i] = Item{
+			ID:        m.ids[i],
+			IsDeleted: m.deleted[i],
+		}
+		if !m.deleted[i] {
+			start := i * m.dimension
+			end := start + m.dimension
+			vec := make([]float32, m.dimension)
+			copy(vec, m.vectors[start:end])
+			items[i].Vector = vec
+		}
+	}
 	return items
 }
 

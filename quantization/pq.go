@@ -270,10 +270,10 @@ func (pq *ProductQuantizer) kmeans(vectors [][]float32, k, maxIters int) []float
 			}
 		}
 
-		for i := 0; i < k; i++ {
+		for i := range k {
 			if counts[i] > 0 {
 				start := i * dim
-				for j := 0; j < dim; j++ {
+				for j := range dim {
 					centroids[start+j] = newCentroids[start+j] / float32(counts[i])
 				}
 			}

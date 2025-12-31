@@ -296,6 +296,7 @@ type TransactionalIndex interface {
 
 	// Apply operations (deterministic, used during recovery)
 	ApplyInsert(ctx context.Context, id uint64, vector []float32) error
+	ApplyBatchInsert(ctx context.Context, ids []uint64, vectors [][]float32) error
 	ApplyUpdate(ctx context.Context, id uint64, vector []float32) error
 	ApplyDelete(ctx context.Context, id uint64) error
 

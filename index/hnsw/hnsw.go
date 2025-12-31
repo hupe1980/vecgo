@@ -458,6 +458,45 @@ func (h *HNSW) ApplyInsert(ctx context.Context, id uint64, v []float32) error {
 	return err
 }
 
+// ApplyBatchInsert inserts multiple vectors with specific IDs concurrently.
+func (h *HNSW) ApplyBatchInsert(ctx context.Context, ids []uint64, vectors [][]float32) error {
+	if len(ids) != len(vectors) {
+		return fmt.Errorf("ids and vectors length mismatch")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	g := h.currentGraph.Load()
+	var wg sync.WaitGroup
+
+	// Limit concurrency to avoid overwhelming the system
+	concurrency := runtime.GOMAXPROCS(0)
+	sem := make(chan struct{}, concurrency)
+
+	var firstErr error
+	var errMu sync.Mutex
+
+	for i := range vectors {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(idx int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			if _, err := h.insert(g, vectors[idx], ids[idx], -1, true); err != nil {
+				errMu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				errMu.Unlock()
+			}
+		}(i)
+	}
+	wg.Wait()
+	return firstErr
+}
+
 // ApplyDelete deletes a node with a specific ID (for WAL replay).
 func (h *HNSW) ApplyDelete(ctx context.Context, id uint64) error {
 	return h.Delete(ctx, id)

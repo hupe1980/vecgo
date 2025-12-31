@@ -387,6 +387,74 @@ func (f *Flat) ApplyInsert(ctx context.Context, id uint64, v []float32) error {
 	return nil
 }
 
+// ApplyBatchInsert inserts multiple vectors with specific IDs.
+func (f *Flat) ApplyBatchInsert(ctx context.Context, ids []uint64, vectors [][]float32) error {
+	if len(ids) != len(vectors) {
+		return fmt.Errorf("ids and vectors length mismatch")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	f.writeMu.Lock()
+	defer f.writeMu.Unlock()
+
+	currentDim := int(f.dimension.Load())
+	oldState := f.getState()
+	newState := f.cloneState(oldState)
+	pq := f.pq.Load()
+
+	for i, v := range vectors {
+		id := ids[i]
+		if len(v) == 0 {
+			return index.ErrEmptyVector
+		}
+		if len(v) != currentDim {
+			return &index.ErrDimensionMismatch{Expected: currentDim, Actual: len(v)}
+		}
+
+		vec := v
+		if f.opts.NormalizeVectors {
+			norm, ok := distance.NormalizeL2Copy(v)
+			if !ok {
+				return fmt.Errorf("flat: cannot normalize zero vector")
+			}
+			vec = norm
+		}
+
+		// Ensure nodes slice can hold id.
+		if int(id) >= len(newState.nodes) {
+			oldLen := len(newState.nodes)
+			newLen := int(id) + 1
+			newState.nodes = append(newState.nodes, make([]*Node, newLen-oldLen)...)
+			if pq != nil {
+				if newState.pqCodes == nil {
+					newState.pqCodes = make([][]byte, oldLen)
+				}
+				newState.pqCodes = append(newState.pqCodes, make([][]byte, newLen-oldLen)...)
+			}
+		}
+
+		if newState.nodes[id] != nil {
+			return fmt.Errorf("node %d already exists", id)
+		}
+
+		if err := f.vectors.SetVector(id, vec); err != nil {
+			return err
+		}
+		newState.nodes[id] = &Node{ID: id}
+		if pq != nil {
+			if newState.pqCodes == nil {
+				newState.pqCodes = make([][]byte, len(newState.nodes))
+			}
+			newState.pqCodes[id] = pq.Encode(vec)
+		}
+	}
+
+	f.state.Store(newState)
+	return nil
+}
+
 // ApplyUpdate updates a vector at an explicit ID (deterministic WAL replay helper).
 func (f *Flat) ApplyUpdate(ctx context.Context, id uint64, v []float32) error {
 	return f.Update(ctx, id, v)

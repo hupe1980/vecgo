@@ -351,6 +351,45 @@ func (idx *Index) ApplyInsert(ctx context.Context, id uint64, v []float32) error
 	return nil
 }
 
+// ApplyBatchInsert adds multiple vectors with specific IDs to the MemTable.
+func (idx *Index) ApplyBatchInsert(ctx context.Context, ids []uint64, vectors [][]float32) error {
+	if len(ids) != len(vectors) {
+		return fmt.Errorf("ids and vectors length mismatch")
+	}
+
+	idx.mu.RLock()
+	memTable := idx.memTable
+	idx.mu.RUnlock()
+
+	if memTable == nil {
+		return fmt.Errorf("diskann: memtable not initialized")
+	}
+
+	// Insert into MemTable
+	if err := memTable.ApplyBatchInsert(ctx, ids, vectors); err != nil {
+		return fmt.Errorf("diskann: memtable batch insert: %w", err)
+	}
+
+	// Update shadowing bitset
+	idx.mu.Lock()
+	for _, id := range ids {
+		idx.memTablePresent.Set(id)
+	}
+	idx.mu.Unlock()
+
+	// Update stats
+	atomic.AddUint64(&idx.memTableCount, uint64(len(ids)))
+
+	// Clear deletion bit if it was previously deleted
+	idx.deletedMu.Lock()
+	for _, id := range ids {
+		idx.deleted.Unset(id)
+	}
+	idx.deletedMu.Unlock()
+
+	return nil
+}
+
 // Delete removes a vector from the index.
 func (idx *Index) Delete(ctx context.Context, id uint64) error {
 	return idx.ApplyDelete(ctx, id)

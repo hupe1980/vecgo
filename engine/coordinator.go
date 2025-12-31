@@ -196,7 +196,6 @@ func New[T any](idx index.Index, dataStore Store[T], metaStore *metadata.Unified
 		metaStore:  metaStore,
 		durability: d,
 		codec:      c,
-		memTable:   memtable.New(opts.dimension, distance.SquaredL2),
 		distFunc:   distance.SquaredL2,
 		flushCh:    make(chan struct{}, 1),
 		stopCh:     make(chan struct{}),
@@ -213,7 +212,15 @@ func New[T any](idx index.Index, dataStore Store[T], metaStore *metadata.Unified
 			},
 		},
 	}
-	tx.flushCond = sync.NewCond(&tx.mu)
+
+	// Initialize memState
+	initialState := &memState{
+		active: memtable.New(opts.dimension, distance.SquaredL2),
+		frozen: nil,
+	}
+	tx.memState.Store(initialState)
+
+	tx.flushCond = sync.NewCond(&tx.flushMu)
 
 	tx.wg.Add(1)
 	go tx.runFlushWorker()

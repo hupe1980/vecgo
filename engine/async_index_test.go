@@ -174,11 +174,7 @@ func TestAsyncIndex_Race_FlushAndDelete(t *testing.T) {
 		// No, we want to check if it's in the system (MemTable OR Index).
 
 		// Let's use a helper that locks
-		vec, err := func() ([]float32, error) {
-			tx.mu.Lock()
-			defer tx.mu.Unlock()
-			return tx.vectorByIDLocked(ctx, ids[i])
-		}()
+		vec, err := tx.vectorByID(ctx, ids[i])
 
 		require.NoError(t, err)
 		results, err := tx.HybridSearch(ctx, vec, 1, nil)
