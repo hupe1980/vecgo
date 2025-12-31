@@ -194,18 +194,34 @@ func (s *Store) SetVector(id uint64, v []float32) error {
 	data := s.data.Load()
 	dim := int(s.dim)
 
-	// If ID is beyond current capacity, we need to extend
+	// If ID is beyond current length, we need to extend the slice length.
+	// IMPORTANT: do not publish the extended slice (via s.data.Store) until
+	// after the new vector data has been fully written. Otherwise, concurrent
+	// readers can observe partially-written vectors.
 	requiredLen := int(id+1) * dim
 	currentData := *data
 
+	// Copy-on-write for growth beyond current length.
 	if requiredLen > len(currentData) {
-		// Extend the data slice
-		newCap := max(requiredLen*2, len(currentData)*2)
-		newData := mem.AllocAlignedFloat32(newCap)
-		newData = newData[:requiredLen]
-		copy(newData, currentData)
-		s.data.Store(&newData)
-		currentData = newData
+		if requiredLen <= cap(currentData) {
+			// Grow within capacity (same backing array). Safe as long as we only
+			// write beyond the previously-published length, then publish length.
+			grown := currentData[:requiredLen]
+			start := int(id) * dim
+			copy(grown[start:start+dim], v)
+			// Publish new length after data write.
+			published := grown
+			s.data.Store(&published)
+		} else {
+			// Allocate new backing array, populate fully, then publish.
+			newCap := max(requiredLen*2, len(currentData)*2)
+			newData := mem.AllocAlignedFloat32(newCap)
+			newData = newData[:requiredLen]
+			copy(newData, currentData)
+			start := int(id) * dim
+			copy(newData[start:start+dim], v)
+			s.data.Store(&newData)
+		}
 
 		// Extend deletion bitmap if needed
 		requiredBitmapLen := int(id+63) / 64
@@ -220,11 +236,14 @@ func (s *Store) SetVector(id uint64, v []float32) error {
 		if id >= s.count {
 			s.count = id + 1
 		}
+	} else {
+		// In-place update of an already-published vector.
+		// Writers are externally synchronized, but concurrent readers may exist.
+		// This is safe for correctness if callers do not rely on atomic point updates;
+		// for strict snapshot semantics, updates must use copy-on-write at a higher level.
+		start := int(id) * dim
+		copy(currentData[start:start+dim], v)
 	}
-
-	// Copy vector data
-	start := int(id) * dim
-	copy(currentData[start:], v)
 
 	// Clear deletion bit if it was set
 	if s.isDeletedLocked(id) {
@@ -253,25 +272,24 @@ func (s *Store) Append(v []float32) (uint64, error) {
 	data := s.data.Load()
 	currentData := *data
 
-	// Extend data slice
+	// Extend data slice.
+	// IMPORTANT: publish updated slice only after writing the new vector.
 	requiredLen := int(id+1) * dim
 	if requiredLen > cap(currentData) {
 		newCap := max(requiredLen*2, len(currentData)*2)
-		// Use aligned allocator
 		newData := mem.AllocAlignedFloat32(newCap)
-		newData = newData[:requiredLen] // Set length
+		newData = newData[:requiredLen]
 		copy(newData, currentData)
+		start := int(id) * dim
+		copy(newData[start:start+dim], v)
 		s.data.Store(&newData)
-		currentData = newData
 	} else {
-		newData := currentData[:requiredLen]
-		s.data.Store(&newData)
-		currentData = newData
+		grown := currentData[:requiredLen]
+		start := int(id) * dim
+		copy(grown[start:start+dim], v)
+		published := grown
+		s.data.Store(&published)
 	}
-
-	// Copy vector data
-	start := int(id) * dim
-	copy(currentData[start:], v)
 
 	// Extend deletion bitmap if needed
 	bitmapIdx := id / 64
