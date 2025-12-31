@@ -2,12 +2,9 @@ package memtable
 
 import (
 	"container/heap"
-	"context"
 	"sync"
 
 	"github.com/hupe1980/vecgo/index"
-	"github.com/hupe1980/vecgo/index/hnsw"
-	"github.com/hupe1980/vecgo/vectorstore/columnar"
 )
 
 // Item represents a vector in the memtable.
@@ -27,8 +24,8 @@ type MemTable struct {
 	deleted   []bool
 	distFunc  index.DistanceFunc
 	dimension int
-	hnswIndex *hnsw.HNSW
 	heapPool  sync.Pool
+	mapPool   sync.Pool
 }
 
 // New creates a new MemTable.
@@ -45,25 +42,13 @@ func New(dimension int, distFunc index.DistanceFunc) *MemTable {
 				return &h
 			},
 		},
+		mapPool: sync.Pool{
+			New: func() any {
+				return make(map[uint64]struct{}, 1024)
+			},
+		},
 	}
-	m.resetHNSW()
 	return m
-}
-
-func (m *MemTable) resetHNSW() {
-	// Create a small HNSW index for fast search
-	// We use small parameters since MemTable is small
-	h, err := hnsw.New(func(o *hnsw.Options) {
-		o.Dimension = m.dimension
-		o.M = 8
-		o.EF = 64
-		o.InitialArenaSize = 32 * 1024 * 1024 // 32MB
-		o.Vectors = columnar.New(m.dimension)
-	})
-	if err != nil {
-		panic(err) // Should not happen for in-memory config
-	}
-	m.hnswIndex = h
 }
 
 // Reset clears the memtable for reuse.
@@ -74,19 +59,12 @@ func (m *MemTable) Reset() {
 	m.ids = m.ids[:0]
 	m.vectors = m.vectors[:0]
 	m.deleted = m.deleted[:0]
-	m.hnswIndex.Reset()
 }
 
 // Insert adds a vector to the memtable.
 func (m *MemTable) Insert(id uint64, vector []float32) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-
-	// Update HNSW
-	// We ignore errors here as HNSW insert should succeed in memory
-	if err := m.hnswIndex.ApplyInsert(context.Background(), id, vector); err != nil {
-		// Log error but continue
-	}
 
 	// Append-only (SoA)
 	m.ids = append(m.ids, id)
@@ -119,13 +97,24 @@ func (m *MemTable) Get(id uint64) ([]float32, bool, bool) {
 	return nil, false, false
 }
 
+// Contains checks if an ID exists in the memtable and returns (found, isDeleted).
+// This avoids allocating the vector copy.
+func (m *MemTable) Contains(id uint64) (bool, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	for i := len(m.ids) - 1; i >= 0; i-- {
+		if m.ids[i] == id {
+			return true, m.deleted[i]
+		}
+	}
+	return false, false
+}
+
 // Delete marks a vector as deleted in the memtable (Tombstone).
 func (m *MemTable) Delete(id uint64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-
-	// Update HNSW
-	_ = m.hnswIndex.ApplyDelete(context.Background(), id)
 
 	// Append tombstone
 	m.ids = append(m.ids, id)
@@ -165,7 +154,6 @@ func (m *MemTable) Flush() []Item {
 	m.ids = make([]uint64, 0, 1024)
 	m.vectors = make([]float32, 0, 1024*m.dimension)
 	m.deleted = make([]bool, 0, 1024)
-	m.hnswIndex.Reset()
 
 	return items
 }
@@ -177,54 +165,28 @@ func (m *MemTable) Size() int {
 	return len(m.ids)
 }
 
-// Search performs a search on the memtable using the internal HNSW index.
+// Search performs a search on the memtable using linear scan.
 func (m *MemTable) Search(query []float32, k int, filter func(uint64) bool) []index.SearchResult {
-	m.mu.RLock()
-	hnswIndex := m.hnswIndex
-	m.mu.RUnlock()
-
-	if hnswIndex == nil {
-		return nil
-	}
-
-	// Use HNSW for search
-	results, err := hnswIndex.KNNSearch(context.Background(), query, k, &index.SearchOptions{
-		Filter: filter,
-	})
-	if err != nil {
-		// Fallback to linear scan if HNSW fails
-		return m.linearSearch(query, k, filter)
-	}
-	return results
+	var res []index.SearchResult
+	_ = m.SearchWithBuffer(query, k, filter, &res)
+	return res
 }
 
-// SearchWithBuffer performs a search on the memtable using the internal HNSW index and appends to buf.
+// SearchWithBuffer performs a search on the memtable using linear scan and appends to buf.
 func (m *MemTable) SearchWithBuffer(query []float32, k int, filter func(uint64) bool, buf *[]index.SearchResult) error {
 	m.mu.RLock()
-	hnswIndex := m.hnswIndex
-	m.mu.RUnlock()
+	defer m.mu.RUnlock()
 
-	if hnswIndex == nil {
-		return nil
-	}
-
-	// Use HNSW for search
-	return hnswIndex.KNNSearchWithBuffer(context.Background(), query, k, &index.SearchOptions{
-		Filter: filter,
-	}, buf)
-}
-
-// linearSearch performs a brute-force search on the memtable.
-func (m *MemTable) linearSearch(query []float32, k int, filter func(uint64) bool) []index.SearchResult {
 	// Use pooled heap
 	h := m.heapPool.Get().(*resultHeap)
 	*h = (*h)[:0]
 	defer m.heapPool.Put(h)
 
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	seen := make(map[uint64]struct{})
+	// Linear scan
+	// We iterate backwards to find the latest version of each ID
+	seen := m.mapPool.Get().(map[uint64]struct{})
+	clear(seen)
+	defer m.mapPool.Put(seen)
 
 	for i := len(m.ids) - 1; i >= 0; i-- {
 		id := m.ids[i]
@@ -236,16 +198,18 @@ func (m *MemTable) linearSearch(query []float32, k int, filter func(uint64) bool
 		if m.deleted[i] {
 			continue
 		}
+
 		if filter != nil && !filter(id) {
 			continue
 		}
 
+		// Compute distance
 		start := i * m.dimension
 		end := start + m.dimension
 		vec := m.vectors[start:end]
-
 		dist := m.distFunc(query, vec)
 
+		// Push to heap
 		if h.Len() < k {
 			heap.Push(h, index.SearchResult{ID: id, Distance: dist})
 		} else if dist < (*h)[0].Distance {
@@ -254,13 +218,19 @@ func (m *MemTable) linearSearch(query []float32, k int, filter func(uint64) bool
 		}
 	}
 
-	// Convert heap to sorted slice (nearest first)
-	results := make([]index.SearchResult, h.Len())
-	for i := len(results) - 1; i >= 0; i-- {
-		results[i] = heap.Pop(h).(index.SearchResult)
+	// Extract from heap (reverse order)
+	startLen := len(*buf)
+	for h.Len() > 0 {
+		*buf = append(*buf, heap.Pop(h).(index.SearchResult))
 	}
 
-	return results
+	// Reverse the appended segment to get nearest first
+	res := *buf
+	for i, j := startLen, len(res)-1; i < j; i, j = i+1, j-1 {
+		res[i], res[j] = res[j], res[i]
+	}
+
+	return nil
 }
 
 // Items returns a copy of all items in the memtable without clearing it.

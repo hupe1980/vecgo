@@ -311,9 +311,6 @@ func (w *WAL) LogInsert(id uint64, vector []float32, data []byte, meta metadata.
 	if err := w.encodeEntry(&prepare); err != nil {
 		return fmt.Errorf("failed to encode WAL prepare entry: %w", err)
 	}
-	if err := w.flushLocked(); err != nil {
-		return err
-	}
 
 	w.seqNum++
 	commit := Entry{Type: OpCommitInsert, ID: id, SeqNum: w.seqNum}
@@ -337,9 +334,6 @@ func (w *WAL) LogUpdate(id uint64, vector []float32, data []byte, meta metadata.
 	prepare := Entry{Type: OpPrepareUpdate, ID: id, Vector: vector, Data: data, Metadata: meta, SeqNum: w.seqNum}
 	if err := w.encodeEntry(&prepare); err != nil {
 		return fmt.Errorf("failed to encode WAL prepare entry: %w", err)
-	}
-	if err := w.flushLocked(); err != nil {
-		return err
 	}
 
 	w.seqNum++
@@ -365,9 +359,6 @@ func (w *WAL) LogDelete(id uint64) error {
 	if err := w.encodeEntry(&prepare); err != nil {
 		return fmt.Errorf("failed to encode WAL prepare entry: %w", err)
 	}
-	if err := w.flushLocked(); err != nil {
-		return err
-	}
 
 	w.seqNum++
 	commit := Entry{Type: OpCommitDelete, ID: id, SeqNum: w.seqNum}
@@ -391,7 +382,7 @@ func (w *WAL) LogPrepareInsert(id uint64, vector []float32, data []byte, meta me
 	if err := w.encodeEntry(&entry); err != nil {
 		return fmt.Errorf("failed to encode WAL entry: %w", err)
 	}
-	return w.flushLocked()
+	return nil
 }
 
 // LogCommitInsert writes a commit entry for an insert and fsyncs the WAL.
@@ -424,7 +415,7 @@ func (w *WAL) LogPrepareUpdate(id uint64, vector []float32, data []byte, meta me
 	if err := w.encodeEntry(&entry); err != nil {
 		return fmt.Errorf("failed to encode WAL entry: %w", err)
 	}
-	return w.flushLocked()
+	return nil
 }
 
 // LogCommitUpdate writes a commit entry for an update and fsyncs the WAL.
@@ -457,7 +448,7 @@ func (w *WAL) LogPrepareDelete(id uint64) error {
 	if err := w.encodeEntry(&entry); err != nil {
 		return fmt.Errorf("failed to encode WAL entry: %w", err)
 	}
-	return w.flushLocked()
+	return nil
 }
 
 // LogCommitDelete writes a commit entry for a delete and fsyncs the WAL.
@@ -492,7 +483,7 @@ func (w *WAL) LogPrepareBatchInsert(ids []uint64, vectors [][]float32, dataSlice
 			return fmt.Errorf("failed to encode WAL entry %d: %w", i, err)
 		}
 	}
-	return w.flushLocked()
+	return nil
 }
 
 // LogCommitBatchInsert writes commit entries for a batch insert and fsyncs once.
@@ -531,9 +522,6 @@ func (w *WAL) LogBatchInsert(ids []uint64, vectors [][]float32, dataSlice [][]by
 		if err := w.encodeEntry(&entry); err != nil {
 			return fmt.Errorf("failed to encode WAL prepare entry %d: %w", i, err)
 		}
-	}
-	if err := w.flushLocked(); err != nil {
-		return err
 	}
 
 	// Commit all

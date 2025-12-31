@@ -206,7 +206,7 @@ func New[T any](idx index.Index, dataStore Store[T], metaStore *metadata.Unified
 				return &txScratch{
 					indexResults:  make([]index.SearchResult, 0, 100),
 					memResults:    make([]index.SearchResult, 0, 100),
-					frozenResults: make([]index.SearchResult, 0, 100),
+					queueResults:  make([]index.SearchResult, 0, 100),
 					mergedResults: make([]index.SearchResult, 0, 100),
 				}
 			},
@@ -216,7 +216,7 @@ func New[T any](idx index.Index, dataStore Store[T], metaStore *metadata.Unified
 	// Initialize memState
 	initialState := &memState{
 		active: memtable.New(opts.dimension, distance.SquaredL2),
-		frozen: nil,
+		queue:  nil,
 	}
 	tx.memState.Store(initialState)
 

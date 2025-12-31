@@ -1,57 +1,63 @@
 package visited
 
-// VisitedSet tracks visited nodes using generation tokens for O(1) reset.
+// VisitedSet tracks visited nodes using a bitset and a dirty list for fast reset.
 type VisitedSet struct {
-	visited []uint32
-	token   uint32
+	bits  []uint64
+	dirty []uint64
 }
 
 // New creates a new visited set.
 func New(capacity int) *VisitedSet {
+	// capacity is number of nodes.
+	// bits needed = (capacity + 63) / 64
 	return &VisitedSet{
-		visited: make([]uint32, capacity),
-		token:   1,
+		bits:  make([]uint64, (capacity+63)/64),
+		dirty: make([]uint64, 0, 128), // Initial capacity for dirty list
 	}
 }
 
 // Visit marks a node as visited.
 func (v *VisitedSet) Visit(id uint64) {
-	v.ensureCapacity(int(id))
-	v.visited[id] = v.token
+	wordIdx := int(id >> 6)
+	bitMask := uint64(1) << (id & 63)
+
+	if wordIdx >= len(v.bits) {
+		v.grow(wordIdx + 1)
+	}
+
+	if v.bits[wordIdx]&bitMask == 0 {
+		v.bits[wordIdx] |= bitMask
+		v.dirty = append(v.dirty, id)
+	}
 }
 
 // Visited returns true if the node has been visited.
 func (v *VisitedSet) Visited(id uint64) bool {
-	if int(id) >= len(v.visited) {
+	wordIdx := int(id >> 6)
+	if wordIdx >= len(v.bits) {
 		return false
 	}
-	return v.visited[id] == v.token
+	return v.bits[wordIdx]&(uint64(1)<<(id&63)) != 0
 }
 
-// Reset prepares the set for a new search by incrementing the generation token.
-// This is O(1) unless the token overflows (very rare).
+// Reset clears the visited status for all nodes visited in the current session.
 func (v *VisitedSet) Reset() {
-	v.token++
-	if v.token == 0 {
-		// Overflow, clear all (O(N))
-		// This happens once every 4 billion searches per thread.
-		for i := range v.visited {
-			v.visited[i] = 0
-		}
-		v.token = 1
+	for _, id := range v.dirty {
+		wordIdx := int(id >> 6)
+		bitMask := uint64(1) << (id & 63)
+		v.bits[wordIdx] &^= bitMask
 	}
+	v.dirty = v.dirty[:0]
 }
 
-func (v *VisitedSet) ensureCapacity(idx int) {
-	if idx < len(v.visited) {
-		return
+func (v *VisitedSet) grow(newLen int) {
+	currentLen := len(v.bits)
+	newCap := currentLen * 2
+	if newCap < newLen {
+		newCap = newLen
 	}
-	// Grow strategy: double capacity
-	newCap := len(v.visited) * 2
-	if newCap <= idx {
-		newCap = idx + 1
-	}
-	newVisited := make([]uint32, newCap)
-	copy(newVisited, v.visited)
-	v.visited = newVisited
+
+	newBits := make([]uint64, newCap)
+	copy(newBits, v.bits)
+	v.bits = newBits
 }

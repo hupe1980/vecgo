@@ -6,14 +6,11 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
-	"sync"
 	"time"
 	"unsafe"
 
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/internal/bitset"
-	"github.com/hupe1980/vecgo/internal/queue"
-	"github.com/hupe1980/vecgo/internal/visited"
 	"github.com/hupe1980/vecgo/persistence"
 	"github.com/hupe1980/vecgo/vectorstore/zerocopy"
 )
@@ -130,9 +127,13 @@ func loadHNSWMmap(data []byte) (index.Index, int, error) {
 			count := binary.LittleEndian.Uint32(countBytes)
 
 			if count > 0 {
-				conns, err := r.ReadUint64SliceCopy(int(count))
+				ids, err := r.ReadUint64SliceCopy(int(count))
 				if err != nil {
 					return nil, 0, err
+				}
+				conns := make([]Neighbor, len(ids))
+				for i, id := range ids {
+					conns[i] = Neighbor{ID: id}
 				}
 				node.setConnections(layer, conns)
 			}
@@ -161,10 +162,23 @@ func loadHNSWMmap(data []byte) (index.Index, int, error) {
 		}
 	}
 
-	h.distanceFunc = index.NewDistanceFunc(h.opts.DistanceType)
-	h.minQueuePool = &sync.Pool{New: func() any { return queue.NewMin(h.opts.EF) }}
-	h.maxQueuePool = &sync.Pool{New: func() any { return queue.NewMax(h.opts.EF) }}
-	h.visitedPool = &sync.Pool{New: func() any { return visited.New(1024) }}
+	// Recompute distances
+	for id := range nextID {
+		node := h.getNode(g, id)
+		if node == nil {
+			continue
+		}
+		vec, ok := h.vectors.GetVector(id)
+		if !ok {
+			continue
+		}
+		for l := 0; l <= node.Level; l++ {
+			conns := node.getConnections(l)
+			for i := range conns {
+				conns[i].Dist = h.dist(vec, conns[i].ID)
+			}
+		}
+	}
 
 	return h, r.Offset(), nil
 }

@@ -184,7 +184,8 @@ func (h *HNSW) reconcileNode(ctx context.Context, g *graph, id uint64) {
 		for changed {
 			changed = false
 			conns := h.getConnections(g, currID, level)
-			for _, nextID := range conns {
+			for _, neighbor := range conns {
+				nextID := neighbor.ID
 				d := h.dist(vec, nextID)
 				if d < currDist {
 					currDist = d
@@ -216,17 +217,17 @@ func (h *HNSW) reconcileNode(ctx context.Context, g *graph, id uint64) {
 			currentConns := node.getConnections(level)
 
 			// Identify tombstones in current connections
-			var tombstonesToKeep []uint64
-			for _, neighborID := range currentConns {
-				if g.tombstones.Test(neighborID) {
-					tombstonesToKeep = append(tombstonesToKeep, neighborID)
+			var tombstonesToKeep []Neighbor
+			for _, neighbor := range currentConns {
+				if g.tombstones.Test(neighbor.ID) {
+					tombstonesToKeep = append(tombstonesToKeep, neighbor)
 				}
 			}
 
 			// Combine: New Active + Old Tombstones
-			finalConns := make([]uint64, 0, len(newNeighbors)+len(tombstonesToKeep))
+			finalConns := make([]Neighbor, 0, len(newNeighbors)+len(tombstonesToKeep))
 			for _, n := range newNeighbors {
-				finalConns = append(finalConns, n.Node)
+				finalConns = append(finalConns, Neighbor{ID: n.Node, Dist: n.Distance})
 			}
 			finalConns = append(finalConns, tombstonesToKeep...)
 
@@ -266,8 +267,8 @@ func (h *HNSW) checkRepairNeeded(g *graph, id uint64) (bool, map[int]bool) {
 		}
 
 		activeCount := 0
-		for _, neighborID := range conns {
-			if !tombstones.Test(neighborID) {
+		for _, neighbor := range conns {
+			if !tombstones.Test(neighbor.ID) {
 				activeCount++
 			}
 		}
@@ -307,8 +308,8 @@ func (h *HNSW) pruneNodeConnections(ctx context.Context, g *graph, id uint64) {
 
 		// Check if we have any tombstones
 		hasTombstones := false
-		for _, neighborID := range conns {
-			if tombstones.Test(neighborID) {
+		for _, neighbor := range conns {
+			if tombstones.Test(neighbor.ID) {
 				hasTombstones = true
 				break
 			}
@@ -316,15 +317,15 @@ func (h *HNSW) pruneNodeConnections(ctx context.Context, g *graph, id uint64) {
 
 		if hasTombstones {
 			// Create a new slice with only active neighbors
-			activeConns := make([]uint64, 0, len(conns))
-			for _, neighborID := range conns {
-				if !tombstones.Test(neighborID) {
-					activeConns = append(activeConns, neighborID)
+			activeConns := make([]Neighbor, 0, len(conns))
+			for _, neighbor := range conns {
+				if !tombstones.Test(neighbor.ID) {
+					activeConns = append(activeConns, neighbor)
 				}
 			}
 
 			// Create a new slice to fit perfectly
-			newConns := make([]uint64, len(activeConns))
+			newConns := make([]Neighbor, len(activeConns))
 			copy(newConns, activeConns)
 			node.setConnections(l, newConns)
 		}

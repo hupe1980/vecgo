@@ -255,6 +255,7 @@ type FlatBuilder[T any] struct {
 	walPath      string
 	walOptions   []func(*wal.Options)
 	snapshotPath string
+	syncWrite    bool
 }
 
 // SquaredL2 sets the distance metric to Squared Euclidean distance.
@@ -316,6 +317,13 @@ func (b FlatBuilder[T]) SnapshotPath(path string) FlatBuilder[T] {
 	return b
 }
 
+// SyncWrite configures whether writes are synchronous (bypassing MemTable).
+// This is primarily for benchmarking and testing.
+func (b FlatBuilder[T]) SyncWrite(sync bool) FlatBuilder[T] {
+	b.syncWrite = sync
+	return b
+}
+
 // Build creates the Flat-based Vecgo instance.
 func (b FlatBuilder[T]) Build() (*Vecgo[T], error) {
 	var vecgoOpts []Option
@@ -337,6 +345,9 @@ func (b FlatBuilder[T]) Build() (*Vecgo[T], error) {
 	}
 	if b.snapshotPath != "" {
 		vecgoOpts = append(vecgoOpts, WithSnapshotPath(b.snapshotPath))
+	}
+	if b.syncWrite {
+		vecgoOpts = append(vecgoOpts, WithSyncWrite(true))
 	}
 
 	return newFlat[T](b.dimension, b.distanceType, nil, vecgoOpts)

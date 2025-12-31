@@ -81,16 +81,12 @@ func (pq *ProductQuantizer) Train(vectors [][]float32) error {
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			// Extract subvectors for this position
-			subvectors := make([][]float32, len(vectors))
-			for i, vec := range vectors {
-				start := m * pq.subvectorDim
-				end := start + pq.subvectorDim
-				subvectors[i] = vec[start:end]
-			}
+			start := m * pq.subvectorDim
+			end := start + pq.subvectorDim
 
 			// Run k-means to get centroids
-			centroids := pq.kmeans(subvectors, pq.numCentroids, 20) // 20 iterations
+			// We pass the full vectors and the subvector range to avoid allocating a new slice of slices
+			centroids := pq.kmeans(vectors, start, end, pq.numCentroids, 20) // 20 iterations
 
 			// Quantize centroids to int8
 			minVal, maxVal := float32(math.MaxFloat32), float32(-math.MaxFloat32)
@@ -280,27 +276,27 @@ func (pq *ProductQuantizer) CompressionRatio() float64 {
 }
 
 // kmeans performs k-means clustering on subvectors.
-func (pq *ProductQuantizer) kmeans(vectors [][]float32, k, maxIters int) []float32 {
-	dim := len(vectors[0])
+func (pq *ProductQuantizer) kmeans(vectors [][]float32, startIdx, endIdx int, k, maxIters int) []float32 {
+	dim := endIdx - startIdx
 	centroids := make([]float32, k*dim)
 
 	if len(vectors) < k {
 		// Not enough data, return random vectors as centroids
 		for i := 0; i < k; i++ {
-			copy(centroids[i*dim:], vectors[i%len(vectors)])
+			copy(centroids[i*dim:], vectors[i%len(vectors)][startIdx:endIdx])
 		}
 		return centroids
 	}
 
 	// Initialize centroids randomly (k-means++)
 	firstIdx := rand.Intn(len(vectors))
-	copy(centroids[0:dim], vectors[firstIdx])
+	copy(centroids[0:dim], vectors[firstIdx][startIdx:endIdx])
 
 	// minDistSq tracks each vector's squared distance to its nearest chosen centroid.
 	minDistSq := make([]float32, len(vectors))
 	var sum float32
 	for i, vec := range vectors {
-		d := math32.SquaredL2(vec, centroids[0:dim])
+		d := math32.SquaredL2(vec[startIdx:endIdx], centroids[0:dim])
 		minDistSq[i] = d
 		sum += d
 	}
@@ -308,7 +304,7 @@ func (pq *ProductQuantizer) kmeans(vectors [][]float32, k, maxIters int) []float
 	for c := 1; c < k; c++ {
 		if sum == 0 {
 			idx := rand.Intn(len(vectors))
-			copy(centroids[c*dim:], vectors[idx])
+			copy(centroids[c*dim:], vectors[idx][startIdx:endIdx])
 			continue
 		}
 
@@ -323,13 +319,13 @@ func (pq *ProductQuantizer) kmeans(vectors [][]float32, k, maxIters int) []float
 				break
 			}
 		}
-		copy(centroids[c*dim:], vectors[chosen])
+		copy(centroids[c*dim:], vectors[chosen][startIdx:endIdx])
 
 		// Update minDistSq incrementally (O(n) per centroid).
 		sum = 0
-		start := c * dim
+		cStart := c * dim
 		for i, vec := range vectors {
-			d := math32.SquaredL2(vec, centroids[start:start+dim])
+			d := math32.SquaredL2(vec[startIdx:endIdx], centroids[cStart:cStart+dim])
 			if d < minDistSq[i] {
 				minDistSq[i] = d
 			}
@@ -362,7 +358,7 @@ func (pq *ProductQuantizer) kmeans(vectors [][]float32, k, maxIters int) []float
 				defer wg.Done()
 				localChanged := false
 				for i := start; i < end; i++ {
-					nearestIdx := pq.findNearestCentroid(vectors[i], centroids)
+					nearestIdx := pq.findNearestCentroid(vectors[i][startIdx:endIdx], centroids)
 					if assignments[i] != nearestIdx {
 						localChanged = true
 						assignments[i] = nearestIdx
@@ -387,7 +383,7 @@ func (pq *ProductQuantizer) kmeans(vectors [][]float32, k, maxIters int) []float
 			cluster := assignments[i]
 			counts[cluster]++
 			start := cluster * dim
-			for j, val := range vec {
+			for j, val := range vec[startIdx:endIdx] {
 				newCentroids[start+j] += val
 			}
 		}
@@ -398,6 +394,10 @@ func (pq *ProductQuantizer) kmeans(vectors [][]float32, k, maxIters int) []float
 				for j := range dim {
 					centroids[start+j] = newCentroids[start+j] / float32(counts[i])
 				}
+			} else {
+				// Re-initialize empty cluster with random vector
+				idx := rand.Intn(len(vectors))
+				copy(centroids[i*dim:], vectors[idx][startIdx:endIdx])
 			}
 		}
 	}

@@ -8,7 +8,6 @@ import (
 	"math"
 	"math/rand"
 	"runtime"
-	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,7 +16,6 @@ import (
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/internal/bitset"
 	"github.com/hupe1980/vecgo/internal/queue"
-	"github.com/hupe1980/vecgo/internal/visited"
 	"github.com/hupe1980/vecgo/vectorstore"
 	"github.com/hupe1980/vecgo/vectorstore/columnar"
 )
@@ -218,7 +216,7 @@ func (h *HNSW) initPools() {
 		New: func() any { return queue.NewMax(h.opts.EF) },
 	}
 	h.visitedPool = &sync.Pool{
-		New: func() any { return visited.New(1024) },
+		New: func() any { return bitset.NewFast(1024) },
 	}
 	h.scratchPool = &sync.Pool{
 		New: func() any {
@@ -309,7 +307,7 @@ func (h *HNSW) growNodes(g *graph, id uint64) {
 
 // Helper methods for node access
 
-func (h *HNSW) getConnections(g *graph, id uint64, layer int) []uint64 {
+func (h *HNSW) getConnections(g *graph, id uint64, layer int) []Neighbor {
 	node := h.getNode(g, id)
 	if node == nil {
 		return nil
@@ -317,14 +315,14 @@ func (h *HNSW) getConnections(g *graph, id uint64, layer int) []uint64 {
 	return node.getConnections(layer)
 }
 
-func (h *HNSW) setConnections(g *graph, id uint64, layer int, conns []uint64) {
+func (h *HNSW) setConnections(g *graph, id uint64, layer int, conns []Neighbor) {
 	node := h.getNode(g, id)
 	if node == nil {
 		return
 	}
 
 	// Copy to new slice to ensure safety (COW)
-	newConns := make([]uint64, len(conns))
+	newConns := make([]Neighbor, len(conns))
 	copy(newConns, conns)
 
 	node.setConnections(layer, newConns)
@@ -352,7 +350,15 @@ func (h *HNSW) addConnection(g *graph, sourceID, targetID uint64, level int, dis
 
 	// Linear scan is fine for small M (8-32).
 	// slices.Contains is optimized in Go 1.21+.
-	if slices.Contains(conns, targetID) {
+	// Optimization: Use manual loop to avoid overhead of generic slices.Contains
+	found := false
+	for _, c := range conns {
+		if c.ID == targetID {
+			found = true
+			break
+		}
+	}
+	if found {
 		return
 	}
 
@@ -363,46 +369,27 @@ func (h *HNSW) addConnection(g *graph, sourceID, targetID uint64, level int, dis
 
 	if len(conns) < maxM {
 		// Just append
-		var newConns []uint64
+		var newConns []Neighbor
 		if cap(conns) >= len(conns)+1 {
 			// We have capacity, append in place (safe because we hold lock and readers only read up to len)
 			newConns = conns[:len(conns)+1]
-			newConns[len(conns)] = targetID
+			newConns[len(conns)] = Neighbor{ID: targetID, Dist: dist}
 		} else {
 			// Allocate with capacity
-			newConns = make([]uint64, len(conns)+1, maxM)
+			newConns = make([]Neighbor, len(conns)+1, maxM)
 			copy(newConns, conns)
-			newConns[len(conns)] = targetID
+			newConns[len(conns)] = Neighbor{ID: targetID, Dist: dist}
 		}
-		// Keep sorted for faster lookups next time?
-		// If we sort here, we need to be careful about concurrent readers?
-		// Readers just iterate, order doesn't matter for correctness of search,
-		// but it matters for this check.
-		// Let's just append for now to avoid complexity, as requested "What NOT to optimize yet".
-		// Wait, user asked for "Sorted neighbors (no slices.Contains)".
-		// But sorting requires moving elements, which is O(M).
-		// Appending is O(1).
-		// For small M, linear scan is fast.
-		// Let's stick to append for now to ensure stability.
-
 		node.setConnections(level, newConns)
 	} else {
 		// Prune
-		sourceVec, ok := h.vectors.GetVector(sourceID)
-		if !ok {
-			return // Should not happen
-		}
-
 		candidates := h.maxQueuePool.Get().(*queue.PriorityQueue)
 		candidates.Reset()
 		defer h.maxQueuePool.Put(candidates)
 
-		// Add existing
-		// Optimization: Carry distances if possible.
-		// For now, we recompute.
+		// Add existing - use cached distances!
 		for _, c := range conns {
-			d := h.dist(sourceVec, c)
-			candidates.PushItem(queue.PriorityQueueItem{Node: c, Distance: d})
+			candidates.PushItem(queue.PriorityQueueItem{Node: c.ID, Distance: c.Dist})
 		}
 		// Add new
 		candidates.PushItem(queue.PriorityQueueItem{Node: targetID, Distance: dist})
@@ -412,9 +399,9 @@ func (h *HNSW) addConnection(g *graph, sourceID, targetID uint64, level int, dis
 		neighbors := h.selectNeighbors(candidates, maxM, scratch)
 
 		// Allocate final slice with capacity maxM
-		finalConns := make([]uint64, len(neighbors), maxM)
+		finalConns := make([]Neighbor, len(neighbors), maxM)
 		for i, n := range neighbors {
-			finalConns[i] = n.Node
+			finalConns[i] = Neighbor{ID: n.Node, Dist: n.Distance}
 		}
 
 		h.scratchPool.Put(scratch)
@@ -660,10 +647,10 @@ func (h *HNSW) insertNode(g *graph, id uint64, vec []float32, layer int) error {
 		for changed {
 			changed = false
 			conns := h.getConnections(g, currID, level)
-			for _, nextID := range conns {
-				nextDist := h.dist(vec, nextID)
+			for _, next := range conns {
+				nextDist := h.dist(vec, next.ID)
 				if nextDist < currDist {
-					currID = nextID
+					currID = next.ID
 					currDist = nextDist
 					changed = true
 				}
@@ -701,14 +688,14 @@ func (h *HNSW) insertNode(g *graph, id uint64, vec []float32, layer int) error {
 		h.maxQueuePool.Put(candidates)
 
 		// Extract IDs for setConnections
-		neighborIDs := make([]uint64, len(neighbors))
+		neighborConns := make([]Neighbor, len(neighbors))
 		for i, n := range neighbors {
-			neighborIDs[i] = n.Node
+			neighborConns[i] = Neighbor{ID: n.Node, Dist: n.Distance}
 		}
 
 		// Add bidirectional connections
 		g.shardedLocks[id%uint64(len(g.shardedLocks))].Lock()
-		h.setConnections(g, id, level, neighborIDs)
+		h.setConnections(g, id, level, neighborConns)
 		g.shardedLocks[id%uint64(len(g.shardedLocks))].Unlock()
 
 		for _, neighbor := range neighbors {
@@ -827,7 +814,7 @@ func (h *HNSW) selectNeighborsHeuristic(candidates *queue.PriorityQueue, m int, 
 // 2. Less wasted computation (skips filtered regions)
 // 3. Matches exact search behavior
 func (h *HNSW) searchLayer(g *graph, query []float32, epID uint64, epDist float32, level int, ef int, filter func(uint64) bool) (*queue.PriorityQueue, error) {
-	visited := h.visitedPool.Get().(*visited.VisitedSet)
+	visited := h.visitedPool.Get().(*bitset.FastBitSet)
 	visited.Reset()
 	defer h.visitedPool.Put(visited)
 
@@ -841,7 +828,7 @@ func (h *HNSW) searchLayer(g *graph, query []float32, epID uint64, epDist float3
 	results := h.maxQueuePool.Get().(*queue.PriorityQueue) // MaxHeap: stores current top EF results
 	results.Reset()                                        // Caller must put back
 
-	visited.Visit(epID)
+	visited.Set(epID)
 
 	// CRITICAL: Always add entry point to candidates for navigation (even if filtered)
 	// This ensures we have a starting point for graph traversal
@@ -864,11 +851,11 @@ func (h *HNSW) searchLayer(g *graph, query []float32, epID uint64, epDist float3
 		}
 
 		conns := h.getConnections(g, curr.Node, level)
-		for _, nextID := range conns {
-			if !visited.Visited(nextID) {
-				visited.Visit(nextID)
+		for _, next := range conns {
+			if !visited.Test(next.ID) {
+				visited.Set(next.ID)
 
-				nextDist := h.dist(query, nextID)
+				nextDist := h.dist(query, next.ID)
 
 				// Classic HNSW pruning: avoid pushing obviously-bad candidates once we already
 				// have ef results. This substantially reduces heap churn.
@@ -885,14 +872,12 @@ func (h *HNSW) searchLayer(g *graph, query []float32, epID uint64, epDist float3
 				}
 
 				if shouldExplore {
-					candidates.PushItem(queue.PriorityQueueItem{Node: nextID, Distance: nextDist})
+					candidates.PushItem(queue.PriorityQueueItem{Node: next.ID, Distance: nextDist})
 
 					// Only add to results if it passes the filter AND is not deleted
-					if (filter == nil || filter(nextID)) && !g.tombstones.Test(nextID) {
-						results.PushItem(queue.PriorityQueueItem{Node: nextID, Distance: nextDist})
-						if results.Len() > ef {
-							_, _ = results.PopItem()
-						}
+					if (filter == nil || filter(next.ID)) && !g.tombstones.Test(next.ID) {
+						// Use bounded push for results to avoid heap churn
+						results.PushItemBounded(queue.PriorityQueueItem{Node: next.ID, Distance: nextDist}, ef)
 					}
 				}
 			}
@@ -1015,10 +1000,10 @@ func (h *HNSW) KNNSearchWithBuffer(ctx context.Context, q []float32, k int, opts
 		for changed {
 			changed = false
 			conns := h.getConnections(g, currID, level)
-			for _, nextID := range conns {
-				nextDist := h.dist(q, nextID)
+			for _, next := range conns {
+				nextDist := h.dist(q, next.ID)
 				if nextDist < currDist {
-					currID = nextID
+					currID = next.ID
 					currDist = nextDist
 					changed = true
 				}
@@ -1109,10 +1094,10 @@ func (h *HNSW) KNNSearchStream(ctx context.Context, q []float32, k int, opts *in
 			for changed {
 				changed = false
 				conns := h.getConnections(g, currID, level)
-				for _, nextID := range conns {
-					nextDist := h.dist(q, nextID)
+				for _, next := range conns {
+					nextDist := h.dist(q, next.ID)
 					if nextDist < currDist {
-						currID = nextID
+						currID = next.ID
 						currDist = nextDist
 						changed = true
 					}

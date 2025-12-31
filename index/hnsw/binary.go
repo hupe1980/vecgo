@@ -144,7 +144,11 @@ func (h *HNSW) WriteTo(w io.Writer) (int64, error) {
 				return cw.n, err
 			}
 			if count > 0 {
-				if err := writer.WriteUint64Slice(conns); err != nil {
+				ids := make([]uint64, len(conns))
+				for i, c := range conns {
+					ids[i] = c.ID
+				}
+				if err := writer.WriteUint64Slice(ids); err != nil {
 					return cw.n, err
 				}
 			}
@@ -294,9 +298,13 @@ func (h *HNSW) ReadFromWithOptions(r io.Reader, opts Options) error {
 				return err
 			}
 			if count > 0 {
-				conns, err := reader.ReadUint64Slice(int(count))
+				ids, err := reader.ReadUint64Slice(int(count))
 				if err != nil {
 					return err
+				}
+				conns := make([]Neighbor, len(ids))
+				for i, id := range ids {
+					conns[i] = Neighbor{ID: id}
 				}
 				node.setConnections(layer, conns)
 			}
@@ -322,6 +330,24 @@ func (h *HNSW) ReadFromWithOptions(r io.Reader, opts Options) error {
 		copy(vecCopy, vec)
 		if err := h.vectors.SetVector(id, vecCopy); err != nil {
 			return err
+		}
+	}
+
+	// Recompute distances for all connections
+	for id := uint64(0); id < nextID; id++ {
+		node := h.getNode(g, id)
+		if node == nil {
+			continue
+		}
+		vec, ok := h.vectors.GetVector(id)
+		if !ok {
+			continue
+		}
+		for l := 0; l <= node.Level; l++ {
+			conns := node.getConnections(l)
+			for i := range conns {
+				conns[i].Dist = h.dist(vec, conns[i].ID)
+			}
 		}
 	}
 

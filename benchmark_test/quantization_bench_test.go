@@ -147,7 +147,10 @@ func BenchmarkFlatWithPQ(b *testing.B) {
 	dim := 384
 	size := 10000
 
-	db, err := vecgo.Flat[int](dim).SquaredL2().Build()
+	db, err := vecgo.Flat[int](dim).
+		SquaredL2().
+		SyncWrite(true).
+		Build()
 	if err != nil {
 		b.Fatal(err)
 	}

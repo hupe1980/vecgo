@@ -468,10 +468,11 @@ For high-throughput writes (especially in DiskANN), Vecgo uses an LSM-tree inspi
     *   Stored in `internal/arena` for fast allocation.
     *   Concurrent reads allowed; single writer.
 
-2.  **Flushing (Immutable)**:
-    *   When the Hot MemTable fills up, it is rotated to "Flushing" state.
-    *   It becomes immutable (read-only).
-    *   A background worker writes it to disk (creating a new disk segment).
+2.  **Flushing (Immutable Queue)**:
+    *   When the Hot MemTable fills up, it is rotated and appended to an immutable flush queue.
+    *   A background worker consumes the queue and flushes tables to the main index (or disk segment).
+    *   This decouples ingestion from flushing, preventing write stalls and deadlocks.
+    *   Backpressure is applied if the queue grows too large.
 
 3.  **Cold (On-Disk)**:
     *   Data is now persisted in a disk segment (e.g., SSTable or DiskANN segment).

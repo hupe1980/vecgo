@@ -33,6 +33,38 @@ func (pq *PriorityQueue) PushItem(item PriorityQueueItem) {
 	pq.siftUp(len(pq.items) - 1)
 }
 
+// PushItemBounded inserts an item into a bounded heap.
+// If the heap is full and the new item is worse than the top, it is skipped.
+// If the heap is full and the new item is better, the top is replaced.
+func (pq *PriorityQueue) PushItemBounded(item PriorityQueueItem, capacity int) {
+	if len(pq.items) < capacity {
+		pq.PushItem(item)
+		return
+	}
+
+	// Heap is full
+	top, _ := pq.TopItem()
+	if pq.isMaxHeap {
+		// MaxHeap: Top is largest distance (worst candidate)
+		// We want smallest distances.
+		// If item.Distance < top.Distance, it's better.
+		if item.Distance < top.Distance {
+			pq.items[0] = item
+			pq.siftDown(0)
+		}
+	} else {
+		// MinHeap: Top is smallest distance (best candidate)
+		// We want largest distances (e.g. for keeping top-k furthest? unlikely for HNSW traversal)
+		// Usually HNSW uses MinHeap for candidates (best first) and MaxHeap for results (worst first).
+		// For results (MaxHeap), we want to keep the K smallest.
+		// So if item.Distance < top.Distance, we replace top.
+		if item.Distance > top.Distance {
+			pq.items[0] = item
+			pq.siftDown(0)
+		}
+	}
+}
+
 // PopItem removes and returns the top element while maintaining the heap invariant.
 func (pq *PriorityQueue) PopItem() (PriorityQueueItem, bool) {
 	n := len(pq.items)

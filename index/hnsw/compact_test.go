@@ -85,8 +85,8 @@ func TestCompact(t *testing.T) {
 			for l := 0; l <= node.Level; l++ {
 				conns := node.getConnections(l)
 				for _, neighbor := range conns {
-					if deleted[neighbor] {
-						t.Errorf("Active node %d points to deleted node %d at level %d", id, neighbor, l)
+					if deleted[neighbor.ID] {
+						t.Errorf("Active node %d points to deleted node %d at level %d", id, neighbor.ID, l)
 					}
 				}
 

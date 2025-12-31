@@ -6,9 +6,11 @@ import (
 	"io"
 	"iter"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/hupe1980/vecgo/codec"
 	"github.com/hupe1980/vecgo/index"
@@ -17,10 +19,10 @@ import (
 	"github.com/hupe1980/vecgo/wal"
 )
 
-// memState holds the active and frozen memtables for atomic snapshots.
+// memState holds the active and immutable memtables for atomic snapshots.
 type memState struct {
 	active *memtable.MemTable
-	frozen *memtable.MemTable
+	queue  []*memtable.MemTable
 }
 
 // Tx is the transaction/coordination unit for WAL-backed mutations.
@@ -37,13 +39,13 @@ type Tx[T any] struct {
 	// TransactionalIndex provides consolidated ID allocation, apply ops, and vector access
 	txIndex index.TransactionalIndex
 
-	recycledMemTable *memtable.MemTable // Recycled memtable for reuse
-	flushCh          chan struct{}      // Signal to trigger flush
-	flushMu          sync.Mutex         // Protects flushCond
-	flushCond        *sync.Cond         // Signal for backpressure/flow control
-	stopCh           chan struct{}      // Signal to stop background worker
-	wg               sync.WaitGroup
-	closed           bool // Protected by idMu
+	flushCh       chan struct{} // Signal to trigger flush
+	flushMu       sync.Mutex    // Protects flushCond
+	flushCond     *sync.Cond    // Signal for backpressure/flow control
+	flushActionMu sync.Mutex    // Serializes flush operations to prevent concurrent HNSW writes
+	stopCh        chan struct{} // Signal to stop background worker
+	wg            sync.WaitGroup
+	closed        bool // Protected by idMu
 
 	dataStore Store[T]
 	metaStore *metadata.UnifiedIndex
@@ -61,7 +63,7 @@ type Tx[T any] struct {
 type txScratch struct {
 	indexResults  []index.SearchResult
 	memResults    []index.SearchResult
-	frozenResults []index.SearchResult
+	queueResults  []index.SearchResult
 	mergedResults []index.SearchResult
 }
 
@@ -107,8 +109,9 @@ func (tx *Tx[T]) vectorByID(ctx context.Context, id uint64) ([]float32, error) {
 				return vec, nil
 			}
 		}
-		if state.frozen != nil {
-			if vec, found, isDeleted := state.frozen.Get(id); found {
+		// Check queue (newest to oldest)
+		for i := len(state.queue) - 1; i >= 0; i-- {
+			if vec, found, isDeleted := state.queue[i].Get(id); found {
 				if isDeleted {
 					return nil, ErrNotFound
 				}
@@ -154,28 +157,46 @@ func (tx *Tx[T]) Insert(ctx context.Context, vector []float32, data T, meta meta
 		size := state.active.Size()
 		tx.memMu.RUnlock()
 
-		// Trigger flush if MemTable is getting large (simple backpressure)
+		// Trigger flush if MemTable is getting large
 		if size >= 1000 {
-			select {
-			case tx.flushCh <- struct{}{}:
-			default:
+			tx.memMu.Lock()
+			// Reload state to ensure we are still the one to swap
+			state = tx.memState.Load()
+			if state.active.Size() >= 1000 {
+				// Swap: active -> queue, newActive -> active
+				newActive := memtable.New(tx.dimension, tx.distFunc)
+				// Create new queue slice to ensure immutability of the snapshot
+				newQueue := make([]*memtable.MemTable, len(state.queue)+1)
+				copy(newQueue, state.queue)
+				newQueue[len(state.queue)] = state.active
+
+				newState := &memState{
+					active: newActive,
+					queue:  newQueue,
+				}
+				tx.memState.Store(newState)
+
+				// Signal flush
+				select {
+				case tx.flushCh <- struct{}{}:
+				default:
+				}
 			}
+			tx.memMu.Unlock()
 		}
 
-		// Backpressure: Wait if MemTable is too large and flush is in progress
-		if size >= 10000 {
-			tx.flushMu.Lock()
-			for {
-				tx.memMu.RLock()
-				state = tx.memState.Load()
-				currentSize := state.active.Size()
-				tx.memMu.RUnlock()
-				if currentSize < 10000 {
-					break
-				}
-				tx.flushCond.Wait()
+		// Backpressure: Wait if Queue is too large
+		// We do this OUTSIDE the lock to avoid deadlock
+		for {
+			tx.memMu.RLock()
+			state = tx.memState.Load()
+			qLen := len(state.queue)
+			tx.memMu.RUnlock()
+
+			if qLen < 10 { // Limit queue depth to 10 tables
+				break
 			}
-			tx.flushMu.Unlock()
+			time.Sleep(10 * time.Millisecond)
 		}
 	}
 
@@ -531,6 +552,16 @@ func (tx *Tx[T]) KNNSearch(ctx context.Context, query []float32, k int, opts *in
 
 // KNNSearchWithBuffer performs a K-nearest neighbor search and appends results to the provided buffer.
 func (tx *Tx[T]) KNNSearchWithBuffer(ctx context.Context, query []float32, k int, opts *index.SearchOptions, buf *[]index.SearchResult) error {
+	// Capture MemTables safely (Atomic Snapshot) BEFORE searching index.
+	// This ensures we don't miss items that are flushed during the index search.
+	// If an item is flushed during index search:
+	// 1. It might appear in index results (if flush finished early).
+	// 2. It will definitely appear in queue (which we captured).
+	// We handle duplicates by filtering index results against MemTables.
+	state := tx.memState.Load()
+	memT := state.active
+	queue := state.queue
+
 	// Get scratch buffer
 	scratch := tx.scratchPool.Get().(*txScratch)
 	defer tx.scratchPool.Put(scratch)
@@ -538,7 +569,7 @@ func (tx *Tx[T]) KNNSearchWithBuffer(ctx context.Context, query []float32, k int
 	// Reset scratch buffers
 	scratch.indexResults = scratch.indexResults[:0]
 	scratch.memResults = scratch.memResults[:0]
-	scratch.frozenResults = scratch.frozenResults[:0]
+	scratch.queueResults = scratch.queueResults[:0]
 	scratch.mergedResults = scratch.mergedResults[:0]
 
 	// 1. Search Main Index
@@ -546,24 +577,25 @@ func (tx *Tx[T]) KNNSearchWithBuffer(ctx context.Context, query []float32, k int
 		return err
 	}
 
-	// Capture MemTables safely (Atomic Snapshot)
-	state := tx.memState.Load()
-	memT := state.active
-	frozenT := state.frozen
-
-	// 2. Filter Index Results (remove items deleted in MemTables)
-	// In-place filtering
+	// 2. Filter Index Results (remove items present in MemTables)
+	// If an item is in MemTable (active or queue), it overrides the index version.
+	// This handles both deletions (tombstones) and updates.
 	n := 0
 	for _, res := range scratch.indexResults {
 		// Check MemTable
-		if _, found, isDeleted := memT.Get(res.ID); found && isDeleted {
+		if found, _ := memT.Contains(res.ID); found {
 			continue
 		}
-		// Check FrozenMemTable
-		if frozenT != nil {
-			if _, found, isDeleted := frozenT.Get(res.ID); found && isDeleted {
-				continue
+		// Check Queue
+		inQueue := false
+		for _, t := range queue {
+			if found, _ := t.Contains(res.ID); found {
+				inQueue = true
+				break
 			}
+		}
+		if inQueue {
+			continue
 		}
 		scratch.indexResults[n] = res
 		n++
@@ -580,14 +612,21 @@ func (tx *Tx[T]) KNNSearchWithBuffer(ctx context.Context, query []float32, k int
 		return err
 	}
 
-	if frozenT != nil {
-		if err := frozenT.SearchWithBuffer(query, k, filter, &scratch.frozenResults); err != nil {
+	for _, t := range queue {
+		if err := t.SearchWithBuffer(query, k, filter, &scratch.queueResults); err != nil {
 			return err
 		}
 	}
 
+	// Sort queue results as they are concatenated from multiple sorted sources
+	if len(scratch.queueResults) > 0 {
+		sort.Slice(scratch.queueResults, func(i, j int) bool {
+			return scratch.queueResults[i].Distance < scratch.queueResults[j].Distance
+		})
+	}
+
 	// 4. Merge Results
-	index.MergeNSearchResultsInto(&scratch.mergedResults, k, scratch.indexResults, scratch.memResults, scratch.frozenResults)
+	index.MergeNSearchResultsInto(&scratch.mergedResults, k, scratch.indexResults, scratch.memResults, scratch.queueResults)
 
 	// Append to output buffer
 	*buf = append(*buf, scratch.mergedResults...)
@@ -598,27 +637,32 @@ func (tx *Tx[T]) KNNSearchWithBuffer(ctx context.Context, query []float32, k int
 // BruteSearch performs a brute-force search on the underlying index.
 // This method is added to satisfy the coordinator[T] interface.
 func (tx *Tx[T]) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint64) bool) ([]index.SearchResult, error) {
+	// Capture MemTables safely (Atomic Snapshot) BEFORE searching index.
+	state := tx.memState.Load()
+	memT := state.active
+	queue := state.queue
+
 	// 1. Search Main Index
 	indexResults, err := tx.txIndex.BruteSearch(ctx, query, k, filter)
 	if err != nil {
 		return nil, err
 	}
 
-	// Capture MemTables safely (Atomic Snapshot)
-	state := tx.memState.Load()
-	memT := state.active
-	frozenT := state.frozen
-
 	// 2. Filter Index Results
 	filteredIndexResults := make([]index.SearchResult, 0, len(indexResults))
 	for _, res := range indexResults {
-		if _, found, isDeleted := memT.Get(res.ID); found && isDeleted {
+		if found, _ := memT.Contains(res.ID); found {
 			continue
 		}
-		if frozenT != nil {
-			if _, found, isDeleted := frozenT.Get(res.ID); found && isDeleted {
-				continue
+		inQueue := false
+		for _, t := range queue {
+			if found, _ := t.Contains(res.ID); found {
+				inQueue = true
+				break
 			}
+		}
+		if inQueue {
+			continue
 		}
 		filteredIndexResults = append(filteredIndexResults, res)
 	}
@@ -632,15 +676,21 @@ func (tx *Tx[T]) BruteSearch(ctx context.Context, query []float32, k int, filter
 	}
 	memResults := memT.Search(query, k, memFilter)
 
-	var frozenResults []index.SearchResult
-	if frozenT != nil {
-		frozenResults = frozenT.Search(query, k, memFilter)
+	var queueResults []index.SearchResult
+	for _, t := range queue {
+		res := t.Search(query, k, memFilter)
+		if len(res) > 0 {
+			queueResults = append(queueResults, res...)
+		}
+	}
+	if len(queueResults) > 0 {
+		sort.Slice(queueResults, func(i, j int) bool {
+			return queueResults[i].Distance < queueResults[j].Distance
+		})
 	}
 
 	// 4. Merge Results
-	merged := index.MergeNSearchResults(k, filteredIndexResults, memResults, frozenResults)
-
-	return merged, nil
+	return index.MergeNSearchResults(k, filteredIndexResults, memResults, queueResults), nil
 }
 
 // EnableProductQuantization enables Product Quantization (PQ) on the underlying index.
@@ -674,103 +724,106 @@ func (tx *Tx[T]) runFlushWorker() {
 	}
 }
 
-// flushMemTable flushes the MemTable to the main index.
-func (tx *Tx[T]) flushMemTable() {
+// flushMemTable flushes the MemTable queue to the main index.
+// Returns true if a flush was performed, false if skipped.
+func (tx *Tx[T]) flushMemTable() bool {
+	// 1. Rotate active to queue if not empty
 	tx.memMu.Lock()
-
 	state := tx.memState.Load()
-	// If a flush is already in progress (frozen table exists), we skip.
-	// The worker loop calls this repeatedly, so it will pick it up next time.
-	if state.frozen != nil {
-		tx.memMu.Unlock()
-		return
+	rotated := false
+	if state.active.Size() > 0 {
+		newActive := memtable.New(tx.dimension, tx.distFunc)
+		newQueue := make([]*memtable.MemTable, len(state.queue)+1)
+		copy(newQueue, state.queue)
+		newQueue[len(state.queue)] = state.active
+
+		newState := &memState{
+			active: newActive,
+			queue:  newQueue,
+		}
+		tx.memState.Store(newState)
+		rotated = true
 	}
-
-	if state.active.Size() == 0 {
-		tx.memMu.Unlock()
-		return
-	}
-
-	// Prepare new active table
-	var newActive *memtable.MemTable
-	// Reuse recycled memtable if available, otherwise create new
-	if tx.recycledMemTable != nil {
-		newActive = tx.recycledMemTable
-		tx.recycledMemTable = nil
-	} else {
-		newActive = memtable.New(tx.dimension, tx.distFunc)
-	}
-
-	// Swap: active -> frozen, newActive -> active
-	newState := &memState{
-		active: newActive,
-		frozen: state.active,
-	}
-	tx.memState.Store(newState)
-
-	tx.flushMu.Lock()
-	tx.flushCond.Broadcast() // Signal that MemTable is empty
-	tx.flushMu.Unlock()
-
-	// Get items to flush
-	items := newState.frozen.Items()
 	tx.memMu.Unlock()
 
-	// Apply to main index
-	// We use a background context as this is an async operation
+	if rotated {
+		// Signal waiting writers that active memtable is empty
+		tx.flushMu.Lock()
+		tx.flushCond.Broadcast()
+		tx.flushMu.Unlock()
+	}
+
+	// Serialize flush actions to prevent concurrent writes to HNSW
+	tx.flushActionMu.Lock()
+	defer tx.flushActionMu.Unlock()
+
+	flushedAny := false
 	ctx := context.Background()
 
-	var insertIDs []uint64
-	var insertVecs [][]float32
+	for {
+		tx.memMu.RLock()
+		state = tx.memState.Load()
+		if len(state.queue) == 0 {
+			tx.memMu.RUnlock()
+			break
+		}
+		tableToFlush := state.queue[0]
+		tx.memMu.RUnlock()
 
-	for _, item := range items {
-		if item.IsDeleted {
-			err := tx.txIndex.ApplyDelete(ctx, uint64(item.ID))
-			// Ignore if node already deleted or not found
-			if err != nil {
-				errMsg := err.Error()
-				if strings.Contains(errMsg, "not found") || strings.Contains(errMsg, "has been deleted") {
-					err = nil
+		// Get items to flush
+		items := tableToFlush.Items()
+
+		// Deduplicate items (latest wins)
+		unique := make(map[uint64]memtable.Item)
+		for _, item := range items {
+			unique[item.ID] = item
+		}
+
+		var insertIDs []uint64
+		var insertVecs [][]float32
+
+		for _, item := range unique {
+			if item.IsDeleted {
+				err := tx.txIndex.ApplyDelete(ctx, uint64(item.ID))
+				// Ignore if node already deleted or not found
+				if err != nil {
+					errMsg := err.Error()
+					if strings.Contains(errMsg, "not found") || strings.Contains(errMsg, "has been deleted") {
+						err = nil
+					}
 				}
+				if err != nil {
+					// In a production system, we should log this error properly.
+				}
+			} else {
+				insertIDs = append(insertIDs, uint64(item.ID))
+				insertVecs = append(insertVecs, item.Vector)
 			}
-			if err != nil {
+		}
+
+		if len(insertIDs) > 0 {
+			if err := tx.txIndex.ApplyBatchInsert(ctx, insertIDs, insertVecs); err != nil {
 				// In a production system, we should log this error properly.
 			}
-		} else {
-			insertIDs = append(insertIDs, uint64(item.ID))
-			insertVecs = append(insertVecs, item.Vector)
 		}
-	}
 
-	if len(insertIDs) > 0 {
-		if err := tx.txIndex.ApplyBatchInsert(ctx, insertIDs, insertVecs); err != nil {
-			// In a production system, we should log this error properly.
+		// Remove from queue
+		tx.memMu.Lock()
+		state = tx.memState.Load()
+		if len(state.queue) > 0 && state.queue[0] == tableToFlush {
+			newQueue := make([]*memtable.MemTable, len(state.queue)-1)
+			copy(newQueue, state.queue[1:])
+			newState := &memState{
+				active: state.active,
+				queue:  newQueue,
+			}
+			tx.memState.Store(newState)
+			flushedAny = true
 		}
+		tx.memMu.Unlock()
 	}
 
-	// Clear frozen table after flush is done
-	tx.memMu.Lock()
-	// Reload state to be sure
-	state = tx.memState.Load()
-
-	// Reset and recycle the frozen memtable
-	frozen := state.frozen
-	if frozen != nil {
-		frozen.Reset()
-		tx.recycledMemTable = frozen
-	}
-
-	// Update state: frozen -> nil
-	finalState := &memState{
-		active: state.active,
-		frozen: nil,
-	}
-	tx.memState.Store(finalState)
-
-	tx.flushMu.Lock()
-	tx.flushCond.Broadcast() // Signal that flush is done
-	tx.flushMu.Unlock()
-	tx.memMu.Unlock()
+	return flushedAny
 }
 
 // HybridSearch performs a hybrid search combining vector similarity and metadata filtering.
@@ -828,7 +881,7 @@ func (tx *Tx[T]) KNNSearchStream(ctx context.Context, query []float32, k int, op
 	// Capture MemTables safely (Atomic Snapshot)
 	state := tx.memState.Load()
 	memT := state.active
-	frozenT := state.frozen
+	queue := state.queue
 
 	// 1. Stream from Main Index (filtered)
 	indexStream := tx.txIndex.KNNSearchStream(ctx, query, k, opts)
@@ -845,11 +898,16 @@ func (tx *Tx[T]) KNNSearchStream(ctx context.Context, query []float32, k int, op
 			if _, found, isDeleted := memT.Get(res.ID); found && isDeleted {
 				continue
 			}
-			// Check FrozenMemTable
-			if frozenT != nil {
-				if _, found, isDeleted := frozenT.Get(res.ID); found && isDeleted {
-					continue
+			// Check Queue
+			inQueue := false
+			for _, t := range queue {
+				if _, found, isDeleted := t.Get(res.ID); found && isDeleted {
+					inQueue = true
+					break
 				}
+			}
+			if inQueue {
+				continue
 			}
 			if !yield(res, nil) {
 				return
@@ -864,15 +922,23 @@ func (tx *Tx[T]) KNNSearchStream(ctx context.Context, query []float32, k int, op
 	}
 	memResults := memT.Search(query, k, filter)
 
-	var frozenResults []index.SearchResult
-	if frozenT != nil {
-		frozenResults = frozenT.Search(query, k, filter)
+	var queueResults []index.SearchResult
+	for _, t := range queue {
+		res := t.Search(query, k, filter)
+		if len(res) > 0 {
+			queueResults = append(queueResults, res...)
+		}
+	}
+	if len(queueResults) > 0 {
+		sort.Slice(queueResults, func(i, j int) bool {
+			return queueResults[i].Distance < queueResults[j].Distance
+		})
 	}
 
 	// 3. Merge Streams
 	allMemResults := memResults
-	if len(frozenResults) > 0 {
-		allMemResults = index.MergeSearchResults(memResults, frozenResults, k)
+	if len(queueResults) > 0 {
+		allMemResults = index.MergeSearchResults(memResults, queueResults, k)
 	}
 
 	if len(allMemResults) == 0 {
@@ -935,6 +1001,14 @@ func (tx *Tx[T]) Stats() index.Stats {
 	}
 	state := tx.memState.Load()
 	stats.Storage["MemTableSize"] = fmt.Sprintf("%d", state.active.Size())
+
+	queueSize := 0
+	for _, t := range state.queue {
+		queueSize += t.Size()
+	}
+	stats.Storage["MemTableQueueSize"] = fmt.Sprintf("%d", queueSize)
+	stats.Storage["MemTableQueueCount"] = fmt.Sprintf("%d", len(state.queue))
+
 	return stats
 }
 
