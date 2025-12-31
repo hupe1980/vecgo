@@ -11,6 +11,8 @@ import (
 
 	"github.com/hupe1980/vecgo/distance"
 	"github.com/hupe1980/vecgo/index"
+	"github.com/hupe1980/vecgo/internal/bitset"
+	"github.com/hupe1980/vecgo/internal/container"
 	"github.com/hupe1980/vecgo/internal/queue"
 	"github.com/hupe1980/vecgo/quantization"
 	"github.com/hupe1980/vecgo/vectorstore"
@@ -21,11 +23,6 @@ import (
 var _ index.Index = (*Flat)(nil)
 var _ index.TransactionalIndex = (*Flat)(nil)
 var _ index.ProductQuantizationEnabler = (*Flat)(nil)
-
-// Node represents a node in the flat index with its vector and unique identifier.
-type Node struct {
-	ID uint64 // Unique identifier
-}
 
 // Options contains configuration options for the flat index.
 type Options struct {
@@ -47,18 +44,14 @@ var DefaultOptions = Options{
 	DistanceType: index.DistanceTypeSquaredL2,
 }
 
-// indexState holds the immutable state of the index for lock-free reads.
-type indexState struct {
-	nodes []*Node // Nodes in the index (nil entries are tombstones)
-	// pqCodes stores encoded PQ codes indexed by vector ID.
-	// It is nil when PQ is disabled.
-	pqCodes [][]byte
-}
-
 // Flat represents a flat index for vector storage and search.
-// It uses a copy-on-write pattern for lock-free concurrent reads.
+// It uses a zero-overhead architecture (maxID + BitSet) for O(1) inserts.
 type Flat struct {
-	state        atomic.Value // holds *indexState for lock-free reads
+	// State
+	maxID   atomic.Uint64
+	deleted *bitset.BitSet
+	pqCodes *container.SegmentedArray[[]byte]
+
 	writeMu      sync.Mutex   // Serializes writes only
 	dimension    atomic.Int32 // Dimension of vectors (lock-free)
 	distanceFunc index.DistanceFunc
@@ -78,24 +71,9 @@ func (f *Flat) Dimension() int {
 	return int(f.dimension.Load())
 }
 
-// AllocateID reserves a new ID by extending the nodes slice.
-// The reserved slot remains nil until ApplyInsert is called.
+// AllocateID reserves a new ID by atomically incrementing the counter.
 func (f *Flat) AllocateID() uint64 {
-	f.writeMu.Lock()
-	defer f.writeMu.Unlock()
-
-	oldState := f.getState()
-	newState := f.cloneState(oldState)
-
-	var id uint64
-	id = uint64(len(newState.nodes))
-	newState.nodes = append(newState.nodes, nil)
-	if newState.pqCodes != nil {
-		newState.pqCodes = append(newState.pqCodes, nil)
-	}
-
-	f.state.Store(newState)
-	return id
+	return f.maxID.Add(1) - 1
 }
 
 // ReleaseID marks an ID as unused.
@@ -104,16 +82,12 @@ func (f *Flat) ReleaseID(id uint64) {
 	f.writeMu.Lock()
 	defer f.writeMu.Unlock()
 
-	oldState := f.getState()
-	if int(id) >= len(oldState.nodes) {
-		return
-	}
-	if oldState.nodes[id] != nil {
-		// Already inserted; caller must not release.
+	if id >= f.maxID.Load() {
 		return
 	}
 
-	// No-op: IDs are never reused to ensure stability.
+	// Mark as deleted
+	f.deleted.Set(id)
 }
 
 // New creates a new instance of the flat index.
@@ -141,37 +115,11 @@ func New(optFns ...func(o *Options)) (*Flat, error) {
 		vectors:      columnar.New(opts.Dimension),
 		shardID:      0, // Default: shard 0 (non-sharded mode)
 		numShards:    1, // Default: 1 shard (non-sharded mode)
+		deleted:      bitset.New(1024),
 	}
 	f.dimension.Store(int32(opts.Dimension))
 
-	// Initialize state with empty slices
-	f.state.Store(&indexState{
-		nodes: make([]*Node, 0),
-	})
-
 	return f, nil
-}
-
-// getState returns the current immutable state (lock-free read).
-func (f *Flat) getState() *indexState {
-	return f.state.Load().(*indexState)
-}
-
-// cloneState creates a deep copy of the current state for copy-on-write.
-func (f *Flat) cloneState(st *indexState) *indexState {
-	newNodes := make([]*Node, len(st.nodes))
-	copy(newNodes, st.nodes)
-
-	var newPQCodes [][]byte
-	if st.pqCodes != nil {
-		newPQCodes = make([][]byte, len(st.pqCodes))
-		copy(newPQCodes, st.pqCodes)
-	}
-
-	return &indexState{
-		nodes:   newNodes,
-		pqCodes: newPQCodes,
-	}
 }
 
 func (f *Flat) ProductQuantizationEnabled() bool {
@@ -183,10 +131,7 @@ func (f *Flat) DisableProductQuantization() {
 	defer f.writeMu.Unlock()
 
 	f.pq.Store(nil)
-	st := f.getState()
-	newState := f.cloneState(st)
-	newState.pqCodes = nil
-	f.state.Store(newState)
+	f.pqCodes = nil
 }
 
 func (f *Flat) EnableProductQuantization(cfg index.ProductQuantizationConfig) error {
@@ -210,14 +155,17 @@ func (f *Flat) EnableProductQuantization(cfg index.ProductQuantizationConfig) er
 	f.writeMu.Lock()
 	defer f.writeMu.Unlock()
 
-	st := f.getState()
-	vectors := make([][]float32, 0, len(st.nodes))
-	for _, n := range st.nodes {
-		if n != nil {
-			v, ok := f.vectors.GetVector(n.ID)
-			if ok {
-				vectors = append(vectors, v)
-			}
+	maxID := f.maxID.Load()
+	vectors := make([][]float32, 0, maxID)
+
+	// Collect vectors for training
+	for id := uint64(0); id < maxID; id++ {
+		if f.deleted.Test(id) {
+			continue
+		}
+		v, ok := f.vectors.GetVector(id)
+		if ok {
+			vectors = append(vectors, v)
 		}
 	}
 	if len(vectors) == 0 {
@@ -233,22 +181,20 @@ func (f *Flat) EnableProductQuantization(cfg index.ProductQuantizationConfig) er
 		return err
 	}
 
-	newState := f.cloneState(st)
-	newState.pqCodes = make([][]byte, len(newState.nodes))
-	for _, n := range newState.nodes {
-		if n == nil {
+	// Encode all existing vectors
+	pqCodes := container.NewSegmentedArray[[]byte]()
+	for id := uint64(0); id < maxID; id++ {
+		if f.deleted.Test(id) {
 			continue
 		}
-		v, ok := f.vectors.GetVector(n.ID)
-		if !ok {
-			continue
+		v, ok := f.vectors.GetVector(id)
+		if ok {
+			code := pq.Encode(v)
+			pqCodes.Set(id, code)
 		}
-		newState.pqCodes[n.ID] = pq.Encode(v)
 	}
 
-	// IMPORTANT: Publish state first, then pq pointer.
-	// This guarantees pqCodes exist before pq is visible to readers.
-	f.state.Store(newState)
+	f.pqCodes = pqCodes
 	f.pq.Store(pq)
 	return nil
 }
@@ -284,34 +230,25 @@ func (f *Flat) Insert(ctx context.Context, v []float32) (uint64, error) {
 		vec = norm
 	}
 
-	// Make a copy of the vector to ensure changes outside this function don't affect the node
 	if f.vectors == nil {
 		return 0, fmt.Errorf("flat: vector store not configured")
 	}
 
-	// Get current state and clone for modification
-	oldState := f.getState()
-	newState := f.cloneState(oldState)
 	pq := f.pq.Load()
 
 	// Allocate new ID
-	id := uint64(len(newState.nodes))
+	id := f.maxID.Add(1) - 1
+
 	if err := f.vectors.SetVector(id, vec); err != nil {
 		return 0, err
 	}
-	newState.nodes = append(newState.nodes, &Node{ID: id})
-	if pq != nil {
-		if newState.pqCodes == nil {
-			newState.pqCodes = make([][]byte, 0, len(newState.nodes))
-		}
-		for len(newState.pqCodes) < len(newState.nodes)-1 {
-			newState.pqCodes = append(newState.pqCodes, nil)
-		}
-		newState.pqCodes = append(newState.pqCodes, pq.Encode(vec))
-	}
 
-	// Atomic swap to new state
-	f.state.Store(newState)
+	if pq != nil {
+		if f.pqCodes == nil {
+			f.pqCodes = container.NewSegmentedArray[[]byte]()
+		}
+		f.pqCodes.Set(id, pq.Encode(vec))
+	}
 
 	return id, nil
 }
@@ -349,41 +286,22 @@ func (f *Flat) ApplyInsert(ctx context.Context, id uint64, v []float32) error {
 		return fmt.Errorf("flat: vector store not configured")
 	}
 
-	oldState := f.getState()
-	newState := f.cloneState(oldState)
-	pq := f.pq.Load()
-
-	// Ensure nodes slice can hold id.
-	if int(id) >= len(newState.nodes) {
-		oldLen := len(newState.nodes)
-		newLen := int(id) + 1
-		newState.nodes = append(newState.nodes, make([]*Node, newLen-oldLen)...)
-		if pq != nil {
-			if newState.pqCodes == nil {
-				newState.pqCodes = make([][]byte, oldLen)
-			}
-			newState.pqCodes = append(newState.pqCodes, make([][]byte, newLen-oldLen)...)
-		}
-		// NOTE: Do NOT auto-generate entries for gaps during WAL replay.
-		// WAL replay may be out of order; IDs that appear as gaps now may be
-		// inserted later. Only reuse IDs explicitly deleted in WAL.
-	}
-
-	if newState.nodes[id] != nil {
-		return fmt.Errorf("node %d already exists", id)
+	// Ensure maxID covers this ID (for recovery)
+	if id >= f.maxID.Load() {
+		f.maxID.Store(id + 1)
 	}
 
 	if err := f.vectors.SetVector(id, vec); err != nil {
 		return err
 	}
-	newState.nodes[id] = &Node{ID: id}
+
+	pq := f.pq.Load()
 	if pq != nil {
-		if newState.pqCodes == nil {
-			newState.pqCodes = make([][]byte, len(newState.nodes))
+		if f.pqCodes == nil {
+			f.pqCodes = container.NewSegmentedArray[[]byte]()
 		}
-		newState.pqCodes[id] = pq.Encode(vec)
+		f.pqCodes.Set(id, pq.Encode(vec))
 	}
-	f.state.Store(newState)
 	return nil
 }
 
@@ -400,8 +318,6 @@ func (f *Flat) ApplyBatchInsert(ctx context.Context, ids []uint64, vectors [][]f
 	defer f.writeMu.Unlock()
 
 	currentDim := int(f.dimension.Load())
-	oldState := f.getState()
-	newState := f.cloneState(oldState)
 	pq := f.pq.Load()
 
 	for i, v := range vectors {
@@ -422,36 +338,28 @@ func (f *Flat) ApplyBatchInsert(ctx context.Context, ids []uint64, vectors [][]f
 			vec = norm
 		}
 
-		// Ensure nodes slice can hold id.
-		if int(id) >= len(newState.nodes) {
-			oldLen := len(newState.nodes)
-			newLen := int(id) + 1
-			newState.nodes = append(newState.nodes, make([]*Node, newLen-oldLen)...)
-			if pq != nil {
-				if newState.pqCodes == nil {
-					newState.pqCodes = make([][]byte, oldLen)
-				}
-				newState.pqCodes = append(newState.pqCodes, make([][]byte, newLen-oldLen)...)
-			}
+		// Update maxID if needed
+		if id >= f.maxID.Load() {
+			f.maxID.Store(id + 1)
 		}
 
-		if newState.nodes[id] != nil {
-			return fmt.Errorf("node %d already exists", id)
+		// If the ID was previously deleted, undelete it
+		if f.deleted.Test(id) {
+			f.deleted.Unset(id)
 		}
 
 		if err := f.vectors.SetVector(id, vec); err != nil {
 			return err
 		}
-		newState.nodes[id] = &Node{ID: id}
+
 		if pq != nil {
-			if newState.pqCodes == nil {
-				newState.pqCodes = make([][]byte, len(newState.nodes))
+			if f.pqCodes == nil {
+				f.pqCodes = container.NewSegmentedArray[[]byte]()
 			}
-			newState.pqCodes[id] = pq.Encode(vec)
+			f.pqCodes.Set(id, pq.Encode(vec))
 		}
 	}
 
-	f.state.Store(newState)
 	return nil
 }
 
@@ -472,14 +380,15 @@ func (f *Flat) VectorByID(ctx context.Context, id uint64) ([]float32, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	st := f.getState()
-	if int(id) >= len(st.nodes) {
+
+	if id >= f.maxID.Load() {
 		return nil, &index.ErrNodeNotFound{ID: id}
 	}
-	n := st.nodes[id]
-	if n == nil {
+
+	if f.deleted.Test(id) {
 		return nil, &index.ErrNodeDeleted{ID: id}
 	}
+
 	if f.vectors == nil {
 		return nil, fmt.Errorf("flat: vector store not configured")
 	}
@@ -519,17 +428,7 @@ func (f *Flat) BatchInsert(ctx context.Context, vectors [][]float32) index.Batch
 
 	// Get configured dimension (atomic read)
 	currentDim := int(f.dimension.Load())
-
-	// Get current state and clone for modification
-	oldState := f.getState()
-	newState := f.cloneState(oldState)
 	pq := f.pq.Load()
-	if pq != nil && newState.pqCodes == nil {
-		newState.pqCodes = make([][]byte, len(newState.nodes))
-	}
-
-	// Track next append ID
-	nextAppendID := uint64(len(newState.nodes))
 
 	for i, v := range vectors {
 		if len(v) == 0 {
@@ -558,24 +457,24 @@ func (f *Flat) BatchInsert(ctx context.Context, vectors [][]float32) index.Batch
 		}
 
 		// Allocate new ID
-		id := nextAppendID
-		nextAppendID++
+		id := f.maxID.Add(1) - 1
+
 		if err := f.vectors.SetVector(id, vec); err != nil {
+			// If storage fails, we must mark this ID as deleted to avoid "holes"
+			// that look like valid zero-vectors or similar issues.
+			f.deleted.Set(id)
 			result.Errors[i] = err
 			continue
 		}
-		newState.nodes = append(newState.nodes, &Node{ID: id})
+
 		if pq != nil {
-			for len(newState.pqCodes) < len(newState.nodes)-1 {
-				newState.pqCodes = append(newState.pqCodes, nil)
+			if f.pqCodes == nil {
+				f.pqCodes = container.NewSegmentedArray[[]byte]()
 			}
-			newState.pqCodes = append(newState.pqCodes, pq.Encode(vec))
+			f.pqCodes.Set(id, pq.Encode(vec))
 		}
 		result.IDs[i] = id
 	}
-
-	// Atomic swap to new state
-	f.state.Store(newState)
 
 	return result
 }
@@ -587,34 +486,31 @@ func (f *Flat) Delete(ctx context.Context, id uint64) error {
 		return err
 	}
 
+	// We don't strictly need write lock for setting a bit in bitset if it's thread-safe,
+	// but we need to coordinate with other operations.
+	// BitSet is likely not thread-safe for concurrent Set/Test.
 	f.writeMu.Lock()
 	defer f.writeMu.Unlock()
 
-	// Get current state and clone for modification
-	oldState := f.getState()
-
-	if int(id) >= len(oldState.nodes) {
+	if id >= f.maxID.Load() {
 		return &index.ErrNodeNotFound{ID: id}
 	}
 
-	if oldState.nodes[id] == nil {
+	if f.deleted.Test(id) {
 		return &index.ErrNodeDeleted{ID: id}
 	}
 
-	newState := f.cloneState(oldState)
+	// Mark as deleted
+	f.deleted.Set(id)
 
-	// Mark as deleted by setting node to nil
-	newState.nodes[id] = nil
-	if newState.pqCodes != nil && int(id) < len(newState.pqCodes) {
-		newState.pqCodes[id] = nil
-	}
+	// Also remove from PQ codes if present?
+	// We don't need to remove from SegmentedArray, just ignore it.
+	// But we might want to clear it to save memory if it was a pointer?
+	// []byte is small.
 
 	if f.vectors != nil {
 		_ = f.vectors.DeleteVector(id)
 	}
-
-	// Atomic swap to new state
-	f.state.Store(newState)
 
 	return nil
 }
@@ -636,14 +532,11 @@ func (f *Flat) Update(ctx context.Context, id uint64, v []float32) error {
 	// Get current dimension (atomic read)
 	currentDim := int(f.dimension.Load())
 
-	// Get current state and clone for modification
-	oldState := f.getState()
-
-	if int(id) >= len(oldState.nodes) {
+	if id >= f.maxID.Load() {
 		return &index.ErrNodeNotFound{ID: id}
 	}
 
-	if oldState.nodes[id] == nil {
+	if f.deleted.Test(id) {
 		return &index.ErrNodeDeleted{ID: id}
 	}
 
@@ -667,21 +560,13 @@ func (f *Flat) Update(ctx context.Context, id uint64, v []float32) error {
 		return err
 	}
 
-	newState := f.cloneState(oldState)
 	pq := f.pq.Load()
-
-	// Copy-on-write: replace the node pointer to avoid mutating a Node shared
-	// with readers holding the previous immutable state.
-	newState.nodes[id] = &Node{ID: id}
 	if pq != nil {
-		if newState.pqCodes == nil {
-			newState.pqCodes = make([][]byte, len(newState.nodes))
+		if f.pqCodes == nil {
+			f.pqCodes = container.NewSegmentedArray[[]byte]()
 		}
-		newState.pqCodes[id] = pq.Encode(vec)
+		f.pqCodes.Set(id, pq.Encode(vec))
 	}
-
-	// Atomic swap to new state
-	f.state.Store(newState)
 
 	return nil
 }
@@ -760,13 +645,13 @@ func (f *Flat) BruteSearchWithBuffer(ctx context.Context, query []float32, k int
 		return err
 	}
 
-	currentState := f.getState()
+	maxID := f.maxID.Load()
 	currentDim := int(f.dimension.Load())
 
 	if k <= 0 {
 		return index.ErrInvalidK
 	}
-	if len(currentState.nodes) == 0 {
+	if maxID == 0 {
 		return nil
 	}
 	if currentDim > 0 && len(query) != currentDim {
@@ -783,8 +668,8 @@ func (f *Flat) BruteSearchWithBuffer(ctx context.Context, query []float32, k int
 	}
 
 	actualK := k
-	if actualK > len(currentState.nodes) {
-		actualK = len(currentState.nodes)
+	if uint64(actualK) > maxID {
+		actualK = int(maxID)
 	}
 
 	topCandidates := queue.NewMax(actualK)
@@ -797,14 +682,14 @@ func (f *Flat) BruteSearchWithBuffer(ctx context.Context, query []float32, k int
 	// This improves cache locality and SIMD vectorization
 	if pq == nil {
 		// Gather all valid node IDs and vectors
-		batchIDs := make([]uint64, 0, len(currentState.nodes))
-		batchVectors := make([][]float32, 0, len(currentState.nodes))
+		batchIDs := make([]uint64, 0, maxID)
+		batchVectors := make([][]float32, 0, maxID)
 
-		for _, node := range currentState.nodes {
-			if node == nil {
+		for id := uint64(0); id < maxID; id++ {
+			if f.deleted.Test(id) {
 				continue
 			}
-			if filter != nil && !filter(node.ID) {
+			if filter != nil && !filter(id) {
 				continue
 			}
 
@@ -812,12 +697,12 @@ func (f *Flat) BruteSearchWithBuffer(ctx context.Context, query []float32, k int
 				continue
 			}
 
-			v, ok := f.vectors.GetVector(node.ID)
+			v, ok := f.vectors.GetVector(id)
 			if !ok {
 				continue
 			}
 
-			batchIDs = append(batchIDs, node.ID)
+			batchIDs = append(batchIDs, id)
 			batchVectors = append(batchVectors, v)
 		}
 
@@ -848,6 +733,8 @@ func (f *Flat) BruteSearchWithBuffer(ctx context.Context, query []float32, k int
 
 				largest := topCandidates.Top().(queue.PriorityQueueItem)
 				if nodeDist < largest.Distance {
+					// We found a closer neighbor.
+					// Remove the farthest one (root of MaxHeap) and add the new one.
 					heap.Pop(topCandidates)
 					heap.Push(topCandidates, queue.PriorityQueueItem{Node: nodeID, Distance: nodeDist})
 				}
@@ -857,36 +744,30 @@ func (f *Flat) BruteSearchWithBuffer(ctx context.Context, query []float32, k int
 		// PQ mode: use asymmetric distance (can't batch due to custom codes)
 		// NOTE: PQ asymmetric distance approximates L2 distance on normalized vectors.
 		// For cosine, vectors are already normalized so L2 ordering is equivalent.
-		for _, node := range currentState.nodes {
-			if node == nil {
+		for id := uint64(0); id < maxID; id++ {
+			if f.deleted.Test(id) {
 				continue
 			}
-			if filter != nil && !filter(node.ID) {
+			if filter != nil && !filter(id) {
 				continue
 			}
 
 			var nodeDist float32
-			if currentState.pqCodes != nil && int(node.ID) < len(currentState.pqCodes) {
-				if code := currentState.pqCodes[node.ID]; code != nil {
-					// PQ distance is already squared L2; no scaling needed.
-					// For cosine, vectors were normalized on insert, so L2
-					// ordering preserves cosine ranking.
+			var hasCode bool
+
+			if f.pqCodes != nil {
+				code, ok := f.pqCodes.Get(id)
+				if ok && code != nil {
 					nodeDist = pq.ComputeAsymmetricDistance(q, code)
-				} else {
-					if f.vectors == nil {
-						continue
-					}
-					vec, ok := f.vectors.GetVector(node.ID)
-					if !ok {
-						continue
-					}
-					nodeDist = f.distanceFunc(q, vec)
+					hasCode = true
 				}
-			} else {
+			}
+
+			if !hasCode {
 				if f.vectors == nil {
 					continue
 				}
-				vec, ok := f.vectors.GetVector(node.ID)
+				vec, ok := f.vectors.GetVector(id)
 				if !ok {
 					continue
 				}
@@ -894,14 +775,14 @@ func (f *Flat) BruteSearchWithBuffer(ctx context.Context, query []float32, k int
 			}
 
 			if topCandidates.Len() < actualK {
-				heap.Push(topCandidates, queue.PriorityQueueItem{Node: node.ID, Distance: nodeDist})
+				heap.Push(topCandidates, queue.PriorityQueueItem{Node: id, Distance: nodeDist})
 				continue
 			}
 
 			largest := topCandidates.Top().(queue.PriorityQueueItem)
 			if nodeDist < largest.Distance {
 				heap.Pop(topCandidates)
-				heap.Push(topCandidates, queue.PriorityQueueItem{Node: node.ID, Distance: nodeDist})
+				heap.Push(topCandidates, queue.PriorityQueueItem{Node: id, Distance: nodeDist})
 			}
 		}
 	}

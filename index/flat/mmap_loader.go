@@ -5,6 +5,7 @@ import (
 	"unsafe"
 
 	"github.com/hupe1980/vecgo/index"
+	"github.com/hupe1980/vecgo/internal/bitset"
 	"github.com/hupe1980/vecgo/persistence"
 	"github.com/hupe1980/vecgo/vectorstore/zerocopy"
 )
@@ -49,6 +50,7 @@ func loadFlatMmap(data []byte) (index.Index, int, error) {
 	}
 	f.distanceFunc = index.NewDistanceFunc(f.opts.DistanceType)
 	f.vectors = zerocopy.New(int(h.Dimension))
+	f.deleted = bitset.New(1024)
 
 	// freeList (Deprecated: Ignore)
 	freeListLen, err := r.ReadUint64()
@@ -64,6 +66,7 @@ func loadFlatMmap(data []byte) (index.Index, int, error) {
 	if err != nil {
 		return nil, 0, err
 	}
+	f.maxID.Store(nodeCount)
 
 	// Read Markers
 	markers, err := r.ReadBytes(int(nodeCount))
@@ -96,14 +99,12 @@ func loadFlatMmap(data []byte) (index.Index, int, error) {
 		}
 	}
 
-	// Reconstruct nodes
-	nodes := make([]*Node, int(nodeCount))
+	// Reconstruct deleted
 	for i := 0; i < int(nodeCount); i++ {
-		if markers[i] != 0 {
-			nodes[i] = &Node{ID: uint64(i)}
+		if markers[i] == 0 {
+			f.deleted.Set(uint64(i))
 		}
 	}
 
-	f.state.Store(&indexState{nodes: nodes})
 	return f, r.Offset(), nil
 }

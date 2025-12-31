@@ -48,13 +48,10 @@ func TestMmapLoader_VectorAliasesInputBytes(t *testing.T) {
 		t.Fatalf("expected *Flat, got %T", idx)
 	}
 
-	st := loaded.getState()
 	var found bool
-	for _, n := range st.nodes {
-		if n != nil && n.ID == id {
-			found = true
-			break
-		}
+	maxID := loaded.maxID.Load()
+	if id < maxID && !loaded.deleted.Test(id) {
+		found = true
 	}
 	if !found {
 		t.Fatalf("expected node id %d to exist", id)

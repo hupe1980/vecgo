@@ -959,6 +959,14 @@ func (h *HNSW) KNNSearchWithBuffer(ctx context.Context, q []float32, k int, opts
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+
+	// Safety check: Dimension mismatch
+	// This is critical because internal distance functions (SIMD) do not check bounds.
+	dim := int(h.dimensionAtomic.Load())
+	if dim > 0 && len(q) != dim {
+		return &index.ErrDimensionMismatch{Expected: dim, Actual: len(q)}
+	}
+
 	g := h.currentGraph.Load()
 
 	// Get scratch buffer

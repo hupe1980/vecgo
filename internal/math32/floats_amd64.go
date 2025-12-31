@@ -9,8 +9,15 @@ import (
 )
 
 func init() {
-	useAVX = cpu.X86.HasAVX
-	useAVX512 = cpu.X86.HasAVX512
+	if cpu.X86.HasAVX512 {
+		dotImpl = dotAVX512
+		squaredL2Impl = squaredL2AVX512
+		pqAdcImpl = pqAdcAVX512
+	} else if cpu.X86.HasAVX {
+		dotImpl = dotAVX
+		squaredL2Impl = squaredL2AVX
+		pqAdcImpl = pqAdcAVX
+	}
 }
 
 //go:noescape
@@ -31,71 +38,58 @@ func _pq_adc_lookup_avx(table, codes unsafe.Pointer, m int64, result unsafe.Poin
 //go:noescape
 func _pq_adc_lookup_avx512(table, codes unsafe.Pointer, m int64, result unsafe.Pointer)
 
-func dot(a, b []float32) float32 {
-	switch {
-	case useAVX512:
-		var ret float32
+func dotAVX(a, b []float32) float32 {
+	var ret float32
 
-		if len(a) > 0 {
-			_dot_product_avx512(unsafe.Pointer(&a[0]), unsafe.Pointer(&b[0]), int64(len(a)), unsafe.Pointer(&ret))
-		}
-
-		return ret
-	case useAVX:
-		var ret float32
-
-		if len(a) > 0 {
-			_dot_product_avx(unsafe.Pointer(&a[0]), unsafe.Pointer(&b[0]), int64(len(a)), unsafe.Pointer(&ret))
-		}
-
-		return ret
-	default:
-		return dotGeneric(a, b)
+	if len(a) > 0 {
+		_dot_product_avx(unsafe.Pointer(&a[0]), unsafe.Pointer(&b[0]), int64(len(a)), unsafe.Pointer(&ret))
 	}
+
+	return ret
 }
 
-func squaredL2(a, b []float32) float32 {
-	switch {
-	case useAVX512:
-		var ret float32
+func dotAVX512(a, b []float32) float32 {
+	var ret float32
 
-		if len(a) > 0 {
-			_squared_l2_avx512(unsafe.Pointer(&a[0]), unsafe.Pointer(&b[0]), int64(len(a)), unsafe.Pointer(&ret))
-		}
-
-		return ret
-	case useAVX:
-		var ret float32
-
-		if len(a) > 0 {
-			_squared_l2_avx(unsafe.Pointer(&a[0]), unsafe.Pointer(&b[0]), int64(len(a)), unsafe.Pointer(&ret))
-		}
-
-		return ret
-	default:
-		return squaredL2Generic(a, b)
+	if len(a) > 0 {
+		_dot_product_avx512(unsafe.Pointer(&a[0]), unsafe.Pointer(&b[0]), int64(len(a)), unsafe.Pointer(&ret))
 	}
+
+	return ret
 }
 
-func scaleInPlace(a []float32, scalar float32) {
-	scaleGeneric(a, scalar)
+func squaredL2AVX(a, b []float32) float32 {
+	var ret float32
+
+	if len(a) > 0 {
+		_squared_l2_avx(unsafe.Pointer(&a[0]), unsafe.Pointer(&b[0]), int64(len(a)), unsafe.Pointer(&ret))
+	}
+
+	return ret
 }
 
-func pqAdcLookup(table []float32, codes []byte, m int) float32 {
-	switch {
-	case useAVX512:
-		var ret float32
-		if m > 0 {
-			_pq_adc_lookup_avx512(unsafe.Pointer(&table[0]), unsafe.Pointer(&codes[0]), int64(m), unsafe.Pointer(&ret))
-		}
-		return ret
-	case useAVX:
-		var ret float32
-		if m > 0 {
-			_pq_adc_lookup_avx(unsafe.Pointer(&table[0]), unsafe.Pointer(&codes[0]), int64(m), unsafe.Pointer(&ret))
-		}
-		return ret
-	default:
-		return pqAdcLookupGeneric(table, codes, m)
+func squaredL2AVX512(a, b []float32) float32 {
+	var ret float32
+
+	if len(a) > 0 {
+		_squared_l2_avx512(unsafe.Pointer(&a[0]), unsafe.Pointer(&b[0]), int64(len(a)), unsafe.Pointer(&ret))
 	}
+
+	return ret
+}
+
+func pqAdcAVX(table []float32, codes []byte, m int) float32 {
+	var ret float32
+	if m > 0 {
+		_pq_adc_lookup_avx(unsafe.Pointer(&table[0]), unsafe.Pointer(&codes[0]), int64(m), unsafe.Pointer(&ret))
+	}
+	return ret
+}
+
+func pqAdcAVX512(table []float32, codes []byte, m int) float32 {
+	var ret float32
+	if m > 0 {
+		_pq_adc_lookup_avx512(unsafe.Pointer(&table[0]), unsafe.Pointer(&codes[0]), int64(m), unsafe.Pointer(&ret))
+	}
+	return ret
 }

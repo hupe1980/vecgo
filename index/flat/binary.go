@@ -7,6 +7,7 @@ import (
 	"io"
 
 	"github.com/hupe1980/vecgo/index"
+	"github.com/hupe1980/vecgo/internal/bitset"
 	"github.com/hupe1980/vecgo/persistence"
 	"github.com/hupe1980/vecgo/vectorstore/columnar"
 )
@@ -70,7 +71,7 @@ func (f *Flat) WriteTo(w io.Writer) (int64, error) {
 	f.writeMu.Lock()
 	defer f.writeMu.Unlock()
 
-	st := f.getState()
+	maxID := f.maxID.Load()
 
 	cw := &countingWriter{w: w}
 	writer := persistence.NewBinaryIndexWriter(cw)
@@ -78,8 +79,8 @@ func (f *Flat) WriteTo(w io.Writer) (int64, error) {
 	// Write file header
 	// Count active nodes (total - deleted)
 	activeCount := 0
-	for _, n := range st.nodes {
-		if n != nil {
+	for i := uint64(0); i < maxID; i++ {
+		if !f.deleted.Test(i) {
 			activeCount++
 		}
 	}
@@ -112,19 +113,18 @@ func (f *Flat) WriteTo(w io.Writer) (int64, error) {
 		return cw.n, err
 	}
 
-	// Write node count
-	nodeCount := uint64(len(st.nodes))
-	binary.LittleEndian.PutUint64(buf8, nodeCount)
+	// Write node count (maxID)
+	binary.LittleEndian.PutUint64(buf8, maxID)
 	if _, err := cw.Write(buf8); err != nil {
 		return cw.n, err
 	}
 
 	// Write Markers (Validity Bitmap)
 	// For simplicity and alignment, we use 1 byte per node for now.
-	// 0 = nil, 1 = valid.
-	markers := make([]byte, nodeCount)
-	for i, node := range st.nodes {
-		if node != nil {
+	// 0 = nil (deleted), 1 = valid.
+	markers := make([]byte, maxID)
+	for i := uint64(0); i < maxID; i++ {
+		if !f.deleted.Test(i) {
 			markers[i] = 1
 		}
 	}
@@ -133,7 +133,7 @@ func (f *Flat) WriteTo(w io.Writer) (int64, error) {
 	}
 
 	// Padding to 4-byte alignment
-	padding := (4 - (nodeCount % 4)) % 4
+	padding := (4 - (maxID % 4)) % 4
 	if padding > 0 {
 		if _, err := cw.Write(make([]byte, padding)); err != nil {
 			return cw.n, err
@@ -142,14 +142,14 @@ func (f *Flat) WriteTo(w io.Writer) (int64, error) {
 
 	// Write Vectors (Contiguous)
 	zeroVec := make([]float32, f.opts.Dimension)
-	for _, node := range st.nodes {
-		if node == nil {
+	for i := uint64(0); i < maxID; i++ {
+		if f.deleted.Test(i) {
 			if err := writer.WriteFloat32Slice(zeroVec); err != nil {
 				return cw.n, err
 			}
 			continue
 		}
-		vec, err := f.VectorByID(context.Background(), node.ID)
+		vec, err := f.VectorByID(context.Background(), i)
 		if err != nil {
 			return cw.n, err
 		}
@@ -192,6 +192,10 @@ func (f *Flat) ReadFromWithOptions(r io.Reader, opts Options) error {
 	f.opts = opts
 	f.opts.Dimension = int(header.Dimension)
 	f.dimension.Store(int32(header.Dimension))
+
+	if f.deleted == nil {
+		f.deleted = bitset.New(1024)
+	}
 
 	// Read metadata: distance type + flags
 	meta, err := reader.ReadUint32Slice(2)
@@ -253,8 +257,18 @@ func (f *Flat) ReadFromWithOptions(r io.Reader, opts Options) error {
 		}
 	}
 
-	// Pre-allocate nodes array
-	nodes := make([]*Node, nodeCount)
+	// Initialize state
+	f.maxID.Store(nodeCount)
+	// Ensure deleted bitset is large enough
+	// We can't easily resize bitset if it's fixed size?
+	// bitset.New(size) creates a bitset.
+	// But f.deleted is already initialized in New().
+	// We should probably clear it and ensure capacity?
+	// Or just set bits.
+	// If nodeCount is large, we might need to re-allocate deleted?
+	// bitset usually grows automatically on Set?
+	// But here we want to pre-allocate?
+	// Let's assume it grows.
 
 	// Read Vectors
 	vecSize := int(header.Dimension)
@@ -267,7 +281,7 @@ func (f *Flat) ReadFromWithOptions(r io.Reader, opts Options) error {
 		}
 
 		if markers[i] == 0 {
-			nodes[i] = nil
+			f.deleted.Set(i)
 			continue
 		}
 
@@ -278,17 +292,7 @@ func (f *Flat) ReadFromWithOptions(r io.Reader, opts Options) error {
 		if err := f.vectors.SetVector(i, vecCopy); err != nil {
 			return fmt.Errorf("failed to store node vector: %w", err)
 		}
-
-		nodes[i] = &Node{
-			ID: i,
-		}
 	}
-
-	// Create new state and store it
-	newState := &indexState{
-		nodes: nodes,
-	}
-	f.state.Store(newState)
 
 	return nil
 }

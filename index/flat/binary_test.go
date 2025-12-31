@@ -45,19 +45,18 @@ func TestBinaryPersistence_SaveLoad(t *testing.T) {
 	require.NoError(t, err)
 
 	// Count nodes in both indexes
-	origState := f.getState()
-	loadedState := loaded.getState()
-
 	origCount := 0
-	for _, n := range origState.nodes {
-		if n != nil {
+	maxID := f.maxID.Load()
+	for i := uint64(0); i < maxID; i++ {
+		if !f.deleted.Test(i) {
 			origCount++
 		}
 	}
 
 	loadedCount := 0
-	for _, n := range loadedState.nodes {
-		if n != nil {
+	loadedMaxID := loaded.maxID.Load()
+	for i := uint64(0); i < loadedMaxID; i++ {
+		if !loaded.deleted.Test(i) {
 			loadedCount++
 		}
 	}
@@ -110,19 +109,18 @@ func TestBinaryPersistence_MarshalUnmarshal(t *testing.T) {
 	require.NoError(t, err)
 
 	// Count nodes
-	origState := f.getState()
-	loadedState := loaded.getState()
-
 	origCount := 0
-	for _, n := range origState.nodes {
-		if n != nil {
+	maxID := f.maxID.Load()
+	for i := uint64(0); i < maxID; i++ {
+		if !f.deleted.Test(i) {
 			origCount++
 		}
 	}
 
 	loadedCount := 0
-	for _, n := range loadedState.nodes {
-		if n != nil {
+	loadedMaxID := loaded.maxID.Load()
+	for i := uint64(0); i < loadedMaxID; i++ {
+		if !loaded.deleted.Test(i) {
 			loadedCount++
 		}
 	}
@@ -182,10 +180,10 @@ func TestBinaryPersistence_WithDeletes(t *testing.T) {
 	require.NoError(t, err)
 
 	// Count active nodes in loaded index (should have 10 vectors: 0-4, 15-19)
-	loadedState := loaded.getState()
 	loadedCount := 0
-	for _, n := range loadedState.nodes {
-		if n != nil {
+	loadedMaxID := loaded.maxID.Load()
+	for i := uint64(0); i < loadedMaxID; i++ {
+		if !loaded.deleted.Test(i) {
 			loadedCount++
 		}
 	}

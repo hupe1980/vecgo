@@ -8,19 +8,18 @@ import (
 
 // Stats returns statistics about flat.
 func (f *Flat) Stats() index.Stats {
-	// Lock-free read of current state
-	currentState := f.getState()
+	maxID := f.maxID.Load()
 	currentDim := int(f.dimension.Load())
 
-	// Count active nodes (non-nil)
-	activeNodes := 0
-	for _, node := range currentState.nodes {
-		if node != nil {
-			activeNodes++
+	// Count active nodes
+	deletedNodes := 0
+	for i := uint64(0); i < maxID; i++ {
+		if f.deleted.Test(i) {
+			deletedNodes++
 		}
 	}
 
-	deletedNodes := len(currentState.nodes) - activeNodes
+	activeNodes := int(maxID) - deletedNodes
 
 	return index.Stats{
 		Options: map[string]string{
@@ -30,13 +29,13 @@ func (f *Flat) Stats() index.Stats {
 			"dimension": fmt.Sprintf("%d", currentDim),
 		},
 		Storage: map[string]string{
-			"total slots":       fmt.Sprintf("%d", len(currentState.nodes)),
+			"total slots":       fmt.Sprintf("%d", maxID),
 			"active nodes":      fmt.Sprintf("%d", activeNodes),
 			"deleted nodes":     fmt.Sprintf("%d (tombstones)", deletedNodes),
-			"memory efficiency": fmt.Sprintf("%.1f%%", float64(activeNodes)/float64(max(len(currentState.nodes), 1))*100),
+			"memory efficiency": fmt.Sprintf("%.1f%%", float64(activeNodes)/float64(max(int(maxID), 1))*100),
 		},
 		Concurrency: map[string]string{
-			"concurrency model": "Copy-on-Write (lock-free reads)",
+			"concurrency model": "Lock-free reads (atomic maxID + bitset)",
 		},
 	}
 }

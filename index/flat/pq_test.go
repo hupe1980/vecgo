@@ -25,21 +25,21 @@ func TestFlat_ProductQuantization_EnableDisable(t *testing.T) {
 
 	require.False(t, f.ProductQuantizationEnabled())
 	require.Nil(t, f.pq.Load())
-	require.Nil(t, f.getState().pqCodes)
+	require.Nil(t, f.pqCodes)
 
 	err = f.EnableProductQuantization(index.ProductQuantizationConfig{NumSubvectors: 2, NumCentroids: 16})
 	require.NoError(t, err)
 	require.True(t, f.ProductQuantizationEnabled())
 
-	st := f.getState()
-	require.NotNil(t, st.pqCodes)
-	require.Len(t, st.pqCodes, len(st.nodes))
-	require.NotNil(t, st.pqCodes[id0])
+	require.NotNil(t, f.pqCodes)
+	code0, ok := f.pqCodes.Get(id0)
+	require.True(t, ok)
+	require.NotNil(t, code0)
 
 	query := []float32{0.25, 0.25, 0.25, 0.25}
 	pq := f.pq.Load()
 	require.NotNil(t, pq)
-	expected := pq.ComputeAsymmetricDistance(query, st.pqCodes[id0])
+	expected := pq.ComputeAsymmetricDistance(query, code0)
 
 	res, err := f.BruteSearch(context.Background(), query, 1, func(id uint64) bool { return id == id0 })
 	require.NoError(t, err)
@@ -49,10 +49,12 @@ func TestFlat_ProductQuantization_EnableDisable(t *testing.T) {
 
 	idNew, err := f.Insert(context.Background(), []float32{2, 2, 2, 2})
 	require.NoError(t, err)
-	require.NotNil(t, f.getState().pqCodes[idNew])
+	codeNew, ok := f.pqCodes.Get(idNew)
+	require.True(t, ok)
+	require.NotNil(t, codeNew)
 
 	f.DisableProductQuantization()
 	require.False(t, f.ProductQuantizationEnabled())
 	require.Nil(t, f.pq.Load())
-	require.Nil(t, f.getState().pqCodes)
+	require.Nil(t, f.pqCodes)
 }

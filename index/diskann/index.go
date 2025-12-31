@@ -59,16 +59,15 @@ type Index struct {
 	segments        []*Segment
 	memTable        *hnsw.HNSW
 	memTableStartID uint64         // Global ID of the first vector in MemTable
-	memTableCount   uint64         // Number of vectors in MemTable
+	memTableCount   atomic.Uint64  // Number of vectors in MemTable
 	memTablePresent *bitset.BitSet // IDs currently in MemTable (to mask stale segment data)
 
 	// Logical Count
-	count uint64
+	count atomic.Uint64
 
 	// ID Management
 	nextIDAtomic atomic.Uint64
 	deleted      *bitset.BitSet
-	deletedMu    sync.RWMutex
 
 	// Compaction
 	compacting      atomic.Bool
@@ -186,7 +185,7 @@ func Open(indexPath string, opts *Options) (*Index, error) {
 			return nil, fmt.Errorf("diskann: open segment %s: %w", path, err)
 		}
 		idx.segments = append(idx.segments, seg)
-		idx.count += seg.count
+		idx.count.Add(seg.count)
 
 		segMax := baseID + seg.count
 		if segMax > maxID {
@@ -208,7 +207,7 @@ func Open(indexPath string, opts *Options) (*Index, error) {
 			return nil, fmt.Errorf("diskann: open legacy segment: %w", err)
 		}
 		idx.segments = append(idx.segments, seg)
-		idx.count += seg.count
+		idx.count.Add(seg.count)
 		if seg.count > maxID {
 			maxID = seg.count
 		}
@@ -287,7 +286,7 @@ func (idx *Index) resetMemTable() error {
 		return fmt.Errorf("diskann: create memtable: %w", err)
 	}
 	idx.memTable = memTable
-	idx.memTableCount = 0
+	idx.memTableCount.Store(0)
 	if idx.memTablePresent != nil {
 		idx.memTablePresent.ClearAll()
 	}
@@ -316,18 +315,16 @@ func (idx *Index) Insert(ctx context.Context, v []float32) (uint64, error) {
 	if err := idx.ApplyInsert(ctx, id, v); err != nil {
 		return 0, err
 	}
-	idx.mu.Lock()
-	idx.count++
-	idx.mu.Unlock()
+	idx.count.Add(1)
 	return id, nil
 }
 
 // ApplyInsert adds a vector with a specific ID to the MemTable.
 func (idx *Index) ApplyInsert(ctx context.Context, id uint64, v []float32) error {
 	idx.mu.RLock()
-	memTable := idx.memTable
-	idx.mu.RUnlock()
+	defer idx.mu.RUnlock()
 
+	memTable := idx.memTable
 	if memTable == nil {
 		return fmt.Errorf("diskann: memtable not initialized")
 	}
@@ -338,15 +335,11 @@ func (idx *Index) ApplyInsert(ctx context.Context, id uint64, v []float32) error
 	}
 
 	// Update shadowing bitset and stats
-	idx.mu.Lock()
 	idx.memTablePresent.Set(id)
-	idx.memTableCount++
-	idx.mu.Unlock()
+	idx.memTableCount.Add(1)
 
 	// Clear deletion bit if it was previously deleted
-	idx.deletedMu.Lock()
 	idx.deleted.Unset(id)
-	idx.deletedMu.Unlock()
 
 	return nil
 }
@@ -371,19 +364,11 @@ func (idx *Index) ApplyBatchInsert(ctx context.Context, ids []uint64, vectors []
 	}
 
 	// Update shadowing bitset and stats
-	idx.mu.Lock()
 	for _, id := range ids {
 		idx.memTablePresent.Set(id)
-	}
-	idx.memTableCount += uint64(len(ids))
-	idx.mu.Unlock()
-
-	// Clear deletion bit if it was previously deleted
-	idx.deletedMu.Lock()
-	for _, id := range ids {
 		idx.deleted.Unset(id)
 	}
-	idx.deletedMu.Unlock()
+	idx.memTableCount.Add(uint64(len(ids)))
 
 	return nil
 }
@@ -395,9 +380,7 @@ func (idx *Index) Delete(ctx context.Context, id uint64) error {
 
 // ApplyDelete marks a vector as deleted.
 func (idx *Index) ApplyDelete(ctx context.Context, id uint64) error {
-	idx.deletedMu.Lock()
 	idx.deleted.Set(id)
-	idx.deletedMu.Unlock()
 
 	// Also delete from MemTable if present to keep it clean
 	idx.mu.RLock()
@@ -440,19 +423,15 @@ func (idx *Index) BatchInsert(ctx context.Context, vectors [][]float32) index.Ba
 
 // VectorByID retrieves a vector by its ID.
 func (idx *Index) VectorByID(ctx context.Context, id uint64) ([]float32, error) {
-	idx.deletedMu.RLock()
-	isDeleted := idx.deleted.Test(id)
-	idx.deletedMu.RUnlock()
-
-	if isDeleted {
-		return nil, &index.ErrNodeDeleted{ID: id}
-	}
-
-	// Check MemTable
 	idx.mu.RLock()
+	deleted := idx.deleted
 	memTable := idx.memTable
 	segments := idx.segments
 	idx.mu.RUnlock()
+
+	if deleted.Test(id) {
+		return nil, &index.ErrNodeDeleted{ID: id}
+	}
 
 	if memTable != nil {
 		vec, err := memTable.VectorByID(ctx, id)
@@ -493,6 +472,8 @@ func (idx *Index) KNNSearchWithBuffer(ctx context.Context, query []float32, k in
 	idx.mu.RLock()
 	memTable := idx.memTable
 	segments := idx.segments
+	deleted := idx.deleted
+	memTablePresent := idx.memTablePresent
 	idx.mu.RUnlock()
 
 	// Get scratch buffer from pool
@@ -517,10 +498,7 @@ func (idx *Index) KNNSearchWithBuffer(ctx context.Context, query []float32, k in
 
 	// Base filter: deleted check
 	baseFilter := func(id uint64) bool {
-		idx.deletedMu.RLock()
-		isDeleted := idx.deleted.Test(id)
-		idx.deletedMu.RUnlock()
-		if isDeleted {
+		if deleted.Test(id) {
 			return false
 		}
 		if userFilter != nil {
@@ -535,10 +513,7 @@ func (idx *Index) KNNSearchWithBuffer(ctx context.Context, query []float32, k in
 			return false
 		}
 		// Check shadowing
-		idx.mu.RLock()
-		shadowed := idx.memTablePresent.Test(id)
-		idx.mu.RUnlock()
-		return !shadowed
+		return !memTablePresent.Test(id)
 	}
 
 	// Search MemTable
@@ -660,10 +635,7 @@ func (idx *Index) BruteSearch(ctx context.Context, query []float32, k int, filte
 		}
 
 		// Check deleted
-		idx.deletedMu.RLock()
-		isDeleted := idx.deleted.Test(id)
-		idx.deletedMu.RUnlock()
-		if isDeleted {
+		if idx.deleted.Test(id) {
 			continue
 		}
 
@@ -718,17 +690,15 @@ func (idx *Index) Stats() index.Stats {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 
-	totalCount := idx.count
+	totalCount := idx.count.Load()
 
-	idx.deletedMu.RLock()
 	deletedCount := idx.deleted.Count()
-	idx.deletedMu.RUnlock()
 
 	liveCount := int(totalCount) - int(deletedCount)
 
 	storage := map[string]string{
 		"VectorCount":   fmt.Sprintf("%d", liveCount),
-		"MemTableCount": fmt.Sprintf("%d", idx.memTableCount),
+		"MemTableCount": fmt.Sprintf("%d", idx.memTableCount.Load()),
 		"SegmentCount":  fmt.Sprintf("%d", len(idx.segments)),
 	}
 
@@ -762,13 +732,8 @@ func (idx *Index) Dimension() int {
 
 // Count returns the number of live (non-deleted) vectors.
 func (idx *Index) Count() int {
-	idx.deletedMu.RLock()
 	deletedCount := idx.deleted.Count()
-	idx.deletedMu.RUnlock()
-
-	idx.mu.RLock()
-	total := idx.count
-	idx.mu.RUnlock()
+	total := idx.count.Load()
 
 	return int(total) - int(deletedCount)
 }
@@ -786,7 +751,7 @@ func (idx *Index) Flush(ctx context.Context) error {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
-	if idx.memTable == nil || idx.memTableCount == 0 {
+	if idx.memTable == nil || idx.memTableCount.Load() == 0 {
 		return nil
 	}
 
@@ -808,9 +773,7 @@ func (idx *Index) Flush(ctx context.Context) error {
 
 	for id := baseID; id < endID; id++ {
 		// Check if deleted
-		idx.deletedMu.RLock()
 		isDeleted := idx.deleted.Test(id)
-		idx.deletedMu.RUnlock()
 
 		var vec []float32
 		if !isDeleted {
@@ -896,9 +859,7 @@ func (idx *Index) Compact(ctx context.Context) error {
 			globalID := seg.baseID + i
 
 			// Check deleted
-			idx.deletedMu.RLock()
 			isDeleted := idx.deleted.Test(globalID)
-			idx.deletedMu.RUnlock()
 
 			if isDeleted {
 				vectorsRemoved++
@@ -938,14 +899,12 @@ func (idx *Index) Compact(ctx context.Context) error {
 
 	// Replace segments
 	idx.segments = []*Segment{newSeg}
-	idx.count = newSeg.count
+	idx.count.Store(newSeg.count)
 	idx.memTableStartID = newSeg.count
 	idx.nextIDAtomic.Store(newSeg.count)
 
 	// Reset deleted
-	idx.deletedMu.Lock()
 	idx.deleted = bitset.New(newSeg.count)
-	idx.deletedMu.Unlock()
 
 	// Reset shadowing
 	idx.memTablePresent = bitset.New(newSeg.count)
@@ -973,11 +932,10 @@ func (idx *Index) ShouldCompact() bool {
 	}
 
 	// Compact if deleted ratio is high
-	idx.deletedMu.RLock()
 	deletedCount := idx.deleted.Count()
-	idx.deletedMu.RUnlock()
+	count := idx.count.Load()
 
-	if idx.count > 0 && float32(deletedCount)/float32(idx.count) >= idx.opts.CompactionThreshold {
+	if count > 0 && float32(deletedCount)/float32(count) >= idx.opts.CompactionThreshold {
 		return true
 	}
 

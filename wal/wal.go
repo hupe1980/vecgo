@@ -52,6 +52,10 @@ type WAL struct {
 	groupCommitStopCh   chan struct{}  // Shutdown signal for worker goroutine
 	groupCommitPending  int            // Operations since last fsync
 	groupCommitWg       sync.WaitGroup // Tracks worker goroutine lifecycle
+
+	// Blocking Group Commit
+	syncCond        *sync.Cond // Condition variable for blocking group commit
+	persistedSeqNum uint64     // Highest sequence number persisted to disk
 }
 
 // FilePath returns the path to the WAL file.
@@ -99,6 +103,7 @@ func New(optFns ...func(o *Options)) (*WAL, error) {
 		groupCommitMaxOps:   opts.GroupCommitMaxOps,
 		groupCommitPending:  0,
 	}
+	w.syncCond = sync.NewCond(&w.mu)
 
 	// Determine header/dataOffset.
 	if st.Size() == 0 {
@@ -201,14 +206,21 @@ func (w *WAL) syncIfNeeded() error {
 	case DurabilityGroupCommit:
 		// Increment pending operations counter
 		w.groupCommitPending++
+		targetSeq := w.seqNum
 
 		// Trigger immediate fsync if batch size threshold reached
 		if w.groupCommitPending >= w.groupCommitMaxOps {
 			if err := w.doGroupCommit(); err != nil {
 				return err
 			}
+		} else {
+			// Wait for background sync
+			// Note: syncCond.Wait() releases w.mu, allowing the background worker
+			// (or other writers) to acquire it and perform the sync.
+			for w.persistedSeqNum < targetSeq {
+				w.syncCond.Wait()
+			}
 		}
-		// Otherwise, fsync will happen on next timer tick
 		return nil
 
 	default:
@@ -228,6 +240,8 @@ func (w *WAL) doGroupCommit() error {
 	}
 
 	w.groupCommitPending = 0
+	w.persistedSeqNum = w.seqNum
+	w.syncCond.Broadcast()
 	return nil
 }
 
