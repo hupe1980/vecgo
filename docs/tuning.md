@@ -213,6 +213,27 @@ db := vecgo.HNSW[string](128).
     Build()
 ```
 
+### Lazy Deletion & Compaction
+
+HNSW uses a lazy deletion strategy where deleted nodes are marked with tombstones but remain in the graph to preserve connectivity.
+
+**Compaction**:
+To reclaim performance and memory after many deletions, you should periodically run `Compact()`:
+
+```go
+// Run compaction in background
+go func() {
+    if err := index.Compact(context.Background()); err != nil {
+        log.Printf("Compaction failed: %v", err)
+    }
+}()
+```
+
+Compaction:
+1.  Removes connections to deleted nodes.
+2.  Repairs the graph by finding new neighbors for nodes that lost too many connections.
+3.  Is a heavy operation (CPU intensive) but runs in parallel.
+
 ---
 
 ## Sharding for Multi-Core

@@ -189,7 +189,7 @@ func BenchmarkScalarQuantization(b *testing.B) {
 
 	for _, dim := range dimensions {
 		b.Run(formatDim(dim), func(b *testing.B) {
-			sq := quantization.NewScalarQuantizer()
+			sq := quantization.NewScalarQuantizer(dim)
 
 			// Train
 			trainingSize := 1000

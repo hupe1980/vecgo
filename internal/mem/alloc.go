@@ -47,3 +47,13 @@ func AllocAlignedFloat32(size int) []float32 {
 	ptr := unsafe.Pointer(&byteSlice[0])
 	return unsafe.Slice((*float32)(ptr), size)
 }
+
+// AllocAlignedInt8 allocates an int8 slice of the given size with 64-byte alignment.
+func AllocAlignedInt8(size int) []int8 {
+	if size == 0 {
+		return nil
+	}
+	byteSlice := AllocAligned(size)
+	ptr := unsafe.Pointer(&byteSlice[0])
+	return unsafe.Slice((*int8)(ptr), size)
+}

@@ -83,8 +83,9 @@ type Index struct {
 
 // searchScratch holds temporary buffers for search to avoid allocations.
 type searchScratch struct {
-	results []index.SearchResult
-	seen    map[uint64]struct{}
+	results  []index.SearchResult
+	seen     map[uint64]struct{}
+	seenBits *bitset.BitSet
 }
 
 // CompactionStats tracks compaction statistics.
@@ -239,8 +240,9 @@ func Open(indexPath string, opts *Options) (*Index, error) {
 func (idx *Index) initPools() {
 	idx.scratchPool.New = func() interface{} {
 		return &searchScratch{
-			results: make([]index.SearchResult, 0, 1024),
-			seen:    make(map[uint64]struct{}, 1024),
+			results:  make([]index.SearchResult, 0, 1024),
+			seen:     make(map[uint64]struct{}, 1024),
+			seenBits: bitset.New(1024),
 		}
 	}
 }
@@ -335,13 +337,11 @@ func (idx *Index) ApplyInsert(ctx context.Context, id uint64, v []float32) error
 		return fmt.Errorf("diskann: memtable insert: %w", err)
 	}
 
-	// Update shadowing bitset
+	// Update shadowing bitset and stats
 	idx.mu.Lock()
 	idx.memTablePresent.Set(id)
+	idx.memTableCount++
 	idx.mu.Unlock()
-
-	// Update stats
-	atomic.AddUint64(&idx.memTableCount, 1)
 
 	// Clear deletion bit if it was previously deleted
 	idx.deletedMu.Lock()
@@ -370,15 +370,13 @@ func (idx *Index) ApplyBatchInsert(ctx context.Context, ids []uint64, vectors []
 		return fmt.Errorf("diskann: memtable batch insert: %w", err)
 	}
 
-	// Update shadowing bitset
+	// Update shadowing bitset and stats
 	idx.mu.Lock()
 	for _, id := range ids {
 		idx.memTablePresent.Set(id)
 	}
+	idx.memTableCount += uint64(len(ids))
 	idx.mu.Unlock()
-
-	// Update stats
-	atomic.AddUint64(&idx.memTableCount, uint64(len(ids)))
 
 	// Clear deletion bit if it was previously deleted
 	idx.deletedMu.Lock()
@@ -505,6 +503,9 @@ func (idx *Index) KNNSearchWithBuffer(ctx context.Context, query []float32, k in
 		for k := range scratch.seen {
 			delete(scratch.seen, k)
 		}
+		if scratch.seenBits != nil {
+			scratch.seenBits.ClearAll()
+		}
 		idx.scratchPool.Put(scratch)
 	}()
 
@@ -557,14 +558,39 @@ func (idx *Index) KNNSearchWithBuffer(ctx context.Context, query []float32, k in
 
 	// Search DiskANN Segments
 	if len(segments) > 0 {
-		// Search all segments
-		for _, seg := range segments {
-			// Use Zero-Alloc SearchWithBuffer
-			// Note: We pass segmentFilter to exclude shadowed IDs
-			// We pass nil for distTable so Segment builds it if needed
-			if err := seg.SearchWithBuffer(ctx, query, k, nil, segmentFilter, &scratch.results); err != nil {
-				return fmt.Errorf("diskann: segment search: %w", err)
-			}
+		var wg sync.WaitGroup
+		errCh := make(chan error, len(segments))
+		segResults := make([][]index.SearchResult, len(segments))
+
+		// Search all segments concurrently
+		for i, seg := range segments {
+			wg.Add(1)
+			go func(i int, s *Segment) {
+				defer wg.Done()
+				// Pre-allocate per-segment buffer
+				cap := k * 2
+				if opts != nil && opts.EFSearch > cap {
+					cap = opts.EFSearch
+				}
+				res := make([]index.SearchResult, 0, cap)
+
+				if err := s.SearchWithBuffer(ctx, query, k, nil, segmentFilter, &res); err != nil {
+					errCh <- err
+					return
+				}
+				segResults[i] = res
+			}(i, seg)
+		}
+		wg.Wait()
+		close(errCh)
+
+		if err := <-errCh; err != nil {
+			return fmt.Errorf("diskann: segment search: %w", err)
+		}
+
+		// Merge results
+		for _, res := range segResults {
+			scratch.results = append(scratch.results, res...)
 		}
 	}
 
@@ -582,13 +608,35 @@ func (idx *Index) KNNSearchWithBuffer(ctx context.Context, query []float32, k in
 
 	// Deduplicate and take top-k
 	count := 0
+	maxID := idx.nextIDAtomic.Load()
+	useBits := maxID < 10_000_000 // Use bitset for < 10M items (~1.25MB)
+
+	if useBits {
+		scratch.seenBits.Grow(maxID)
+	}
+
 	for _, res := range scratch.results {
 		if count >= k {
 			break
 		}
-		if _, ok := scratch.seen[res.ID]; !ok {
+
+		seen := false
+		if useBits {
+			if scratch.seenBits.Test(res.ID) {
+				seen = true
+			} else {
+				scratch.seenBits.Set(res.ID)
+			}
+		} else {
+			if _, ok := scratch.seen[res.ID]; ok {
+				seen = true
+			} else {
+				scratch.seen[res.ID] = struct{}{}
+			}
+		}
+
+		if !seen {
 			*buf = append(*buf, res)
-			scratch.seen[res.ID] = struct{}{}
 			count++
 		}
 	}
@@ -896,11 +944,11 @@ func (idx *Index) Compact(ctx context.Context) error {
 
 	// Reset deleted
 	idx.deletedMu.Lock()
-	idx.deleted.ClearAll()
+	idx.deleted = bitset.New(newSeg.count)
 	idx.deletedMu.Unlock()
 
 	// Reset shadowing
-	idx.memTablePresent.ClearAll()
+	idx.memTablePresent = bitset.New(newSeg.count)
 
 	// Update stats
 	idx.compactionMu.Lock()

@@ -538,13 +538,21 @@ func (b *Builder) writeMetaFile() error {
 // writePQCodebooksToWriter writes PQ codebooks to an io.Writer.
 func (b *Builder) writePQCodebooksToWriter(w io.Writer) error {
 	// Get codebooks from PQ
-	codebooks := b.pq.Codebooks()
+	codebooks, scales, offsets := b.pq.Codebooks()
 
-	// Codebooks are flat: M * K * subvectorDim
-	for _, v := range codebooks {
-		if err := writeFloat32ToWriter(w, v); err != nil {
-			return err
-		}
+	// Write scales (M floats)
+	if err := binary.Write(w, binary.LittleEndian, scales); err != nil {
+		return fmt.Errorf("write scales: %w", err)
+	}
+
+	// Write offsets (M floats)
+	if err := binary.Write(w, binary.LittleEndian, offsets); err != nil {
+		return fmt.Errorf("write offsets: %w", err)
+	}
+
+	// Write codebooks (M * K * subvectorDim int8s)
+	if err := binary.Write(w, binary.LittleEndian, codebooks); err != nil {
+		return fmt.Errorf("write codebooks: %w", err)
 	}
 	return nil
 }

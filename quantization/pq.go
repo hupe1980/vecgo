@@ -5,6 +5,9 @@ import (
 	"errors"
 	"math"
 	"math/rand"
+	"runtime"
+	"sync"
+	"sync/atomic"
 
 	"github.com/hupe1980/vecgo/internal/math32"
 	"github.com/hupe1980/vecgo/internal/mem"
@@ -19,7 +22,9 @@ type ProductQuantizer struct {
 	numCentroids  int       // K: number of centroids per subspace (typically 256 for uint8)
 	dimension     int       // D: original vector dimension
 	subvectorDim  int       // D/M: dimensions per subvector
-	codebooks     []float32 // Flat aligned storage: M * K * subvectorDim
+	codebooks     []int8    // Quantized centroids: M * K * subvectorDim
+	scales        []float32 // Scale per subvector: M
+	offsets       []float32 // Offset per subvector: M
 	trained       bool
 }
 
@@ -45,7 +50,9 @@ func NewProductQuantizer(dimension, numSubvectors, numCentroids int) (*ProductQu
 		numCentroids:  numCentroids,
 		dimension:     dimension,
 		subvectorDim:  subvectorDim,
-		codebooks:     mem.AllocAlignedFloat32(size),
+		codebooks:     mem.AllocAlignedInt8(size),
+		scales:        make([]float32, numSubvectors),
+		offsets:       make([]float32, numSubvectors),
 		trained:       false,
 	}, nil
 }
@@ -63,23 +70,72 @@ func (pq *ProductQuantizer) Train(vectors [][]float32) error {
 	}
 
 	// Train one codebook per subvector
+	var wg sync.WaitGroup
+	// Limit concurrency to avoid OOM or excessive context switching if M is large
+	sem := make(chan struct{}, runtime.GOMAXPROCS(0))
+
 	for m := 0; m < pq.numSubvectors; m++ {
-		// Extract subvectors for this position
-		subvectors := make([][]float32, len(vectors))
-		for i, vec := range vectors {
-			start := m * pq.subvectorDim
-			end := start + pq.subvectorDim
-			subvectors[i] = vec[start:end]
-		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(m int) {
+			defer wg.Done()
+			defer func() { <-sem }()
 
-		// Run k-means to get centroids
-		centroids := pq.kmeans(subvectors, pq.numCentroids, 20) // 20 iterations
+			// Extract subvectors for this position
+			subvectors := make([][]float32, len(vectors))
+			for i, vec := range vectors {
+				start := m * pq.subvectorDim
+				end := start + pq.subvectorDim
+				subvectors[i] = vec[start:end]
+			}
 
-		// Copy centroids to flat codebooks
-		baseOffset := m * pq.numCentroids * pq.subvectorDim
-		copy(pq.codebooks[baseOffset:], centroids)
+			// Run k-means to get centroids
+			centroids := pq.kmeans(subvectors, pq.numCentroids, 20) // 20 iterations
+
+			// Quantize centroids to int8
+			minVal, maxVal := float32(math.MaxFloat32), float32(-math.MaxFloat32)
+			for _, v := range centroids {
+				if v < minVal {
+					minVal = v
+				}
+				if v > maxVal {
+					maxVal = v
+				}
+			}
+
+			if maxVal == minVal {
+				maxVal = minVal + 1e-6
+			}
+
+			scale := (maxVal - minVal) / 255.0
+			// We map [min, max] to [-128, 127]
+			// v = q * scale + offset
+			// min = -128 * scale + offset => offset = min + 128 * scale
+			offset := minVal + 128.0*scale
+
+			pq.scales[m] = scale
+			pq.offsets[m] = offset
+
+			// Copy quantized centroids to flat codebooks
+			baseOffset := m * pq.numCentroids * pq.subvectorDim
+			for i, v := range centroids {
+				// q = (v - offset) / scale
+				//   = (v - (min + 128*scale)) / scale
+				//   = (v - min)/scale - 128
+				val := int(math.Round(float64((v - minVal) / scale)))
+				if val < 0 {
+					val = 0
+				}
+				if val > 255 {
+					val = 255
+				}
+				q := int8(val - 128)
+				pq.codebooks[baseOffset+i] = q
+			}
+		}(m)
 	}
 
+	wg.Wait()
 	pq.trained = true
 	return nil
 }
@@ -106,11 +162,39 @@ func (pq *ProductQuantizer) Encode(vec []float32) []byte {
 		// Find nearest centroid
 		codebookStart := m * pq.numCentroids * pq.subvectorDim
 		codebookEnd := codebookStart + pq.numCentroids*pq.subvectorDim
-		nearestIdx := pq.findNearestCentroid(subvec, pq.codebooks[codebookStart:codebookEnd])
+
+		scale := pq.scales[m]
+		offset := pq.offsets[m]
+
+		nearestIdx := pq.findNearestQuantizedCentroid(subvec, pq.codebooks[codebookStart:codebookEnd], scale, offset)
 		codes[m] = uint8(nearestIdx)
 	}
 
 	return codes
+}
+
+// findNearestQuantizedCentroid finds the index of the nearest quantized centroid.
+func (pq *ProductQuantizer) findNearestQuantizedCentroid(vec []float32, codebook []int8, scale, offset float32) int {
+	minDist := float32(math.MaxFloat32)
+	nearestIdx := 0
+	scratch := make([]float32, pq.subvectorDim)
+
+	for i := 0; i < pq.numCentroids; i++ {
+		start := i * pq.subvectorDim
+
+		// Dequantize
+		for j := 0; j < pq.subvectorDim; j++ {
+			scratch[j] = float32(codebook[start+j])*scale + offset
+		}
+
+		dist := math32.SquaredL2(vec, scratch)
+		if dist < minDist {
+			minDist = dist
+			nearestIdx = i
+		}
+	}
+
+	return nearestIdx
 }
 
 // Decode reconstructs an approximate vector from PQ codes.
@@ -129,13 +213,18 @@ func (pq *ProductQuantizer) Decode(codes []byte) []float32 {
 	for m := 0; m < pq.numSubvectors; m++ {
 		centroidIdx := int(codes[m])
 
+		scale := pq.scales[m]
+		offset := pq.offsets[m]
+
 		codebookStart := m * pq.numCentroids * pq.subvectorDim
 		centroidStart := codebookStart + centroidIdx*pq.subvectorDim
-		centroid := pq.codebooks[centroidStart : centroidStart+pq.subvectorDim]
 
-		// Copy centroid to reconstructed vector
+		// Dequantize
 		start := m * pq.subvectorDim
-		copy(reconstructed[start:start+pq.subvectorDim], centroid)
+		for i := 0; i < pq.subvectorDim; i++ {
+			qVal := pq.codebooks[centroidStart+i]
+			reconstructed[start+i] = float32(qVal)*scale + offset
+		}
 	}
 
 	return reconstructed
@@ -150,6 +239,7 @@ func (pq *ProductQuantizer) ComputeAsymmetricDistance(query []float32, codes []b
 	}
 
 	var distance float32
+	scratch := make([]float32, pq.subvectorDim)
 
 	// Compute distance contribution from each subvector
 	for m := 0; m < pq.numSubvectors; m++ {
@@ -158,13 +248,20 @@ func (pq *ProductQuantizer) ComputeAsymmetricDistance(query []float32, codes []b
 		querySubvec := query[start:end]
 
 		centroidIdx := int(codes[m])
+		scale := pq.scales[m]
+		offset := pq.offsets[m]
 
 		codebookStart := m * pq.numCentroids * pq.subvectorDim
 		centroidStart := codebookStart + centroidIdx*pq.subvectorDim
-		centroid := pq.codebooks[centroidStart : centroidStart+pq.subvectorDim]
+
+		// Dequantize
+		for i := 0; i < pq.subvectorDim; i++ {
+			qVal := pq.codebooks[centroidStart+i]
+			scratch[i] = float32(qVal)*scale + offset
+		}
 
 		// Squared L2 distance between query subvector and centroid
-		distance += math32.SquaredL2(querySubvec, centroid)
+		distance += math32.SquaredL2(querySubvec, scratch)
 	}
 
 	return distance
@@ -242,18 +339,43 @@ func (pq *ProductQuantizer) kmeans(vectors [][]float32, k, maxIters int) []float
 
 	// Run k-means iterations
 	assignments := make([]int, len(vectors))
+	numWorkers := runtime.GOMAXPROCS(0)
+
 	for range maxIters {
 		// Assignment step
-		changed := false
-		for i, vec := range vectors {
-			nearestIdx := pq.findNearestCentroid(vec, centroids)
-			if assignments[i] != nearestIdx {
-				changed = true
-				assignments[i] = nearestIdx
-			}
-		}
+		var changedAtomic atomic.Bool
+		var wg sync.WaitGroup
 
-		if !changed {
+		chunkSize := (len(vectors) + numWorkers - 1) / numWorkers
+		for w := 0; w < numWorkers; w++ {
+			start := w * chunkSize
+			end := start + chunkSize
+			if end > len(vectors) {
+				end = len(vectors)
+			}
+			if start >= end {
+				continue
+			}
+
+			wg.Add(1)
+			go func(start, end int) {
+				defer wg.Done()
+				localChanged := false
+				for i := start; i < end; i++ {
+					nearestIdx := pq.findNearestCentroid(vectors[i], centroids)
+					if assignments[i] != nearestIdx {
+						localChanged = true
+						assignments[i] = nearestIdx
+					}
+				}
+				if localChanged {
+					changedAtomic.Store(true)
+				}
+			}(start, end)
+		}
+		wg.Wait()
+
+		if !changedAtomic.Load() {
 			break
 		}
 
@@ -318,16 +440,17 @@ func (pq *ProductQuantizer) IsTrained() bool {
 	return pq.trained
 }
 
-// Codebooks returns the PQ codebooks.
-// Returns flat codebooks: M * K * subvectorDim.
-func (pq *ProductQuantizer) Codebooks() []float32 {
-	return pq.codebooks
+// Codebooks returns the PQ codebooks and quantization parameters.
+// Returns flat codebooks (M * K * subvectorDim), scales (M), and offsets (M).
+func (pq *ProductQuantizer) Codebooks() ([]int8, []float32, []float32) {
+	return pq.codebooks, pq.scales, pq.offsets
 }
 
 // SetCodebooks sets the PQ codebooks directly (for loading from disk).
-// The codebooks must be flat: M * K * subvectorDim.
-func (pq *ProductQuantizer) SetCodebooks(codebooks []float32) {
+func (pq *ProductQuantizer) SetCodebooks(codebooks []int8, scales, offsets []float32) {
 	pq.codebooks = codebooks
+	pq.scales = scales
+	pq.offsets = offsets
 	pq.trained = true
 }
 
@@ -341,17 +464,28 @@ func (pq *ProductQuantizer) BuildDistanceTable(query []float32) []float32 {
 	}
 
 	table := make([]float32, pq.numSubvectors*pq.numCentroids)
+	scratch := make([]float32, pq.subvectorDim)
+
 	for m := 0; m < pq.numSubvectors; m++ {
 		start := m * pq.subvectorDim
 		end := start + pq.subvectorDim
 		querySubvec := query[start:end]
 
-		for k := 0; k < pq.numCentroids; k++ {
-			codebookStart := m * pq.numCentroids * pq.subvectorDim
-			centroidStart := codebookStart + k*pq.subvectorDim
-			centroid := pq.codebooks[centroidStart : centroidStart+pq.subvectorDim]
+		scale := pq.scales[m]
+		offset := pq.offsets[m]
+		codebookStart := m * pq.numCentroids * pq.subvectorDim
 
-			dist := math32.SquaredL2(querySubvec, centroid)
+		for k := 0; k < pq.numCentroids; k++ {
+			centroidStart := codebookStart + k*pq.subvectorDim
+
+			// Dequantize centroid on the fly
+			// This fits in L1 cache better than storing float32 codebooks
+			for i := 0; i < pq.subvectorDim; i++ {
+				qVal := pq.codebooks[centroidStart+i]
+				scratch[i] = float32(qVal)*scale + offset
+			}
+
+			dist := math32.SquaredL2(querySubvec, scratch)
 			table[m*pq.numCentroids+k] = dist
 		}
 	}

@@ -413,17 +413,26 @@ func (s *Segment) loadPQCodebooks(r io.Reader, header *FileHeader) error {
 		return err
 	}
 
-	totalFloats := M * K * subDim
-	codebooks := make([]float32, totalFloats)
-	for i := 0; i < totalFloats; i++ {
-		var buf [4]byte
-		if _, err := io.ReadFull(r, buf[:]); err != nil {
-			return err
-		}
-		bits := binary.LittleEndian.Uint32(buf[:])
-		codebooks[i] = math.Float32frombits(bits)
+	// Read scales
+	scales := make([]float32, M)
+	if err := binary.Read(r, binary.LittleEndian, scales); err != nil {
+		return fmt.Errorf("read scales: %w", err)
 	}
-	s.pq.SetCodebooks(codebooks)
+
+	// Read offsets
+	offsets := make([]float32, M)
+	if err := binary.Read(r, binary.LittleEndian, offsets); err != nil {
+		return fmt.Errorf("read offsets: %w", err)
+	}
+
+	// Read codebooks (int8)
+	totalInt8s := M * K * subDim
+	codebooks := make([]int8, totalInt8s)
+	if err := binary.Read(r, binary.LittleEndian, codebooks); err != nil {
+		return fmt.Errorf("read codebooks: %w", err)
+	}
+
+	s.pq.SetCodebooks(codebooks, scales, offsets)
 	return nil
 }
 

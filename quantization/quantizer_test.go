@@ -12,24 +12,42 @@ func TestScalarQuantizer_Train(t *testing.T) {
 		{-2.0, 1.0, 3.0},
 	}
 
-	sq := NewScalarQuantizer()
+	sq := NewScalarQuantizer(3)
 	err := sq.Train(vectors)
 	if err != nil {
 		t.Fatalf("Train failed: %v", err)
 	}
 
-	if sq.min != -2.0 {
-		t.Errorf("Expected min=-2.0, got %f", sq.min)
+	// Check per-dimension min/max
+	// Dim 0: -1.0, -0.5, -2.0 -> min=-2.0, max=-0.5
+	if sq.Min(0) != -2.0 {
+		t.Errorf("Dim 0: Expected min=-2.0, got %f", sq.Min(0))
 	}
-	if sq.max != 3.0 {
-		t.Errorf("Expected max=3.0, got %f", sq.max)
+	if sq.Max(0) != -0.5 {
+		t.Errorf("Dim 0: Expected max=-0.5, got %f", sq.Max(0))
+	}
+
+	// Dim 2: 1.0, 2.0, 3.0 -> min=1.0, max=3.0
+	if sq.Min(2) != 1.0 {
+		t.Errorf("Dim 2: Expected min=1.0, got %f", sq.Min(2))
+	}
+	if sq.Max(2) != 3.0 {
+		t.Errorf("Dim 2: Expected max=3.0, got %f", sq.Max(2))
 	}
 }
 
 func TestScalarQuantizer_EncodeDecode(t *testing.T) {
-	sq := NewScalarQuantizer()
-	sq.min = -1.0
-	sq.max = 1.0
+	// Manually setup a trained quantizer for testing
+	sq := NewScalarQuantizer(5)
+	sq.trained = true
+	sq.mins = []float32{-1.0, -1.0, -1.0, -1.0, -1.0}
+	sq.maxs = []float32{1.0, 1.0, 1.0, 1.0, 1.0}
+	sq.scales = make([]float32, 5)
+	sq.invScales = make([]float32, 5)
+	for i := 0; i < 5; i++ {
+		sq.scales[i] = 255.0 / 2.0
+		sq.invScales[i] = 2.0 / 255.0
+	}
 
 	original := []float32{-1.0, -0.5, 0.0, 0.5, 1.0}
 
@@ -55,14 +73,14 @@ func TestScalarQuantizer_EncodeDecode(t *testing.T) {
 	}
 
 	// Error should be small (within one quantization step)
-	expectedMaxError := (sq.max - sq.min) / 255.0
+	expectedMaxError := (sq.Max(0) - sq.Min(0)) / 255.0
 	if maxError > expectedMaxError*1.1 { // Allow 10% tolerance
 		t.Errorf("Reconstruction error too large: %f (expected <= %f)", maxError, expectedMaxError)
 	}
 }
 
 func TestScalarQuantizer_CompressionRatio(t *testing.T) {
-	sq := NewScalarQuantizer()
+	sq := NewScalarQuantizer(128)
 	ratio := sq.CompressionRatio()
 
 	if ratio != 4.0 {
@@ -71,14 +89,14 @@ func TestScalarQuantizer_CompressionRatio(t *testing.T) {
 }
 
 func TestScalarQuantizer_BytesPerDimension(t *testing.T) {
-	sq := NewScalarQuantizer()
+	sq := NewScalarQuantizer(128)
 	if sq.BytesPerDimension() != 1 {
 		t.Errorf("Expected 1 byte per dimension, got %d", sq.BytesPerDimension())
 	}
 }
 
 func TestScalarQuantizer_EmptyVectors(t *testing.T) {
-	sq := NewScalarQuantizer()
+	sq := NewScalarQuantizer(128)
 	err := sq.Train([][]float32{})
 
 	if err == nil {
@@ -92,14 +110,14 @@ func TestScalarQuantizer_UniformValues(t *testing.T) {
 		{5.0, 5.0, 5.0},
 	}
 
-	sq := NewScalarQuantizer()
+	sq := NewScalarQuantizer(3)
 	err := sq.Train(vectors)
 	if err != nil {
 		t.Fatalf("Train failed: %v", err)
 	}
 
 	// Should handle uniform values by adding a small range
-	if sq.max <= sq.min {
+	if sq.Max(0) <= sq.Min(0) {
 		t.Error("Max should be greater than min even for uniform values")
 	}
 
@@ -116,9 +134,12 @@ func TestScalarQuantizer_UniformValues(t *testing.T) {
 }
 
 func TestScalarQuantizer_Clamping(t *testing.T) {
-	sq := NewScalarQuantizer()
-	sq.min = 0.0
-	sq.max = 1.0
+	sq := NewScalarQuantizer(3)
+	sq.trained = true
+	sq.mins = []float32{0.0, 0.0, 0.0}
+	sq.maxs = []float32{1.0, 1.0, 1.0}
+	sq.scales = []float32{255.0, 255.0, 255.0}
+	sq.invScales = []float32{1.0 / 255.0, 1.0 / 255.0, 1.0 / 255.0}
 
 	// Test values outside trained range
 	original := []float32{-1.0, 0.5, 2.0}
@@ -135,11 +156,21 @@ func TestScalarQuantizer_Clamping(t *testing.T) {
 }
 
 func BenchmarkScalarQuantizer_Encode(b *testing.B) {
-	sq := NewScalarQuantizer()
-	sq.min = -1.0
-	sq.max = 1.0
+	dim := 128
+	sq := NewScalarQuantizer(dim)
+	sq.trained = true
+	sq.mins = make([]float32, dim)
+	sq.maxs = make([]float32, dim)
+	sq.scales = make([]float32, dim)
+	sq.invScales = make([]float32, dim)
+	for i := 0; i < dim; i++ {
+		sq.mins[i] = -1.0
+		sq.maxs[i] = 1.0
+		sq.scales[i] = 255.0 / 2.0
+		sq.invScales[i] = 2.0 / 255.0
+	}
 
-	vec := make([]float32, 128)
+	vec := make([]float32, dim)
 	for i := range vec {
 		vec[i] = float32(i%256)/128.0 - 1.0
 	}
@@ -151,11 +182,21 @@ func BenchmarkScalarQuantizer_Encode(b *testing.B) {
 }
 
 func BenchmarkScalarQuantizer_Decode(b *testing.B) {
-	sq := NewScalarQuantizer()
-	sq.min = -1.0
-	sq.max = 1.0
+	dim := 128
+	sq := NewScalarQuantizer(dim)
+	sq.trained = true
+	sq.mins = make([]float32, dim)
+	sq.maxs = make([]float32, dim)
+	sq.scales = make([]float32, dim)
+	sq.invScales = make([]float32, dim)
+	for i := 0; i < dim; i++ {
+		sq.mins[i] = -1.0
+		sq.maxs[i] = 1.0
+		sq.scales[i] = 255.0 / 2.0
+		sq.invScales[i] = 2.0 / 255.0
+	}
 
-	vec := make([]float32, 128)
+	vec := make([]float32, dim)
 	for i := range vec {
 		vec[i] = float32(i%256)/128.0 - 1.0
 	}
