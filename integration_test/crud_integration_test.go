@@ -229,14 +229,13 @@ func TestCRUDOperations(t *testing.T) {
 				require.NoError(t, err)
 				assert.Equal(t, "third", data)
 
-				// With ID reuse: id3 should equal id2 (reused from free list)
-				// The "second" data should be replaced with "third" at that ID
-				assert.Equal(t, id2, id3, "ID should be reused from free list")
+				// With NO ID reuse: id3 should NOT equal id2
+				assert.NotEqual(t, id2, id3, "ID should NOT be reused")
+				assert.Greater(t, id3, id2, "New ID should be greater than old ID")
 
-				// Verify id2 now contains "third" (not "second")
-				data, err = vg.Get(id2)
-				require.NoError(t, err)
-				assert.Equal(t, "third", data, "Reused ID should have new data")
+				// Verify id2 is gone
+				_, err = vg.Get(id2)
+				assert.Error(t, err, "Deleted ID should not be retrievable")
 
 				// First item should still exist unchanged
 				data, err = vg.Get(id1)

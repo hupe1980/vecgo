@@ -14,6 +14,12 @@ import (
 	"github.com/hupe1980/vecgo/metadata"
 )
 
+type testShardResult struct {
+	shardIdx int
+	results  []index.SearchResult
+	err      error
+}
+
 // mockShard is a test double for Coordinator that can simulate search operations.
 type mockShard[T any] struct {
 	searchDelay time.Duration
@@ -126,22 +132,17 @@ func (m *mockShard[T]) Close() error {
 
 // TestWorkerPoolBasic verifies basic worker pool functionality.
 func TestWorkerPoolBasic(t *testing.T) {
-	pool := NewWorkerPool[string](2)
+	pool := NewWorkerPool(2)
 	defer pool.Close()
 
 	shard := &mockShard[string]{}
-	resultsCh := make(chan shardResult[string], 1)
-
-	req := WorkRequest[string]{
-		shardIdx: 0,
-		shard:    shard,
-		query:    []float32{1, 2, 3},
-		k:        5,
-		resultCh: resultsCh,
-	}
+	resultsCh := make(chan testShardResult, 1)
 
 	ctx := context.Background()
-	err := pool.Submit(ctx, req)
+	err := pool.Submit(ctx, func() {
+		res, err := shard.KNNSearch(ctx, []float32{1, 2, 3}, 5, nil)
+		resultsCh <- testShardResult{shardIdx: 0, results: res, err: err}
+	})
 	if err != nil {
 		t.Fatalf("Submit failed: %v", err)
 	}
@@ -171,11 +172,11 @@ func TestWorkerPoolConcurrency(t *testing.T) {
 	const numWorkers = 4
 	const numRequests = 100
 
-	pool := NewWorkerPool[string](numWorkers)
+	pool := NewWorkerPool(numWorkers)
 	defer pool.Close()
 
 	shard := &mockShard[string]{searchDelay: 1 * time.Millisecond}
-	resultsCh := make(chan shardResult[string], numRequests)
+	resultsCh := make(chan testShardResult, numRequests)
 
 	var wg sync.WaitGroup
 	wg.Add(numRequests)
@@ -187,16 +188,11 @@ func TestWorkerPoolConcurrency(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 
-			req := WorkRequest[string]{
-				shardIdx: idx,
-				shard:    shard,
-				query:    []float32{float32(idx)},
-				k:        1,
-				resultCh: resultsCh,
-			}
-
 			ctx := context.Background()
-			if err := pool.Submit(ctx, req); err != nil {
+			if err := pool.Submit(ctx, func() {
+				res, err := shard.KNNSearch(ctx, []float32{float32(idx)}, 1, nil)
+				resultsCh <- testShardResult{shardIdx: idx, results: res, err: err}
+			}); err != nil {
 				t.Errorf("Submit %d failed: %v", idx, err)
 			}
 		}(i)
@@ -236,26 +232,21 @@ func TestWorkerPoolConcurrency(t *testing.T) {
 
 // TestWorkerPoolContextCancellation verifies context cancellation handling.
 func TestWorkerPoolContextCancellation(t *testing.T) {
-	pool := NewWorkerPool[string](2)
+	pool := NewWorkerPool(2)
 	defer pool.Close()
 
 	// Create shard with long delay
 	shard := &mockShard[string]{searchDelay: 100 * time.Millisecond}
-	resultsCh := make(chan shardResult[string], 1)
-
-	req := WorkRequest[string]{
-		shardIdx: 0,
-		shard:    shard,
-		query:    []float32{1, 2, 3},
-		k:        5,
-		resultCh: resultsCh,
-	}
+	resultsCh := make(chan testShardResult, 1)
 
 	// Cancel context before search completes
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 
-	err := pool.Submit(ctx, req)
+	err := pool.Submit(ctx, func() {
+		res, err := shard.KNNSearch(ctx, []float32{1, 2, 3}, 5, nil)
+		resultsCh <- testShardResult{shardIdx: 0, results: res, err: err}
+	})
 	if err != nil {
 		t.Fatalf("Submit failed: %v", err)
 	}
@@ -278,23 +269,19 @@ func TestWorkerPoolContextCancellation(t *testing.T) {
 
 // TestWorkerPoolShutdown verifies graceful shutdown.
 func TestWorkerPoolShutdown(t *testing.T) {
-	pool := NewWorkerPool[string](2)
+	pool := NewWorkerPool(2)
 
 	shard := &mockShard[string]{searchDelay: 10 * time.Millisecond}
-	resultsCh := make(chan shardResult[string], 10)
+	resultsCh := make(chan testShardResult, 10)
 
 	// Submit some work
 	for i := 0; i < 5; i++ {
-		req := WorkRequest[string]{
-			shardIdx: i,
-			shard:    shard,
-			query:    []float32{float32(i)},
-			k:        1,
-			resultCh: resultsCh,
-		}
-
+		idx := i
 		ctx := context.Background()
-		if err := pool.Submit(ctx, req); err != nil {
+		if err := pool.Submit(ctx, func() {
+			res, err := shard.KNNSearch(ctx, []float32{float32(idx)}, 1, nil)
+			resultsCh <- testShardResult{shardIdx: idx, results: res, err: err}
+		}); err != nil {
 			t.Fatalf("Submit %d failed: %v", i, err)
 		}
 	}
@@ -312,16 +299,10 @@ func TestWorkerPoolShutdown(t *testing.T) {
 	}
 
 	// Try submitting after close (should fail)
-	req := WorkRequest[string]{
-		shardIdx: 99,
-		shard:    shard,
-		query:    []float32{99},
-		k:        1,
-		resultCh: resultsCh,
-	}
-
 	ctx := context.Background()
-	err := pool.Submit(ctx, req)
+	err := pool.Submit(ctx, func() {
+		// no-op
+	})
 	if !errors.Is(err, ErrCoordinatorClosed) {
 		t.Errorf("Expected ErrCoordinatorClosed after shutdown, got %v", err)
 	}
@@ -330,12 +311,12 @@ func TestWorkerPoolShutdown(t *testing.T) {
 // TestWorkerPoolBackpressure verifies backpressure when work channel is full.
 func TestWorkerPoolBackpressure(t *testing.T) {
 	const numWorkers = 2
-	pool := NewWorkerPool[string](numWorkers)
+	pool := NewWorkerPool(numWorkers)
 	defer pool.Close()
 
 	// Create shard with delay to cause backpressure
 	shard := &mockShard[string]{searchDelay: 50 * time.Millisecond}
-	resultsCh := make(chan shardResult[string], 100)
+	resultsCh := make(chan testShardResult, 100)
 
 	// Submit more work than buffer can hold (buffer is 2*numWorkers = 4)
 	const numRequests = 20
@@ -343,21 +324,16 @@ func TestWorkerPoolBackpressure(t *testing.T) {
 	timeout := time.After(100 * time.Millisecond)
 
 	for i := 0; i < numRequests; i++ {
-		req := WorkRequest[string]{
-			shardIdx: i,
-			shard:    shard,
-			query:    []float32{float32(i)},
-			k:        1,
-			resultCh: resultsCh,
-		}
-
 		ctx := context.Background()
 
 		// Try to submit with timeout
 		done := make(chan error, 1)
-		go func() {
-			done <- pool.Submit(ctx, req)
-		}()
+		go func(idx int) {
+			done <- pool.Submit(ctx, func() {
+				res, err := shard.KNNSearch(ctx, []float32{float32(idx)}, 1, nil)
+				resultsCh <- testShardResult{shardIdx: idx, results: res, err: err}
+			})
+		}(i)
 
 		select {
 		case err := <-done:
@@ -387,26 +363,21 @@ done:
 
 // TestWorkerPoolBruteSearch verifies SubmitBrute works correctly.
 func TestWorkerPoolBruteSearch(t *testing.T) {
-	pool := NewWorkerPool[string](2)
+	pool := NewWorkerPool(2)
 	defer pool.Close()
 
 	shard := &mockShard[string]{}
-	resultsCh := make(chan shardResult[string], 1)
-
-	req := WorkRequest[string]{
-		shardIdx: 0,
-		shard:    shard,
-		query:    []float32{1, 2, 3},
-		k:        5,
-		resultCh: resultsCh,
-	}
+	resultsCh := make(chan testShardResult, 1)
 
 	filter := func(id uint64) bool {
 		return id%2 == 0 // Even IDs only
 	}
 
 	ctx := context.Background()
-	err := pool.SubmitBrute(ctx, req, filter)
+	err := pool.Submit(ctx, func() {
+		res, err := shard.BruteSearch(ctx, []float32{1, 2, 3}, 5, filter)
+		resultsCh <- testShardResult{shardIdx: 0, results: res, err: err}
+	})
 	if err != nil {
 		t.Fatalf("SubmitBrute failed: %v", err)
 	}
@@ -426,23 +397,18 @@ func TestWorkerPoolBruteSearch(t *testing.T) {
 
 // TestWorkerPoolErrorHandling verifies error propagation from shards.
 func TestWorkerPoolErrorHandling(t *testing.T) {
-	pool := NewWorkerPool[string](2)
+	pool := NewWorkerPool(2)
 	defer pool.Close()
 
 	searchErr := errors.New("shard search failed")
 	shard := &mockShard[string]{searchError: searchErr}
-	resultsCh := make(chan shardResult[string], 1)
-
-	req := WorkRequest[string]{
-		shardIdx: 0,
-		shard:    shard,
-		query:    []float32{1, 2, 3},
-		k:        5,
-		resultCh: resultsCh,
-	}
+	resultsCh := make(chan testShardResult, 1)
 
 	ctx := context.Background()
-	err := pool.Submit(ctx, req)
+	err := pool.Submit(ctx, func() {
+		res, err := shard.KNNSearch(ctx, []float32{1, 2, 3}, 5, nil)
+		resultsCh <- testShardResult{shardIdx: 0, results: res, err: err}
+	})
 	if err != nil {
 		t.Fatalf("Submit failed: %v", err)
 	}
@@ -462,7 +428,7 @@ func TestWorkerPoolErrorHandling(t *testing.T) {
 
 // TestWorkerPoolZeroWorkers verifies default worker count.
 func TestWorkerPoolZeroWorkers(t *testing.T) {
-	pool := NewWorkerPool[string](0) // Should use GOMAXPROCS
+	pool := NewWorkerPool(0) // Should use GOMAXPROCS
 	defer pool.Close()
 
 	if pool.numWorkers <= 0 {
@@ -471,18 +437,13 @@ func TestWorkerPoolZeroWorkers(t *testing.T) {
 
 	// Verify pool is functional
 	shard := &mockShard[string]{}
-	resultsCh := make(chan shardResult[string], 1)
-
-	req := WorkRequest[string]{
-		shardIdx: 0,
-		shard:    shard,
-		query:    []float32{1, 2, 3},
-		k:        5,
-		resultCh: resultsCh,
-	}
+	resultsCh := make(chan testShardResult, 1)
 
 	ctx := context.Background()
-	err := pool.Submit(ctx, req)
+	err := pool.Submit(ctx, func() {
+		res, err := shard.KNNSearch(ctx, []float32{1, 2, 3}, 5, nil)
+		resultsCh <- testShardResult{shardIdx: 0, results: res, err: err}
+	})
 	if err != nil {
 		t.Fatalf("Submit failed: %v", err)
 	}

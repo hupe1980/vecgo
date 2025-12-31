@@ -260,6 +260,10 @@ type Index interface {
 	// The opts parameter contains index-specific search options (can be nil for defaults).
 	KNNSearch(ctx context.Context, q []float32, k int, opts *SearchOptions) ([]SearchResult, error)
 
+	// KNNSearchWithBuffer performs a K-nearest neighbor search and appends results to the provided buffer.
+	// This avoids allocating a new slice for results.
+	KNNSearchWithBuffer(ctx context.Context, q []float32, k int, opts *SearchOptions, buf *[]SearchResult) error
+
 	// KNNSearchStream returns an iterator over K-nearest neighbor search results.
 	// Results are yielded in order from nearest to farthest.
 	// The iterator supports early termination - stop iterating to cancel.

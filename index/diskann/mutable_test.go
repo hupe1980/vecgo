@@ -209,10 +209,10 @@ func TestTransactionalIndexInterface(t *testing.T) {
 	// Test ReleaseID
 	idx.ReleaseID(id2)
 
-	// Next AllocateID should reuse released ID
+	// Next AllocateID should NOT reuse released ID (ID Stability)
 	id3 := idx.AllocateID()
-	if id3 != id2 {
-		t.Logf("Note: AllocateID returned %d, expected to reuse %d (may allocate new if freelist LIFO)", id3, id2)
+	if id3 == id2 {
+		t.Errorf("AllocateID returned %d, expected NOT to reuse %d", id3, id2)
 	}
 }
 

@@ -8,7 +8,6 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/hupe1980/vecgo/codec"
 	"github.com/hupe1980/vecgo/index"
@@ -28,13 +27,14 @@ type Tx[T any] struct {
 	txIndex index.TransactionalIndex
 
 	// MemTable for async indexing (LSM-style)
-	memTable       *memtable.MemTable
-	frozenMemTable *memtable.MemTable // Items currently being flushed
-	flushCh        chan struct{}      // Signal to trigger flush
-	flushCond      *sync.Cond         // Signal for backpressure/flow control
-	stopCh         chan struct{}      // Signal to stop background worker
-	wg             sync.WaitGroup
-	closed         bool
+	memTable         *memtable.MemTable
+	frozenMemTable   *memtable.MemTable // Items currently being flushed
+	recycledMemTable *memtable.MemTable // Recycled memtable for reuse
+	flushCh          chan struct{}      // Signal to trigger flush
+	flushCond        *sync.Cond         // Signal for backpressure/flow control
+	stopCh           chan struct{}      // Signal to stop background worker
+	wg               sync.WaitGroup
+	closed           bool
 
 	dataStore Store[T]
 	metaStore *metadata.UnifiedIndex
@@ -45,6 +45,15 @@ type Tx[T any] struct {
 	distFunc     index.DistanceFunc
 	syncWrite    bool
 	dimension    int
+
+	scratchPool *sync.Pool
+}
+
+type txScratch struct {
+	indexResults  []index.SearchResult
+	memResults    []index.SearchResult
+	frozenResults []index.SearchResult
+	mergedResults []index.SearchResult
 }
 
 // allocateID allocates a new ID from the index
@@ -436,10 +445,28 @@ func (tx *Tx[T]) GetMetadata(id uint64) (metadata.Metadata, bool) {
 // KNNSearch performs a K-nearest neighbor search on the underlying index.
 // This method is added to satisfy the coordinator[T] interface.
 func (tx *Tx[T]) KNNSearch(ctx context.Context, query []float32, k int, opts *index.SearchOptions) ([]index.SearchResult, error) {
-	// 1. Search Main Index
-	indexResults, err := tx.txIndex.KNNSearch(ctx, query, k, opts)
-	if err != nil {
+	var results []index.SearchResult
+	if err := tx.KNNSearchWithBuffer(ctx, query, k, opts, &results); err != nil {
 		return nil, err
+	}
+	return results, nil
+}
+
+// KNNSearchWithBuffer performs a K-nearest neighbor search and appends results to the provided buffer.
+func (tx *Tx[T]) KNNSearchWithBuffer(ctx context.Context, query []float32, k int, opts *index.SearchOptions, buf *[]index.SearchResult) error {
+	// Get scratch buffer
+	scratch := tx.scratchPool.Get().(*txScratch)
+	defer tx.scratchPool.Put(scratch)
+
+	// Reset scratch buffers
+	scratch.indexResults = scratch.indexResults[:0]
+	scratch.memResults = scratch.memResults[:0]
+	scratch.frozenResults = scratch.frozenResults[:0]
+	scratch.mergedResults = scratch.mergedResults[:0]
+
+	// 1. Search Main Index
+	if err := tx.txIndex.KNNSearchWithBuffer(ctx, query, k, opts, &scratch.indexResults); err != nil {
+		return err
 	}
 
 	// Capture MemTables safely
@@ -449,8 +476,9 @@ func (tx *Tx[T]) KNNSearch(ctx context.Context, query []float32, k int, opts *in
 	tx.mu.Unlock()
 
 	// 2. Filter Index Results (remove items deleted in MemTables)
-	filteredIndexResults := make([]index.SearchResult, 0, len(indexResults))
-	for _, res := range indexResults {
+	// In-place filtering
+	n := 0
+	for _, res := range scratch.indexResults {
 		// Check MemTable
 		if _, found, isDeleted := memT.Get(res.ID); found && isDeleted {
 			continue
@@ -461,28 +489,34 @@ func (tx *Tx[T]) KNNSearch(ctx context.Context, query []float32, k int, opts *in
 				continue
 			}
 		}
-		filteredIndexResults = append(filteredIndexResults, res)
+		scratch.indexResults[n] = res
+		n++
 	}
+	scratch.indexResults = scratch.indexResults[:n]
 
 	// 3. Search MemTables
 	var filter func(uint64) bool
 	if opts != nil && opts.Filter != nil {
-		filter = func(id uint64) bool {
-			return opts.Filter(id)
-		}
+		filter = opts.Filter
 	}
-	memResults := memT.Search(query, k, filter)
 
-	var frozenResults []index.SearchResult
+	if err := memT.SearchWithBuffer(query, k, filter, &scratch.memResults); err != nil {
+		return err
+	}
+
 	if frozenT != nil {
-		frozenResults = frozenT.Search(query, k, filter)
+		if err := frozenT.SearchWithBuffer(query, k, filter, &scratch.frozenResults); err != nil {
+			return err
+		}
 	}
 
 	// 4. Merge Results
-	// Merge index and memtable results
-	merged := index.MergeNSearchResults(k, filteredIndexResults, memResults, frozenResults)
+	index.MergeNSearchResultsInto(&scratch.mergedResults, k, scratch.indexResults, scratch.memResults, scratch.frozenResults)
 
-	return merged, nil
+	// Append to output buffer
+	*buf = append(*buf, scratch.mergedResults...)
+
+	return nil
 }
 
 // BruteSearch performs a brute-force search on the underlying index.
@@ -583,7 +617,15 @@ func (tx *Tx[T]) flushMemTable() {
 
 	// Swap current MemTable to Frozen
 	tx.frozenMemTable = tx.memTable
-	tx.memTable = memtable.New(tx.dimension, tx.distFunc)
+
+	// Reuse recycled memtable if available, otherwise create new
+	if tx.recycledMemTable != nil {
+		tx.memTable = tx.recycledMemTable
+		tx.recycledMemTable = nil
+	} else {
+		tx.memTable = memtable.New(tx.dimension, tx.distFunc)
+	}
+
 	tx.flushCond.Broadcast() // Signal that MemTable is empty
 
 	// Get items to flush
@@ -595,48 +637,33 @@ func (tx *Tx[T]) flushMemTable() {
 	ctx := context.Background()
 
 	for _, item := range items {
-		// Retry loop for ErrEntryPointDeleted
-		retries := 0
-		for {
-			var err error
-			if item.IsDeleted {
-				err = tx.txIndex.ApplyDelete(ctx, uint64(item.ID))
-				// Ignore if node already deleted or not found
-				if err != nil {
-					errMsg := err.Error()
-					if strings.Contains(errMsg, "not found") || strings.Contains(errMsg, "has been deleted") {
-						err = nil
-					}
-				}
-			} else {
-				err = tx.txIndex.ApplyInsert(ctx, uint64(item.ID), item.Vector)
-			}
-
-			if err == index.ErrEntryPointDeleted {
-				// Entry point was deleted concurrently, retry after a short backoff
-				retries++
-				if retries > 10 {
-					// If we can't resolve it after multiple retries, we log and skip.
-					// In a single-threaded flush, this error shouldn't persist unless the index is broken.
-					// We choose to skip this item to avoid blocking the flush worker forever.
-					// TODO: Log this error properly
-					break
-				}
-				time.Sleep(1 * time.Millisecond)
-				continue
-			}
+		var err error
+		if item.IsDeleted {
+			err = tx.txIndex.ApplyDelete(ctx, uint64(item.ID))
+			// Ignore if node already deleted or not found
 			if err != nil {
-				// In a production system, we should log this error properly or have a retry mechanism.
-				// Since the data is in the WAL, it will be recovered on restart if it fails here.
-				// For deletes, "node not found" is acceptable.
+				errMsg := err.Error()
+				if strings.Contains(errMsg, "not found") || strings.Contains(errMsg, "has been deleted") {
+					err = nil
+				}
 			}
-			break
+		} else {
+			err = tx.txIndex.ApplyInsert(ctx, uint64(item.ID), item.Vector)
+		}
+
+		if err != nil {
+			// In a production system, we should log this error properly.
+			// Since the data is in the WAL, it will be recovered on restart if it fails here.
 		}
 	}
 
 	// Clear frozen table after flush is done
 	tx.mu.Lock()
+	// Reset and recycle the frozen memtable
+	tx.frozenMemTable.Reset()
+	tx.recycledMemTable = tx.frozenMemTable
 	tx.frozenMemTable = nil
+
 	tx.flushCond.Broadcast() // Signal that flush is done
 	tx.mu.Unlock()
 }

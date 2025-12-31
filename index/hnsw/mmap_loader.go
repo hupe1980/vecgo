@@ -54,13 +54,13 @@ func loadHNSWMmap(data []byte) (index.Index, int, error) {
 		return nil, 0, err
 	}
 
-	// freeList
+	// freeList (Deprecated: Ignore)
 	freeListLen, err := r.ReadUint64()
 	if err != nil {
 		return nil, 0, err
 	}
-	freeList, err := r.ReadUint64SliceCopy(int(freeListLen))
-	if err != nil {
+	// Consume and discard free list data
+	if _, err := r.ReadUint64SliceCopy(int(freeListLen)); err != nil {
 		return nil, 0, err
 	}
 
@@ -86,24 +86,26 @@ func loadHNSWMmap(data []byte) (index.Index, int, error) {
 	h.maxConnectionsLayer0 = 2 * m
 	h.layerMultiplier = float64(ml)
 	h.dimensionAtomic.Store(int32(hdr.Dimension))
-	h.entryPointAtomic.Store(entryPoint)
-	h.maxLevelAtomic.Store(int32(maxLayers) - 1)
-	h.nextIDAtomic.Store(nextID)
-	h.freeList = freeList
+
+	g := newGraph()
+	h.currentGraph.Store(g)
+
+	g.entryPointAtomic.Store(entryPoint)
+	g.maxLevelAtomic.Store(int32(maxLayers) - 1)
+	g.nextIDAtomic.Store(nextID)
 	h.vectors = zerocopy.New(int(hdr.Dimension))
-	h.tombstones = ts
+	g.tombstones = ts
 
 	// Initialize runtime fields
-	h.shardedLocks = make([]sync.RWMutex, 1024)
 	h.initPools()
 	h.distanceFunc = index.NewDistanceFunc(dt)
 	h.rng = rand.New(rand.NewSource(time.Now().UnixNano()))
 
 	// Set countAtomic
-	h.countAtomic.Store(int64(nextID) - int64(len(freeList)) - int64(ts.Count()))
+	g.countAtomic.Store(int64(nextID) - int64(ts.Count()))
 
 	// Initialize nodes
-	h.growNodes(0)
+	h.growNodes(g, 0)
 
 	// Read Graph Data
 	for id := uint64(0); id < nextID; id++ {
@@ -118,7 +120,7 @@ func loadHNSWMmap(data []byte) (index.Index, int, error) {
 		}
 
 		node := newNode(int(level))
-		h.setNode(id, node)
+		h.setNode(g, id, node)
 
 		for layer := 0; layer <= int(level); layer++ {
 			countBytes, err := r.ReadBytes(4)
@@ -158,8 +160,6 @@ func loadHNSWMmap(data []byte) (index.Index, int, error) {
 			return nil, 0, fmt.Errorf("internal error: expected zerocopy.Store")
 		}
 	}
-
-	h.shardedLocks = make([]sync.RWMutex, 1024)
 
 	h.distanceFunc = index.NewDistanceFunc(h.opts.DistanceType)
 	h.minQueuePool = &sync.Pool{New: func() any { return queue.NewMin(h.opts.EF) }}

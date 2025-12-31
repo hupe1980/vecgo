@@ -57,6 +57,11 @@ func (m *mockCoordinator[T]) KNNSearch(ctx context.Context, query []float32, k i
 	return []index.SearchResult{{ID: 1, Distance: 0.1}}, nil
 }
 
+func (m *mockCoordinator[T]) KNNSearchWithBuffer(ctx context.Context, query []float32, k int, opts *index.SearchOptions, buf *[]index.SearchResult) error {
+	*buf = append(*buf, index.SearchResult{ID: 1, Distance: 0.1})
+	return nil
+}
+
 func (m *mockCoordinator[T]) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint64) bool) ([]index.SearchResult, error) {
 	return []index.SearchResult{{ID: 1, Distance: 0.1}}, nil
 }

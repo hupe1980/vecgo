@@ -147,6 +147,20 @@ func (v *ValidatedCoordinator[T]) KNNSearch(ctx context.Context, query []float32
 	return v.inner.KNNSearch(ctx, query, k, opts)
 }
 
+// KNNSearchWithBuffer validates query and k, then delegates to the inner coordinator.
+func (v *ValidatedCoordinator[T]) KNNSearchWithBuffer(ctx context.Context, query []float32, k int, opts *index.SearchOptions, buf *[]index.SearchResult) error {
+	if err := v.validateVector(query); err != nil {
+		return err
+	}
+	if k <= 0 {
+		return index.ErrInvalidK
+	}
+	if k > v.limits.MaxK {
+		return fmt.Errorf("k=%d exceeds limit %d", k, v.limits.MaxK)
+	}
+	return v.inner.KNNSearchWithBuffer(ctx, query, k, opts, buf)
+}
+
 // BruteSearch validates query and k, then delegates to the inner coordinator.
 func (v *ValidatedCoordinator[T]) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint64) bool) ([]index.SearchResult, error) {
 	if err := v.validateVector(query); err != nil {

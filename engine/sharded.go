@@ -41,8 +41,8 @@ import (
 type ShardedCoordinator[T any] struct {
 	shards     []*Tx[T]
 	numShards  int
-	nextShard  int            // round-robin counter for insert distribution
-	workerPool *WorkerPool[T] // Fixed-size pool for parallel searches
+	nextShard  int         // round-robin counter for insert distribution
+	workerPool *WorkerPool // Fixed-size pool for parallel searches
 }
 
 // NewSharded creates a new sharded coordinator with independent shards.
@@ -113,7 +113,7 @@ func NewSharded[T any](
 	if procs := runtime.GOMAXPROCS(0); procs > poolSize {
 		poolSize = procs
 	}
-	workerPool := NewWorkerPool[T](poolSize)
+	workerPool := NewWorkerPool(poolSize)
 
 	return &ShardedCoordinator[T]{
 		shards:     shards,
@@ -283,35 +283,37 @@ func (sc *ShardedCoordinator[T]) GetMetadata(id uint64) (metadata.Metadata, bool
 	return shard.GetMetadata(gid.LocalID())
 }
 
+type shardResult struct {
+	shardIdx int
+	results  []index.SearchResult
+	err      error
+}
+
 // KNNSearch performs a K-nearest neighbor search across all shards in parallel.
-//
-// This method fans out the query to all shards simultaneously, collects results,
-// and merges them to return the global top-k results. Result IDs are GlobalIDs
-// that encode shard routing information.
-//
-// Error Handling:
-//   - Returns error if any shard fails (fail-fast behavior for correctness)
-//   - Respects context cancellation and deadlines
-//   - Includes shard index in error messages for debugging
-//
-// Performance:
-//   - Parallel fan-out utilizes multiple cores for search
-//   - Latency is roughly the same as single-shard (limited by slowest shard)
-//   - Throughput can improve with concurrent searches
 func (sc *ShardedCoordinator[T]) KNNSearch(ctx context.Context, query []float32, k int, opts *index.SearchOptions) ([]index.SearchResult, error) {
+	var results []index.SearchResult
+	if err := sc.KNNSearchWithBuffer(ctx, query, k, opts, &results); err != nil {
+		return nil, err
+	}
+	return results, nil
+}
+
+// KNNSearchWithBuffer performs approximate K-nearest neighbor search and appends results to the provided buffer.
+func (sc *ShardedCoordinator[T]) KNNSearchWithBuffer(ctx context.Context, query []float32, k int, opts *index.SearchOptions, buf *[]index.SearchResult) error {
 	if k <= 0 {
-		return nil, index.ErrInvalidK
+		return index.ErrInvalidK
 	}
 
-	// Fan out to all shards via worker pool (zero goroutine creation)
-	resultsCh := make(chan shardResult[T], sc.numShards)
+	resultsCh := make(chan shardResult, sc.numShards)
 
 	for i := 0; i < sc.numShards; i++ {
+		shardIdx := i
+		shard := sc.shards[i]
+
 		// Wrap filter to convert local IDs to global IDs before checking
 		shardOpts := opts
 		if opts != nil && opts.Filter != nil {
 			userFilter := opts.Filter
-			shardIdx := i // capture for closure
 			shardOpts = &index.SearchOptions{
 				EFSearch: opts.EFSearch,
 				Filter: func(localID uint64) bool {
@@ -321,19 +323,16 @@ func (sc *ShardedCoordinator[T]) KNNSearch(ctx context.Context, query []float32,
 			}
 		}
 
-		// Submit to worker pool instead of spawning goroutine
-		req := WorkRequest[T]{
-			shardIdx: i,
-			shard:    sc.shards[i],
-			query:    query,
-			k:        k,
-			opts:     shardOpts,
-			resultCh: resultsCh,
-		}
+		err := sc.workerPool.Submit(ctx, func() {
+			res, err := shard.KNNSearch(ctx, query, k, shardOpts)
+			select {
+			case resultsCh <- shardResult{shardIdx: shardIdx, results: res, err: err}:
+			case <-ctx.Done():
+			}
+		})
 
-		if err := sc.workerPool.Submit(ctx, req); err != nil {
-			// Pool closed or context cancelled
-			return nil, fmt.Errorf("worker pool submit failed: %w", err)
+		if err != nil {
+			return fmt.Errorf("worker pool submit failed: %w", err)
 		}
 	}
 
@@ -354,59 +353,48 @@ func (sc *ShardedCoordinator[T]) KNNSearch(ctx context.Context, query []float32,
 				allResults = append(allResults, res.results...)
 			}
 		case <-ctx.Done():
-			// Context cancelled (timeout or explicit cancellation)
-			return nil, fmt.Errorf("search cancelled: %w", ctx.Err())
+			return fmt.Errorf("search cancelled: %w", ctx.Err())
 		}
 	}
 
-	// Fail if any shard failed (fail-fast for correctness)
 	if len(errors) > 0 {
-		return nil, fmt.Errorf("parallel search failed (%d/%d shards): %v", len(errors), sc.numShards, errors)
+		return fmt.Errorf("parallel search failed (%d/%d shards): %v", len(errors), sc.numShards, errors)
 	}
 
-	// Merge results to get global top-k
-	return mergeTopK(allResults, k), nil
+	merged := mergeTopK(allResults, k)
+	*buf = append(*buf, merged...)
+	return nil
 }
 
 // BruteSearch performs a brute-force search across all shards in parallel.
-//
-// Similar to KNNSearch, this fans out to all shards and merges results.
-// Result IDs are GlobalIDs that encode shard routing information.
-//
-// Error Handling:
-//   - Returns error if any shard fails (fail-fast behavior)
-//   - Respects context cancellation and deadlines
-//   - Includes shard index in error messages
 func (sc *ShardedCoordinator[T]) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint64) bool) ([]index.SearchResult, error) {
 	if k <= 0 {
 		return nil, index.ErrInvalidK
 	}
 
-	// Fan out to all shards via worker pool (zero goroutine creation)
-	resultsCh := make(chan shardResult[T], sc.numShards)
+	resultsCh := make(chan shardResult, sc.numShards)
 
 	for i := 0; i < sc.numShards; i++ {
-		// Wrap filter to translate global IDs to local IDs for filtering
+		shardIdx := i
+		shard := sc.shards[i]
+
 		var localFilter func(id uint64) bool
 		if filter != nil {
-			shardIdx := i // capture for closure
 			localFilter = func(localID uint64) bool {
 				globalID := uint64(NewGlobalID(shardIdx, localID))
 				return filter(globalID)
 			}
 		}
 
-		// Submit to worker pool instead of spawning goroutine
-		req := WorkRequest[T]{
-			shardIdx: i,
-			shard:    sc.shards[i],
-			query:    query,
-			k:        k,
-			resultCh: resultsCh,
-		}
+		err := sc.workerPool.Submit(ctx, func() {
+			res, err := shard.BruteSearch(ctx, query, k, localFilter)
+			select {
+			case resultsCh <- shardResult{shardIdx: shardIdx, results: res, err: err}:
+			case <-ctx.Done():
+			}
+		})
 
-		if err := sc.workerPool.SubmitBrute(ctx, req, localFilter); err != nil {
-			// Pool closed or context cancelled
+		if err != nil {
 			return nil, fmt.Errorf("worker pool submit failed: %w", err)
 		}
 	}
@@ -428,17 +416,14 @@ func (sc *ShardedCoordinator[T]) BruteSearch(ctx context.Context, query []float3
 				allResults = append(allResults, res.results...)
 			}
 		case <-ctx.Done():
-			// Context cancelled (timeout or explicit cancellation)
 			return nil, fmt.Errorf("brute search cancelled: %w", ctx.Err())
 		}
 	}
 
-	// Fail if any shard failed (fail-fast for correctness)
 	if len(errors) > 0 {
 		return nil, fmt.Errorf("parallel brute search failed (%d/%d shards): %v", len(errors), sc.numShards, errors)
 	}
 
-	// Merge results to get global top-k
 	return mergeTopK(allResults, k), nil
 }
 

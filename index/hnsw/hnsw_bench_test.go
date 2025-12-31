@@ -213,8 +213,8 @@ func BenchmarkConcurrentSearchAndInsert(b *testing.B) {
 	}
 }
 
-// BenchmarkIDReuse measures performance of ID reuse after deletions
-func BenchmarkIDReuse(b *testing.B) {
+// BenchmarkInsertAfterDelete measures performance of insertions after deletions
+func BenchmarkInsertAfterDelete(b *testing.B) {
 	ctx := context.Background()
 	dim := 128
 	vectors := testutil.NewRNG(42).UniformVectors(2000, dim)
@@ -251,17 +251,16 @@ func BenchmarkIDReuse(b *testing.B) {
 			}
 		}
 
-		// Insert 500 more - these should reuse IDs
+		// Insert 500 more - these should NOT reuse IDs (ID Stability)
 		for j := 1000; j < 1500; j++ {
-			_, err := h.Insert(ctx, vectors[j])
+			id, err := h.Insert(ctx, vectors[j])
 			if err != nil {
 				b.Fatalf("Insert failed: %v", err)
 			}
-		}
-
-		// Verify free list is being used
-		if len(h.freeList) > 0 {
-			b.Errorf("Expected free list to be empty after reuse, got %d entries", len(h.freeList))
+			// IDs should be > 1000 (original set)
+			if id < 1000 {
+				b.Errorf("Expected new ID > 1000, got %d (ID reuse detected)", id)
+			}
 		}
 	}
 }

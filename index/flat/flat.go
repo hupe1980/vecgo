@@ -49,8 +49,7 @@ var DefaultOptions = Options{
 
 // indexState holds the immutable state of the index for lock-free reads.
 type indexState struct {
-	nodes    []*Node  // Nodes in the index (nil entries are tombstones)
-	freeList []uint64 // IDs available for reuse from deleted nodes
+	nodes []*Node // Nodes in the index (nil entries are tombstones)
 	// pqCodes stores encoded PQ codes indexed by vector ID.
 	// It is nil when PQ is disabled.
 	pqCodes [][]byte
@@ -79,7 +78,7 @@ func (f *Flat) Dimension() int {
 	return int(f.dimension.Load())
 }
 
-// AllocateID reserves a new ID from the free list or by extending the nodes slice.
+// AllocateID reserves a new ID by extending the nodes slice.
 // The reserved slot remains nil until ApplyInsert is called.
 func (f *Flat) AllocateID() uint64 {
 	f.writeMu.Lock()
@@ -89,22 +88,18 @@ func (f *Flat) AllocateID() uint64 {
 	newState := f.cloneState(oldState)
 
 	var id uint64
-	if len(newState.freeList) > 0 {
-		id = newState.freeList[len(newState.freeList)-1]
-		newState.freeList = newState.freeList[:len(newState.freeList)-1]
-	} else {
-		id = uint64(len(newState.nodes))
-		newState.nodes = append(newState.nodes, nil)
-		if newState.pqCodes != nil {
-			newState.pqCodes = append(newState.pqCodes, nil)
-		}
+	id = uint64(len(newState.nodes))
+	newState.nodes = append(newState.nodes, nil)
+	if newState.pqCodes != nil {
+		newState.pqCodes = append(newState.pqCodes, nil)
 	}
 
 	f.state.Store(newState)
 	return id
 }
 
-// ReleaseID returns a previously allocated but unused ID back to the free list.
+// ReleaseID marks an ID as unused.
+// Note: IDs are never reused (ID Stability), so this just clears the slot.
 func (f *Flat) ReleaseID(id uint64) {
 	f.writeMu.Lock()
 	defer f.writeMu.Unlock()
@@ -118,16 +113,7 @@ func (f *Flat) ReleaseID(id uint64) {
 		return
 	}
 
-	newState := f.cloneState(oldState)
-	// Avoid obvious duplicates (best-effort; ReleaseID is not on the hot path).
-	for _, free := range newState.freeList {
-		if free == id {
-			f.state.Store(newState)
-			return
-		}
-	}
-	newState.freeList = append(newState.freeList, id)
-	f.state.Store(newState)
+	// No-op: IDs are never reused to ensure stability.
 }
 
 // New creates a new instance of the flat index.
@@ -160,8 +146,7 @@ func New(optFns ...func(o *Options)) (*Flat, error) {
 
 	// Initialize state with empty slices
 	f.state.Store(&indexState{
-		nodes:    make([]*Node, 0),
-		freeList: make([]uint64, 0),
+		nodes: make([]*Node, 0),
 	})
 
 	return f, nil
@@ -177,9 +162,6 @@ func (f *Flat) cloneState(st *indexState) *indexState {
 	newNodes := make([]*Node, len(st.nodes))
 	copy(newNodes, st.nodes)
 
-	newFreeList := make([]uint64, len(st.freeList))
-	copy(newFreeList, st.freeList)
-
 	var newPQCodes [][]byte
 	if st.pqCodes != nil {
 		newPQCodes = make([][]byte, len(st.pqCodes))
@@ -187,9 +169,8 @@ func (f *Flat) cloneState(st *indexState) *indexState {
 	}
 
 	return &indexState{
-		nodes:    newNodes,
-		freeList: newFreeList,
-		pqCodes:  newPQCodes,
+		nodes:   newNodes,
+		pqCodes: newPQCodes,
 	}
 }
 
@@ -230,7 +211,7 @@ func (f *Flat) EnableProductQuantization(cfg index.ProductQuantizationConfig) er
 	defer f.writeMu.Unlock()
 
 	st := f.getState()
-	vectors := make([][]float32, 0, len(st.nodes)-len(st.freeList))
+	vectors := make([][]float32, 0, len(st.nodes))
 	for _, n := range st.nodes {
 		if n != nil {
 			v, ok := f.vectors.GetVector(n.ID)
@@ -313,39 +294,20 @@ func (f *Flat) Insert(ctx context.Context, v []float32) (uint64, error) {
 	newState := f.cloneState(oldState)
 	pq := f.pq.Load()
 
-	// Reuse ID from free list if available, otherwise allocate new
-	var id uint64
-	if len(newState.freeList) > 0 {
-		// Pop from free list
-		id = newState.freeList[len(newState.freeList)-1]
-		newState.freeList = newState.freeList[:len(newState.freeList)-1]
-		// Reuse slot
-		if err := f.vectors.SetVector(id, vec); err != nil {
-			return 0, err
+	// Allocate new ID
+	id := uint64(len(newState.nodes))
+	if err := f.vectors.SetVector(id, vec); err != nil {
+		return 0, err
+	}
+	newState.nodes = append(newState.nodes, &Node{ID: id})
+	if pq != nil {
+		if newState.pqCodes == nil {
+			newState.pqCodes = make([][]byte, 0, len(newState.nodes))
 		}
-		newState.nodes[id] = &Node{ID: id}
-		if pq != nil {
-			if newState.pqCodes == nil {
-				newState.pqCodes = make([][]byte, len(newState.nodes))
-			}
-			newState.pqCodes[id] = pq.Encode(vec)
+		for len(newState.pqCodes) < len(newState.nodes)-1 {
+			newState.pqCodes = append(newState.pqCodes, nil)
 		}
-	} else {
-		// Allocate new ID
-		id = uint64(len(newState.nodes))
-		if err := f.vectors.SetVector(id, vec); err != nil {
-			return 0, err
-		}
-		newState.nodes = append(newState.nodes, &Node{ID: id})
-		if pq != nil {
-			if newState.pqCodes == nil {
-				newState.pqCodes = make([][]byte, 0, len(newState.nodes))
-			}
-			for len(newState.pqCodes) < len(newState.nodes)-1 {
-				newState.pqCodes = append(newState.pqCodes, nil)
-			}
-			newState.pqCodes = append(newState.pqCodes, pq.Encode(vec))
-		}
+		newState.pqCodes = append(newState.pqCodes, pq.Encode(vec))
 	}
 
 	// Atomic swap to new state
@@ -402,22 +364,13 @@ func (f *Flat) ApplyInsert(ctx context.Context, id uint64, v []float32) error {
 			}
 			newState.pqCodes = append(newState.pqCodes, make([][]byte, newLen-oldLen)...)
 		}
-		// NOTE: Do NOT auto-generate freeList entries for gaps during WAL replay.
+		// NOTE: Do NOT auto-generate entries for gaps during WAL replay.
 		// WAL replay may be out of order; IDs that appear as gaps now may be
 		// inserted later. Only reuse IDs explicitly deleted in WAL.
 	}
 
 	if newState.nodes[id] != nil {
 		return fmt.Errorf("node %d already exists", id)
-	}
-
-	// Remove id from free list if present.
-	for i := 0; i < len(newState.freeList); i++ {
-		if newState.freeList[i] == id {
-			newState.freeList[i] = newState.freeList[len(newState.freeList)-1]
-			newState.freeList = newState.freeList[:len(newState.freeList)-1]
-			break
-		}
 	}
 
 	if err := f.vectors.SetVector(id, vec); err != nil {
@@ -474,7 +427,7 @@ func (f *Flat) VectorByID(ctx context.Context, id uint64) ([]float32, error) {
 
 // BatchInsert inserts multiple vectors into the flat index in a single operation.
 // This is more efficient than calling Insert multiple times as it acquires the lock once.
-// Note: BatchInsert reuses IDs from the freeList before allocating new IDs.
+// Note: BatchInsert appends new IDs.
 func (f *Flat) BatchInsert(ctx context.Context, vectors [][]float32) index.BatchInsertResult {
 	result := index.BatchInsertResult{
 		IDs:    make([]uint64, len(vectors)),
@@ -507,7 +460,7 @@ func (f *Flat) BatchInsert(ctx context.Context, vectors [][]float32) index.Batch
 		newState.pqCodes = make([][]byte, len(newState.nodes))
 	}
 
-	// Track next append ID (used after freeList is exhausted)
+	// Track next append ID
 	nextAppendID := uint64(len(newState.nodes))
 
 	for i, v := range vectors {
@@ -536,36 +489,19 @@ func (f *Flat) BatchInsert(ctx context.Context, vectors [][]float32) index.Batch
 			continue
 		}
 
-		// Reuse ID from freeList if available, otherwise allocate new
-		var id uint64
-		if len(newState.freeList) > 0 {
-			// Pop from free list
-			id = newState.freeList[len(newState.freeList)-1]
-			newState.freeList = newState.freeList[:len(newState.freeList)-1]
-			// Reuse slot
-			if err := f.vectors.SetVector(id, vec); err != nil {
-				result.Errors[i] = err
-				continue
+		// Allocate new ID
+		id := nextAppendID
+		nextAppendID++
+		if err := f.vectors.SetVector(id, vec); err != nil {
+			result.Errors[i] = err
+			continue
+		}
+		newState.nodes = append(newState.nodes, &Node{ID: id})
+		if pq != nil {
+			for len(newState.pqCodes) < len(newState.nodes)-1 {
+				newState.pqCodes = append(newState.pqCodes, nil)
 			}
-			newState.nodes[id] = &Node{ID: id}
-			if pq != nil {
-				newState.pqCodes[id] = pq.Encode(vec)
-			}
-		} else {
-			// Allocate new ID
-			id = nextAppendID
-			nextAppendID++
-			if err := f.vectors.SetVector(id, vec); err != nil {
-				result.Errors[i] = err
-				continue
-			}
-			newState.nodes = append(newState.nodes, &Node{ID: id})
-			if pq != nil {
-				for len(newState.pqCodes) < len(newState.nodes)-1 {
-					newState.pqCodes = append(newState.pqCodes, nil)
-				}
-				newState.pqCodes = append(newState.pqCodes, pq.Encode(vec))
-			}
+			newState.pqCodes = append(newState.pqCodes, pq.Encode(vec))
 		}
 		result.IDs[i] = id
 	}
@@ -605,17 +541,6 @@ func (f *Flat) Delete(ctx context.Context, id uint64) error {
 		newState.pqCodes[id] = nil
 	}
 
-	// Add ID to free list for reuse (avoid duplicates)
-	duplicateInFreeList := false
-	for _, free := range newState.freeList {
-		if free == id {
-			duplicateInFreeList = true
-			break
-		}
-	}
-	if !duplicateInFreeList {
-		newState.freeList = append(newState.freeList, id)
-	}
 	if f.vectors != nil {
 		_ = f.vectors.DeleteVector(id)
 	}
@@ -703,6 +628,15 @@ func (f *Flat) KNNSearch(ctx context.Context, q []float32, k int, opts *index.Se
 	return f.BruteSearch(ctx, q, k, filter)
 }
 
+// KNNSearchWithBuffer performs a K-nearest neighbor search and appends results to the provided buffer.
+func (f *Flat) KNNSearchWithBuffer(ctx context.Context, q []float32, k int, opts *index.SearchOptions, buf *[]index.SearchResult) error {
+	var filter func(id uint64) bool
+	if opts != nil && opts.Filter != nil {
+		filter = opts.Filter
+	}
+	return f.BruteSearchWithBuffer(ctx, q, k, filter, buf)
+}
+
 // KNNSearchStream returns an iterator over K-nearest neighbor search results.
 // Results are yielded in order from nearest to farthest.
 // The iterator supports early termination - stop iterating to cancel.
@@ -745,28 +679,37 @@ func (f *Flat) KNNSearchStream(ctx context.Context, q []float32, k int, opts *in
 // BruteSearch performs a brute-force search in the flat index.
 // This method is lock-free for reads using the copy-on-write pattern.
 func (f *Flat) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint64) bool) ([]index.SearchResult, error) {
-	if err := ctx.Err(); err != nil {
+	res := make([]index.SearchResult, 0, k)
+	if err := f.BruteSearchWithBuffer(ctx, query, k, filter, &res); err != nil {
 		return nil, err
+	}
+	return res, nil
+}
+
+// BruteSearchWithBuffer performs a brute-force search and appends results to the provided buffer.
+func (f *Flat) BruteSearchWithBuffer(ctx context.Context, query []float32, k int, filter func(id uint64) bool, buf *[]index.SearchResult) error {
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	currentState := f.getState()
 	currentDim := int(f.dimension.Load())
 
 	if k <= 0 {
-		return nil, index.ErrInvalidK
+		return index.ErrInvalidK
 	}
 	if len(currentState.nodes) == 0 {
-		return nil, nil
+		return nil
 	}
 	if currentDim > 0 && len(query) != currentDim {
-		return nil, &index.ErrDimensionMismatch{Expected: currentDim, Actual: len(query)}
+		return &index.ErrDimensionMismatch{Expected: currentDim, Actual: len(query)}
 	}
 
 	q := query
 	if f.opts.NormalizeVectors {
 		norm, ok := distance.NormalizeL2Copy(query)
 		if !ok {
-			return nil, fmt.Errorf("flat: cannot normalize zero query")
+			return fmt.Errorf("flat: cannot normalize zero query")
 		}
 		q = norm
 	}
@@ -800,13 +743,14 @@ func (f *Flat) BruteSearch(ctx context.Context, query []float32, k int, filter f
 			if f.vectors == nil {
 				continue
 			}
-			vec, ok := f.vectors.GetVector(node.ID)
+
+			v, ok := f.vectors.GetVector(node.ID)
 			if !ok {
 				continue
 			}
 
 			batchIDs = append(batchIDs, node.ID)
-			batchVectors = append(batchVectors, vec)
+			batchVectors = append(batchVectors, v)
 		}
 
 		// Compute all distances using single-pair SIMD
@@ -894,36 +838,23 @@ func (f *Flat) BruteSearch(ctx context.Context, query []float32, k int, filter f
 		}
 	}
 
-	results := make([]index.SearchResult, topCandidates.Len())
-	for i := topCandidates.Len() - 1; i >= 0; i-- {
+	// Extract results from heap
+	// Note: MaxHeap pops largest distance first, so we get results in descending order (farthest to nearest)
+	// We need to reverse them to get nearest to farthest.
+
+	startLen := len(*buf)
+	for topCandidates.Len() > 0 {
 		item := heap.Pop(topCandidates).(queue.PriorityQueueItem)
-		results[i] = index.SearchResult{ID: item.Node, Distance: item.Distance}
+		*buf = append(*buf, index.SearchResult{ID: item.Node, Distance: item.Distance})
 	}
-	return results, nil
-}
 
-// Shard interface implementation for sharded Flat indexes
-
-// VectorCount returns the number of vectors in THIS shard only.
-// For sharded indexes, total vectors = sum across all shards.
-func (f *Flat) VectorCount() int {
-	st := f.getState()
-	count := 0
-	for _, node := range st.nodes {
-		if node != nil {
-			count++
-		}
+	// Reverse the appended segment
+	res := *buf
+	for i, j := startLen, len(res)-1; i < j; i, j = i+1, j-1 {
+		res[i], res[j] = res[j], res[i]
 	}
-	return count
-}
 
-// ContainsID returns true if this shard owns the given ID.
-// Ownership is determined by hash-based partitioning: id % numShards == shardID
-func (f *Flat) ContainsID(id uint64) bool {
-	if f.numShards <= 1 {
-		return true // Non-sharded mode - owns all IDs
-	}
-	return int(id%uint64(f.numShards)) == f.shardID
+	return nil
 }
 
 // ShardID returns this shard's identifier (0-based).

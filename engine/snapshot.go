@@ -296,6 +296,9 @@ func LoadFromReaderWithCodec[T any](r io.ReadSeeker, c codec.Codec) (*Snapshot[T
 	if err := binary.Read(storeChecksumReader, binary.LittleEndian, &storeCount); err != nil {
 		return nil, fmt.Errorf("failed to read store count: %w", err)
 	}
+	if storeCount > (storeEntry.Len-8)/12 {
+		return nil, fmt.Errorf("store count %d exceeds max possible for section size %d", storeCount, storeEntry.Len)
+	}
 
 	dataStoreOut := NewMapStore[T]()
 	for i := uint64(0); i < storeCount; i++ {
@@ -350,6 +353,9 @@ func LoadFromReaderWithCodec[T any](r io.ReadSeeker, c codec.Codec) (*Snapshot[T
 	var metaCount uint64
 	if err := binary.Read(metaChecksumReader, binary.LittleEndian, &metaCount); err != nil {
 		return nil, fmt.Errorf("failed to read metadata count: %w", err)
+	}
+	if metaCount > (metaEntry.Len-8)/12 {
+		return nil, fmt.Errorf("metadata count %d exceeds max possible for section size %d", metaCount, metaEntry.Len)
 	}
 
 	metadataStoreOut := NewMapStore[metadata.Metadata]()

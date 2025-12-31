@@ -659,6 +659,21 @@ All indexes support **concurrent reads**:
 **Flat**: Read-only access to vectors (no locks needed)  
 **DiskANN**: mmap allows concurrent reads from OS page cache
 
+### HNSW Concurrency
+
+The HNSW implementation uses fine-grained locking and atomic operations to support high concurrency:
+
+- **Insertions**:
+    - Uses `atomic.Pointer` for node storage (lock-free reads).
+    - Uses sharded `sync.RWMutex` for connection updates (minimizes contention).
+    - Handles concurrent entry point updates via atomic CAS and retry loops.
+    - **Robustness**: Automatically retries if the entry point is deleted concurrently (`ErrEntryPointDeleted`).
+
+- **Searches**:
+    - Completely lock-free traversal (except for `visited` set pooling).
+    - Safe against concurrent deletions (tombstones are checked atomically).
+    - Uses `sync.Pool` for scratch buffers to avoid allocation.
+
 ### Write Concurrency
 
 **Single-Shard Mode**:

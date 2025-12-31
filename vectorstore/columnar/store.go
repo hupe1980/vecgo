@@ -86,6 +86,28 @@ func NewWithCapacity(dim, capacity int) *Store {
 	return s
 }
 
+// Reset clears the store for reuse.
+func (s *Store) Reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Reset data slice but keep capacity
+	data := s.data.Load()
+	if data != nil {
+		*data = (*data)[:0]
+	}
+
+	// Reset deleted bitmap
+	deleted := s.deleted.Load()
+	if deleted != nil {
+		*deleted = (*deleted)[:0]
+	}
+
+	s.count = 0
+	s.live = 0
+	s.versions = s.versions[:0]
+}
+
 // Dimension returns the vector dimensionality.
 func (s *Store) Dimension() int {
 	return int(s.dim)

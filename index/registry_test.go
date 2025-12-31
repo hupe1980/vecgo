@@ -25,6 +25,9 @@ func (m *MockIndex) Update(ctx context.Context, id uint64, v []float32) error { 
 func (m *MockIndex) KNNSearch(ctx context.Context, q []float32, k int, opts *SearchOptions) ([]SearchResult, error) {
 	return nil, nil
 }
+func (m *MockIndex) KNNSearchWithBuffer(ctx context.Context, q []float32, k int, opts *SearchOptions, buf *[]SearchResult) error {
+	return nil
+}
 func (m *MockIndex) KNNSearchStream(ctx context.Context, q []float32, k int, opts *SearchOptions) iter.Seq2[SearchResult, error] {
 	return func(yield func(SearchResult, error) bool) {}
 }

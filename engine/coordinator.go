@@ -81,6 +81,9 @@ type Coordinator[T any] interface {
 	// KNNSearch performs approximate K-nearest neighbor search.
 	KNNSearch(ctx context.Context, query []float32, k int, opts *index.SearchOptions) ([]index.SearchResult, error)
 
+	// KNNSearchWithBuffer performs approximate K-nearest neighbor search and appends results to the provided buffer.
+	KNNSearchWithBuffer(ctx context.Context, query []float32, k int, opts *index.SearchOptions, buf *[]index.SearchResult) error
+
 	// BruteSearch performs exact brute-force search with optional filter.
 	BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint64) bool) ([]index.SearchResult, error)
 
@@ -199,6 +202,16 @@ func New[T any](idx index.Index, dataStore Store[T], metaStore *metadata.Unified
 		stopCh:     make(chan struct{}),
 		syncWrite:  opts.syncWrite,
 		dimension:  opts.dimension,
+		scratchPool: &sync.Pool{
+			New: func() any {
+				return &txScratch{
+					indexResults:  make([]index.SearchResult, 0, 100),
+					memResults:    make([]index.SearchResult, 0, 100),
+					frozenResults: make([]index.SearchResult, 0, 100),
+					mergedResults: make([]index.SearchResult, 0, 100),
+				}
+			},
+		},
 	}
 	tx.flushCond = sync.NewCond(&tx.mu)
 

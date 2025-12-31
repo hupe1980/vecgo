@@ -7,6 +7,7 @@ import (
 	"iter"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -437,11 +438,19 @@ func (idx *Index) VectorByID(ctx context.Context, id uint64) ([]float32, error) 
 // KNNSearch performs k-nearest neighbor search with optional pre-filtering.
 // filter (in opts): Applied DURING graph traversal for correct recall and performance.
 func (idx *Index) KNNSearch(ctx context.Context, query []float32, k int, opts *index.SearchOptions) ([]index.SearchResult, error) {
+	var results []index.SearchResult
+	if err := idx.KNNSearchWithBuffer(ctx, query, k, opts, &results); err != nil {
+		return nil, err
+	}
+	return results, nil
+}
+
+func (idx *Index) KNNSearchWithBuffer(ctx context.Context, query []float32, k int, opts *index.SearchOptions, buf *[]index.SearchResult) error {
 	if len(query) != idx.dim {
-		return nil, &index.ErrDimensionMismatch{Expected: idx.dim, Actual: len(query)}
+		return &index.ErrDimensionMismatch{Expected: idx.dim, Actual: len(query)}
 	}
 	if k <= 0 {
-		return nil, index.ErrInvalidK
+		return index.ErrInvalidK
 	}
 
 	idx.mu.RLock()
@@ -503,7 +512,7 @@ func (idx *Index) KNNSearch(ctx context.Context, query []float32, k int, opts *i
 
 		// Use Zero-Alloc KNNSearchWithBuffer
 		if err := memTable.KNNSearchWithBuffer(ctx, query, k, &memOpts, &scratch.results); err != nil {
-			return nil, fmt.Errorf("diskann: memtable search: %w", err)
+			return fmt.Errorf("diskann: memtable search: %w", err)
 		}
 	}
 
@@ -515,30 +524,37 @@ func (idx *Index) KNNSearch(ctx context.Context, query []float32, k int, opts *i
 			// Note: We pass segmentFilter to exclude shadowed IDs
 			// We pass nil for distTable so Segment builds it if needed
 			if err := seg.SearchWithBuffer(ctx, query, k, nil, segmentFilter, &scratch.results); err != nil {
-				return nil, fmt.Errorf("diskann: segment search: %w", err)
+				return fmt.Errorf("diskann: segment search: %w", err)
 			}
 		}
 	}
 
 	// Merge and Deduplicate
 	// Sort by distance
-	sort.Slice(scratch.results, func(i, j int) bool {
-		return scratch.results[i].Distance < scratch.results[j].Distance
+	slices.SortFunc(scratch.results, func(a, b index.SearchResult) int {
+		if a.Distance < b.Distance {
+			return -1
+		}
+		if a.Distance > b.Distance {
+			return 1
+		}
+		return 0
 	})
 
 	// Deduplicate and take top-k
-	finalResults := make([]index.SearchResult, 0, k)
+	count := 0
 	for _, res := range scratch.results {
-		if len(finalResults) >= k {
+		if count >= k {
 			break
 		}
 		if _, ok := scratch.seen[res.ID]; !ok {
-			finalResults = append(finalResults, res)
+			*buf = append(*buf, res)
 			scratch.seen[res.ID] = struct{}{}
+			count++
 		}
 	}
 
-	return finalResults, nil
+	return nil
 }
 
 // BruteSearch performs a brute-force search on the index.

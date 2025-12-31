@@ -59,6 +59,10 @@ func (f *failingCoordinator[T]) KNNSearch(ctx context.Context, query []float32, 
 	return nil, f.err
 }
 
+func (f *failingCoordinator[T]) KNNSearchWithBuffer(ctx context.Context, query []float32, k int, opts *index.SearchOptions, buf *[]index.SearchResult) error {
+	return f.err
+}
+
 func (f *failingCoordinator[T]) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint64) bool) ([]index.SearchResult, error) {
 	return nil, f.err
 }
@@ -143,6 +147,15 @@ func (s *slowCoordinator[T]) KNNSearch(ctx context.Context, query []float32, k i
 		return nil, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
+	}
+}
+
+func (s *slowCoordinator[T]) KNNSearchWithBuffer(ctx context.Context, query []float32, k int, opts *index.SearchOptions, buf *[]index.SearchResult) error {
+	select {
+	case <-time.After(s.delay):
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 

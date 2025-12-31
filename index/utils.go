@@ -51,8 +51,26 @@ func MergeSearchResults(a, b []SearchResult, k int) []SearchResult {
 // MergeNSearchResults merges multiple sorted lists of SearchResult into a single sorted list of size k.
 // All input lists must be sorted by distance (ascending).
 func MergeNSearchResults(k int, lists ...[]SearchResult) []SearchResult {
+	res := make([]SearchResult, 0, k)
+	MergeNSearchResultsInto(&res, k, lists...)
+	return res
+}
+
+// MergeNSearchResultsInto merges multiple sorted lists of SearchResult into the provided buffer.
+// The buffer is cleared before merging.
+func MergeNSearchResultsInto(dst *[]SearchResult, k int, lists ...[]SearchResult) {
+	*dst = (*dst)[:0]
+
 	// Filter out empty lists
-	activeLists := make([][]SearchResult, 0, len(lists))
+	// We use a small fixed-size array to avoid allocation for common cases (up to 8 lists)
+	var activeListsBuf [8][]SearchResult
+	var activeLists [][]SearchResult
+	if len(lists) <= 8 {
+		activeLists = activeListsBuf[:0]
+	} else {
+		activeLists = make([][]SearchResult, 0, len(lists))
+	}
+
 	for _, l := range lists {
 		if len(l) > 0 {
 			activeLists = append(activeLists, l)
@@ -60,16 +78,21 @@ func MergeNSearchResults(k int, lists ...[]SearchResult) []SearchResult {
 	}
 
 	if len(activeLists) == 0 {
-		return nil
+		return
 	}
 	if len(activeLists) == 1 {
-		if len(activeLists[0]) > k {
-			return activeLists[0][:k]
+		l := activeLists[0]
+		if len(l) > k {
+			l = l[:k]
 		}
-		return activeLists[0]
+		*dst = append(*dst, l...)
+		return
 	}
+
+	// For 2 lists, use optimized merge
 	if len(activeLists) == 2 {
-		return MergeSearchResults(activeLists[0], activeLists[1], k)
+		mergeSearchResultsInto(dst, activeLists[0], activeLists[1], k)
+		return
 	}
 
 	// Use a min-heap for N-way merge
@@ -85,10 +108,9 @@ func MergeNSearchResults(k int, lists ...[]SearchResult) []SearchResult {
 		})
 	}
 
-	result := make([]SearchResult, 0, k)
-	for h.Len() > 0 && len(result) < k {
+	for h.Len() > 0 && len(*dst) < k {
 		item := heap.Pop(h).(mergeItem)
-		result = append(result, item.res)
+		*dst = append(*dst, item.res)
 
 		// Push next element from the same list
 		if item.elemIdx+1 < len(activeLists[item.listIdx]) {
@@ -99,8 +121,27 @@ func MergeNSearchResults(k int, lists ...[]SearchResult) []SearchResult {
 			})
 		}
 	}
+}
 
-	return result
+func mergeSearchResultsInto(dst *[]SearchResult, a, b []SearchResult, k int) {
+	i, j := 0, 0
+	for len(*dst) < k && (i < len(a) || j < len(b)) {
+		if i < len(a) && j < len(b) {
+			if a[i].Distance < b[j].Distance {
+				*dst = append(*dst, a[i])
+				i++
+			} else {
+				*dst = append(*dst, b[j])
+				j++
+			}
+		} else if i < len(a) {
+			*dst = append(*dst, a[i])
+			i++
+		} else {
+			*dst = append(*dst, b[j])
+			j++
+		}
+	}
 }
 
 type mergeItem struct {

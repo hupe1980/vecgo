@@ -76,8 +76,15 @@ func (f *Flat) WriteTo(w io.Writer) (int64, error) {
 	writer := persistence.NewBinaryIndexWriter(cw)
 
 	// Write file header
+	// Count active nodes (total - deleted)
+	activeCount := 0
+	for _, n := range st.nodes {
+		if n != nil {
+			activeCount++
+		}
+	}
 	header := &persistence.FileHeader{
-		VectorCount: uint64(len(st.nodes) - len(st.freeList)),
+		VectorCount: uint64(activeCount),
 		Dimension:   uint32(f.dimension.Load()),
 		IndexType:   persistence.IndexTypeFlat,
 		DataOffset:  64, // After header
@@ -98,17 +105,11 @@ func (f *Flat) WriteTo(w io.Writer) (int64, error) {
 		return cw.n, err
 	}
 
-	// Write freeList length and data
-	freeListLen := uint64(len(st.freeList))
+	// Write freeList length and data (Deprecated: Always 0)
 	buf8 := make([]byte, 8)
-	binary.LittleEndian.PutUint64(buf8, freeListLen)
+	binary.LittleEndian.PutUint64(buf8, 0)
 	if _, err := cw.Write(buf8); err != nil {
 		return cw.n, err
-	}
-	if freeListLen > 0 {
-		if err := writer.WriteUint64Slice(st.freeList); err != nil {
-			return cw.n, err
-		}
 	}
 
 	// Write node count
@@ -211,21 +212,21 @@ func (f *Flat) ReadFromWithOptions(r io.Reader, opts Options) error {
 	f.distanceFunc = index.NewDistanceFunc(f.opts.DistanceType)
 	f.vectors = columnar.New(int(header.Dimension))
 
-	// Read freeList
+	// Read freeList (Deprecated: Ignore)
 	freeListLenSlice, err := reader.ReadUint64Slice(1)
 	if err != nil {
 		return err
 	}
 	freeListLen := freeListLenSlice[0]
+	if freeListLen > 100_000_000 {
+		return fmt.Errorf("freeList length %d exceeds limit", freeListLen)
+	}
 
-	var freeList []uint64
 	if freeListLen > 0 {
-		freeList, err = reader.ReadUint64Slice(int(freeListLen))
-		if err != nil {
+		// Consume and discard free list data
+		if _, err := reader.ReadUint64Slice(int(freeListLen)); err != nil {
 			return err
 		}
-	} else {
-		freeList = []uint64{}
 	}
 
 	// Read node count
@@ -234,6 +235,9 @@ func (f *Flat) ReadFromWithOptions(r io.Reader, opts Options) error {
 		return err
 	}
 	nodeCount := nodeCountSlice[0]
+	if nodeCount > 100_000_000 {
+		return fmt.Errorf("node count %d exceeds limit", nodeCount)
+	}
 
 	// Read Markers
 	markers := make([]byte, nodeCount)
@@ -282,8 +286,7 @@ func (f *Flat) ReadFromWithOptions(r io.Reader, opts Options) error {
 
 	// Create new state and store it
 	newState := &indexState{
-		nodes:    nodes,
-		freeList: freeList,
+		nodes: nodes,
 	}
 	f.state.Store(newState)
 

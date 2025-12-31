@@ -8,11 +8,12 @@ import (
 
 // Stats returns statistics about the HNSW graph.
 func (h *HNSW) Stats() index.Stats {
+	g := h.currentGraph.Load()
 	// Count active vs deleted nodes
 	activeNodes := 0
 	deletedNodes := 0
 
-	nodes := h.nodes.Load()
+	nodes := g.nodes.Load()
 	numSegments := 0
 	if nodes != nil {
 		numSegments = len(*nodes)
@@ -32,11 +33,7 @@ func (h *HNSW) Stats() index.Stats {
 		}
 	}
 
-	h.freeListMu.Lock()
-	freeListSize := len(h.freeList)
-	h.freeListMu.Unlock()
-
-	maxLevel := int(h.maxLevelAtomic.Load())
+	maxLevel := int(g.maxLevelAtomic.Load())
 	levelStats := make([]int, maxLevel+1)
 	connectionStats := make([]int, maxLevel+1)
 	connectionNodeStats := make([]int, maxLevel+1)
@@ -97,10 +94,9 @@ func (h *HNSW) Stats() index.Stats {
 			"EF": fmt.Sprintf("%d", h.opts.EF),
 		},
 		Storage: map[string]string{
-			"VectorCount":  fmt.Sprintf("%d", activeNodes),
-			"Deleted":      fmt.Sprintf("%d", deletedNodes),
-			"FreeListSize": fmt.Sprintf("%d", freeListSize),
-			"Segments":     fmt.Sprintf("%d", numSegments),
+			"VectorCount": fmt.Sprintf("%d", activeNodes),
+			"Deleted":     fmt.Sprintf("%d", deletedNodes),
+			"Segments":    fmt.Sprintf("%d", numSegments),
 		},
 		Levels: levelStatsStructs,
 	}
@@ -110,5 +106,5 @@ func (h *HNSW) Stats() index.Stats {
 func (h *HNSW) String() string {
 	stats := h.Stats()
 	return fmt.Sprintf("HNSW(M=%s, EF=%s, Count=%s, Deleted=%s, MaxLevel=%d)",
-		stats.Parameters["M"], stats.Parameters["EF"], stats.Storage["VectorCount"], stats.Storage["Deleted"], h.maxLevelAtomic.Load())
+		stats.Parameters["M"], stats.Parameters["EF"], stats.Storage["VectorCount"], stats.Storage["Deleted"], h.currentGraph.Load().maxLevelAtomic.Load())
 }

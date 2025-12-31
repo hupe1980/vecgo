@@ -6,13 +6,9 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
-	"sync"
 	"time"
 
 	"github.com/hupe1980/vecgo/index"
-	"github.com/hupe1980/vecgo/internal/bitset"
-	"github.com/hupe1980/vecgo/internal/queue"
-	"github.com/hupe1980/vecgo/internal/visited"
 	"github.com/hupe1980/vecgo/persistence"
 	"github.com/hupe1980/vecgo/vectorstore/columnar"
 )
@@ -72,18 +68,17 @@ func LoadFromFile(filename string, opts Options) (*HNSW, error) {
 
 // WriteTo writes the HNSW index to a writer in binary format.
 func (h *HNSW) WriteTo(w io.Writer) (int64, error) {
-	h.freeListMu.Lock()
-	defer h.freeListMu.Unlock()
+	g := h.currentGraph.Load()
 
 	cw := &countingWriter{w: w}
 	writer := persistence.NewBinaryIndexWriter(cw)
 
 	// Calculate actual node count (max ID + 1)
-	nextID := h.nextIDAtomic.Load()
+	nextID := g.nextIDAtomic.Load()
 
 	// Write file header
 	header := &persistence.FileHeader{
-		VectorCount: uint64(int64(nextID) - int64(len(h.freeList))),
+		VectorCount: uint64(int64(nextID) - int64(g.tombstones.Count())),
 		Dimension:   uint32(h.dimensionAtomic.Load()),
 		IndexType:   persistence.IndexTypeHNSW,
 		DataOffset:  64, // After header
@@ -94,10 +89,10 @@ func (h *HNSW) WriteTo(w io.Writer) (int64, error) {
 
 	// Write HNSW metadata
 	metadata := &persistence.HNSWMetadata{
-		MaxLayers:    uint16(h.maxLevelAtomic.Load() + 1),
+		MaxLayers:    uint16(g.maxLevelAtomic.Load() + 1),
 		M:            uint16(h.maxConnectionsPerLayer),
 		Ml:           float32(h.layerMultiplier),
-		EntryPoint:   h.entryPointAtomic.Load(),
+		EntryPoint:   g.entryPointAtomic.Load(),
 		DistanceFunc: uint8(h.opts.DistanceType),
 		Flags: func() uint8 {
 			if h.opts.NormalizeVectors {
@@ -115,25 +110,19 @@ func (h *HNSW) WriteTo(w io.Writer) (int64, error) {
 		return cw.n, err
 	}
 
-	// Write freeList
-	freeListLen := uint64(len(h.freeList))
-	if err := binary.Write(cw, binary.LittleEndian, freeListLen); err != nil {
+	// Write freeList (Deprecated: Always 0)
+	if err := binary.Write(cw, binary.LittleEndian, uint64(0)); err != nil {
 		return cw.n, err
-	}
-	if freeListLen > 0 {
-		if err := writer.WriteUint64Slice(h.freeList); err != nil {
-			return cw.n, err
-		}
 	}
 
 	// Write Tombstones
-	if _, err := h.tombstones.WriteTo(cw); err != nil {
+	if _, err := g.tombstones.WriteTo(cw); err != nil {
 		return cw.n, err
 	}
 
 	// Write Graph Data
 	for id := uint64(0); id < nextID; id++ {
-		node := h.getNode(id)
+		node := h.getNode(g, id)
 		if node == nil {
 			// Deleted or unused ID
 			if err := binary.Write(cw, binary.LittleEndian, int32(-1)); err != nil {
@@ -231,23 +220,17 @@ func (h *HNSW) ReadFromWithOptions(r io.Reader, opts Options) error {
 	h.maxConnectionsLayer0 = 2 * int(metadata.M)
 	h.layerMultiplier = float64(metadata.Ml)
 	h.dimensionAtomic.Store(int32(header.Dimension))
-	h.entryPointAtomic.Store(metadata.EntryPoint)
-	h.maxLevelAtomic.Store(int32(metadata.MaxLayers) - 1)
+
+	g := newGraph()
+	h.currentGraph.Store(g)
+
+	g.entryPointAtomic.Store(metadata.EntryPoint)
+	g.maxLevelAtomic.Store(int32(metadata.MaxLayers) - 1)
 
 	// Initialize runtime fields
 	h.distanceFunc = index.NewDistanceFunc(h.opts.DistanceType)
-	h.growNodes(0)
-	h.shardedLocks = make([]sync.RWMutex, 1024)
-	h.minQueuePool = &sync.Pool{
-		New: func() any { return queue.NewMin(h.opts.EF) },
-	}
-	h.maxQueuePool = &sync.Pool{
-		New: func() any { return queue.NewMax(h.opts.EF) },
-	}
-	h.visitedPool = &sync.Pool{
-		New: func() any { return visited.New(1024) },
-	}
-	h.tombstones = bitset.New(1024)
+	h.growNodes(g, 0)
+	h.initPools()
 
 	if h.opts.RandomSeed != nil {
 		h.rng = rand.New(rand.NewSource(*h.opts.RandomSeed))
@@ -266,34 +249,32 @@ func (h *HNSW) ReadFromWithOptions(r io.Reader, opts Options) error {
 	if err != nil {
 		return err
 	}
-	h.nextIDAtomic.Store(nextIDSlice[0])
-	h.tombstones.Grow(nextIDSlice[0])
+	g.nextIDAtomic.Store(nextIDSlice[0])
+	g.tombstones.Grow(nextIDSlice[0])
 
-	// Read freeList
+	// Read freeList (Deprecated: Ignore)
 	freeListLenSlice, err := reader.ReadUint64Slice(1)
 	if err != nil {
 		return err
 	}
 	freeListLen := freeListLenSlice[0]
 	if freeListLen > 0 {
-		h.freeList, err = reader.ReadUint64Slice(int(freeListLen))
-		if err != nil {
+		// Consume and discard free list data
+		if _, err := reader.ReadUint64Slice(int(freeListLen)); err != nil {
 			return err
 		}
-	} else {
-		h.freeList = []uint64{}
 	}
 
 	// Read Tombstones
-	if _, err := h.tombstones.ReadFrom(cr); err != nil {
+	if _, err := g.tombstones.ReadFrom(cr); err != nil {
 		return err
 	}
 
 	// Set countAtomic
-	h.countAtomic.Store(int64(h.nextIDAtomic.Load()) - int64(len(h.freeList)) - int64(h.tombstones.Count()))
+	g.countAtomic.Store(int64(g.nextIDAtomic.Load()) - int64(g.tombstones.Count()))
 
 	// Read Graph Data
-	nextID := h.nextIDAtomic.Load()
+	nextID := g.nextIDAtomic.Load()
 	for id := uint64(0); id < nextID; id++ {
 		var level int32
 		if err := binary.Read(cr, binary.LittleEndian, &level); err != nil {
@@ -305,7 +286,7 @@ func (h *HNSW) ReadFromWithOptions(r io.Reader, opts Options) error {
 		}
 
 		node := newNode(int(level))
-		h.setNode(id, node)
+		h.setNode(g, id, node)
 
 		for layer := 0; layer <= int(level); layer++ {
 			var count uint32
@@ -342,23 +323,6 @@ func (h *HNSW) ReadFromWithOptions(r io.Reader, opts Options) error {
 		if err := h.vectors.SetVector(id, vecCopy); err != nil {
 			return err
 		}
-	}
-
-	// Initialize pools
-	h.minQueuePool = &sync.Pool{
-		New: func() any {
-			return queue.NewMin(h.opts.EF)
-		},
-	}
-	h.maxQueuePool = &sync.Pool{
-		New: func() any {
-			return queue.NewMax(h.opts.EF)
-		},
-	}
-	h.visitedPool = &sync.Pool{
-		New: func() any {
-			return visited.New(1024)
-		},
 	}
 
 	return nil

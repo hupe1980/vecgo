@@ -60,17 +60,19 @@ func TestBinaryPersistence_SaveLoad(t *testing.T) {
 	}
 
 	// Verify each vector
-	nextID := h.nextIDAtomic.Load()
+	g := h.currentGraph.Load()
+	loadedG := loaded.currentGraph.Load()
+	nextID := g.nextIDAtomic.Load()
 	for i := uint64(0); i < nextID; i++ {
-		originalNode := h.getNode(i)
+		originalNode := h.getNode(g, i)
 		if originalNode == nil {
-			if loaded.getNode(i) != nil {
+			if loaded.getNode(loadedG, i) != nil {
 				t.Errorf("Node %d should be nil", i)
 			}
 			continue
 		}
 
-		loadedNode := loaded.getNode(i)
+		loadedNode := loaded.getNode(loadedG, i)
 		if loadedNode == nil {
 			t.Errorf("Node %d should not be nil", i)
 			continue
@@ -207,17 +209,19 @@ func TestBinaryPersistence_MmapLoad(t *testing.T) {
 	}
 
 	// Verify each vector
-	nextID := h.nextIDAtomic.Load()
+	g := h.currentGraph.Load()
+	loadedG := loaded.currentGraph.Load()
+	nextID := g.nextIDAtomic.Load()
 	for i := uint64(0); i < nextID; i++ {
-		originalNode := h.getNode(i)
+		originalNode := h.getNode(g, i)
 		if originalNode == nil {
-			if loaded.getNode(i) != nil {
+			if loaded.getNode(loadedG, i) != nil {
 				t.Errorf("Node %d should be nil", i)
 			}
 			continue
 		}
 
-		loadedNode := loaded.getNode(i)
+		loadedNode := loaded.getNode(loadedG, i)
 		if loadedNode == nil {
 			t.Errorf("Node %d should not be nil", i)
 			continue
