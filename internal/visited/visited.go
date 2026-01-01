@@ -50,6 +50,14 @@ func (v *VisitedSet) Reset() {
 	v.dirty = v.dirty[:0]
 }
 
+// EnsureCapacity ensures the visited set can hold at least the given number of nodes.
+func (v *VisitedSet) EnsureCapacity(capacity int) {
+	wordIdx := (capacity + 63) / 64
+	if wordIdx > len(v.bits) {
+		v.grow(wordIdx)
+	}
+}
+
 func (v *VisitedSet) grow(newLen int) {
 	currentLen := len(v.bits)
 	newCap := currentLen * 2

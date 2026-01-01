@@ -18,6 +18,7 @@ import (
 	"github.com/hupe1980/vecgo/internal/bitset"
 	"github.com/hupe1980/vecgo/internal/core"
 	"github.com/hupe1980/vecgo/internal/queue"
+	"github.com/hupe1980/vecgo/internal/search"
 	"github.com/hupe1980/vecgo/vectorstore"
 	"github.com/hupe1980/vecgo/vectorstore/columnar"
 )
@@ -122,10 +123,7 @@ type HNSW struct {
 	numShards int
 
 	// Resources
-	minQueuePool *sync.Pool
-	maxQueuePool *sync.Pool
-	visitedPool  *sync.Pool
-	scratchPool  *sync.Pool
+	scratchPool *sync.Pool
 }
 
 type scratch struct {
@@ -240,15 +238,6 @@ func (h *HNSW) newNode(g *graph, level int) (*Node, error) {
 }
 
 func (h *HNSW) initPools() {
-	h.minQueuePool = &sync.Pool{
-		New: func() any { return queue.NewMin(h.opts.EF) },
-	}
-	h.maxQueuePool = &sync.Pool{
-		New: func() any { return queue.NewMax(h.opts.EF) },
-	}
-	h.visitedPool = &sync.Pool{
-		New: func() any { return bitset.NewFast(1024) },
-	}
 	h.scratchPool = &sync.Pool{
 		New: func() any {
 			return &scratch{
@@ -352,6 +341,23 @@ func (h *HNSW) getConnections(g *graph, id uint64, layer int) []Neighbor {
 	return res
 }
 
+// visitConnections iterates over the connections of a node without allocating a slice.
+// It returns true if the iteration completed, or false if the callback stopped it.
+func (h *HNSW) visitConnections(g *graph, id uint64, layer int, callback func(Neighbor) bool) {
+	node := h.getNode(g, id)
+	if node == nil {
+		return
+	}
+
+	count := node.GetCount(g.arena, layer, h.maxConnectionsPerLayer, h.maxConnectionsLayer0)
+	for i := 0; i < count; i++ {
+		n := node.GetConnection(g.arena, layer, i, h.maxConnectionsPerLayer, h.maxConnectionsLayer0)
+		if !callback(n) {
+			return
+		}
+	}
+}
+
 func (h *HNSW) setConnections(g *graph, id uint64, layer int, conns []Neighbor) {
 	node := h.getNode(g, id)
 	if node == nil {
@@ -364,7 +370,7 @@ func (h *HNSW) setConnections(g *graph, id uint64, layer int, conns []Neighbor) 
 	}
 }
 
-func (h *HNSW) addConnection(g *graph, sourceID, targetID uint64, level int, dist float32) {
+func (h *HNSW) addConnection(s *search.Searcher, scratch *scratch, g *graph, sourceID, targetID uint64, level int, dist float32) {
 	g.shardedLocks[sourceID%uint64(len(g.shardedLocks))].Lock()
 	defer g.shardedLocks[sourceID%uint64(len(g.shardedLocks))].Unlock()
 
@@ -419,9 +425,8 @@ func (h *HNSW) addConnection(g *graph, sourceID, targetID uint64, level int, dis
 		h.setConnections(g, sourceID, level, newConns)
 	} else {
 		// Prune
-		candidates := h.maxQueuePool.Get().(*queue.PriorityQueue)
+		candidates := s.Candidates
 		candidates.Reset()
-		defer h.maxQueuePool.Put(candidates)
 
 		// Add existing - use cached distances!
 		for _, c := range conns {
@@ -431,7 +436,6 @@ func (h *HNSW) addConnection(g *graph, sourceID, targetID uint64, level int, dis
 		candidates.PushItem(queue.PriorityQueueItem{Node: targetID, Distance: dist})
 
 		// Use scratch for selectNeighbors
-		scratch := h.scratchPool.Get().(*scratch)
 		neighbors := h.selectNeighbors(candidates, maxM, scratch)
 
 		// Allocate final slice with capacity maxM
@@ -439,8 +443,6 @@ func (h *HNSW) addConnection(g *graph, sourceID, targetID uint64, level int, dis
 		for i, n := range neighbors {
 			finalConns[i] = Neighbor{ID: core.LocalID(n.Node), Dist: n.Distance}
 		}
-
-		h.scratchPool.Put(scratch)
 
 		h.setConnections(g, sourceID, level, finalConns)
 	}
@@ -691,6 +693,11 @@ func (h *HNSW) insertNode(g *graph, id uint64, vec []float32, layer int) error {
 	currID := epID
 	currDist := h.dist(vec, currID)
 
+	// Acquire Searcher
+	maxID := int(g.nextIDAtomic.Load())
+	s := search.AcquireSearcher(maxID, h.opts.Dimension)
+	defer search.ReleaseSearcher(s)
+
 	// 1. Greedy search from top to node.Layer + 1
 	maxLevel := int(g.maxLevelAtomic.Load())
 	for level := maxLevel; level > layer; level-- {
@@ -715,10 +722,8 @@ func (h *HNSW) insertNode(g *graph, id uint64, vec []float32, layer int) error {
 
 	for level := min(layer, maxLevel); level >= 0; level-- {
 		// Search layer (no filtering during insertion)
-		candidates, err := h.searchLayer(g, vec, currID, currDist, level, h.opts.EF, nil)
-		if err != nil {
-			return err
-		}
+		h.searchLayer(s, g, vec, currID, currDist, level, h.opts.EF, nil)
+		candidates := s.Candidates
 
 		// Update entry point for next level
 		if best, ok := candidates.MinItem(); ok {
@@ -734,10 +739,6 @@ func (h *HNSW) insertNode(g *graph, id uint64, vec []float32, layer int) error {
 
 		neighbors := h.selectNeighbors(candidates, maxConns, scratch)
 
-		// Put back candidates (results from searchLayer)
-		candidates.Reset()
-		h.maxQueuePool.Put(candidates)
-
 		// Extract IDs for setConnections
 		neighborConns := make([]Neighbor, len(neighbors))
 		for i, n := range neighbors {
@@ -750,7 +751,7 @@ func (h *HNSW) insertNode(g *graph, id uint64, vec []float32, layer int) error {
 		g.shardedLocks[id%uint64(len(g.shardedLocks))].Unlock()
 
 		for _, neighbor := range neighbors {
-			h.addConnection(g, neighbor.Node, id, level, neighbor.Distance)
+			h.addConnection(s, scratch, g, neighbor.Node, id, level, neighbor.Distance)
 		}
 	}
 
@@ -864,22 +865,17 @@ func (h *HNSW) selectNeighborsHeuristic(candidates *queue.PriorityQueue, m int, 
 // 1. Correct recall (returns k results if available, not fewer)
 // 2. Less wasted computation (skips filtered regions)
 // 3. Matches exact search behavior
-func (h *HNSW) searchLayer(g *graph, query []float32, epID uint64, epDist float32, level int, ef int, filter func(uint64) bool) (*queue.PriorityQueue, error) {
-	visited := h.visitedPool.Get().(*bitset.FastBitSet)
+func (h *HNSW) searchLayer(s *search.Searcher, g *graph, query []float32, epID uint64, epDist float32, level int, ef int, filter func(uint64) bool) {
+	visited := s.Visited
 	visited.Reset()
-	defer h.visitedPool.Put(visited)
 
-	candidates := h.minQueuePool.Get().(*queue.PriorityQueue) // MinHeap: stores best candidates to explore
+	candidates := s.ScratchCandidates // MinHeap: stores best candidates to explore
 	candidates.Reset()
-	defer func() {
-		candidates.Reset()
-		h.minQueuePool.Put(candidates)
-	}()
 
-	results := h.maxQueuePool.Get().(*queue.PriorityQueue) // MaxHeap: stores current top EF results
-	results.Reset()                                        // Caller must put back
+	results := s.Candidates // MaxHeap: stores current top EF results
+	results.Reset()
 
-	visited.Set(epID)
+	visited.Visit(epID)
 
 	// CRITICAL: Always add entry point to candidates for navigation (even if filtered)
 	// This ensures we have a starting point for graph traversal
@@ -901,10 +897,9 @@ func (h *HNSW) searchLayer(g *graph, query []float32, epID uint64, epDist float3
 			}
 		}
 
-		conns := h.getConnections(g, curr.Node, level)
-		for _, next := range conns {
-			if !visited.Test(uint64(next.ID)) {
-				visited.Set(uint64(next.ID))
+		h.visitConnections(g, curr.Node, level, func(next Neighbor) bool {
+			if !visited.Visited(uint64(next.ID)) {
+				visited.Visit(uint64(next.ID))
 
 				nextDist := h.dist(query, uint64(next.ID))
 
@@ -932,10 +927,9 @@ func (h *HNSW) searchLayer(g *graph, query []float32, epID uint64, epDist float3
 					}
 				}
 			}
-		}
+			return true
+		})
 	}
-
-	return results, nil
 }
 
 // dist computes distance between vector and node ID.
@@ -1024,20 +1018,21 @@ func (h *HNSW) KNNSearchWithBuffer(ctx context.Context, q []float32, k int, opts
 	g.arena.IncRef()
 	defer g.arena.DecRef()
 
-	// Get scratch buffer
-	scratch := h.scratchPool.Get().(*scratch)
-	defer h.scratchPool.Put(scratch)
+	// Acquire Searcher
+	maxID := int(g.nextIDAtomic.Load())
+	s := search.AcquireSearcher(maxID, h.opts.Dimension)
+	defer search.ReleaseSearcher(s)
 
 	// Normalize
 	if h.opts.NormalizeVectors {
-		if len(scratch.floats) < len(q) {
-			scratch.floats = make([]float32, len(q))
+		if len(s.ScratchVec) < len(q) {
+			s.ScratchVec = make([]float32, len(q))
 		}
-		copy(scratch.floats, q)
-		if !distance.NormalizeL2InPlace(scratch.floats) {
+		copy(s.ScratchVec, q)
+		if !distance.NormalizeL2InPlace(s.ScratchVec) {
 			return fmt.Errorf("hnsw: zero query vector")
 		}
-		q = scratch.floats
+		q = s.ScratchVec
 	}
 
 	epID := g.entryPointAtomic.Load()
@@ -1053,6 +1048,9 @@ func (h *HNSW) KNNSearchWithBuffer(ctx context.Context, q []float32, k int, opts
 		ef = k
 	}
 
+	// Ensure queues have sufficient capacity
+	s.EnsureQueueCapacity(ef)
+
 	// 1. Greedy to layer 0
 	currID := epID
 	currDist := h.dist(q, currID)
@@ -1062,15 +1060,15 @@ func (h *HNSW) KNNSearchWithBuffer(ctx context.Context, q []float32, k int, opts
 		changed := true
 		for changed {
 			changed = false
-			conns := h.getConnections(g, currID, level)
-			for _, next := range conns {
+			h.visitConnections(g, currID, level, func(next Neighbor) bool {
 				nextDist := h.dist(q, uint64(next.ID))
 				if nextDist < currDist {
 					currID = uint64(next.ID)
 					currDist = nextDist
 					changed = true
 				}
-			}
+				return true
+			})
 		}
 	}
 
@@ -1080,11 +1078,8 @@ func (h *HNSW) KNNSearchWithBuffer(ctx context.Context, q []float32, k int, opts
 		filter = opts.Filter
 	}
 
-	results, err := h.searchLayer(g, q, currID, currDist, 0, ef, filter)
-	if err != nil {
-		return err
-	}
-	defer func() { results.Reset(); h.maxQueuePool.Put(results) }()
+	h.searchLayer(s, g, q, currID, currDist, 0, ef, filter)
+	results := s.Candidates
 
 	// Extract K (filter is already applied during traversal)
 	// MaxHeap pops worst first, so we need to pop (Len-k) items first
@@ -1093,16 +1088,17 @@ func (h *HNSW) KNNSearchWithBuffer(ctx context.Context, q []float32, k int, opts
 	}
 
 	// Collect results in reverse order (nearest first)
-	// We use scratch.results as a temporary stack to reverse
-	scratch.results = scratch.results[:0]
+	// We append to buf, then reverse the new segment
+	startIdx := len(*buf)
 	for results.Len() > 0 {
 		item, _ := results.PopItem()
-		scratch.results = append(scratch.results, index.SearchResult{ID: item.Node, Distance: item.Distance})
+		*buf = append(*buf, index.SearchResult{ID: item.Node, Distance: item.Distance})
 	}
 
-	// Append to output buffer in correct order
-	for i := len(scratch.results) - 1; i >= 0; i-- {
-		*buf = append(*buf, scratch.results[i])
+	// Reverse the appended segment
+	endIdx := len(*buf) - 1
+	for i := 0; i < (endIdx-startIdx+1)/2; i++ {
+		(*buf)[startIdx+i], (*buf)[endIdx-i] = (*buf)[endIdx-i], (*buf)[startIdx+i]
 	}
 
 	return nil
@@ -1116,22 +1112,25 @@ func (h *HNSW) KNNSearchStream(ctx context.Context, q []float32, k int, opts *in
 			return
 		}
 		g := h.currentGraph.Load()
+		g.arena.IncRef()
+		defer g.arena.DecRef()
 
-		// Get scratch buffer
-		scratch := h.scratchPool.Get().(*scratch)
-		defer h.scratchPool.Put(scratch)
+		// Acquire Searcher
+		maxID := int(g.nextIDAtomic.Load())
+		s := search.AcquireSearcher(maxID, h.opts.Dimension)
+		defer search.ReleaseSearcher(s)
 
 		// Normalize
 		if h.opts.NormalizeVectors {
-			if len(scratch.floats) < len(q) {
-				scratch.floats = make([]float32, len(q))
+			if len(s.ScratchVec) < len(q) {
+				s.ScratchVec = make([]float32, len(q))
 			}
-			copy(scratch.floats, q)
-			if !distance.NormalizeL2InPlace(scratch.floats) {
+			copy(s.ScratchVec, q)
+			if !distance.NormalizeL2InPlace(s.ScratchVec) {
 				yield(index.SearchResult{}, fmt.Errorf("hnsw: zero query vector"))
 				return
 			}
-			q = scratch.floats
+			q = s.ScratchVec
 		}
 
 		epID := g.entryPointAtomic.Load()
@@ -1147,6 +1146,9 @@ func (h *HNSW) KNNSearchStream(ctx context.Context, q []float32, k int, opts *in
 			ef = k
 		}
 
+		// Ensure queues have sufficient capacity
+		s.EnsureQueueCapacity(ef)
+
 		// 1. Greedy to layer 0
 		currID := epID
 		currDist := h.dist(q, currID)
@@ -1156,15 +1158,15 @@ func (h *HNSW) KNNSearchStream(ctx context.Context, q []float32, k int, opts *in
 			changed := true
 			for changed {
 				changed = false
-				conns := h.getConnections(g, currID, level)
-				for _, next := range conns {
+				h.visitConnections(g, currID, level, func(next Neighbor) bool {
 					nextDist := h.dist(q, uint64(next.ID))
 					if nextDist < currDist {
 						currID = uint64(next.ID)
 						currDist = nextDist
 						changed = true
 					}
-				}
+					return true
+				})
 			}
 		}
 
@@ -1174,34 +1176,25 @@ func (h *HNSW) KNNSearchStream(ctx context.Context, q []float32, k int, opts *in
 			filter = opts.Filter
 		}
 
-		results, err := h.searchLayer(g, q, currID, currDist, 0, ef, filter)
-		if err != nil {
-			yield(index.SearchResult{}, err)
-			return
-		}
-		defer func() { results.Reset(); h.maxQueuePool.Put(results) }()
+		h.searchLayer(s, g, q, currID, currDist, 0, ef, filter)
+		results := s.Candidates
 
 		// Extract K
-		count := results.Len()
-		if count > k {
-			count = k
-		}
-
 		// MaxHeap pops worst first, so we need to pop (Len-k) items first
 		for results.Len() > k {
 			_, _ = results.PopItem()
 		}
 
 		// Collect results in reverse order (nearest first)
-		scratch.results = scratch.results[:0]
+		tempResults := make([]index.SearchResult, 0, k)
 		for results.Len() > 0 {
 			item, _ := results.PopItem()
-			scratch.results = append(scratch.results, index.SearchResult{ID: item.Node, Distance: item.Distance})
+			tempResults = append(tempResults, index.SearchResult{ID: item.Node, Distance: item.Distance})
 		}
 
-		// Yield in reverse (since we popped worst first, the last item in scratch.results is the best)
-		for i := len(scratch.results) - 1; i >= 0; i-- {
-			if !yield(scratch.results[i], nil) {
+		// Yield in reverse (since we popped worst first, the last item in tempResults is the best)
+		for i := len(tempResults) - 1; i >= 0; i-- {
+			if !yield(tempResults[i], nil) {
 				return
 			}
 		}

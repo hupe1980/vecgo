@@ -177,6 +177,90 @@ func (ui *UnifiedIndex) removeFromIndexLocked(id uint64, doc InternedDocument) {
 	}
 }
 
+// RLock locks the index for reading.
+func (ui *UnifiedIndex) RLock() {
+	ui.mu.RLock()
+}
+
+// RUnlock unlocks the index for reading.
+func (ui *UnifiedIndex) RUnlock() {
+	ui.mu.RUnlock()
+}
+
+// CreateStreamingFilter creates a filter function that checks the index without allocating intermediate bitmaps.
+// The caller MUST hold the read lock (RLock) while using the returned function.
+func (ui *UnifiedIndex) CreateStreamingFilter(fs *FilterSet) func(uint64) bool {
+	if fs == nil || len(fs.Filters) == 0 {
+		return func(uint64) bool { return true }
+	}
+
+	// Pre-resolve bitmaps for supported operators
+	var checks []func(uint64) bool
+
+	for _, filter := range fs.Filters {
+		switch filter.Operator {
+		case OpEqual:
+			// Fast path: check bitmap directly
+			bitmap := ui.getBitmapLocked(filter.Key, filter.Value)
+			if bitmap == nil {
+				// No matches for this filter -> AND implies no matches at all
+				return func(uint64) bool { return false }
+			}
+			checks = append(checks, func(id uint64) bool {
+				return bitmap.Contains(id)
+			})
+
+		case OpIn:
+			// Check if ID is in ANY of the bitmaps
+			arr, ok := filter.Value.AsArray()
+			if !ok {
+				return func(uint64) bool { return false }
+			}
+
+			var bitmaps []*Bitmap
+			for _, v := range arr {
+				if b := ui.getBitmapLocked(filter.Key, v); b != nil {
+					bitmaps = append(bitmaps, b)
+				}
+			}
+
+			if len(bitmaps) == 0 {
+				return func(uint64) bool { return false }
+			}
+
+			checks = append(checks, func(id uint64) bool {
+				for _, b := range bitmaps {
+					if b.Contains(id) {
+						return true
+					}
+				}
+				return false
+			})
+
+		default:
+			// Fallback for unsupported operators: check document
+			// This is slow but necessary
+			f := filter // capture loop variable
+			checks = append(checks, func(id uint64) bool {
+				doc, ok := ui.documents[id]
+				if !ok {
+					return false
+				}
+				return f.MatchesInterned(doc)
+			})
+		}
+	}
+
+	return func(id uint64) bool {
+		for _, check := range checks {
+			if !check(id) {
+				return false
+			}
+		}
+		return true
+	}
+}
+
 // CompileFilter compiles a FilterSet into a fast bitmap-based filter.
 // Returns a bitmap of matching IDs, or nil if compilation fails.
 //

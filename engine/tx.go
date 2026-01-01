@@ -838,15 +838,15 @@ func (tx *Tx[T]) HybridSearch(ctx context.Context, query []float32, k int, opts 
 	}
 
 	// Create metadata filter function
-	metadataFilter := func(id uint64) bool {
-		meta, ok := tx.metaStore.Get(id)
-		if !ok {
-			return false
-		}
-		return opts.MetadataFilters.Matches(meta)
-	}
+	var metadataFilter func(uint64) bool
+
 	if tx.metaStore != nil {
-		metadataFilter = tx.metaStore.CreateFilterFunc(opts.MetadataFilters)
+		tx.metaStore.RLock()
+		defer tx.metaStore.RUnlock()
+		metadataFilter = tx.metaStore.CreateStreamingFilter(opts.MetadataFilters)
+	} else {
+		// Should not happen if initialized correctly, but safe fallback
+		return []index.SearchResult{}, nil
 	}
 
 	if opts.PreFilter {

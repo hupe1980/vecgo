@@ -7,6 +7,7 @@ import (
 
 	"github.com/hupe1980/vecgo/internal/core"
 	"github.com/hupe1980/vecgo/internal/queue"
+	"github.com/hupe1980/vecgo/internal/search"
 )
 
 // Compact removes deleted nodes from the graph connections and attempts to repair connectivity.
@@ -32,6 +33,11 @@ func (h *HNSW) Compact(ctx context.Context) error {
 
 		worker := func() {
 			defer wg.Done()
+			s := search.AcquireSearcher(int(maxID), h.opts.Dimension)
+			defer search.ReleaseSearcher(s)
+			scratch := h.scratchPool.Get().(*scratch)
+			defer h.scratchPool.Put(scratch)
+
 			for id := range jobs {
 				if ctx.Err() != nil {
 					return
@@ -41,7 +47,7 @@ func (h *HNSW) Compact(ctx context.Context) error {
 					continue
 				}
 				// Repair active nodes, keeping tombstones
-				h.reconcileNode(ctx, g, id)
+				h.reconcileNode(s, scratch, ctx, g, id)
 			}
 		}
 
@@ -157,7 +163,7 @@ func (h *HNSW) Compact(ctx context.Context) error {
 // reconcileNode checks if an active node needs repair (due to deleted neighbors).
 // If so, it finds new active neighbors and appends them to the connection list,
 // preserving the deleted neighbors as bridges.
-func (h *HNSW) reconcileNode(ctx context.Context, g *graph, id uint64) {
+func (h *HNSW) reconcileNode(s *search.Searcher, scratch *scratch, ctx context.Context, g *graph, id uint64) {
 	// Step 1: Check if repair is needed (Read-only check)
 	needsRepair, layersToRepair := h.checkRepairNeeded(g, id)
 	if !needsRepair {
@@ -178,10 +184,6 @@ func (h *HNSW) reconcileNode(ctx context.Context, g *graph, id uint64) {
 		return
 	}
 
-	// Get scratch buffer
-	scratch := h.scratchPool.Get().(*scratch)
-	defer h.scratchPool.Put(scratch)
-
 	// Greedy descent to node.Level
 	epID := g.entryPointAtomic.Load()
 	maxLevel := int(g.maxLevelAtomic.Load())
@@ -192,8 +194,7 @@ func (h *HNSW) reconcileNode(ctx context.Context, g *graph, id uint64) {
 		changed := true
 		for changed {
 			changed = false
-			conns := h.getConnections(g, currID, level)
-			for _, neighbor := range conns {
+			h.visitConnections(g, currID, level, func(neighbor Neighbor) bool {
 				nextID := uint64(neighbor.ID)
 				d := h.dist(vec, nextID)
 				if d < currDist {
@@ -201,7 +202,8 @@ func (h *HNSW) reconcileNode(ctx context.Context, g *graph, id uint64) {
 					currID = nextID
 					changed = true
 				}
-			}
+				return true
+			})
 		}
 	}
 
@@ -209,11 +211,11 @@ func (h *HNSW) reconcileNode(ctx context.Context, g *graph, id uint64) {
 	for level := node.Level(g.arena); level >= 0; level-- {
 		// Search for candidates
 		filter := func(x uint64) bool { return x != id }
-		// searchLayer returns MaxHeap (stores top EF results)
-		candidates, err := h.searchLayer(g, vec, currID, currDist, level, h.opts.EF, filter)
-		if err != nil {
-			return
-		}
+		// searchLayer populates s.Candidates
+		h.searchLayer(s, g, vec, currID, currDist, level, h.opts.EF, filter)
+
+		// Use s.Candidates
+		candidates := s.Candidates
 
 		// Deduplicate candidates and merge with existing active neighbors
 		// We use a map to ensure uniqueness.
@@ -301,7 +303,6 @@ func (h *HNSW) reconcileNode(ctx context.Context, g *graph, id uint64) {
 
 		// Return candidates to pool
 		candidates.Reset()
-		h.maxQueuePool.Put(candidates)
 
 		// Update currID/currDist for next layer
 		if foundBest {

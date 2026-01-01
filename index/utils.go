@@ -1,7 +1,6 @@
 package index
 
 import (
-	"container/heap"
 	"iter"
 )
 
@@ -95,30 +94,41 @@ func MergeNSearchResultsInto(dst *[]SearchResult, k int, lists ...[]SearchResult
 		return
 	}
 
-	// Use a min-heap for N-way merge
-	h := &mergeHeap{}
-	heap.Init(h)
+	// Use a specialized min-heap for N-way merge to avoid interface boxing
+	// We reuse a small buffer for the heap if possible, but since it's small (N lists),
+	// a slice allocation is acceptable or we could use a pool.
+	// Given N is usually small (shards), this is fine.
+	h := make(mergeHeap, 0, len(activeLists))
 
 	// Initialize heap with first element from each list
 	for i, list := range activeLists {
-		heap.Push(h, mergeItem{
+		h = append(h, mergeItem{
 			res:     list[0],
 			listIdx: i,
 			elemIdx: 0,
 		})
 	}
+	h.init()
 
-	for h.Len() > 0 && len(*dst) < k {
-		item := heap.Pop(h).(mergeItem)
-		*dst = append(*dst, item.res)
+	for len(h) > 0 && len(*dst) < k {
+		// Peek root
+		root := h[0]
+		*dst = append(*dst, root.res)
 
-		// Push next element from the same list
-		if item.elemIdx+1 < len(activeLists[item.listIdx]) {
-			heap.Push(h, mergeItem{
-				res:     activeLists[item.listIdx][item.elemIdx+1],
-				listIdx: item.listIdx,
-				elemIdx: item.elemIdx + 1,
-			})
+		// Get next element from the same list
+		nextIdx := root.elemIdx + 1
+		if nextIdx < len(activeLists[root.listIdx]) {
+			// Optimization: Replace root with next element and fix down
+			// This avoids a pop (swap+resize) followed by a push (append+up)
+			h[0] = mergeItem{
+				res:     activeLists[root.listIdx][nextIdx],
+				listIdx: root.listIdx,
+				elemIdx: nextIdx,
+			}
+			h.down(0, len(h))
+		} else {
+			// List exhausted, remove root
+			h.pop()
 		}
 	}
 }
@@ -150,22 +160,45 @@ type mergeItem struct {
 	elemIdx int
 }
 
+// mergeHeap is a specialized min-heap for mergeItem to avoid interface boxing.
 type mergeHeap []mergeItem
 
-func (h mergeHeap) Len() int           { return len(h) }
-func (h mergeHeap) Less(i, j int) bool { return h[i].res.Distance < h[j].res.Distance }
-func (h mergeHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h mergeHeap) less(i, j int) bool { return h[i].res.Distance < h[j].res.Distance }
+func (h mergeHeap) swap(i, j int)      { h[i], h[j] = h[j], h[i] }
 
-func (h *mergeHeap) Push(x any) {
-	*h = append(*h, x.(mergeItem))
+func (h mergeHeap) init() {
+	n := len(h)
+	for i := n/2 - 1; i >= 0; i-- {
+		h.down(i, n)
+	}
 }
 
-func (h *mergeHeap) Pop() any {
-	old := *h
-	n := len(old)
-	x := old[n-1]
-	*h = old[0 : n-1]
-	return x
+func (h *mergeHeap) pop() {
+	n := len(*h) - 1
+	(*h)[0] = (*h)[n]
+	*h = (*h)[:n]
+	if n > 0 {
+		(*h).down(0, n)
+	}
+}
+
+func (h mergeHeap) down(i0, n int) {
+	i := i0
+	for {
+		j1 := 2*i + 1
+		if j1 >= n || j1 < 0 { // j1 < 0 after int overflow
+			break
+		}
+		j := j1 // left child
+		if j2 := j1 + 1; j2 < n && h.less(j2, j1) {
+			j = j2 // = 2*i + 2  // right child
+		}
+		if !h.less(j, i) {
+			break
+		}
+		h.swap(i, j)
+		i = j
+	}
 }
 
 // SliceToStream converts a slice of SearchResult to an iterator.

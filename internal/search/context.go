@@ -1,6 +1,8 @@
 package search
 
 import (
+	"sync"
+
 	"github.com/hupe1980/vecgo/internal/queue"
 	"github.com/hupe1980/vecgo/internal/visited"
 )
@@ -33,6 +35,32 @@ type Searcher struct {
 	OpsPerformed int
 }
 
+var searcherPool = sync.Pool{
+	New: func() interface{} {
+		return NewSearcher(1024, 128) // Default initial capacity
+	},
+}
+
+// AcquireSearcher retrieves a Searcher from the pool and prepares it for use.
+// It ensures the Searcher has sufficient capacity for maxNodes and dim.
+func AcquireSearcher(maxNodes int, dim int) *Searcher {
+	s := searcherPool.Get().(*Searcher)
+	s.Visited.EnsureCapacity(maxNodes)
+	if cap(s.ScratchVec) < dim {
+		s.ScratchVec = make([]float32, dim)
+	} else {
+		s.ScratchVec = s.ScratchVec[:dim]
+	}
+	s.OpsPerformed = 0
+	return s
+}
+
+// ReleaseSearcher resets the Searcher and returns it to the pool.
+func ReleaseSearcher(s *Searcher) {
+	s.Reset()
+	searcherPool.Put(s)
+}
+
 // NewSearcher creates a new Searcher with the given configuration.
 // maxNodes is the maximum number of nodes in the index (for visited set sizing).
 // dim is the vector dimension (for scratch vector sizing).
@@ -53,4 +81,11 @@ func (s *Searcher) Reset() {
 	s.ScratchCandidates.Reset()
 	// ScratchVec and IOBuffer don't need clearing, just overwriting
 	s.OpsPerformed = 0
+}
+
+// EnsureQueueCapacity ensures that the candidate queues have sufficient capacity.
+// This should be called before search with the expected ef/k values.
+func (s *Searcher) EnsureQueueCapacity(capacity int) {
+	s.Candidates.EnsureCapacity(capacity)
+	s.ScratchCandidates.EnsureCapacity(capacity)
 }

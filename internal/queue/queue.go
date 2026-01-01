@@ -208,3 +208,12 @@ func (pq *PriorityQueue) Top() any {
 func (pq *PriorityQueue) Reset() {
 	pq.items = pq.items[:0]
 }
+
+// EnsureCapacity ensures the queue has at least the specified capacity.
+func (pq *PriorityQueue) EnsureCapacity(capacity int) {
+	if cap(pq.items) < capacity {
+		newItems := make([]PriorityQueueItem, len(pq.items), capacity)
+		copy(newItems, pq.items)
+		pq.items = newItems
+	}
+}

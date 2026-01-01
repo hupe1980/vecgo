@@ -2,80 +2,80 @@ goos: darwin
 goarch: arm64
 pkg: github.com/hupe1980/vecgo/benchmark_test
 cpu: Apple M4 Pro
-BenchmarkDiskANN/Insert-14             	  167292	    183790 ns/op	  290691 B/op	     361 allocs/op
-BenchmarkDiskANN/Search-14             	    2698	    439463 ns/op	         1.000 recall	 1005582 B/op	    1818 allocs/op
-BenchmarkEngineInsert/Async(MemTable)-14         	  758936	     45005 ns/op	   50275 B/op	     338 allocs/op
-BenchmarkEngineInsert/Sync(NoMemTable)-14        	   10000	    159692 ns/op	   44767 B/op	     303 allocs/op
-BenchmarkEngineSearch/Async(MemTable)-14         	   10384	    110054 ns/op	         1.000 recall	   62488 B/op	     469 allocs/op
-BenchmarkEngineSearch/Sync(NoMemTable)-14        	   10000	    100593 ns/op	         0.9000 recall	   26568 B/op	     210 allocs/op
-BenchmarkEngineConcurrency/SingleShard/1W/1R-14  	    8211	    126342 ns/op	     15830 ops/sec	   98675 B/op	     680 allocs/op
-BenchmarkEngineConcurrency/SingleShard/1W/10R-14 	    5150	    196997 ns/op	     56011 ops/sec	  373483 B/op	    3040 allocs/op
-BenchmarkEngineConcurrency/SingleShard/10W/10R-14         	    3045	    354567 ns/op	     56492 ops/sec	  565205 B/op	    4347 allocs/op
-BenchmarkEngineConcurrency/Sharded4/1W/1R-14              	   12043	     95507 ns/op	     20941 ops/sec	  101347 B/op	     700 allocs/op
-BenchmarkEngineConcurrency/Sharded4/1W/10R-14             	    2524	    470616 ns/op	     23374 ops/sec	 1342654 B/op	   10439 allocs/op
-BenchmarkEngineConcurrency/Sharded4/10W/10R-14            	    3003	    374131 ns/op	     53867 ops/sec	 1010479 B/op	    9022 allocs/op
-BenchmarkFlat/Insert-14                                   	  909813	      1159 ns/op	    4551 B/op	       5 allocs/op
-BenchmarkFlat/Search-14                                   	    5659	    222094 ns/op	         1.000 recall	  375730 B/op	     295 allocs/op
-BenchmarkHNSW/Insert-14                                   	  728222	     45630 ns/op	   49794 B/op	     338 allocs/op
-BenchmarkHNSW/Search-14                                   	    8262	    121037 ns/op	         1.000 recall	   71739 B/op	     536 allocs/op
-BenchmarkMetadataInsert-14                                	  367130	      3743 ns/op	   13126 B/op	      14 allocs/op
-BenchmarkFilterCompilation/Equal-14                       	79331630	        14.92 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFilterCompilation/GreaterThan-14                 	77439548	        15.38 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFilterCompilation/Combined-14                    	39515604	        30.14 ns/op	       0 B/op	       0 allocs/op
-BenchmarkHybridSearchSelectivity/1%-14                    	    2985	    400605 ns/op	  384183 B/op	     687 allocs/op
-BenchmarkHybridSearchSelectivity/10%-14                   	    2780	    397925 ns/op	  383890 B/op	     725 allocs/op
-BenchmarkHybridSearchSelectivity/50%-14                   	    2952	    399900 ns/op	  390523 B/op	     761 allocs/op
-BenchmarkMetadataOperators/LessThan-14                    	    3020	    397398 ns/op	  389245 B/op	     682 allocs/op
-BenchmarkMetadataOperators/GreaterThan-14                 	    2996	    396926 ns/op	  389126 B/op	     682 allocs/op
-BenchmarkMetadataOperators/Equal-14                       	    2982	    396753 ns/op	  387601 B/op	     679 allocs/op
-BenchmarkMetadataOperators/NotEqual-14                    	    2995	    396520 ns/op	  389047 B/op	     682 allocs/op
-BenchmarkMultipleFilters/1-14                             	    3051	    393898 ns/op	  383926 B/op	     633 allocs/op
-BenchmarkMultipleFilters/2-14                             	    3018	    394433 ns/op	  382288 B/op	     629 allocs/op
-BenchmarkMultipleFilters/3-14                             	    3025	    394096 ns/op	  380735 B/op	     624 allocs/op
-BenchmarkSnapshotSave/1K-14                               	     100	  11636949 ns/op	  295328 B/op	    3798 allocs/op
-BenchmarkSnapshotSave/10K-14                              	      72	  15799606 ns/op	  639837 B/op	   39812 allocs/op
-BenchmarkSnapshotLoad/1K-14                               	    2701	    413173 ns/op	 1685098 B/op	    2077 allocs/op
-BenchmarkSnapshotLoad/10K-14                              	     417	   2891125 ns/op	 2347293 B/op	   20138 allocs/op
-BenchmarkWALWrite/Async-14                                	  216883	      5260 ns/op	   12358 B/op	      16 allocs/op
-BenchmarkWALWrite/GroupCommit-14                          	     295	   4143062 ns/op	    1930 B/op	      13 allocs/op
-BenchmarkWALWrite/Sync-14                                 	     296	   4069222 ns/op	    1897 B/op	      13 allocs/op
-BenchmarkWALReplay/100-14                                 	    4172	    289978 ns/op	 1610833 B/op	     290 allocs/op
-BenchmarkWALReplay/1K-14                                  	    2660	    454128 ns/op	 1695187 B/op	    2103 allocs/op
-BenchmarkWALReplay/10K-14                                 	     421	   2895143 ns/op	 2357347 B/op	   20164 allocs/op
-BenchmarkWALCompression/Uncompressed-14                   	  214783	      5175 ns/op	   12347 B/op	      16 allocs/op
-BenchmarkWALCompression/Compressed-14                     	  115904	     10203 ns/op	    9001 B/op	      19 allocs/op
-BenchmarkBinaryQuantization/dim128/Encode-14              	11923322	        99.18 ns/op	      16 B/op	       1 allocs/op
-BenchmarkBinaryQuantization/dim128/Distance-14            	592071180	         2.023 ns/op	       0 B/op	       0 allocs/op
-BenchmarkBinaryQuantization/dim384/Encode-14              	 3488029	       343.8 ns/op	      48 B/op	       1 allocs/op
-BenchmarkBinaryQuantization/dim384/Distance-14            	381002374	         3.203 ns/op	       0 B/op	       0 allocs/op
-BenchmarkBinaryQuantization/dim768/Encode-14              	 1747070	       686.1 ns/op	      96 B/op	       1 allocs/op
-BenchmarkBinaryQuantization/dim768/Distance-14            	235207586	         5.090 ns/op	       0 B/op	       0 allocs/op
-BenchmarkBinaryQuantization/dim1536/Encode-14             	  843231	      1377 ns/op	     192 B/op	       1 allocs/op
-BenchmarkBinaryQuantization/dim1536/Distance-14           	141256543	         8.487 ns/op	       0 B/op	       0 allocs/op
-BenchmarkProductQuantization/Encode-14                    	   26391	     45052 ns/op	    1544 B/op	       9 allocs/op
-BenchmarkProductQuantization/Decode-14                    	 2285816	       528.0 ns/op	    1536 B/op	       1 allocs/op
-BenchmarkProductQuantization/AsymmetricDistance-14        	 5101936	       235.1 ns/op	     192 B/op	       1 allocs/op
-BenchmarkOptimizedPQ/Train-14                             	       1	8020141625 ns/op	426323040 B/op	 1077787 allocs/op
-BenchmarkOptimizedPQ/Encode-14                            	   25099	     47416 ns/op	    1569 B/op	      10 allocs/op
-BenchmarkOptimizedPQ/AsymmetricDistance-14                	  487228	      2431 ns/op	     216 B/op	       2 allocs/op
-BenchmarkFlatWithPQ-14                                    	     537	   2245038 ns/op	 1924764 B/op	   10153 allocs/op
-BenchmarkScalarQuantization/dim128/Encode-14              	 8987462	       135.0 ns/op	     128 B/op	       1 allocs/op
-BenchmarkScalarQuantization/dim128/Decode-14              	 6716702	       181.1 ns/op	     512 B/op	       1 allocs/op
-BenchmarkScalarQuantization/dim384/Encode-14              	 3274856	       367.8 ns/op	     384 B/op	       1 allocs/op
-BenchmarkScalarQuantization/dim384/Decode-14              	 2266275	       533.3 ns/op	    1536 B/op	       1 allocs/op
-BenchmarkScalarQuantization/dim768/Encode-14              	 1640443	       731.1 ns/op	     768 B/op	       1 allocs/op
-BenchmarkScalarQuantization/dim768/Decode-14              	 1000000	      1006 ns/op	    3072 B/op	       1 allocs/op
+BenchmarkDiskANN/Insert-14             	  196153	    187670 ns/op	  241389 B/op	     260 allocs/op
+BenchmarkDiskANN/Search-14             	    2329	    462700 ns/op	         1.000 recall	  833165 B/op	    1451 allocs/op
+BenchmarkEngineInsert/Async(MemTable)-14         	  541028	     44488 ns/op	   19184 B/op	      84 allocs/op
+BenchmarkEngineInsert/Sync(NoMemTable)-14        	   10000	    167140 ns/op	   17697 B/op	      79 allocs/op
+BenchmarkEngineSearch/Async(MemTable)-14         	   10400	    115372 ns/op	         1.000 recall	   14753 B/op	      88 allocs/op
+BenchmarkEngineSearch/Sync(NoMemTable)-14        	   10000	    104272 ns/op	         0.9000 recall	     520 B/op	       4 allocs/op
+BenchmarkEngineConcurrency/SingleShard/1W/1R-14  	    9590	    122586 ns/op	     16315 ops/sec	   35589 B/op	     172 allocs/op
+BenchmarkEngineConcurrency/SingleShard/1W/10R-14 	    5847	    178659 ns/op	     61923 ops/sec	   54834 B/op	     551 allocs/op
+BenchmarkEngineConcurrency/SingleShard/10W/10R-14         	    2776	    396404 ns/op	     50922 ops/sec	  273876 B/op	    1879 allocs/op
+BenchmarkEngineConcurrency/Sharded4/1W/1R-14              	    5403	    206128 ns/op	      9703 ops/sec	   51511 B/op	     240 allocs/op
+BenchmarkEngineConcurrency/Sharded4/1W/10R-14             	    2482	    469163 ns/op	     23447 ops/sec	  112978 B/op	     677 allocs/op
+BenchmarkEngineConcurrency/Sharded4/10W/10R-14            	    3010	    384046 ns/op	     52649 ops/sec	  303961 B/op	    3142 allocs/op
+BenchmarkFlat/Insert-14                                   	  916816	      1166 ns/op	    4474 B/op	       5 allocs/op
+BenchmarkFlat/Search-14                                   	    5284	    222359 ns/op	         1.000 recall	  375271 B/op	     297 allocs/op
+BenchmarkHNSW/Insert-14                                   	  507070	     44671 ns/op	   18750 B/op	      84 allocs/op
+BenchmarkHNSW/Search-14                                   	   10118	    113223 ns/op	         1.000 recall	   15675 B/op	      89 allocs/op
+BenchmarkMetadataInsert-14                                	  351756	      3909 ns/op	   14317 B/op	      14 allocs/op
+BenchmarkFilterCompilation/Equal-14                       	77665714	        15.08 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFilterCompilation/GreaterThan-14                 	76597780	        15.50 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFilterCompilation/Combined-14                    	39305278	        30.42 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHybridSearchSelectivity/1%-14                    	    2935	    402757 ns/op	  386824 B/op	     724 allocs/op
+BenchmarkHybridSearchSelectivity/10%-14                   	    3031	    396235 ns/op	  386174 B/op	     642 allocs/op
+BenchmarkHybridSearchSelectivity/50%-14                   	    2996	    399798 ns/op	  389482 B/op	     714 allocs/op
+BenchmarkMetadataOperators/LessThan-14                    	    3027	    400309 ns/op	  389208 B/op	     682 allocs/op
+BenchmarkMetadataOperators/GreaterThan-14                 	    2990	    398554 ns/op	  389390 B/op	     682 allocs/op
+BenchmarkMetadataOperators/Equal-14                       	    2994	    398153 ns/op	  385950 B/op	     674 allocs/op
+BenchmarkMetadataOperators/NotEqual-14                    	    3025	    399406 ns/op	  389353 B/op	     682 allocs/op
+BenchmarkMultipleFilters/1-14                             	    2983	    397294 ns/op	  389267 B/op	     698 allocs/op
+BenchmarkMultipleFilters/2-14                             	    3031	    398304 ns/op	  388705 B/op	     699 allocs/op
+BenchmarkMultipleFilters/3-14                             	    3000	    395565 ns/op	  385534 B/op	     693 allocs/op
+BenchmarkSnapshotSave/1K-14                               	     100	  11094168 ns/op	  295372 B/op	    3798 allocs/op
+BenchmarkSnapshotSave/10K-14                              	      78	  15901145 ns/op	  635956 B/op	   39811 allocs/op
+BenchmarkSnapshotLoad/1K-14                               	    2737	    417276 ns/op	 1685069 B/op	    2077 allocs/op
+BenchmarkSnapshotLoad/10K-14                              	     412	   2917227 ns/op	 2347336 B/op	   20138 allocs/op
+BenchmarkWALWrite/Async-14                                	  214711	      5430 ns/op	   10553 B/op	      16 allocs/op
+BenchmarkWALWrite/GroupCommit-14                          	     286	   4232543 ns/op	    1916 B/op	      13 allocs/op
+BenchmarkWALWrite/Sync-14                                 	     277	   4205558 ns/op	    1894 B/op	      13 allocs/op
+BenchmarkWALReplay/100-14                                 	    3628	    309557 ns/op	 1610846 B/op	     291 allocs/op
+BenchmarkWALReplay/1K-14                                  	    2492	    465284 ns/op	 1695166 B/op	    2103 allocs/op
+BenchmarkWALReplay/10K-14                                 	     414	   2945277 ns/op	 2357432 B/op	   20165 allocs/op
+BenchmarkWALCompression/Uncompressed-14                   	  215797	      5433 ns/op	   10349 B/op	      16 allocs/op
+BenchmarkWALCompression/Compressed-14                     	  110310	     10297 ns/op	   10054 B/op	      19 allocs/op
+BenchmarkBinaryQuantization/dim128/Encode-14              	10369958	       115.5 ns/op	      16 B/op	       1 allocs/op
+BenchmarkBinaryQuantization/dim128/Distance-14            	594046539	         2.019 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBinaryQuantization/dim384/Encode-14              	 3487196	       340.7 ns/op	      48 B/op	       1 allocs/op
+BenchmarkBinaryQuantization/dim384/Distance-14            	383475405	         3.123 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBinaryQuantization/dim768/Encode-14              	 1706859	       699.9 ns/op	      96 B/op	       1 allocs/op
+BenchmarkBinaryQuantization/dim768/Distance-14            	237307234	         5.071 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBinaryQuantization/dim1536/Encode-14             	  862135	      1404 ns/op	     192 B/op	       1 allocs/op
+BenchmarkBinaryQuantization/dim1536/Distance-14           	137675180	         8.687 ns/op	       0 B/op	       0 allocs/op
+BenchmarkProductQuantization/Encode-14                    	   26516	     45167 ns/op	    1544 B/op	       9 allocs/op
+BenchmarkProductQuantization/Decode-14                    	 2179336	       544.1 ns/op	    1536 B/op	       1 allocs/op
+BenchmarkProductQuantization/AsymmetricDistance-14        	 4718478	       240.1 ns/op	     192 B/op	       1 allocs/op
+BenchmarkOptimizedPQ/Train-14                             	       1	8042631334 ns/op	426166656 B/op	 1077728 allocs/op
+BenchmarkOptimizedPQ/Encode-14                            	   25124	     47543 ns/op	    1569 B/op	      10 allocs/op
+BenchmarkOptimizedPQ/AsymmetricDistance-14                	  488025	      2445 ns/op	     216 B/op	       2 allocs/op
+BenchmarkFlatWithPQ-14                                    	     530	   2250527 ns/op	 1925357 B/op	   10171 allocs/op
+BenchmarkScalarQuantization/dim128/Encode-14              	 8989888	       132.4 ns/op	     128 B/op	       1 allocs/op
+BenchmarkScalarQuantization/dim128/Decode-14              	 6567108	       183.1 ns/op	     512 B/op	       1 allocs/op
+BenchmarkScalarQuantization/dim384/Encode-14              	 3260425	       370.4 ns/op	     384 B/op	       1 allocs/op
+BenchmarkScalarQuantization/dim384/Decode-14              	 2197876	       550.9 ns/op	    1536 B/op	       1 allocs/op
+BenchmarkScalarQuantization/dim768/Encode-14              	 1579652	       761.6 ns/op	     768 B/op	       1 allocs/op
+BenchmarkScalarQuantization/dim768/Decode-14              	 1000000	      1015 ns/op	    3072 B/op	       1 allocs/op
 PASS
-ok  	github.com/hupe1980/vecgo/benchmark_test	215.767s
+ok  	github.com/hupe1980/vecgo/benchmark_test	199.354s
 goos: darwin
 goarch: arm64
 pkg: github.com/hupe1980/vecgo/benchmark_test/isolated
 cpu: Apple M4 Pro
-BenchmarkDiskANNIsolatedInsert/Direct-14         	    7444	   1061547 ns/op	  266969 B/op	     348 allocs/op
-BenchmarkDiskANNIsolatedSearch-14                	    5589	    203743 ns/op	         1.000 recall	   52912 B/op	     112 allocs/op
-BenchmarkFlatIsolatedInsert/Direct-14            	 1813885	       706.7 ns/op	    3550 B/op	       2 allocs/op
-BenchmarkFlatIsolatedSearch-14                   	    6279	    184521 ns/op	         1.000 recall	  371744 B/op	     178 allocs/op
-BenchmarkHNSWIsolatedInsert/Direct-14            	   10000	    159283 ns/op	   44692 B/op	     300 allocs/op
-BenchmarkHNSWIsolatedSearch-14                   	   12224	     96970 ns/op	         0.9000 recall	   26208 B/op	     207 allocs/op
+BenchmarkDiskANNIsolatedInsert/Direct-14         	    7478	   1096223 ns/op	  215421 B/op	     246 allocs/op
+BenchmarkDiskANNIsolatedSearch-14                	    4923	    235139 ns/op	         1.000 recall	     606 B/op	       7 allocs/op
+BenchmarkFlatIsolatedInsert/Direct-14            	 1787703	       702.6 ns/op	    3542 B/op	       2 allocs/op
+BenchmarkFlatIsolatedSearch-14                   	    6342	    185972 ns/op	         1.000 recall	  371744 B/op	     178 allocs/op
+BenchmarkHNSWIsolatedInsert/Direct-14            	   10000	    167590 ns/op	   17614 B/op	      77 allocs/op
+BenchmarkHNSWIsolatedSearch-14                   	   10000	    104254 ns/op	         0.9000 recall	     160 B/op	       1 allocs/op
 PASS
-ok  	github.com/hupe1980/vecgo/benchmark_test/isolated	57.451s
+ok  	github.com/hupe1980/vecgo/benchmark_test/isolated	56.764s

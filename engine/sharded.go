@@ -575,6 +575,12 @@ func (sc *ShardedCoordinator[T]) HybridSearch(ctx context.Context, query []float
 		go func(shardIdx int) {
 			defer wg.Done()
 			res, err := sc.shards[shardIdx].HybridSearch(ctx, query, k, opts)
+			if err == nil {
+				// Convert local IDs to global IDs
+				for j := range res {
+					res[j].ID = uint64(NewGlobalID(shardIdx, res[j].ID))
+				}
+			}
 			results[shardIdx] = res
 			errs[shardIdx] = err
 		}(i)
