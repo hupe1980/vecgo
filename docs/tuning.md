@@ -2,8 +2,6 @@
 
 This guide helps you optimize Vecgo for your specific workload and requirements.
 
-> **For deep production optimization** (allocation budgets, subsystem contracts, anti-patterns, phasing strategy), see [PERFORM.md](../PERFORM.md).
-
 ## Table of Contents
 
 1. [Index Selection](#index-selection)
@@ -67,7 +65,7 @@ db := vecgo.Flat[string](128).
 db := vecgo.HNSW[string](128).
     SquaredL2().
     M(32).
-    EF(200).
+    EFConstruction(200).
     Build()
 
 // Large dataset: DiskANN
@@ -191,28 +189,28 @@ db := vecgo.HNSW[string](128).
 db := vecgo.HNSW[string](128).
     SquaredL2().
     M(12).
-    EF(100).
+    EFConstruction(100).
     Build()
 
 // Balanced (default, 95-98% recall)
 db := vecgo.HNSW[string](128).
     SquaredL2().
     M(16).
-    EF(200).
+    EFConstruction(200).
     Build()
 
 // High recall (98-99.5% recall)
 db := vecgo.HNSW[string](128).
     SquaredL2().
     M(48).
-    EF(400).
+    EFConstruction(400).
     Build()
 
 // Maximum recall (99.5%+ recall)
 db := vecgo.HNSW[string](128).
     SquaredL2().
     M(96).
-    EF(800).
+    EFConstruction(800).
     Build()
 ```
 

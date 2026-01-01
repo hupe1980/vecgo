@@ -8,6 +8,10 @@ This directory contains runnable examples demonstrating various features of Vecg
 - **[flat/](flat/main.go)**: Flat index usage (Brute Force). Best for small datasets or 100% recall requirements.
 - **[diskann/](diskann/main.go)**: DiskANN index usage (SSD-Resident). Best for datasets larger than RAM.
 
+## Performance
+
+- **[comparison/](comparison/main.go)**: Benchmarks Flat vs HNSW index performance (build time and search latency).
+
 ## Advanced Features
 
 - **[sharding/](sharding/main.go)**: Demonstrates multi-core write scaling using sharding.
@@ -30,6 +34,6 @@ This directory contains runnable examples demonstrating various features of Vecg
 You can run any example using `go run`:
 
 ```bash
-go run ./_examples/hnsw/main.go
-go run ./_examples/sharding/main.go
+go run ./examples/hnsw/main.go
+go run ./examples/sharding/main.go
 ```

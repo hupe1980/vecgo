@@ -19,7 +19,7 @@ func main() {
 	db, err := vecgo.HNSW[string](128).
 		SquaredL2().
 		M(16).
-		EF(200).
+		EFConstruction(200).
 		Build()
 	if err != nil {
 		log.Fatal(err)

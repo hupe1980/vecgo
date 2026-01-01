@@ -44,7 +44,7 @@ func benchmarkConcurrentInserts(ctx context.Context, dim, numVectors, numShards 
 	vg, err := vecgo.HNSW[string](dim).
 		SquaredL2().
 		M(16).
-		EF(200).
+		EFConstruction(200).
 		Shards(numShards).
 		Build()
 	if err != nil {
@@ -109,7 +109,7 @@ func demonstrateSearch(ctx context.Context, dim, numShards int) {
 	vg, err := vecgo.HNSW[string](dim).
 		SquaredL2().
 		M(16).
-		EF(200).
+		EFConstruction(200).
 		Shards(numShards).
 		Build()
 	if err != nil {

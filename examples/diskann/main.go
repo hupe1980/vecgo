@@ -116,7 +116,7 @@ func main() {
 		firstID := results[0].ID
 		fmt.Printf("Updating vector ID=%d...\n", firstID)
 		err = db.Update(ctx, firstID, vecgo.VectorWithData[string]{
-			Vector: randomVector(rng, dimension),
+			Vector: rng.UniformVectors(1, dimension)[0],
 			Data:   "Updated Document",
 			Metadata: metadata.Metadata{
 				"category": metadata.String("updated"),

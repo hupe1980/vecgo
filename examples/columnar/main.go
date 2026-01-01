@@ -16,7 +16,8 @@ import (
 )
 
 func main() {
-	fmt.Println("=== Vecgo Columnar Storage Demo ===\n")
+	fmt.Println("=== Vecgo Columnar Storage Demo ===")
+	fmt.Println()
 
 	// 1. Create an in-memory columnar store
 	fmt.Println("1. Creating columnar store (128 dimensions)")
@@ -46,7 +47,7 @@ func main() {
 
 	// 4. Soft delete vectors
 	fmt.Println("\n4. Soft deleting vectors 100-199")
-	for i := uint32(100); i < 200; i++ {
+	for i := uint64(100); i < 200; i++ {
 		if err := store.DeleteVector(i); err != nil {
 			log.Fatalf("DeleteVector failed: %v", err)
 		}
@@ -60,7 +61,7 @@ func main() {
 	// 5. Iterate over live vectors
 	fmt.Println("\n5. Iterating over live vectors (first 5)")
 	count := 0
-	store.Iterate(func(id uint32, vec []float32) bool {
+	store.Iterate(func(id uint64, vec []float32) bool {
 		if count < 5 {
 			fmt.Printf("   ID=%d, vec[0]=%.1f\n", id, vec[0])
 		}

@@ -1,20 +1,15 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"math"
 
-	"github.com/hupe1980/vecgo"
-	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/quantization"
 	"github.com/hupe1980/vecgo/testutil"
 )
 
 func main() {
-	ctx := context.Background()
-
 	// Configuration
 	dimension := 128
 	numVectors := 10000
@@ -22,13 +17,8 @@ func main() {
 	numCentroids := 256
 	opqIterations := 10
 
-	fmt.Println("=== Optimized Product Quantization (OPQ) Demo ===\n")
-
-	// Create HNSW index
-	db, err := vecgo.HNSW[string](dimension).SquaredL2().Build()
-	if err != nil {
-		log.Fatal(err)
-	}
+	fmt.Println("=== Optimized Product Quantization (OPQ) Demo ===")
+	fmt.Println()
 
 	// Generate training vectors for OPQ
 	fmt.Printf("Generating %d training vectors (dim=%d)...\n", numVectors, dimension)
@@ -107,61 +97,6 @@ func main() {
 	fmt.Printf("Compressed size:   %d bytes\n", compressedBytes)
 	fmt.Printf("Compression ratio: %.1fx\n", ratio)
 
-	// Enable PQ on the index (note: OPQ is not yet integrated into the index layer)
-	// For now, we just demonstrate that PQ can be enabled
-	fmt.Println("\n=== Enabling PQ on HNSW Index ===")
-	err = db.EnableProductQuantization(index.ProductQuantizationConfig{
-		NumSubvectors: numSubvectors,
-		NumCentroids:  numCentroids,
-	})
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Println("✓ Product Quantization enabled on index")
-
-	// Insert vectors
-	fmt.Printf("\nInserting %d vectors...\n", 1000)
-	for i := 0; i < 1000; i++ {
-		vec := generateRandomVector(dimension, i+numVectors)
-		_, err := db.Insert(ctx, vecgo.VectorWithData[string]{
-			Vector: vec,
-			Data:   fmt.Sprintf("vec_%d", i),
-		})
-		if err != nil {
-			log.Fatal(err)
-		}
-	}
-	fmt.Println("✓ Insert complete")
-
-	// Perform searches
-	fmt.Println("\n=== Search with PQ Acceleration ===")
-	query := generateRandomVector(dimension, 99999)
-
-	results, err := db.KNNSearch(ctx, query, 10, func(o *vecgo.KNNSearchOptions) {
-		o.EF = 50
-	})
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	fmt.Printf("Found %d results:\n", len(results))
-	for i, result := range results {
-		fmt.Printf("  %d. %s (distance: %.4f)\n", i+1, result.Data, result.Distance)
-	}
-
-	// Show index statistics
-	fmt.Println("\n=== Index Statistics ===")
-	stats := db.Stats()
-
-	// Extract relevant stats
-	if totalVec, ok := stats.Storage["vectors"]; ok {
-		fmt.Printf("Total vectors:     %s\n", totalVec)
-	}
-	if memUsage, ok := stats.Storage["memory_usage"]; ok {
-		fmt.Printf("Memory usage:      %s\n", memUsage)
-	}
-	fmt.Printf("PQ enabled:        true\n")
-
 	fmt.Println("\n✓ Demo complete!")
 	fmt.Println("\nNote: This example demonstrates OPQ training and quality improvement.")
 	fmt.Println("Full OPQ integration into the index layer is a future enhancement.")
@@ -189,4 +124,11 @@ func l2DistanceSquared(a, b []float32) float32 {
 		sum += diff * diff
 	}
 	return sum
+}
+
+func generateRandomVector(dim int, seed int) []float32 {
+	rng := testutil.NewRNG(int64(seed))
+	vec := rng.UniformVectors(1, dim)[0]
+	normalize(vec)
+	return vec
 }

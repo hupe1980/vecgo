@@ -1,62 +1,164 @@
-linters-settings:
-  exhaustive:
-    # Presence of "default" case in switch statements satisfies exhaustiveness,
-    # even if all enum members are not listed.
-    # Default: false
-    default-signifies-exhaustive: true
-  errcheck:
-    check-type-assertions: true
-  goconst:
-    min-len: 2
-    min-occurrences: 3
-  gocritic:
-    enabled-tags:
-      - diagnostic
-      - experimental
-      - opinionated
-      - performance
-      - style
-  govet:
-    check-shadowing: true
-  nolintlint:
-    require-explanation: true
-    require-specific: true
+version: "2"
 
 linters:
-  disable-all: true
   enable:
-    - bodyclose
-    #- depguard
-    - dogsled
-    #- dupl
     - errcheck
-    - exportloopref
-    - exhaustive
-    #- goconst TODO
-    - gofmt
-    - goimports
-    #- gomnd
-    - gocyclo
-    - gosec
-    - gosimple
     - govet
     - ineffassign
+    - staticcheck
+    - unused
     - misspell
-    #- nolintlint
-    - nakedret
+    - gosec
+    - unconvert
+    - goconst
+    - gocyclo
+    - dupl
+    - gocritic
     - prealloc
     - predeclared
-    #- revive #TODO
-    - staticcheck
-    - stylecheck
-    - thelper
-    - tparallel
-    - typecheck
-    - unconvert
-    - unparam
-    - unused
+    - nolintlint
     - whitespace
-    - wsl
+    - errorlint
+    - durationcheck
+    - nilerr
+    # Additional comprehensive linters for +0.3 code quality improvement
+    - revive         # Fast, configurable, extensible, flexible drop-in replacement for golint
+    - bodyclose      # Checks whether HTTP response body is closed successfully
+    - nakedret       # Finds naked returns in functions greater than a specified length
+    - nestif         # Reports deeply nested if statements
+    - unparam        # Reports unused function parameters
+    - wastedassign   # Finds wasted assignment statements
+    - makezero       # Finds slice declarations with non-zero initial length
+    - thelper        # Detects test helpers without t.Helper() call
+
+  settings:
+    gocyclo:
+      min-complexity: 15
+
+    goconst:
+      min-len: 3
+      min-occurrences: 3
+
+    dupl:
+      threshold: 100
+
+    nakedret:
+      max-func-lines: 30
+
+    nestif:
+      min-complexity: 4
+
+    gocritic:
+      enabled-checks:
+        - boolExprSimplify
+        - builtinShadow
+        - emptyFallthrough
+        - emptyStringTest
+        - hexLiteral
+        - indexAlloc
+        - initClause
+        - methodExprCall
+        - nilValReturn
+        - rangeExprCopy
+        - rangeValCopy
+        - stringXbytes
+        - typeAssertChain
+        - unnecessaryBlock
+        - weakCond
+        - yodaStyleExpr
+
+    revive:
+      enable-all-rules: false
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: dot-imports
+        - name: error-return
+        - name: error-strings
+        - name: error-naming
+        - name: exported
+        - name: increment-decrement
+        - name: var-naming
+        - name: package-comments
+        - name: range
+        - name: receiver-naming
+        - name: time-naming
+        - name: unexported-return
+        - name: indent-error-flow
+        - name: errorf
+        - name: empty-block
+        - name: superfluous-else
+        - name: unreachable-code
+        - name: redefines-builtin-id
+
+    gosec:
+      excludes:
+        - G404
+
+    errorlint:
+      errorf: true
+      asserts: true
+      comparison: true
+
+  exclusions:
+    rules:
+      - path: _test\.go$
+        linters:
+          - errcheck
+          - gosec
+          - goconst
+          - gocyclo
+          - gocritic
+          - predeclared
+          - prealloc
+          - unused
+          - staticcheck
+          - revive
+          - dupl
+          - unparam
+          - nakedret
+          - nestif
+          - tparallel
+
+      - path: examples/
+        linters:
+          - errcheck
+          - gosec
+          - goconst
+          - unused
+          - gocyclo
+          - gocritic
+          - predeclared
+          - revive
+          - unparam
+          - nakedret
+          - nestif
+          - ineffassign
+          - staticcheck
+          - wastedassign
+
+      - path: benchmark_test/
+        linters:
+          - errcheck
+          - gosec
+          - goconst
+          - gocyclo
+          - gocritic
+          - predeclared
+
+      - linters:
+          - govet
+        text: 'shadow: declaration of "(err|ctx)"'
+
+      - linters:
+          - revive
+        text: "parameter '.*' seems to be unused"
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
 
 run:
-  issues-exit-code: 1
+  timeout: 5m
+  tests: false

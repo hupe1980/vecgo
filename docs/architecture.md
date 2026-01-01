@@ -2,8 +2,6 @@
 
 This document provides an in-depth look at Vecgo's internal architecture, helping you understand how the system works and how to extend it.
 
-> **For production optimization and performance tuning**, see [PERFORM.md](../PERFORM.md) which contains detailed contracts, anti-patterns, and implementation recipes for embedded, high-performance deployments.
-
 ## Table of Contents
 
 1. [High-Level Overview](#high-level-overview)
@@ -61,7 +59,27 @@ Vecgo is designed around a **Shared-Nothing, LSM-Tree Architecture** to maximize
 
 ## Core Components
 
-### 1. Vecgo API (`vecgo.go`)
+### 1. Identity & Addressing
+
+Vecgo separates **External Identity** from **Internal Execution** to optimize for cache density and performance.
+
+1.  **GlobalID (`uint64`)**:
+    -   Stable, durable, user-facing ID.
+    -   Used for routing, API results, and WAL entries.
+    -   *Invariant*: Never reused. Tombstones are permanent until compaction.
+    -   **Encoding**: `[ShardID:8 bits][ShardLocalID:56 bits]`
+
+2.  **LocalID (`uint32`)**:
+    -   Dense, transient, internal index.
+    -   Used for **all** hot-path structures: graph adjacency, visited bitsets, heap items.
+    -   *Benefit*: Reduces graph edge size by 50% (4 bytes vs 8 bytes), doubles cache density.
+    -   *Scope*: Local to a single Segment (Shard or DiskANN file).
+
+3.  **Translation**:
+    -   `Segment.GlobalOf(localID uint32) uint64` (Array lookup: fast).
+    -   `Segment.LocalOf(globalID uint64) (uint32, bool)` (Hash map or sparse array: slower, used only at query entry).
+
+### 2. Vecgo API (`vecgo.go`)
 
 The main entry point provides:
 - **Index-specific builders**: `HNSW[T]()`, `Flat[T]()`, `DiskANN[T]()`
@@ -203,7 +221,7 @@ To scale beyond a single core's capacity, Vecgo implements a **Shared-Nothing Sh
     *   **Total Capacity**: Infinite for all practical purposes
     *   **Why 64-bit?**: Prevents ID exhaustion in long-running systems and aligns with DiskANN's native storage format.
 
-*   **LanceDB-style identity model (recommended)**:
+*   **Identity Model**:
     Vecgo separates *application identity* from *engine execution identity*:
     *   **Business Key** (optional): a user-provided key stored as a normal column (UUID/string/int), indexed for lookups/upserts.
     *   **GlobalID (`uint64`)**: Vecgo-generated stable ID used for sharding, WAL/snapshots, and public API references.
@@ -289,6 +307,28 @@ To minimize Garbage Collection (GC) pauses, Vecgo uses custom memory management 
 *   **Aligned Memory (`internal/mem`)**:
     *   **SIMD Alignment**: Vectors in `MemTable` and other critical paths are allocated with 64-byte alignment (AVX-512 friendly).
     *   **Custom Allocator**: Uses `mem.AllocAlignedFloat32` to ensure backing arrays start at aligned addresses, enabling efficient SIMD loads.
+
+#### F. Memory Lifetime & Safety Rules
+
+Since Vecgo uses manual memory management (Arenas, mmap, unsafe pointers), strict rules are enforced to prevent segfaults and corruption:
+
+1.  **Arena Generations**:
+    -   Each Arena has a monotonically increasing `GenerationID`.
+    -   Any stored reference must carry `(GenerationID, Offset)`.
+    -   On access: `if ref.Gen != arena.Gen { panic("stale arena reference") }`
+
+2.  **Compaction Barrier**:
+    -   Compaction MUST run under an epoch barrier.
+    -   No concurrent searches using the old arena.
+    -   No graph reads during arena reset/free.
+
+3.  **GC Visibility Rule**:
+    -   Clearing the last Go reference to arena-backed memory does not imply safety.
+    -   Offsets are invisible to GC and must be treated as raw pointers.
+
+4.  **Arena Boundary Rule**:
+    -   No arena-backed pointer, slice, or offset may cross a public API boundary.
+    -   All arena-backed data must be translated to stable representations (GlobalID, copied vectors, metadata) before returning to the caller.
 
 ---
 
@@ -916,6 +956,39 @@ type StatProvider interface {
 | **Metadata** | Filter compile | O(# fields) | Roaring bitmap merge |
 | **WAL** | Append | O(1) | Sequential write |
 | **WAL** | Replay | O(# entries) | Sequential read |
+
+---
+
+## Design Principles & Anti-Patterns
+
+To maintain high performance, Vecgo adheres to strict design principles.
+
+### Core Principles
+1.  **Zero-Allocation Steady State**: Hot paths (Search) must not allocate on the heap.
+2.  **Data-Oriented Design**: Memory layouts are chosen for cache locality, not OOP convenience.
+3.  **Explicit Ownership**: Buffers and IO resources are owned by execution contexts (`Searcher`), not the GC.
+
+### Anti-Patterns (Strictly Forbidden)
+
+1.  **The "Generic Interface" Trap**:
+    -   *Bad*: `type Vector interface { Dist(other Vector) float32 }`
+    -   *Good*: `func Dist(a, b []float32) float32` (Concrete types, inlinable).
+
+2.  **The "Channel Iterator"**:
+    -   *Bad*: `func Search() <-chan Result` (Goroutine leak risk, slow).
+    -   *Good*: `func Search(yield func(Result) bool)` (Go 1.23 iterators) or `[]Result`.
+
+3.  **The "Hidden Allocation"**:
+    -   *Bad*: `fmt.Sprintf` in hot paths, `interface{}` conversion, closure capture.
+    -   *Good*: Zero-alloc logging, typed errors, explicit context passing.
+
+4.  **The "Global Lock"**:
+    -   *Bad*: `sync.RWMutex` protecting the whole DB.
+    -   *Good*: Shard-level locks + MVCC for lock-free reads.
+
+5.  **The "Interface Boxing" Trap**:
+    -   *Bad*: `heap.Push(h, item)` where `h` is `interface{}`.
+    -   *Good*: Use typed heaps (generics) or specialized heap implementations.
 
 ---
 

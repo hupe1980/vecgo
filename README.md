@@ -5,7 +5,14 @@
 [![goreportcard](https://goreportcard.com/badge/github.com/hupe1980/vecgo)](https://goreportcard.com/report/github.com/hupe1980/vecgo)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
-**Vecgo** is a high-performance vector database library for Go, designed for production workloads requiring billion-scale similarity search with typed metadata filtering and enterprise-grade durability.
+**Vecgo** is a **pure Go, embeddable, hybrid vector database** designed for high-performance production workloads.
+
+It occupies a unique niche:
+- **Faster & lighter than external services** (no network overhead, no sidecar).
+- **More capable than simple libraries** (provides durability, concurrency, and hybrid search).
+- **Simpler than CGO wrappers** (pure Go toolchain, static binaries, cross-compilation).
+
+⚠️ This is experimental and subject to breaking changes.
 
 ## ⚡ Key Features
 
@@ -399,15 +406,14 @@ fmt.Printf("Searches: %d, Avg latency: %dns\n",
 
 ## 🧪 Examples
 
-See [`_examples/`](./_examples/) for complete working code:
-- [Flat index](./_examples/flat/main.go)
-- [HNSW index](./_examples/hnsw/main.go)
-- [DiskANN index](./_examples/diskann/main.go)
-- [Persistence](./_examples/persistence/main.go)
-- [Quantization](./_examples/quantization/main.go)
-- [Metrics & logging](./_examples/metrics/main.go)
-- [Streaming search](./_examples/streaming/main.go)
-
+See [`examples/`](./examples/) for complete working code:
+- [Flat index](./examples/flat/main.go)
+- [HNSW index](./examples/hnsw/main.go)
+- [DiskANN index](./examples/diskann/main.go)
+- [Persistence](./examples/persistence/main.go)
+- [Quantization](./examples/quantization/main.go)
+- [Metrics & logging](./examples/metrics/main.go)
+- [Streaming search](./examples/streaming/main.go)- [Performance Comparison](./examples/comparison/main.go)
 ## ��️ Architecture
 
 ```
@@ -441,7 +447,7 @@ See [`_examples/`](./_examples/) for complete working code:
 
 **HNSW Tuning**:
 - `M=16-32`: Balanced (32 for high recall)
-- `EF=100-400`: Higher = better quality, slower build
+- `EFConstruction=100-400`: Build quality (higher = better quality, slower build)
 - `Shards=2-8`: Multi-core write scaling
 
 **DiskANN Tuning**:

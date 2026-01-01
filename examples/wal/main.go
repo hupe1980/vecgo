@@ -31,7 +31,7 @@ func main() {
 	db1, err := vecgo.HNSW[string](4).
 		SquaredL2().
 		M(16).
-		EF(64).
+		EFConstruction(64).
 		WAL(walPath+"/groupcommit", func(o *wal.Options) {
 			o.DurabilityMode = wal.DurabilityGroupCommit
 			o.GroupCommitInterval = 10 * time.Millisecond
@@ -63,7 +63,7 @@ func main() {
 	db2, err := vecgo.HNSW[string](4).
 		SquaredL2().
 		M(16).
-		EF(64).
+		EFConstruction(64).
 		WAL(walPath+"/async", func(o *wal.Options) {
 			o.DurabilityMode = wal.DurabilityAsync
 		}).
@@ -93,7 +93,7 @@ func main() {
 	db3, err := vecgo.HNSW[string](4).
 		SquaredL2().
 		M(16).
-		EF(64).
+		EFConstruction(64).
 		WAL(walPath+"/sync", func(o *wal.Options) {
 			o.DurabilityMode = wal.DurabilitySync
 		}).
@@ -122,7 +122,7 @@ func main() {
 	db4, err := vecgo.HNSW[string](4).
 		SquaredL2().
 		M(16).
-		EF(64).
+		EFConstruction(64).
 		WAL(walPath+"/groupcommit", func(o *wal.Options) {
 			o.DurabilityMode = wal.DurabilityGroupCommit
 		}).

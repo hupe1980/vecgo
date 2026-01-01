@@ -12,7 +12,8 @@ import (
 )
 
 func main() {
-	fmt.Println("=== Vecgo Quantization Example ===\n")
+	fmt.Println("=== Vecgo Quantization Example ===")
+	fmt.Println()
 
 	// Configuration
 	const (
@@ -29,12 +30,12 @@ func main() {
 
 	// Create quantizer and train it on the dataset
 	fmt.Println("\nTraining 8-bit scalar quantizer...")
-	quantizer := quantization.NewScalarQuantizer()
+	quantizer := quantization.NewScalarQuantizer(dimensions)
 	if err := quantizer.Train(vectors); err != nil {
 		log.Fatalf("Failed to train quantizer: %v", err)
 	}
 
-	fmt.Printf("Quantizer trained: min=%.4f, max=%.4f\n", quantizer.Min(), quantizer.Max())
+	fmt.Printf("Quantizer trained: min[0]=%.4f, max[0]=%.4f\n", quantizer.Min(0), quantizer.Max(0))
 	fmt.Printf("Compression ratio: %.1fx (float32 → uint8)\n", quantizer.CompressionRatio())
 	fmt.Printf("Estimated quantization error: %.6f per dimension\n", quantizer.QuantizationError())
 
@@ -83,7 +84,7 @@ func main() {
 	db, err := vecgo.HNSW[int](dimensions).
 		SquaredL2().
 		M(16).
-		EF(200).
+		EFConstruction(200).
 		Build()
 	if err != nil {
 		log.Fatalf("Failed to create vecgo: %v", err)
