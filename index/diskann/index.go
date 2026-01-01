@@ -82,9 +82,16 @@ type Index struct {
 
 // searchScratch holds temporary buffers for search to avoid allocations.
 type searchScratch struct {
-	results  []index.SearchResult
-	seen     map[uint64]struct{}
-	seenBits *bitset.BitSet
+	results        []index.SearchResult   // Final merged results
+	segmentResults [][]index.SearchResult // Per-segment results (slice of slices)
+	flatResults    []index.SearchResult   // Flat buffer for all segment results
+	seen           map[uint64]struct{}    // Deduplication map (fallback)
+	seenBits       *bitset.BitSet         // Deduplication bitset (primary)
+
+	// Segment Search Buffers
+	candidates candidateHeap  // Min-heap for beam search
+	visited    *bitset.BitSet // Visited set for beam search
+	beamBuf    []distNode     // Buffer for beam search results
 }
 
 // CompactionStats tracks compaction statistics.
@@ -239,9 +246,14 @@ func Open(indexPath string, opts *Options) (*Index, error) {
 func (idx *Index) initPools() {
 	idx.scratchPool.New = func() interface{} {
 		return &searchScratch{
-			results:  make([]index.SearchResult, 0, 1024),
-			seen:     make(map[uint64]struct{}, 1024),
-			seenBits: bitset.New(1024),
+			results:        make([]index.SearchResult, 0, 1024),
+			segmentResults: make([][]index.SearchResult, 0, 16),
+			flatResults:    make([]index.SearchResult, 0, 4096),
+			seen:           make(map[uint64]struct{}, 1024),
+			seenBits:       bitset.New(1024),
+			candidates:     make(candidateHeap, 0, 128),
+			visited:        bitset.New(1024),
+			beamBuf:        make([]distNode, 0, 256),
 		}
 	}
 }
@@ -481,11 +493,18 @@ func (idx *Index) KNNSearchWithBuffer(ctx context.Context, query []float32, k in
 	defer func() {
 		// Clear and return to pool
 		scratch.results = scratch.results[:0]
+		scratch.segmentResults = scratch.segmentResults[:0]
+		scratch.flatResults = scratch.flatResults[:0]
 		for k := range scratch.seen {
 			delete(scratch.seen, k)
 		}
 		if scratch.seenBits != nil {
 			scratch.seenBits.ClearAll()
+		}
+		scratch.candidates = scratch.candidates[:0]
+		scratch.beamBuf = scratch.beamBuf[:0]
+		if scratch.visited != nil {
+			scratch.visited.ClearAll()
 		}
 		idx.scratchPool.Put(scratch)
 	}()
@@ -533,40 +552,71 @@ func (idx *Index) KNNSearchWithBuffer(ctx context.Context, query []float32, k in
 
 	// Search DiskANN Segments
 	if len(segments) > 0 {
-		var wg sync.WaitGroup
-		errCh := make(chan error, len(segments))
-		segResults := make([][]index.SearchResult, len(segments))
-
-		// Search all segments concurrently
-		for i, seg := range segments {
-			wg.Add(1)
-			go func(i int, s *Segment) {
-				defer wg.Done()
-				// Pre-allocate per-segment buffer
-				cap := k * 2
-				if opts != nil && opts.EFSearch > cap {
-					cap = opts.EFSearch
-				}
-				res := make([]index.SearchResult, 0, cap)
-
-				if err := s.SearchWithBuffer(ctx, query, k, nil, segmentFilter, &res); err != nil {
-					errCh <- err
-					return
-				}
-				segResults[i] = res
-			}(i, seg)
+		// Pre-allocate segment results slice in scratch
+		if cap(scratch.segmentResults) < len(segments) {
+			scratch.segmentResults = make([][]index.SearchResult, 0, len(segments))
 		}
-		wg.Wait()
-		close(errCh)
 
-		if err := <-errCh; err != nil {
-			return fmt.Errorf("diskann: segment search: %w", err)
+		// Calculate capacity per segment
+		capPerSeg := k * 2
+		if opts != nil && opts.EFSearch > capPerSeg {
+			capPerSeg = opts.EFSearch
+		}
+
+		// Ensure flat buffer has enough capacity
+		totalCap := capPerSeg * len(segments)
+		if cap(scratch.flatResults) < totalCap {
+			scratch.flatResults = make([]index.SearchResult, 0, totalCap)
+		}
+
+		// Search segments sequentially (Zero-Alloc)
+		for _, seg := range segments {
+			// Ensure capacity for this segment in flat buffer
+			if len(scratch.flatResults)+capPerSeg > cap(scratch.flatResults) {
+				// Grow flat buffer
+				newCap := cap(scratch.flatResults) * 2
+				if newCap < len(scratch.flatResults)+capPerSeg {
+					newCap = len(scratch.flatResults) + capPerSeg
+				}
+				newFlat := make([]index.SearchResult, 0, newCap)
+				newFlat = append(newFlat, scratch.flatResults...)
+				scratch.flatResults = newFlat
+			}
+
+			// Start of this segment's results in flat buffer
+			startIdx := len(scratch.flatResults)
+
+			// Search and append directly to flatResults
+			if err := seg.SearchWithBuffer(ctx, query, k, nil, segmentFilter, scratch, &scratch.flatResults); err != nil {
+				return fmt.Errorf("diskann: segment search: %w", err)
+			}
+
+			// End of this segment's results
+			endIdx := len(scratch.flatResults)
+
+			// Capture the slice for this segment (points into flatResults)
+			scratch.segmentResults = append(scratch.segmentResults, scratch.flatResults[startIdx:endIdx])
 		}
 
 		// Merge results
-		for _, res := range segResults {
-			scratch.results = append(scratch.results, res...)
-		}
+		// We can use MergeNSearchResultsInto to merge all segment results + memtable results
+		// But here we are just collecting them into scratch.results
+		// The original code appended to scratch.results.
+
+		// Let's append all segment results to scratch.results
+		// Actually, scratch.results already contains MemTable results.
+		// We should merge MemTable results + Segment results.
+
+		// Current state:
+		// scratch.results: [MemTable Results...]
+		// scratch.segmentResults: [[Seg1 Results...], [Seg2 Results...]]
+
+		// We can just append everything to scratch.results and sort/dedup as before.
+		// This is what the original code did.
+		// But wait, scratch.flatResults ALREADY contains all segment results!
+		// So we just need to append scratch.flatResults to scratch.results.
+
+		scratch.results = append(scratch.results, scratch.flatResults...)
 	}
 
 	// Merge and Deduplicate

@@ -1,7 +1,6 @@
 package diskann
 
 import (
-	"container/heap"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -147,7 +146,15 @@ func (s *Segment) Search(query []float32, k int, filter func(uint64) bool) ([]in
 	if rerankK < k {
 		rerankK = k * 2
 	}
-	candidates := s.beamSearch(query, distTable, queryBQ, rerankK, internalFilter)
+
+	// Create a temporary scratch for standalone search
+	scratch := &searchScratch{
+		candidates: make(candidateHeap, 0, 128),
+		visited:    bitset.New(1024),
+		beamBuf:    make([]distNode, 0, 256),
+	}
+
+	candidates := s.beamSearch(query, distTable, queryBQ, rerankK, internalFilter, scratch)
 
 	// Phase 2: Rerank
 	results := s.rerank(query, candidates, k)
@@ -161,7 +168,7 @@ func (s *Segment) Search(query []float32, k int, filter func(uint64) bool) ([]in
 }
 
 // SearchWithBuffer performs KNN search and appends results to the provided buffer.
-func (s *Segment) SearchWithBuffer(ctx context.Context, query []float32, k int, distTable []float32, filter func(uint64) bool, buf *[]index.SearchResult) error {
+func (s *Segment) SearchWithBuffer(ctx context.Context, query []float32, k int, distTable []float32, filter func(uint64) bool, scratch *searchScratch, buf *[]index.SearchResult) error {
 	// Local filter wrapper to handle Global ID -> Local ID mapping
 	var localFilter func(uint64) bool
 	if filter != nil {
@@ -186,7 +193,7 @@ func (s *Segment) SearchWithBuffer(ctx context.Context, query []float32, k int, 
 		distTable = s.pq.BuildDistanceTable(query)
 	}
 
-	candidates := s.beamSearch(query, distTable, queryBQ, rerankK, localFilter)
+	candidates := s.beamSearch(query, distTable, queryBQ, rerankK, localFilter, scratch)
 
 	// Phase 2: Rerank and append to buffer
 	// We inline rerank logic to append directly
@@ -215,13 +222,13 @@ func (s *Segment) SearchWithBuffer(ctx context.Context, query []float32, k int, 
 }
 
 // beamSearch performs beam search through the graph.
-func (s *Segment) beamSearch(query []float32, distTable []float32, queryBQ []uint64, topK int, filter func(uint64) bool) []distNode {
+func (s *Segment) beamSearch(query []float32, distTable []float32, queryBQ []uint64, topK int, filter func(uint64) bool, scratch *searchScratch) []distNode {
 	if len(s.graph) == 0 {
 		return nil
 	}
 
-	candidates := &distHeap{}
-	heap.Init(candidates)
+	candidates := &scratch.candidates
+	*candidates = (*candidates)[:0]
 
 	entryPoint := s.entryPoint
 	if entryPoint >= uint64(len(s.graph)) {
@@ -229,22 +236,26 @@ func (s *Segment) beamSearch(query []float32, distTable []float32, queryBQ []uin
 	}
 
 	entryDist := s.computeDistance(query, entryPoint, distTable)
-	heap.Push(candidates, distNode{id: entryPoint, dist: entryDist})
+	candidates.push(distNode{id: entryPoint, dist: entryDist})
 
 	maxID := uint64(len(s.graph))
-	visited := s.getVisitedBitset(maxID)
-	defer s.putVisitedBitset(visited)
+	visited := scratch.visited
+	visited.ClearAll()
+	if visited.Len() < maxID {
+		visited = bitset.New(maxID)
+		scratch.visited = visited
+	}
 	visited.Set(entryPoint)
 
-	results := make([]distNode, 0, topK*2)
+	results := scratch.beamBuf[:0]
 
 	// Add entry point if it passes filter
 	if filter == nil || filter(entryPoint) {
 		results = append(results, distNode{id: entryPoint, dist: entryDist})
 	}
 
-	for candidates.Len() > 0 {
-		curr := heap.Pop(candidates).(distNode)
+	for len(*candidates) > 0 {
+		curr := candidates.pop()
 
 		if len(results) >= topK {
 			worstInBeam := results[len(results)-1].dist
@@ -277,7 +288,7 @@ func (s *Segment) beamSearch(query []float32, distTable []float32, queryBQ []uin
 				}
 
 				dist := s.computeDistance(query, neighbor, distTable)
-				heap.Push(candidates, distNode{id: neighbor, dist: dist})
+				candidates.push(distNode{id: neighbor, dist: dist})
 
 				results = append(results, distNode{id: neighbor, dist: dist})
 				sortDistNodes(results)
@@ -338,15 +349,6 @@ func (s *Segment) getVector(id uint64) []float32 {
 	offset := int(id) * int(s.dim) * 4
 	if offset < 0 || offset+int(s.dim)*4 > len(s.mmapReader.Data) {
 		return nil
-	}
-	if offset%4 != 0 {
-		vec := make([]float32, s.dim)
-		buf := s.mmapReader.Data[offset : offset+int(s.dim)*4]
-		for i := 0; i < s.dim; i++ {
-			bits := binary.LittleEndian.Uint32(buf[i*4:])
-			vec[i] = math.Float32frombits(bits)
-		}
-		return vec
 	}
 	return unsafe.Slice((*float32)(unsafe.Pointer(&s.mmapReader.Data[offset])), s.dim)
 }
@@ -508,4 +510,52 @@ func (s *Segment) VectorByID(ctx context.Context, id uint64) ([]float32, error) 
 		return nil, &index.ErrNodeNotFound{ID: id}
 	}
 	return vec, nil
+}
+
+// candidateHeap is a min-heap of distNodes, specialized to avoid interface boxing.
+type candidateHeap []distNode
+
+func (h *candidateHeap) push(n distNode) {
+	*h = append(*h, n)
+	h.up(len(*h) - 1)
+}
+
+func (h *candidateHeap) pop() distNode {
+	old := *h
+	n := len(old) - 1
+	root := old[0]
+	old[0] = old[n]
+	*h = old[:n]
+	h.down(0, len(*h))
+	return root
+}
+
+func (h candidateHeap) up(j int) {
+	for {
+		i := (j - 1) / 2 // parent
+		if i == j || h[j].dist >= h[i].dist {
+			break
+		}
+		h[i], h[j] = h[j], h[i]
+		j = i
+	}
+}
+
+func (h candidateHeap) down(i0, n int) {
+	i := i0
+	for {
+		j1 := 2*i + 1
+		if j1 >= n || j1 < 0 { // j1 < 0 after int overflow
+			break
+		}
+		j := j1 // left child
+		if j2 := j1 + 1; j2 < n && h[j2].dist < h[j1].dist {
+			j = j2 // = 2*i + 2  // right child
+		}
+		if h[j].dist >= h[i].dist {
+			break
+		}
+		h[i], h[j] = h[j], h[i]
+		i = j
+	}
 }
