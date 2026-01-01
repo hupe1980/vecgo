@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/hupe1980/vecgo/distance"
+	"github.com/hupe1980/vecgo/searcher"
 )
 
 // Common sentinel errors for index operations
@@ -263,6 +264,11 @@ type Index interface {
 	// KNNSearchWithBuffer performs a K-nearest neighbor search and appends results to the provided buffer.
 	// This avoids allocating a new slice for results.
 	KNNSearchWithBuffer(ctx context.Context, q []float32, k int, opts *SearchOptions, buf *[]SearchResult) error
+
+	// KNNSearchWithContext performs a K-nearest neighbor search using the provided Searcher context.
+	// The results are stored in s.Candidates (MaxHeap).
+	// This is the zero-alloc path.
+	KNNSearchWithContext(ctx context.Context, s *searcher.Searcher, q []float32, k int, opts *SearchOptions) error
 
 	// KNNSearchStream returns an iterator over K-nearest neighbor search results.
 	// Results are yielded in order from nearest to farthest.

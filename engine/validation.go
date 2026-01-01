@@ -10,6 +10,7 @@ import (
 
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/metadata"
+	"github.com/hupe1980/vecgo/searcher"
 )
 
 // ValidationLimits defines bounds for input validation.
@@ -159,6 +160,20 @@ func (v *ValidatedCoordinator[T]) KNNSearchWithBuffer(ctx context.Context, query
 		return fmt.Errorf("k=%d exceeds limit %d", k, v.limits.MaxK)
 	}
 	return v.inner.KNNSearchWithBuffer(ctx, query, k, opts, buf)
+}
+
+// KNNSearchWithContext validates query and k, then delegates to the inner coordinator.
+func (v *ValidatedCoordinator[T]) KNNSearchWithContext(ctx context.Context, query []float32, k int, opts *index.SearchOptions, s *searcher.Searcher) error {
+	if err := v.validateVector(query); err != nil {
+		return err
+	}
+	if k <= 0 {
+		return index.ErrInvalidK
+	}
+	if k > v.limits.MaxK {
+		return fmt.Errorf("k=%d exceeds limit %d", k, v.limits.MaxK)
+	}
+	return v.inner.KNNSearchWithContext(ctx, query, k, opts, s)
 }
 
 // BruteSearch validates query and k, then delegates to the inner coordinator.

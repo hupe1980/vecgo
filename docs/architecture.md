@@ -43,6 +43,12 @@ Vecgo is designed around a **Shared-Nothing, LSM-Tree Architecture** to maximize
 │   - Compaction & Merging                                    │
 └─────────────────────────────────────────────────────────────┘
                             │
+┌─────────────────────────────────────────────────────────────┐
+│                   Searcher Context                          │
+│   - Reusable Scratch Memory (Heaps, BitSets, Buffers)       │
+│   - Zero-Allocation Execution Path                          │
+└─────────────────────────────────────────────────────────────┘
+                            │
         ┌───────────────────┼───────────────────┐
         │                   │                   │
 ┌───────▼────────┐  ┌───────▼────────┐  ┌──────▼──────┐
@@ -142,6 +148,34 @@ type Coordinator[T any] interface {
 - `Delete(ctx, id)`: Soft delete (tombstone), trigger compaction if threshold exceeded
 - `Get(ctx, id)`: Decode GlobalID, retrieve vector + metadata from correct shard
 - `KNNSearch(ctx, query, k, filter)`: Fan-out via worker pool, merge top-k results, translate GlobalIDs in filters
+- `KNNSearchWithContext(ctx, query, k, searcher)`: Zero-allocation path using caller-provided scratch memory
+
+## Searcher Context (Zero-Alloc Runtime)
+
+To achieve maximum performance and zero allocations in the steady state, Vecgo introduces the `Searcher` context.
+
+**Problem**: Traditional search implementations allocate memory for:
+- Priority queues (candidates)
+- Visited sets (bitsets/maps)
+- Scratch vectors (decompression)
+- IO buffers (disk reads)
+
+**Solution**: The `Searcher` struct owns all these resources.
+- **Reusable**: Created once per goroutine/worker, reset between searches.
+- **Typed**: Uses value-based heaps (`PriorityQueueItem`) to avoid pointer overhead.
+- **Sized**: Pre-allocated to the maximum index size.
+
+```go
+type Searcher struct {
+    Visited           *VisitedSet
+    Candidates        *PriorityQueue
+    ScratchCandidates *PriorityQueue
+    ScratchVec        []float32
+    IOBuffer          []byte
+}
+```
+
+When `KNNSearchWithContext` is called, the index uses the provided `Searcher` instead of allocating new structures. This reduces GC pressure to near zero for read-heavy workloads.
 
 ### 3. Inner Workings & Optimizations
 

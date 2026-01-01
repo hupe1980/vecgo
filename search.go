@@ -6,8 +6,11 @@ package vecgo
 import (
 	"context"
 	"iter"
+	"slices"
 
+	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/metadata"
+	"github.com/hupe1980/vecgo/searcher"
 )
 
 // Search creates a new fluent search builder for the given query vector.
@@ -58,6 +61,27 @@ type SearchBuilder[T any] struct {
 
 	// Options
 	hybrid bool
+
+	// Zero-Alloc Context
+	searcher *searcher.Searcher
+	buffer   *[]SearchResult[T]
+}
+
+// WithSearcher sets the reusable Searcher context for this query.
+// If provided, the search will use this context instead of allocating a new one.
+// The caller is responsible for resetting and managing the Searcher's lifecycle.
+//
+// This enables zero-allocation searches in hot loops.
+func (sb *SearchBuilder[T]) WithSearcher(s *searcher.Searcher) *SearchBuilder[T] {
+	sb.searcher = s
+	return sb
+}
+
+// WithBuffer sets a reusable buffer for appending results.
+// If provided, results will be appended to this slice instead of allocating a new one.
+func (sb *SearchBuilder[T]) WithBuffer(buf *[]SearchResult[T]) *SearchBuilder[T] {
+	sb.buffer = buf
+	return sb
 }
 
 // KNN sets the number of nearest neighbors to return.
@@ -145,6 +169,71 @@ func (sb *SearchBuilder[T]) Execute(ctx context.Context) ([]SearchResult[T], err
 		})
 	}
 
+	// Zero-Alloc Path: Use provided Searcher
+	if sb.searcher != nil {
+		if err := sb.vg.KNNSearchWithContext(ctx, sb.query, sb.k, sb.searcher, func(o *KNNSearchOptions) {
+			if sb.ef > 0 {
+				o.EF = sb.ef
+			}
+			if sb.filterFunc != nil {
+				o.FilterFunc = sb.filterFunc
+			}
+		}); err != nil {
+			return nil, err
+		}
+
+		// If buffer is provided, append results to it
+		if sb.buffer != nil {
+			// Extract from heap to buffer
+			// Note: MaxHeap pops worst first, so we need to pop (Len-k) items first if any
+			// But KNNSearchWithContext should have already kept top K.
+			// We just need to extract and reverse.
+
+			// We need to be careful not to drain the searcher if the user wants to inspect it later?
+			// But the contract is we return []SearchResult.
+			// If the user provided a buffer, we append to it.
+
+			// Extract results from searcher.Candidates
+			results := sb.searcher.Candidates
+			startIdx := len(*sb.buffer)
+
+			for results.Len() > 0 {
+				item, _ := results.PopItem()
+				*sb.buffer = append(*sb.buffer, SearchResult[T]{
+					SearchResult: index.SearchResult{
+						ID:       item.Node,
+						Distance: item.Distance,
+					},
+				})
+			}
+
+			// Reverse
+			endIdx := len(*sb.buffer) - 1
+			for i := 0; i < (endIdx-startIdx+1)/2; i++ {
+				(*sb.buffer)[startIdx+i], (*sb.buffer)[endIdx-i] = (*sb.buffer)[endIdx-i], (*sb.buffer)[startIdx+i]
+			}
+
+			return *sb.buffer, nil
+		}
+
+		// If no buffer provided, allocate one
+		res := make([]SearchResult[T], 0, sb.k)
+		results := sb.searcher.Candidates
+		for results.Len() > 0 {
+			item, _ := results.PopItem()
+			res = append(res, SearchResult[T]{
+				SearchResult: index.SearchResult{
+					ID:       item.Node,
+					Distance: item.Distance,
+				},
+			})
+		}
+		// Reverse
+		slices.Reverse(res)
+		return res, nil
+	}
+
+	// Standard Path (Internal Searcher)
 	return sb.vg.KNNSearch(ctx, sb.query, sb.k, func(o *KNNSearchOptions) {
 		if sb.ef > 0 {
 			o.EF = sb.ef

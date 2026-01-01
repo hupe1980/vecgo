@@ -1,4 +1,4 @@
-package visited
+package searcher
 
 // VisitedSet tracks visited nodes using a bitset and a dirty list for fast reset.
 type VisitedSet struct {
@@ -6,8 +6,8 @@ type VisitedSet struct {
 	dirty []uint64
 }
 
-// New creates a new visited set.
-func New(capacity int) *VisitedSet {
+// NewVisitedSet creates a new visited set.
+func NewVisitedSet(capacity int) *VisitedSet {
 	// capacity is number of nodes.
 	// bits needed = (capacity + 63) / 64
 	return &VisitedSet{

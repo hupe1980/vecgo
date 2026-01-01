@@ -128,6 +128,7 @@ import (
 	"github.com/hupe1980/vecgo/index/flat"
 	"github.com/hupe1980/vecgo/index/hnsw"
 	"github.com/hupe1980/vecgo/metadata"
+	"github.com/hupe1980/vecgo/searcher"
 	"github.com/hupe1980/vecgo/wal"
 )
 
@@ -800,6 +801,24 @@ func (vg *Vecgo[T]) KNNSearch(ctx context.Context, query []float32, k int, optFn
 	vg.metrics.RecordSearch(k, duration, nil)
 	vg.logger.LogSearch(ctx, k, len(results), nil)
 	return results, nil
+}
+
+// KNNSearchWithContext performs a K-nearest neighbor search using the provided Searcher context.
+// The results are stored in s.Candidates (MaxHeap).
+func (vg *Vecgo[T]) KNNSearchWithContext(ctx context.Context, query []float32, k int, s *searcher.Searcher, optFns ...func(o *KNNSearchOptions)) error {
+	opts := KNNSearchOptions{
+		EF: 0, // Use index default
+	}
+	for _, fn := range optFns {
+		fn(&opts)
+	}
+
+	searchOpts := &index.SearchOptions{
+		EFSearch: opts.EF,
+		Filter:   opts.FilterFunc,
+	}
+
+	return vg.coordinator.KNNSearchWithContext(ctx, query, k, searchOpts, s)
 }
 
 // KNNSearchStream returns an iterator over K-nearest neighbor search results.

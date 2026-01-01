@@ -16,6 +16,7 @@ import (
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/index/memtable"
 	"github.com/hupe1980/vecgo/metadata"
+	"github.com/hupe1980/vecgo/searcher"
 	"github.com/hupe1980/vecgo/wal"
 )
 
@@ -630,6 +631,84 @@ func (tx *Tx[T]) KNNSearchWithBuffer(ctx context.Context, query []float32, k int
 
 	// Append to output buffer
 	*buf = append(*buf, scratch.mergedResults...)
+
+	return nil
+}
+
+// KNNSearchWithContext performs a K-nearest neighbor search using the provided Searcher context.
+func (tx *Tx[T]) KNNSearchWithContext(ctx context.Context, query []float32, k int, opts *index.SearchOptions, s *searcher.Searcher) error {
+	// Capture MemTables safely (Atomic Snapshot) BEFORE searching index.
+	state := tx.memState.Load()
+	memT := state.active
+	queue := state.queue
+
+	// 1. Search Main Index
+	// Results are in s.Candidates (MaxHeap)
+	if err := tx.txIndex.KNNSearchWithContext(ctx, s, query, k, opts); err != nil {
+		return err
+	}
+
+	// 2. Filter Index Results (remove items present in MemTables)
+	// We need to check if any item in s.Candidates is in MemTable.
+	// If so, we must remove it.
+	// Since s.Candidates is a heap, we can't easily remove.
+	// We pop all items from s.Candidates into a scratch slice.
+
+	scratch := tx.scratchPool.Get().(*txScratch)
+	defer tx.scratchPool.Put(scratch)
+	scratch.indexResults = scratch.indexResults[:0]
+	scratch.memResults = scratch.memResults[:0]
+	scratch.queueResults = scratch.queueResults[:0]
+
+	for s.Candidates.Len() > 0 {
+		item, _ := s.Candidates.PopItem()
+		scratch.indexResults = append(scratch.indexResults, index.SearchResult{ID: item.Node, Distance: item.Distance})
+	}
+
+	// Filter index results and push back valid ones
+	for _, res := range scratch.indexResults {
+		// Check MemTable
+		if found, _ := memT.Contains(res.ID); found {
+			continue
+		}
+		// Check Queue
+		inQueue := false
+		for _, t := range queue {
+			if found, _ := t.Contains(res.ID); found {
+				inQueue = true
+				break
+			}
+		}
+		if inQueue {
+			continue
+		}
+		// Keep it
+		s.Candidates.PushItemBounded(searcher.PriorityQueueItem{Node: res.ID, Distance: res.Distance}, k)
+	}
+
+	// 3. Search MemTables
+	var filter func(uint64) bool
+	if opts != nil && opts.Filter != nil {
+		filter = opts.Filter
+	}
+
+	if err := memT.SearchWithBuffer(query, k, filter, &scratch.memResults); err != nil {
+		return err
+	}
+
+	for _, t := range queue {
+		if err := t.SearchWithBuffer(query, k, filter, &scratch.queueResults); err != nil {
+			return err
+		}
+	}
+
+	// 4. Add MemTable results
+	for _, res := range scratch.memResults {
+		s.Candidates.PushItemBounded(searcher.PriorityQueueItem{Node: res.ID, Distance: res.Distance}, k)
+	}
+	for _, res := range scratch.queueResults {
+		s.Candidates.PushItemBounded(searcher.PriorityQueueItem{Node: res.ID, Distance: res.Distance}, k)
+	}
 
 	return nil
 }

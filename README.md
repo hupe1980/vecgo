@@ -78,6 +78,20 @@ id, _ := db.Insert(ctx, vecgo.VectorWithData[string]{
 // Search
 results, _ := db.Search(query).KNN(10).Execute(ctx)
 
+// Zero-Allocation Search (High Performance)
+// 1. Create a reusable searcher (once per goroutine)
+s := searcher.NewSearcher(1_000_000, 128) // maxNodes, dimension
+
+// 2. Use it in your hot loop
+for {
+    s.Reset() // Clear state, keep memory
+    results, _ := db.Search(query).
+        KNN(10).
+        WithSearcher(s). // Inject context
+        Execute(ctx)
+    // ...
+}
+
 // Streaming search with early termination
 for result, err := range db.Search(query).KNN(100).Stream(ctx) {
     if err != nil {
@@ -445,6 +459,13 @@ See [`_examples/`](./_examples/) for complete working code:
 - **API Reference**: [pkg.go.dev/github.com/hupe1980/vecgo](https://pkg.go.dev/github.com/hupe1980/vecgo)
 - **Architecture**: [docs/architecture.md](docs/architecture.md)
 - **Performance Tuning**: [docs/tuning.md](docs/tuning.md)
+
+## 📑 References
+
+- **HNSW**: [Efficient and robust approximate nearest neighbor search using Hierarchical Navigable Small World graphs](https://arxiv.org/abs/1603.09320) (Malkov & Yashunin, 2018)
+- **DiskANN (Vamana)**: [DiskANN: Fast Accurate Billion-point Nearest Neighbor Search on a Single Node](https://neurips.cc/paper/2019/hash/09853c7fb1d3f8ee67a61b6bf4a7f8e6-Abstract.html) (Subramanya et al., 2019)
+- **FreshDiskANN**: [FreshDiskANN: A Fast and Accurate Graph-Based Index for Streaming Similarity Search](https://arxiv.org/abs/2105.09613) (Singh et al., 2021)
+- **Product Quantization**: [Product Quantization for Nearest Neighbor Search](https://inria.hal.science/inria-00514462/en/) (Jégou et al., 2011)
 
 ## 🤝 Contributing
 

@@ -16,6 +16,7 @@ import (
 	"github.com/hupe1980/vecgo/internal/bitset"
 	"github.com/hupe1980/vecgo/internal/mmap"
 	"github.com/hupe1980/vecgo/quantization"
+	"github.com/hupe1980/vecgo/searcher"
 )
 
 // Segment represents an immutable, disk-resident DiskANN index segment.
@@ -558,4 +559,119 @@ func (h candidateHeap) down(i0, n int) {
 		h[i], h[j] = h[j], h[i]
 		i = j
 	}
+}
+
+// SearchWithContext performs KNN search using the provided Searcher context.
+func (s *Segment) SearchWithContext(ctx context.Context, query []float32, k int, distTable []float32, filter func(uint64) bool, sr *searcher.Searcher) error {
+	// Local filter wrapper
+	var localFilter func(uint64) bool
+	if filter != nil {
+		localFilter = func(localID uint64) bool {
+			return filter(s.baseID + localID)
+		}
+	}
+
+	// Phase 1: Beam Search
+	rerankK := s.opts.RerankK
+	if rerankK < k {
+		rerankK = k * 2
+	}
+
+	var queryBQ []uint64
+	if s.opts.EnableBinaryPrefilter && s.bq != nil && len(s.bqCodes) > 0 {
+		queryBQ = s.bq.EncodeUint64(query)
+	}
+
+	if distTable == nil && s.pq != nil {
+		distTable = s.pq.BuildDistanceTable(query)
+	}
+
+	// Use sr.ScratchCandidates for beam search exploration
+	sr.ScratchCandidates.Reset()
+
+	// Perform beam search
+	// We use a local slice for results to avoid polluting sr.Candidates with PQ distances
+	candidates := s.beamSearchWithContext(query, distTable, queryBQ, rerankK, localFilter, sr)
+
+	// Phase 2: Rerank and push to sr.Candidates (MaxHeap)
+	for _, c := range candidates {
+		// Rerank
+		vec := s.getVector(c.Node)
+		if vec == nil {
+			continue
+		}
+		dist := s.distFunc(query, vec)
+
+		// Push to result heap (bounded by k)
+		// Note: c.Node is local ID, we need global ID
+		sr.Candidates.PushItemBounded(searcher.PriorityQueueItem{Node: s.baseID + c.Node, Distance: dist}, k)
+	}
+
+	return nil
+}
+
+func (s *Segment) beamSearchWithContext(query []float32, distTable []float32, queryBQ []uint64, topK int, filter func(uint64) bool, sr *searcher.Searcher) []searcher.PriorityQueueItem {
+	if len(s.graph) == 0 {
+		return nil
+	}
+
+	entryPoint := s.entryPoint
+	if entryPoint >= uint64(len(s.graph)) {
+		return nil
+	}
+
+	globalEntryPoint := s.baseID + entryPoint
+	// Note: We don't check if already visited because we want to start search here regardless.
+	// But we mark it visited.
+	sr.Visited.Visit(globalEntryPoint)
+
+	entryDist := s.computeDistance(query, entryPoint, distTable)
+
+	sr.ScratchCandidates.Reset()
+	sr.ScratchCandidates.PushItem(searcher.PriorityQueueItem{Node: entryPoint, Distance: entryDist})
+
+	// Keep track of best results found
+	results := make([]searcher.PriorityQueueItem, 0, topK*2)
+	results = append(results, searcher.PriorityQueueItem{Node: entryPoint, Distance: entryDist})
+
+	for sr.ScratchCandidates.Len() > 0 {
+		curr, _ := sr.ScratchCandidates.PopItem()
+
+		// Expand neighbors
+		neighbors := s.graph[curr.Node]
+		for _, neighborID := range neighbors {
+			globalNeighborID := s.baseID + neighborID
+			if sr.Visited.Visited(globalNeighborID) {
+				continue
+			}
+			sr.Visited.Visit(globalNeighborID)
+
+			if filter != nil && !filter(neighborID) {
+				continue
+			}
+
+			dist := s.computeDistance(query, neighborID, distTable)
+
+			item := searcher.PriorityQueueItem{Node: neighborID, Distance: dist}
+			sr.ScratchCandidates.PushItem(item)
+			results = append(results, item)
+		}
+
+		// Sort and prune results to keep size manageable
+		if len(results) > topK*4 {
+			sort.Slice(results, func(i, j int) bool {
+				return results[i].Distance < results[j].Distance
+			})
+			results = results[:topK*2]
+		}
+	}
+
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Distance < results[j].Distance
+	})
+	if len(results) > topK {
+		results = results[:topK]
+	}
+
+	return results
 }

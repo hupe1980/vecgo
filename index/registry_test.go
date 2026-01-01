@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/hupe1980/vecgo/persistence"
+	"github.com/hupe1980/vecgo/searcher"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -26,6 +27,9 @@ func (m *MockIndex) KNNSearch(ctx context.Context, q []float32, k int, opts *Sea
 	return nil, nil
 }
 func (m *MockIndex) KNNSearchWithBuffer(ctx context.Context, q []float32, k int, opts *SearchOptions, buf *[]SearchResult) error {
+	return nil
+}
+func (m *MockIndex) KNNSearchWithContext(ctx context.Context, s *searcher.Searcher, q []float32, k int, opts *SearchOptions) error {
 	return nil
 }
 func (m *MockIndex) KNNSearchStream(ctx context.Context, q []float32, k int, opts *SearchOptions) iter.Seq2[SearchResult, error] {

@@ -14,7 +14,8 @@ This guide helps you optimize Vecgo for your specific workload and requirements.
 6. [WAL Durability Modes](#wal-durability-modes)
 7. [Memory Optimization](#memory-optimization)
 8. [Search Performance](#search-performance)
-9. [Benchmarking](#benchmarking)
+9. [Zero-Allocation Search](#zero-allocation-search)
+10. [Benchmarking](#benchmarking)
 
 ---
 
@@ -748,6 +749,41 @@ filter := metadata.And(
 results1 := db.Search(query1).KNN(10).Filter(filter).Execute(ctx)
 results2 := db.Search(query2).KNN(10).Filter(filter).Execute(ctx)
 ```
+
+## Zero-Allocation Search
+
+For ultra-low latency and high throughput, use the `Searcher` context to eliminate heap allocations during search.
+
+### When to use
+- High QPS workloads (>10k QPS)
+- Latency-sensitive applications (SLA < 1ms)
+- Garbage Collection (GC) pause issues
+
+### How to implement
+
+1.  **Create a Searcher**: Initialize it once per worker goroutine.
+2.  **Reuse**: Call `Reset()` before each use.
+3.  **Inject**: Use `.WithSearcher(s)` in the query builder.
+
+```go
+import "github.com/hupe1980/vecgo/searcher"
+
+// 1. Initialize (e.g., in a worker pool)
+s := searcher.NewSearcher(maxNodes, dimension)
+
+// 2. Loop
+for job := range jobs {
+    s.Reset() // Critical: Reset state
+    
+    // 3. Execute
+    results, err := db.Search(job.Query).
+        KNN(10).
+        WithSearcher(s).
+        Execute(ctx)
+}
+```
+
+**Impact**: Reduces allocations from ~100-500/op to **0-5/op** (depending on index type).
 
 ---
 

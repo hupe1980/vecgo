@@ -12,6 +12,7 @@ import (
 	"github.com/hupe1980/vecgo/engine"
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/metadata"
+	"github.com/hupe1980/vecgo/searcher"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -60,6 +61,10 @@ func (f *failingCoordinator[T]) KNNSearch(ctx context.Context, query []float32, 
 }
 
 func (f *failingCoordinator[T]) KNNSearchWithBuffer(ctx context.Context, query []float32, k int, opts *index.SearchOptions, buf *[]index.SearchResult) error {
+	return f.err
+}
+
+func (f *failingCoordinator[T]) KNNSearchWithContext(ctx context.Context, query []float32, k int, opts *index.SearchOptions, s *searcher.Searcher) error {
 	return f.err
 }
 
@@ -151,6 +156,15 @@ func (s *slowCoordinator[T]) KNNSearch(ctx context.Context, query []float32, k i
 }
 
 func (s *slowCoordinator[T]) KNNSearchWithBuffer(ctx context.Context, query []float32, k int, opts *index.SearchOptions, buf *[]index.SearchResult) error {
+	select {
+	case <-time.After(s.delay):
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *slowCoordinator[T]) KNNSearchWithContext(ctx context.Context, query []float32, k int, opts *index.SearchOptions, sr *searcher.Searcher) error {
 	select {
 	case <-time.After(s.delay):
 		return nil

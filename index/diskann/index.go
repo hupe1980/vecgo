@@ -17,6 +17,7 @@ import (
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/index/hnsw"
 	"github.com/hupe1980/vecgo/internal/bitset"
+	"github.com/hupe1980/vecgo/searcher"
 )
 
 // Compile-time interface checks
@@ -663,6 +664,74 @@ func (idx *Index) KNNSearchWithBuffer(ctx context.Context, query []float32, k in
 		if !seen {
 			*buf = append(*buf, res)
 			count++
+		}
+	}
+
+	return nil
+}
+
+// KNNSearchWithContext performs a K-nearest neighbor search using the provided Searcher context.
+func (idx *Index) KNNSearchWithContext(ctx context.Context, s *searcher.Searcher, query []float32, k int, opts *index.SearchOptions) error {
+	if len(query) != idx.dim {
+		return &index.ErrDimensionMismatch{Expected: idx.dim, Actual: len(query)}
+	}
+	if k <= 0 {
+		return index.ErrInvalidK
+	}
+
+	idx.mu.RLock()
+	memTable := idx.memTable
+	segments := idx.segments
+	deleted := idx.deleted
+	memTablePresent := idx.memTablePresent
+	idx.mu.RUnlock()
+
+	// Wrap filter to exclude deleted items
+	var userFilter func(uint64) bool
+	if opts != nil {
+		userFilter = opts.Filter
+	}
+
+	// Base filter: deleted check
+	baseFilter := func(id uint64) bool {
+		if deleted.Test(id) {
+			return false
+		}
+		if userFilter != nil {
+			return userFilter(id)
+		}
+		return true
+	}
+
+	// Segment filter: base filter + check if shadowed by MemTable
+	segmentFilter := func(id uint64) bool {
+		if !baseFilter(id) {
+			return false
+		}
+		// Check shadowing
+		return !memTablePresent.Test(id)
+	}
+
+	// Search MemTable
+	if memTable != nil {
+		memOpts := index.SearchOptions{
+			Filter: baseFilter,
+		}
+		if opts != nil {
+			memOpts.EFSearch = opts.EFSearch
+		}
+
+		// Use Zero-Alloc KNNSearchWithContext
+		if err := memTable.KNNSearchWithContext(ctx, s, query, k, &memOpts); err != nil {
+			return fmt.Errorf("diskann: memtable search: %w", err)
+		}
+	}
+
+	// Search DiskANN Segments
+	for _, seg := range segments {
+		// Search and push directly to s.Candidates
+		if err := seg.SearchWithContext(ctx, query, k, nil, segmentFilter, s); err != nil {
+			return fmt.Errorf("diskann: segment search: %w", err)
 		}
 	}
 

@@ -1,4 +1,4 @@
-package queue
+package searcher
 
 import "container/heap"
 

@@ -1,4 +1,4 @@
-// Package hnsw implements the Hierarchical Navigable Small World (HNSW) graph for approximate nearest neighbor search.
+// Package hnsw implements the Hierarchical Navigable Small World (HNSW) graph for approximate nearest neighbor searcher.
 package hnsw
 
 import (
@@ -17,8 +17,7 @@ import (
 	"github.com/hupe1980/vecgo/internal/arena"
 	"github.com/hupe1980/vecgo/internal/bitset"
 	"github.com/hupe1980/vecgo/internal/core"
-	"github.com/hupe1980/vecgo/internal/queue"
-	"github.com/hupe1980/vecgo/internal/search"
+	"github.com/hupe1980/vecgo/searcher"
 	"github.com/hupe1980/vecgo/vectorstore"
 	"github.com/hupe1980/vecgo/vectorstore/columnar"
 )
@@ -131,8 +130,8 @@ type scratch struct {
 	results []index.SearchResult
 
 	// Heuristic scratch buffers
-	heuristicCandidates []queue.PriorityQueueItem
-	heuristicResult     []queue.PriorityQueueItem
+	heuristicCandidates []searcher.PriorityQueueItem
+	heuristicResult     []searcher.PriorityQueueItem
 	heuristicResultVecs [][]float32
 }
 
@@ -243,8 +242,8 @@ func (h *HNSW) initPools() {
 			return &scratch{
 				floats:              make([]float32, h.opts.Dimension),
 				results:             make([]index.SearchResult, 0, h.opts.EF),
-				heuristicCandidates: make([]queue.PriorityQueueItem, 0, h.opts.EF),
-				heuristicResult:     make([]queue.PriorityQueueItem, 0, h.opts.M),
+				heuristicCandidates: make([]searcher.PriorityQueueItem, 0, h.opts.EF),
+				heuristicResult:     make([]searcher.PriorityQueueItem, 0, h.opts.M),
 				heuristicResultVecs: make([][]float32, 0, h.opts.M),
 			}
 		},
@@ -370,7 +369,7 @@ func (h *HNSW) setConnections(g *graph, id uint64, layer int, conns []Neighbor) 
 	}
 }
 
-func (h *HNSW) addConnection(s *search.Searcher, scratch *scratch, g *graph, sourceID, targetID uint64, level int, dist float32) {
+func (h *HNSW) addConnection(s *searcher.Searcher, scratch *scratch, g *graph, sourceID, targetID uint64, level int, dist float32) {
 	g.shardedLocks[sourceID%uint64(len(g.shardedLocks))].Lock()
 	defer g.shardedLocks[sourceID%uint64(len(g.shardedLocks))].Unlock()
 
@@ -430,10 +429,10 @@ func (h *HNSW) addConnection(s *search.Searcher, scratch *scratch, g *graph, sou
 
 		// Add existing - use cached distances!
 		for _, c := range conns {
-			candidates.PushItem(queue.PriorityQueueItem{Node: uint64(c.ID), Distance: c.Dist})
+			candidates.PushItem(searcher.PriorityQueueItem{Node: uint64(c.ID), Distance: c.Dist})
 		}
 		// Add new
-		candidates.PushItem(queue.PriorityQueueItem{Node: targetID, Distance: dist})
+		candidates.PushItem(searcher.PriorityQueueItem{Node: targetID, Distance: dist})
 
 		// Use scratch for selectNeighbors
 		neighbors := h.selectNeighbors(candidates, maxM, scratch)
@@ -695,8 +694,8 @@ func (h *HNSW) insertNode(g *graph, id uint64, vec []float32, layer int) error {
 
 	// Acquire Searcher
 	maxID := int(g.nextIDAtomic.Load())
-	s := search.AcquireSearcher(maxID, h.opts.Dimension)
-	defer search.ReleaseSearcher(s)
+	s := searcher.AcquireSearcher(maxID, h.opts.Dimension)
+	defer searcher.ReleaseSearcher(s)
 
 	// 1. Greedy search from top to node.Layer + 1
 	maxLevel := int(g.maxLevelAtomic.Load())
@@ -759,14 +758,14 @@ func (h *HNSW) insertNode(g *graph, id uint64, vec []float32, layer int) error {
 }
 
 // selectNeighbors selects the best neighbors from candidates.
-func (h *HNSW) selectNeighbors(candidates *queue.PriorityQueue, m int, scratch *scratch) []queue.PriorityQueueItem {
+func (h *HNSW) selectNeighbors(candidates *searcher.PriorityQueue, m int, scratch *scratch) []searcher.PriorityQueueItem {
 	if h.opts.Heuristic {
 		return h.selectNeighborsHeuristic(candidates, m, scratch)
 	}
 	return h.selectNeighborsSimple(candidates, m, scratch)
 }
 
-func (h *HNSW) selectNeighborsSimple(candidates *queue.PriorityQueue, m int, scratch *scratch) []queue.PriorityQueueItem {
+func (h *HNSW) selectNeighborsSimple(candidates *searcher.PriorityQueue, m int, scratch *scratch) []searcher.PriorityQueueItem {
 	// Simple selection (keep top M)
 	for candidates.Len() > m {
 		_, _ = candidates.PopItem()
@@ -784,7 +783,7 @@ func (h *HNSW) selectNeighborsSimple(candidates *queue.PriorityQueue, m int, scr
 	return res
 }
 
-func (h *HNSW) selectNeighborsHeuristic(candidates *queue.PriorityQueue, m int, scratch *scratch) []queue.PriorityQueueItem {
+func (h *HNSW) selectNeighborsHeuristic(candidates *searcher.PriorityQueue, m int, scratch *scratch) []searcher.PriorityQueueItem {
 	if candidates.Len() <= m {
 		return h.selectNeighborsSimple(candidates, m, scratch) // Fallback to simple if few candidates
 	}
@@ -865,7 +864,7 @@ func (h *HNSW) selectNeighborsHeuristic(candidates *queue.PriorityQueue, m int, 
 // 1. Correct recall (returns k results if available, not fewer)
 // 2. Less wasted computation (skips filtered regions)
 // 3. Matches exact search behavior
-func (h *HNSW) searchLayer(s *search.Searcher, g *graph, query []float32, epID uint64, epDist float32, level int, ef int, filter func(uint64) bool) {
+func (h *HNSW) searchLayer(s *searcher.Searcher, g *graph, query []float32, epID uint64, epDist float32, level int, ef int, filter func(uint64) bool) {
 	visited := s.Visited
 	visited.Reset()
 
@@ -879,11 +878,11 @@ func (h *HNSW) searchLayer(s *search.Searcher, g *graph, query []float32, epID u
 
 	// CRITICAL: Always add entry point to candidates for navigation (even if filtered)
 	// This ensures we have a starting point for graph traversal
-	candidates.PushItem(queue.PriorityQueueItem{Node: epID, Distance: epDist})
+	candidates.PushItem(searcher.PriorityQueueItem{Node: epID, Distance: epDist})
 
 	// Only add to results if it passes the filter AND is not deleted
 	if (filter == nil || filter(epID)) && !g.tombstones.Test(epID) {
-		results.PushItem(queue.PriorityQueueItem{Node: epID, Distance: epDist})
+		results.PushItem(searcher.PriorityQueueItem{Node: epID, Distance: epDist})
 	}
 
 	for candidates.Len() > 0 {
@@ -918,12 +917,12 @@ func (h *HNSW) searchLayer(s *search.Searcher, g *graph, query []float32, epID u
 				}
 
 				if shouldExplore {
-					candidates.PushItem(queue.PriorityQueueItem{Node: uint64(next.ID), Distance: nextDist})
+					candidates.PushItem(searcher.PriorityQueueItem{Node: uint64(next.ID), Distance: nextDist})
 
 					// Only add to results if it passes the filter AND is not deleted
 					if (filter == nil || filter(uint64(next.ID))) && !g.tombstones.Test(uint64(next.ID)) {
 						// Use bounded push for results to avoid heap churn
-						results.PushItemBounded(queue.PriorityQueueItem{Node: uint64(next.ID), Distance: nextDist}, ef)
+						results.PushItemBounded(searcher.PriorityQueueItem{Node: uint64(next.ID), Distance: nextDist}, ef)
 					}
 				}
 			}
@@ -964,7 +963,7 @@ func (h *HNSW) Delete(ctx context.Context, id uint64) error {
 
 	// We do NOT remove from graph or release ID.
 	// This preserves graph connectivity and avoids O(N) entry point scans.
-	// The node remains in the graph but is ignored during search.
+	// The node remains in the graph but is ignored during searcher.
 
 	// We can optionally delete the vector data to save memory,
 	// but keeping it might be safer for concurrent readers.
@@ -991,7 +990,7 @@ func (h *HNSW) Update(ctx context.Context, id uint64, v []float32) error {
 	return err
 }
 
-// KNNSearch performs search.
+// KNNSearch performs searcher.
 func (h *HNSW) KNNSearch(ctx context.Context, q []float32, k int, opts *index.SearchOptions) ([]index.SearchResult, error) {
 	res := make([]index.SearchResult, 0, k)
 	if err := h.KNNSearchWithBuffer(ctx, q, k, opts, &res); err != nil {
@@ -1003,6 +1002,42 @@ func (h *HNSW) KNNSearch(ctx context.Context, q []float32, k int, opts *index.Se
 // KNNSearchWithBuffer performs a K-nearest neighbor search and appends results to the provided buffer.
 // This avoids allocating a new slice for results, which is critical for high-throughput scenarios.
 func (h *HNSW) KNNSearchWithBuffer(ctx context.Context, q []float32, k int, opts *index.SearchOptions, buf *[]index.SearchResult) error {
+	g := h.currentGraph.Load()
+	maxID := int(g.nextIDAtomic.Load())
+	s := searcher.AcquireSearcher(maxID, h.opts.Dimension)
+	defer searcher.ReleaseSearcher(s)
+
+	if err := h.searchExecute(ctx, s, q, k, opts); err != nil {
+		return err
+	}
+
+	// Extract results from s.Candidates to buf
+	results := s.Candidates
+	// MaxHeap pops worst first, so we need to pop (Len-k) items first
+	for results.Len() > k {
+		_, _ = results.PopItem()
+	}
+
+	startIdx := len(*buf)
+	for results.Len() > 0 {
+		item, _ := results.PopItem()
+		*buf = append(*buf, index.SearchResult{ID: item.Node, Distance: item.Distance})
+	}
+
+	// Reverse
+	endIdx := len(*buf) - 1
+	for i := 0; i < (endIdx-startIdx+1)/2; i++ {
+		(*buf)[startIdx+i], (*buf)[endIdx-i] = (*buf)[endIdx-i], (*buf)[startIdx+i]
+	}
+	return nil
+}
+
+// KNNSearchWithContext performs a K-nearest neighbor search using the provided Searcher context.
+func (h *HNSW) KNNSearchWithContext(ctx context.Context, s *searcher.Searcher, q []float32, k int, opts *index.SearchOptions) error {
+	return h.searchExecute(ctx, s, q, k, opts)
+}
+
+func (h *HNSW) searchExecute(ctx context.Context, s *searcher.Searcher, q []float32, k int, opts *index.SearchOptions) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -1017,11 +1052,6 @@ func (h *HNSW) KNNSearchWithBuffer(ctx context.Context, q []float32, k int, opts
 	g := h.currentGraph.Load()
 	g.arena.IncRef()
 	defer g.arena.DecRef()
-
-	// Acquire Searcher
-	maxID := int(g.nextIDAtomic.Load())
-	s := search.AcquireSearcher(maxID, h.opts.Dimension)
-	defer search.ReleaseSearcher(s)
 
 	// Normalize
 	if h.opts.NormalizeVectors {
@@ -1079,32 +1109,10 @@ func (h *HNSW) KNNSearchWithBuffer(ctx context.Context, q []float32, k int, opts
 	}
 
 	h.searchLayer(s, g, q, currID, currDist, 0, ef, filter)
-	results := s.Candidates
-
-	// Extract K (filter is already applied during traversal)
-	// MaxHeap pops worst first, so we need to pop (Len-k) items first
-	for results.Len() > k {
-		_, _ = results.PopItem()
-	}
-
-	// Collect results in reverse order (nearest first)
-	// We append to buf, then reverse the new segment
-	startIdx := len(*buf)
-	for results.Len() > 0 {
-		item, _ := results.PopItem()
-		*buf = append(*buf, index.SearchResult{ID: item.Node, Distance: item.Distance})
-	}
-
-	// Reverse the appended segment
-	endIdx := len(*buf) - 1
-	for i := 0; i < (endIdx-startIdx+1)/2; i++ {
-		(*buf)[startIdx+i], (*buf)[endIdx-i] = (*buf)[endIdx-i], (*buf)[startIdx+i]
-	}
-
 	return nil
 }
 
-// KNNSearchStream implements streaming search.
+// KNNSearchStream implements streaming searcher.
 func (h *HNSW) KNNSearchStream(ctx context.Context, q []float32, k int, opts *index.SearchOptions) iter.Seq2[index.SearchResult, error] {
 	return func(yield func(index.SearchResult, error) bool) {
 		if err := ctx.Err(); err != nil {
@@ -1117,8 +1125,8 @@ func (h *HNSW) KNNSearchStream(ctx context.Context, q []float32, k int, opts *in
 
 		// Acquire Searcher
 		maxID := int(g.nextIDAtomic.Load())
-		s := search.AcquireSearcher(maxID, h.opts.Dimension)
-		defer search.ReleaseSearcher(s)
+		s := searcher.AcquireSearcher(maxID, h.opts.Dimension)
+		defer searcher.ReleaseSearcher(s)
 
 		// Normalize
 		if h.opts.NormalizeVectors {
@@ -1201,11 +1209,11 @@ func (h *HNSW) KNNSearchStream(ctx context.Context, q []float32, k int, opts *in
 	}
 }
 
-// BruteSearch implements brute force search.
+// BruteSearch implements brute force searcher.
 func (h *HNSW) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint64) bool) ([]index.SearchResult, error) {
 	g := h.currentGraph.Load()
 	// Simple scan
-	pq := queue.NewMax(k)
+	pq := searcher.NewMax(k)
 
 	nodes := g.nodes.Load()
 	if nodes != nil {
@@ -1225,12 +1233,12 @@ func (h *HNSW) BruteSearch(ctx context.Context, query []float32, k int, filter f
 
 				d := h.dist(query, nodeID)
 				if pq.Len() < k {
-					pq.PushItem(queue.PriorityQueueItem{Node: nodeID, Distance: d})
+					pq.PushItem(searcher.PriorityQueueItem{Node: nodeID, Distance: d})
 				} else {
 					top, _ := pq.TopItem()
 					if d < top.Distance {
 						_, _ = pq.PopItem()
-						pq.PushItem(queue.PriorityQueueItem{Node: nodeID, Distance: d})
+						pq.PushItem(searcher.PriorityQueueItem{Node: nodeID, Distance: d})
 					}
 				}
 			}

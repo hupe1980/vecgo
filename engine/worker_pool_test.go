@@ -12,6 +12,7 @@ import (
 
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/metadata"
+	"github.com/hupe1980/vecgo/searcher"
 )
 
 type testShardResult struct {
@@ -50,6 +51,19 @@ func (m *mockShard[T]) KNNSearch(ctx context.Context, query []float32, k int, op
 		}
 	}
 	return results, nil
+}
+
+func (m *mockShard[T]) KNNSearchWithBuffer(ctx context.Context, query []float32, k int, opts *index.SearchOptions, buf *[]index.SearchResult) error {
+	res, err := m.KNNSearch(ctx, query, k, opts)
+	if err != nil {
+		return err
+	}
+	*buf = append(*buf, res...)
+	return nil
+}
+
+func (m *mockShard[T]) KNNSearchWithContext(ctx context.Context, query []float32, k int, opts *index.SearchOptions, s *searcher.Searcher) error {
+	return nil
 }
 
 func (m *mockShard[T]) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint64) bool) ([]index.SearchResult, error) {

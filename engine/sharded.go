@@ -14,6 +14,7 @@ import (
 	"github.com/hupe1980/vecgo/codec"
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/metadata"
+	"github.com/hupe1980/vecgo/searcher"
 )
 
 // ShardedCoordinator wraps multiple independent coordinators (shards) to enable
@@ -363,6 +364,72 @@ func (sc *ShardedCoordinator[T]) KNNSearchWithBuffer(ctx context.Context, query 
 
 	merged := mergeTopK(allResults, k)
 	*buf = append(*buf, merged...)
+	return nil
+}
+
+// KNNSearchWithContext performs approximate K-nearest neighbor search using the provided Searcher context.
+func (sc *ShardedCoordinator[T]) KNNSearchWithContext(ctx context.Context, query []float32, k int, opts *index.SearchOptions, s *searcher.Searcher) error {
+	if k <= 0 {
+		return index.ErrInvalidK
+	}
+
+	resultsCh := make(chan shardResult, sc.numShards)
+
+	for i := 0; i < sc.numShards; i++ {
+		shardIdx := i
+		shard := sc.shards[i]
+
+		err := sc.workerPool.Submit(ctx, func() {
+			// Acquire local searcher for this shard
+			localS := searcher.AcquireSearcher(10000, len(query)) // Initial guess, will grow if needed
+			defer searcher.ReleaseSearcher(localS)
+
+			err := shard.KNNSearchWithContext(ctx, query, k, opts, localS)
+
+			var res []index.SearchResult
+			if err == nil {
+				// Extract results from localS.Candidates
+				res = make([]index.SearchResult, 0, localS.Candidates.Len())
+				for localS.Candidates.Len() > 0 {
+					item, _ := localS.Candidates.PopItem()
+					res = append(res, index.SearchResult{ID: item.Node, Distance: item.Distance})
+				}
+			}
+
+			select {
+			case resultsCh <- shardResult{shardIdx: shardIdx, results: res, err: err}:
+			case <-ctx.Done():
+			}
+		})
+
+		if err != nil {
+			return fmt.Errorf("worker pool submit failed: %w", err)
+		}
+	}
+
+	// Collect results
+	var errors []error
+	for i := 0; i < sc.numShards; i++ {
+		select {
+		case res := <-resultsCh:
+			if res.err != nil {
+				errors = append(errors, fmt.Errorf("shard %d: %w", res.shardIdx, res.err))
+			} else {
+				// Convert local IDs to global IDs and push to s.Candidates
+				for _, r := range res.results {
+					globalID := uint64(NewGlobalID(res.shardIdx, r.ID))
+					s.Candidates.PushItemBounded(searcher.PriorityQueueItem{Node: globalID, Distance: r.Distance}, k)
+				}
+			}
+		case <-ctx.Done():
+			return fmt.Errorf("search cancelled: %w", ctx.Err())
+		}
+	}
+
+	if len(errors) > 0 {
+		return fmt.Errorf("parallel search failed (%d/%d shards): %v", len(errors), sc.numShards, errors)
+	}
+
 	return nil
 }
 

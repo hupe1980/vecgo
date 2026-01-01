@@ -13,6 +13,7 @@ import (
 
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/metadata"
+	"github.com/hupe1980/vecgo/searcher"
 )
 
 // mockCoordinator implements Coordinator for testing validation layer
@@ -59,6 +60,10 @@ func (m *mockCoordinator[T]) KNNSearch(ctx context.Context, query []float32, k i
 
 func (m *mockCoordinator[T]) KNNSearchWithBuffer(ctx context.Context, query []float32, k int, opts *index.SearchOptions, buf *[]index.SearchResult) error {
 	*buf = append(*buf, index.SearchResult{ID: 1, Distance: 0.1})
+	return nil
+}
+
+func (m *mockCoordinator[T]) KNNSearchWithContext(ctx context.Context, query []float32, k int, opts *index.SearchOptions, s *searcher.Searcher) error {
 	return nil
 }
 

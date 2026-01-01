@@ -31,6 +31,7 @@ import (
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/index/memtable"
 	"github.com/hupe1980/vecgo/metadata"
+	"github.com/hupe1980/vecgo/searcher"
 )
 
 // HybridSearchOptions contains options for hybrid search (vector + metadata).
@@ -83,6 +84,10 @@ type Coordinator[T any] interface {
 
 	// KNNSearchWithBuffer performs approximate K-nearest neighbor search and appends results to the provided buffer.
 	KNNSearchWithBuffer(ctx context.Context, query []float32, k int, opts *index.SearchOptions, buf *[]index.SearchResult) error
+
+	// KNNSearchWithContext performs approximate K-nearest neighbor search using the provided Searcher context.
+	// The results are stored in searcher.Candidates.
+	KNNSearchWithContext(ctx context.Context, query []float32, k int, opts *index.SearchOptions, searcher *searcher.Searcher) error
 
 	// BruteSearch performs exact brute-force search with optional filter.
 	BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint64) bool) ([]index.SearchResult, error)

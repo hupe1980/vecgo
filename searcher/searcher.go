@@ -1,10 +1,7 @@
-package search
+package searcher
 
 import (
 	"sync"
-
-	"github.com/hupe1980/vecgo/internal/queue"
-	"github.com/hupe1980/vecgo/internal/visited"
 )
 
 // Searcher is a reusable execution context for vector search operations.
@@ -15,15 +12,15 @@ import (
 // during a search operation.
 type Searcher struct {
 	// Visited tracks visited nodes during graph traversal.
-	Visited *visited.VisitedSet
+	Visited *VisitedSet
 
 	// Candidates is a min-heap for tracking the best candidates found so far.
 	// Used for the result set (keeping top K).
-	Candidates *queue.PriorityQueue
+	Candidates *PriorityQueue
 
 	// ScratchCandidates is a max-heap for tracking candidates to explore.
 	// Used for the exploration set (ef).
-	ScratchCandidates *queue.PriorityQueue
+	ScratchCandidates *PriorityQueue
 
 	// ScratchVec is a reusable buffer for vector operations (e.g. decompression).
 	ScratchVec []float32
@@ -66,9 +63,9 @@ func ReleaseSearcher(s *Searcher) {
 // dim is the vector dimension (for scratch vector sizing).
 func NewSearcher(maxNodes int, dim int) *Searcher {
 	return &Searcher{
-		Visited:           visited.New(maxNodes),
-		Candidates:        queue.NewMax(128), // Max-heap for results (keeps K smallest, evicts largest)
-		ScratchCandidates: queue.NewMin(128), // Min-heap for exploration (explores closest first)
+		Visited:           NewVisitedSet(maxNodes),
+		Candidates:        NewMax(128), // Max-heap for results (keeps K smallest, evicts largest)
+		ScratchCandidates: NewMin(128), // Min-heap for exploration (explores closest first)
 		ScratchVec:        make([]float32, dim),
 		IOBuffer:          make([]byte, 4096), // Default page size
 	}

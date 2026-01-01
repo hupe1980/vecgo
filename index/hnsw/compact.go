@@ -6,8 +6,7 @@ import (
 	"sync"
 
 	"github.com/hupe1980/vecgo/internal/core"
-	"github.com/hupe1980/vecgo/internal/queue"
-	"github.com/hupe1980/vecgo/internal/search"
+	"github.com/hupe1980/vecgo/searcher"
 )
 
 // Compact removes deleted nodes from the graph connections and attempts to repair connectivity.
@@ -33,8 +32,8 @@ func (h *HNSW) Compact(ctx context.Context) error {
 
 		worker := func() {
 			defer wg.Done()
-			s := search.AcquireSearcher(int(maxID), h.opts.Dimension)
-			defer search.ReleaseSearcher(s)
+			s := searcher.AcquireSearcher(int(maxID), h.opts.Dimension)
+			defer searcher.ReleaseSearcher(s)
 			scratch := h.scratchPool.Get().(*scratch)
 			defer h.scratchPool.Put(scratch)
 
@@ -163,7 +162,7 @@ func (h *HNSW) Compact(ctx context.Context) error {
 // reconcileNode checks if an active node needs repair (due to deleted neighbors).
 // If so, it finds new active neighbors and appends them to the connection list,
 // preserving the deleted neighbors as bridges.
-func (h *HNSW) reconcileNode(s *search.Searcher, scratch *scratch, ctx context.Context, g *graph, id uint64) {
+func (h *HNSW) reconcileNode(s *searcher.Searcher, scratch *scratch, ctx context.Context, g *graph, id uint64) {
 	// Step 1: Check if repair is needed (Read-only check)
 	needsRepair, layersToRepair := h.checkRepairNeeded(g, id)
 	if !needsRepair {
@@ -241,7 +240,7 @@ func (h *HNSW) reconcileNode(s *search.Searcher, scratch *scratch, ctx context.C
 
 		// Push unique candidates back to heap
 		for id, dist := range uniqueCandidates {
-			candidates.PushItemBounded(queue.PriorityQueueItem{Node: id, Distance: dist}, h.opts.EF)
+			candidates.PushItemBounded(searcher.PriorityQueueItem{Node: id, Distance: dist}, h.opts.EF)
 		}
 
 		var bestNode uint64 = currID

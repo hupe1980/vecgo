@@ -1,4 +1,4 @@
-// Package flat provides an implementation of a flat index for vector storage and search.
+// Package flat provides an implementation of a flat index for vector storage and searcher.
 package flat
 
 import (
@@ -14,9 +14,8 @@ import (
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/internal/bitset"
 	"github.com/hupe1980/vecgo/internal/container"
-	"github.com/hupe1980/vecgo/internal/queue"
-	"github.com/hupe1980/vecgo/internal/search"
 	"github.com/hupe1980/vecgo/quantization"
+	"github.com/hupe1980/vecgo/searcher"
 	"github.com/hupe1980/vecgo/vectorstore"
 	"github.com/hupe1980/vecgo/vectorstore/columnar"
 )
@@ -36,7 +35,7 @@ type Options struct {
 	DistanceType index.DistanceType
 
 	// NormalizeVectors enables L2 normalization for stored vectors and queries.
-	// Commonly used for cosine search.
+	// Commonly used for cosine searcher.
 	NormalizeVectors bool
 }
 
@@ -46,7 +45,7 @@ var DefaultOptions = Options{
 	DistanceType: index.DistanceTypeSquaredL2,
 }
 
-// Flat represents a flat index for vector storage and search.
+// Flat represents a flat index for vector storage and searcher.
 // It uses a zero-overhead architecture (maxID + BitSet) for O(1) inserts.
 type Flat struct {
 	// State
@@ -575,7 +574,7 @@ func (f *Flat) Update(ctx context.Context, id uint64, v []float32) error {
 
 // SearchWithContext performs a K-nearest neighbor search using a reusable Searcher context.
 // This method is allocation-free in the steady state (except for the result slice).
-func (f *Flat) SearchWithContext(ctx context.Context, s *search.Searcher, q []float32, k int, opts *index.SearchOptions) ([]index.SearchResult, error) {
+func (f *Flat) SearchWithContext(ctx context.Context, s *searcher.Searcher, q []float32, k int, opts *index.SearchOptions) ([]index.SearchResult, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -649,7 +648,7 @@ func (f *Flat) SearchWithContext(ctx context.Context, s *search.Searcher, q []fl
 			nodeDist = f.distanceFunc(query, vec)
 		}
 
-		s.ScratchCandidates.PushItemBounded(queue.PriorityQueueItem{Node: id, Distance: nodeDist}, k)
+		s.ScratchCandidates.PushItemBounded(searcher.PriorityQueueItem{Node: id, Distance: nodeDist}, k)
 	}
 
 	// Extract results
@@ -682,6 +681,15 @@ func (f *Flat) KNNSearchWithBuffer(ctx context.Context, q []float32, k int, opts
 		filter = opts.Filter
 	}
 	return f.BruteSearchWithBuffer(ctx, q, k, filter, buf)
+}
+
+// KNNSearchWithContext performs a K-nearest neighbor search using the provided Searcher context.
+func (f *Flat) KNNSearchWithContext(ctx context.Context, s *searcher.Searcher, q []float32, k int, opts *index.SearchOptions) error {
+	var filter func(id uint64) bool
+	if opts != nil && opts.Filter != nil {
+		filter = opts.Filter
+	}
+	return f.BruteSearchWithContext(ctx, s, q, k, filter)
 }
 
 // KNNSearchStream returns an iterator over K-nearest neighbor search results.
@@ -766,7 +774,7 @@ func (f *Flat) BruteSearchWithBuffer(ctx context.Context, query []float32, k int
 		actualK = int(maxID)
 	}
 
-	topCandidates := queue.NewMax(actualK)
+	topCandidates := searcher.NewMax(actualK)
 	heap.Init(topCandidates)
 
 	pq := f.pq.Load()
@@ -821,16 +829,16 @@ func (f *Flat) BruteSearchWithBuffer(ctx context.Context, query []float32, k int
 				nodeDist := batchDistances[i]
 
 				if topCandidates.Len() < actualK {
-					heap.Push(topCandidates, queue.PriorityQueueItem{Node: nodeID, Distance: nodeDist})
+					heap.Push(topCandidates, searcher.PriorityQueueItem{Node: nodeID, Distance: nodeDist})
 					continue
 				}
 
-				largest := topCandidates.Top().(queue.PriorityQueueItem)
+				largest := topCandidates.Top().(searcher.PriorityQueueItem)
 				if nodeDist < largest.Distance {
 					// We found a closer neighbor.
 					// Remove the farthest one (root of MaxHeap) and add the new one.
 					heap.Pop(topCandidates)
-					heap.Push(topCandidates, queue.PriorityQueueItem{Node: nodeID, Distance: nodeDist})
+					heap.Push(topCandidates, searcher.PriorityQueueItem{Node: nodeID, Distance: nodeDist})
 				}
 			}
 		}
@@ -869,14 +877,14 @@ func (f *Flat) BruteSearchWithBuffer(ctx context.Context, query []float32, k int
 			}
 
 			if topCandidates.Len() < actualK {
-				heap.Push(topCandidates, queue.PriorityQueueItem{Node: id, Distance: nodeDist})
+				heap.Push(topCandidates, searcher.PriorityQueueItem{Node: id, Distance: nodeDist})
 				continue
 			}
 
-			largest := topCandidates.Top().(queue.PriorityQueueItem)
+			largest := topCandidates.Top().(searcher.PriorityQueueItem)
 			if nodeDist < largest.Distance {
 				heap.Pop(topCandidates)
-				heap.Push(topCandidates, queue.PriorityQueueItem{Node: id, Distance: nodeDist})
+				heap.Push(topCandidates, searcher.PriorityQueueItem{Node: id, Distance: nodeDist})
 			}
 		}
 	}
@@ -887,7 +895,7 @@ func (f *Flat) BruteSearchWithBuffer(ctx context.Context, query []float32, k int
 
 	startLen := len(*buf)
 	for topCandidates.Len() > 0 {
-		item := heap.Pop(topCandidates).(queue.PriorityQueueItem)
+		item := heap.Pop(topCandidates).(searcher.PriorityQueueItem)
 		*buf = append(*buf, index.SearchResult{ID: item.Node, Distance: item.Distance})
 	}
 
@@ -944,4 +952,64 @@ func NewSharded(shardID, numShards int, optFns ...func(o *Options)) (*Flat, erro
 	f.numShards = numShards
 
 	return f, nil
+}
+
+// BruteSearchWithContext performs a brute-force search using the provided Searcher context.
+func (f *Flat) BruteSearchWithContext(ctx context.Context, s *searcher.Searcher, query []float32, k int, filter func(id uint64) bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	maxID := f.maxID.Load()
+	currentDim := int(f.dimension.Load())
+
+	if k <= 0 {
+		return index.ErrInvalidK
+	}
+	if maxID == 0 {
+		return nil
+	}
+	if currentDim > 0 && len(query) != currentDim {
+		return &index.ErrDimensionMismatch{Expected: currentDim, Actual: len(query)}
+	}
+
+	q := query
+	if f.opts.NormalizeVectors {
+		if len(s.ScratchVec) < len(query) {
+			s.ScratchVec = make([]float32, len(query))
+		}
+		copy(s.ScratchVec, query)
+		if !distance.NormalizeL2InPlace(s.ScratchVec) {
+			return fmt.Errorf("flat: cannot normalize zero query")
+		}
+		q = s.ScratchVec
+	}
+
+	actualK := k
+	if uint64(actualK) > maxID {
+		actualK = int(maxID)
+	}
+
+	s.Candidates.Reset()
+
+	// Simple iteration
+	for id := range maxID {
+		if f.deleted.Test(id) {
+			continue
+		}
+		if filter != nil && !filter(id) {
+			continue
+		}
+		if f.vectors == nil {
+			continue
+		}
+		v, ok := f.vectors.GetVector(id)
+		if !ok {
+			continue
+		}
+
+		dist := f.distanceFunc(q, v)
+		s.Candidates.PushItemBounded(searcher.PriorityQueueItem{Node: id, Distance: dist}, actualK)
+	}
+	return nil
 }
