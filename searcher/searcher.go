@@ -33,6 +33,12 @@ type Searcher struct {
 	// FilterBitmap is a reusable bitmap for metadata filtering.
 	FilterBitmap *metadata.Bitmap
 
+	// ScratchResults is a reusable buffer for collecting intermediate results (e.g. DiskANN beam search).
+	ScratchResults []PriorityQueueItem
+
+	// BQBuffer is a reusable buffer for Binary Quantization codes.
+	BQBuffer []uint64
+
 	// OpsPerformed tracks the number of distance calculations or node visits.
 	OpsPerformed int
 }
@@ -53,6 +59,9 @@ func AcquireSearcher(maxNodes int, dim int) *Searcher {
 	} else {
 		s.ScratchVec = s.ScratchVec[:dim]
 	}
+	// Reset scratch buffers
+	s.ScratchResults = s.ScratchResults[:0]
+	s.BQBuffer = s.BQBuffer[:0]
 	s.OpsPerformed = 0
 	return s
 }
@@ -74,6 +83,8 @@ func NewSearcher(maxNodes int, dim int) *Searcher {
 		ScratchVec:        make([]float32, dim),
 		IOBuffer:          make([]byte, 4096), // Default page size
 		FilterBitmap:      metadata.NewBitmap(),
+		ScratchResults:    make([]PriorityQueueItem, 0, 128),
+		BQBuffer:          make([]uint64, 0, 8), // Enough for 512 dimensions
 	}
 }
 

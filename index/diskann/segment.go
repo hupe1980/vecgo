@@ -579,7 +579,14 @@ func (s *Segment) SearchWithContext(ctx context.Context, query []float32, k int,
 
 	var queryBQ []uint64
 	if s.opts.EnableBinaryPrefilter && s.bq != nil && len(s.bqCodes) > 0 {
-		queryBQ = s.bq.EncodeUint64(query)
+		// Use Searcher scratch buffer
+		numWords := (len(query) + 63) / 64
+		if cap(sr.BQBuffer) < numWords {
+			sr.BQBuffer = make([]uint64, numWords)
+		}
+		sr.BQBuffer = sr.BQBuffer[:numWords]
+		s.bq.EncodeUint64Into(sr.BQBuffer, query)
+		queryBQ = sr.BQBuffer
 	}
 
 	if distTable == nil && s.pq != nil {
@@ -631,7 +638,7 @@ func (s *Segment) beamSearchWithContext(query []float32, distTable []float32, qu
 	sr.ScratchCandidates.PushItem(searcher.PriorityQueueItem{Node: entryPoint, Distance: entryDist})
 
 	// Keep track of best results found
-	results := make([]searcher.PriorityQueueItem, 0, topK*2)
+	results := sr.ScratchResults
 	results = append(results, searcher.PriorityQueueItem{Node: entryPoint, Distance: entryDist})
 
 	for sr.ScratchCandidates.Len() > 0 {
@@ -672,6 +679,9 @@ func (s *Segment) beamSearchWithContext(query []float32, distTable []float32, qu
 	if len(results) > topK {
 		results = results[:topK]
 	}
+
+	// Update scratch buffer to retain capacity
+	sr.ScratchResults = results
 
 	return results
 }

@@ -928,7 +928,23 @@ func (tx *Tx[T]) HybridSearchWithContext(ctx context.Context, query []float32, k
 		if err != nil {
 			return nil, err
 		}
-		return toSearchResults(s.Candidates.ToSortedSlice()), nil
+
+		// Zero-alloc conversion
+		s.ScratchResults = s.ScratchResults[:0]
+		for s.Candidates.Len() > 0 {
+			item, _ := s.Candidates.PopItem()
+			s.ScratchResults = append(s.ScratchResults, item)
+		}
+		// Reverse
+		for i, j := 0, len(s.ScratchResults)-1; i < j; i, j = i+1, j-1 {
+			s.ScratchResults[i], s.ScratchResults[j] = s.ScratchResults[j], s.ScratchResults[i]
+		}
+
+		results := make([]index.SearchResult, len(s.ScratchResults))
+		for i, item := range s.ScratchResults {
+			results[i] = index.SearchResult{ID: item.Node, Distance: item.Distance}
+		}
+		return results, nil
 	}
 
 	// Create metadata filter function
@@ -960,7 +976,23 @@ func (tx *Tx[T]) HybridSearchWithContext(ctx context.Context, query []float32, k
 		if err != nil {
 			return nil, err
 		}
-		return toSearchResults(s.Candidates.ToSortedSlice()), nil
+
+		// Zero-alloc conversion using ScratchResults
+		s.ScratchResults = s.ScratchResults[:0]
+		for s.Candidates.Len() > 0 {
+			item, _ := s.Candidates.PopItem()
+			s.ScratchResults = append(s.ScratchResults, item)
+		}
+		// Reverse
+		for i, j := 0, len(s.ScratchResults)-1; i < j; i, j = i+1, j-1 {
+			s.ScratchResults[i], s.ScratchResults[j] = s.ScratchResults[j], s.ScratchResults[i]
+		}
+
+		results := make([]index.SearchResult, len(s.ScratchResults))
+		for i, item := range s.ScratchResults {
+			results[i] = index.SearchResult{ID: item.Node, Distance: item.Distance}
+		}
+		return results, nil
 	}
 
 	// Post-filtering
@@ -972,11 +1004,20 @@ func (tx *Tx[T]) HybridSearchWithContext(ctx context.Context, query []float32, k
 	}
 
 	// Apply metadata filtering
-	// Note: ToSortedSlice allocates, but we are in the "returning slice" API anyway.
-	// For pure zero-alloc, users should use KNNSearchWithContext directly with a pre-compiled filter.
-	rawResults := s.Candidates.ToSortedSlice()
+	// Use ScratchResults to avoid allocation during sorting
+	s.ScratchResults = s.ScratchResults[:0]
+	for s.Candidates.Len() > 0 {
+		item, _ := s.Candidates.PopItem()
+		s.ScratchResults = append(s.ScratchResults, item)
+	}
+
+	// Reverse to get best-first (MaxHeap pops worst-first)
+	for i, j := 0, len(s.ScratchResults)-1; i < j; i, j = i+1, j-1 {
+		s.ScratchResults[i], s.ScratchResults[j] = s.ScratchResults[j], s.ScratchResults[i]
+	}
+
 	results := make([]index.SearchResult, 0, k)
-	for _, item := range rawResults {
+	for _, item := range s.ScratchResults {
 		if len(results) >= k {
 			break
 		}

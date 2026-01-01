@@ -703,15 +703,15 @@ func (h *HNSW) insertNode(g *graph, id uint64, vec []float32, layer int) error {
 		changed := true
 		for changed {
 			changed = false
-			conns := h.getConnections(g, currID, level)
-			for _, next := range conns {
+			h.visitConnections(g, currID, level, func(next Neighbor) bool {
 				nextDist := h.dist(vec, uint64(next.ID))
 				if nextDist < currDist {
 					currID = uint64(next.ID)
 					currDist = nextDist
 					changed = true
 				}
-			}
+				return true
+			})
 		}
 	}
 

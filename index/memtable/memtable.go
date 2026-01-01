@@ -1,10 +1,11 @@
 package memtable
 
 import (
-	"container/heap"
 	"sync"
 
 	"github.com/hupe1980/vecgo/index"
+	"github.com/hupe1980/vecgo/internal/mem"
+	"github.com/hupe1980/vecgo/searcher"
 )
 
 // Item represents a vector in the memtable.
@@ -24,6 +25,7 @@ type MemTable struct {
 	deleted   []bool
 	distFunc  index.DistanceFunc
 	dimension int
+	zeroVec   []float32 // Pre-allocated zero vector for deletes
 	heapPool  sync.Pool
 	mapPool   sync.Pool
 }
@@ -32,14 +34,14 @@ type MemTable struct {
 func New(dimension int, distFunc index.DistanceFunc) *MemTable {
 	m := &MemTable{
 		ids:       make([]uint64, 0, 1024),
-		vectors:   make([]float32, 0, 1024*dimension),
+		vectors:   mem.AllocAlignedFloat32(1024 * dimension)[:0],
 		deleted:   make([]bool, 0, 1024),
 		distFunc:  distFunc,
 		dimension: dimension,
+		zeroVec:   make([]float32, dimension),
 		heapPool: sync.Pool{
 			New: func() any {
-				h := make(resultHeap, 0, 32)
-				return &h
+				return searcher.NewMax(32)
 			},
 		},
 		mapPool: sync.Pool{
@@ -68,8 +70,24 @@ func (m *MemTable) Insert(id uint64, vector []float32) {
 
 	// Append-only (SoA)
 	m.ids = append(m.ids, id)
-	m.vectors = append(m.vectors, vector...)
+	m.appendVectors(vector)
 	m.deleted = append(m.deleted, false)
+}
+
+func (m *MemTable) appendVectors(vec []float32) {
+	needed := len(m.vectors) + len(vec)
+	if needed > cap(m.vectors) {
+		// Grow strategy: 2x or needed
+		newCap := cap(m.vectors) * 2
+		if newCap < needed {
+			newCap = needed
+		}
+		// Allocate aligned
+		newVecs := mem.AllocAlignedFloat32(newCap)
+		copy(newVecs, m.vectors)
+		m.vectors = newVecs[:len(m.vectors)]
+	}
+	m.vectors = append(m.vectors, vec...)
 }
 
 // Get retrieves a vector from the memtable.
@@ -88,10 +106,9 @@ func (m *MemTable) Get(id uint64) ([]float32, bool, bool) {
 			// Extract vector from flattened slice
 			start := i * m.dimension
 			end := start + m.dimension
-			// Return a copy to be safe
-			vec := make([]float32, m.dimension)
-			copy(vec, m.vectors[start:end])
-			return vec, true, false
+			// Return slice view (read-only)
+			// WARNING: Caller must not modify the returned slice.
+			return m.vectors[start:end], true, false
 		}
 	}
 	return nil, false, false
@@ -119,8 +136,8 @@ func (m *MemTable) Delete(id uint64) {
 	// Append tombstone
 	m.ids = append(m.ids, id)
 	// We need to append dummy vector data to keep alignment
-	zeros := make([]float32, m.dimension)
-	m.vectors = append(m.vectors, zeros...)
+	// Use pre-allocated zero vector to avoid allocation
+	m.appendVectors(m.zeroVec)
 	m.deleted = append(m.deleted, true)
 }
 
@@ -136,24 +153,40 @@ func (m *MemTable) Flush() []Item {
 
 	// Reconstruct Items from SoA
 	items := make([]Item, len(m.ids))
-	for i := range m.ids {
-		items[i] = Item{
-			ID:        m.ids[i],
-			IsDeleted: m.deleted[i],
+
+	// Batch allocate vectors for all items to reduce GC pressure
+	// Calculate total size needed
+	totalFloats := len(m.ids) * m.dimension
+	if totalFloats > 0 {
+		vecs := mem.AllocAlignedFloat32(totalFloats)
+		copy(vecs, m.vectors)
+
+		for i := range m.ids {
+			items[i] = Item{
+				ID:        m.ids[i],
+				IsDeleted: m.deleted[i],
+			}
+			if !m.deleted[i] {
+				start := i * m.dimension
+				end := start + m.dimension
+				// Point to the batch allocated slice
+				items[i].Vector = vecs[start:end]
+			}
 		}
-		if !m.deleted[i] {
-			start := i * m.dimension
-			end := start + m.dimension
-			vec := make([]float32, m.dimension)
-			copy(vec, m.vectors[start:end])
-			items[i].Vector = vec
+	} else {
+		// Should be covered by len(m.ids) == 0 check above, but safe fallback
+		for i := range m.ids {
+			items[i] = Item{
+				ID:        m.ids[i],
+				IsDeleted: m.deleted[i],
+			}
 		}
 	}
 
-	// Reset
-	m.ids = make([]uint64, 0, 1024)
-	m.vectors = make([]float32, 0, 1024*m.dimension)
-	m.deleted = make([]bool, 0, 1024)
+	// Reset (Reuse buffers instead of reallocating)
+	m.ids = m.ids[:0]
+	m.vectors = m.vectors[:0]
+	m.deleted = m.deleted[:0]
 
 	return items
 }
@@ -178,8 +211,8 @@ func (m *MemTable) SearchWithBuffer(query []float32, k int, filter func(uint64) 
 	defer m.mu.RUnlock()
 
 	// Use pooled heap
-	h := m.heapPool.Get().(*resultHeap)
-	*h = (*h)[:0]
+	h := m.heapPool.Get().(*searcher.PriorityQueue)
+	h.Reset()
 	defer m.heapPool.Put(h)
 
 	// Linear scan
@@ -210,18 +243,14 @@ func (m *MemTable) SearchWithBuffer(query []float32, k int, filter func(uint64) 
 		dist := m.distFunc(query, vec)
 
 		// Push to heap
-		if h.Len() < k {
-			heap.Push(h, index.SearchResult{ID: id, Distance: dist})
-		} else if dist < (*h)[0].Distance {
-			heap.Pop(h)
-			heap.Push(h, index.SearchResult{ID: id, Distance: dist})
-		}
+		h.PushItemBounded(searcher.PriorityQueueItem{Node: id, Distance: dist}, k)
 	}
 
 	// Extract from heap (reverse order)
 	startLen := len(*buf)
 	for h.Len() > 0 {
-		*buf = append(*buf, heap.Pop(h).(index.SearchResult))
+		item, _ := h.PopItem()
+		*buf = append(*buf, index.SearchResult{ID: item.Node, Distance: item.Distance})
 	}
 
 	// Reverse the appended segment to get nearest first
@@ -239,37 +268,31 @@ func (m *MemTable) Items() []Item {
 	defer m.mu.RUnlock()
 
 	items := make([]Item, len(m.ids))
-	for i := range m.ids {
-		items[i] = Item{
-			ID:        m.ids[i],
-			IsDeleted: m.deleted[i],
+
+	// Batch allocate vectors
+	totalFloats := len(m.ids) * m.dimension
+	if totalFloats > 0 {
+		vecs := mem.AllocAlignedFloat32(totalFloats)
+		copy(vecs, m.vectors)
+
+		for i := range m.ids {
+			items[i] = Item{
+				ID:        m.ids[i],
+				IsDeleted: m.deleted[i],
+			}
+			if !m.deleted[i] {
+				start := i * m.dimension
+				end := start + m.dimension
+				items[i].Vector = vecs[start:end]
+			}
 		}
-		if !m.deleted[i] {
-			start := i * m.dimension
-			end := start + m.dimension
-			vec := make([]float32, m.dimension)
-			copy(vec, m.vectors[start:end])
-			items[i].Vector = vec
+	} else {
+		for i := range m.ids {
+			items[i] = Item{
+				ID:        m.ids[i],
+				IsDeleted: m.deleted[i],
+			}
 		}
 	}
 	return items
-}
-
-// resultHeap is a max-heap of SearchResults (based on distance)
-type resultHeap []index.SearchResult
-
-func (h resultHeap) Len() int           { return len(h) }
-func (h resultHeap) Less(i, j int) bool { return h[i].Distance > h[j].Distance } // Max-heap
-func (h resultHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
-
-func (h *resultHeap) Push(x any) {
-	*h = append(*h, x.(index.SearchResult))
-}
-
-func (h *resultHeap) Pop() any {
-	old := *h
-	n := len(old)
-	x := old[n-1]
-	*h = old[0 : n-1]
-	return x
 }

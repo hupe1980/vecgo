@@ -38,7 +38,7 @@ Vecgo is designed around a **Shared-Nothing, LSM-Tree Architecture** to maximize
 ┌─────────────────────────────────────────────────────────────┐
 │                   Shard Engine (Per Shard)                  │
 │   - Write-Ahead Log (WAL)                                   │
-│   - MemTable (Mutable HNSW)                                 │
+│   - MemTable (Mutable, SIMD-Aligned SoA)                    │
 │   - Immutable Segments (DiskANN/Flat)                       │
 │   - Compaction & Merging                                    │
 └─────────────────────────────────────────────────────────────┘
@@ -285,6 +285,10 @@ To minimize Garbage Collection (GC) pauses, Vecgo uses custom memory management 
     *   **SearchContext**: Reuses buffers for visited sets (`bitset`), priority queues, and temporary vectors.
     *   **Benefit**: Drives search toward near-zero allocations in steady state (verify via benchmarks; treat allocs/op as a regression metric).
     *   **Sync.Pool**: Uses Go's `sync.Pool` to automatically scale with load and release memory when idle.
+
+*   **Aligned Memory (`internal/mem`)**:
+    *   **SIMD Alignment**: Vectors in `MemTable` and other critical paths are allocated with 64-byte alignment (AVX-512 friendly).
+    *   **Custom Allocator**: Uses `mem.AllocAlignedFloat32` to ensure backing arrays start at aligned addresses, enabling efficient SIMD loads.
 
 ---
 
