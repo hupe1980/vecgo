@@ -785,6 +785,20 @@ for job := range jobs {
 
 **Impact**: Reduces allocations from ~100-500/op to **0-5/op** (depending on index type).
 
+### Hybrid Search Optimization
+
+The `Searcher` context also optimizes hybrid search (vector + metadata filtering) by reusing internal bitmaps.
+
+```go
+// Hybrid Search with Zero Allocations
+s.Reset()
+results, err := db.Search(query).
+    KNN(10).
+    Filter(metadata.NewFilterSet(...)).
+    WithSearcher(s). // Reuses s.FilterBitmap for filter compilation
+    Execute(ctx)
+```
+
 ---
 
 ## Benchmarking

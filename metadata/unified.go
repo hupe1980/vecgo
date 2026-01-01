@@ -269,71 +269,78 @@ func (ui *UnifiedIndex) CreateStreamingFilter(fs *FilterSet) func(uint64) bool {
 //   - OpIn: field IN (value1, value2, ...)
 //   - OpNotEqual, OpGreaterThan, etc.: Falls back to scanning
 func (ui *UnifiedIndex) CompileFilter(fs *FilterSet) *Bitmap {
+	dst := NewBitmap()
+	if ui.CompileFilterTo(fs, dst) {
+		return dst
+	}
+	return nil
+}
+
+// CompileFilterTo compiles a FilterSet into the provided destination bitmap.
+// Returns true if compilation succeeded (all operators supported), false otherwise.
+// The destination bitmap is cleared before use.
+func (ui *UnifiedIndex) CompileFilterTo(fs *FilterSet, dst *Bitmap) bool {
 	if fs == nil || len(fs.Filters) == 0 {
-		return nil
+		dst.Clear()
+		return true
 	}
 
 	ui.mu.RLock()
 	defer ui.mu.RUnlock()
 
-	var result *Bitmap
+	dst.Clear()
+	first := true
 
 	for _, filter := range fs.Filters {
-		var filterBitmap *Bitmap
-
 		switch filter.Operator {
 		case OpEqual:
-			// Get bitmap for this exact key=value
-			filterBitmap = ui.getBitmapLocked(filter.Key, filter.Value)
-
-		case OpIn:
-			// Union of all matching values
-			arr, ok := filter.Value.AsArray()
-			if !ok {
-				// Can't compile OpIn with non-array value
-				return nil
+			bitmap := ui.getBitmapLocked(filter.Key, filter.Value)
+			if bitmap == nil {
+				dst.Clear()
+				return true // No matches for this filter -> AND implies 0 matches
 			}
 
-			filterBitmap = NewBitmap()
-			for _, v := range arr {
-				if bitmap := ui.getBitmapLocked(filter.Key, v); bitmap != nil {
-					filterBitmap = filterBitmap.Or(bitmap)
+			if first {
+				dst.OrInPlace(bitmap) // Copy first bitmap
+			} else {
+				dst.AndInPlace(bitmap)
+			}
+
+		case OpIn:
+			arr, ok := filter.Value.AsArray()
+			if !ok {
+				return false
+			}
+
+			if first {
+				for _, v := range arr {
+					if b := ui.getBitmapLocked(filter.Key, v); b != nil {
+						dst.OrInPlace(b)
+					}
 				}
+			} else {
+				// We need to intersect dst with (Union of values)
+				// dst = dst AND (v1 OR v2 OR ...)
+				scratch := NewBitmap()
+				for _, v := range arr {
+					if b := ui.getBitmapLocked(filter.Key, v); b != nil {
+						scratch.OrInPlace(b)
+					}
+				}
+				dst.AndInPlace(scratch)
 			}
 
 		default:
-			// Can't compile other operators (GreaterThan, LessThan, etc.)
-			// Caller should fall back to scanning + evaluating
-			return nil
+			return false
 		}
 
-		// Intersect with previous results (AND operation)
-		if result == nil {
-			if filterBitmap != nil {
-				result = filterBitmap
-			} else {
-				// First filter has no matches - return empty
-				return NewBitmap()
-			}
-		} else if filterBitmap != nil {
-			result = result.And(filterBitmap)
-		} else {
-			// Empty result - no matches possible
-			return NewBitmap()
+		if !first && dst.IsEmpty() {
+			return true
 		}
-
-		// Early termination if result is empty
-		if result.IsEmpty() {
-			return result
-		}
+		first = false
 	}
 
-	// If no filters were provided, return empty bitmap
-	if result == nil {
-		return NewBitmap()
-	}
-
-	return result
+	return true
 }
 
 // getBitmapLocked retrieves the bitmap for a specific field=value combination.

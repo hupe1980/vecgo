@@ -721,6 +721,14 @@ func (sc *ShardedCoordinator[T]) mergeResults(shardResults [][]index.SearchResul
 	return flat
 }
 
+// HybridSearchWithContext performs a hybrid search using the provided Searcher context.
+// Note: For ShardedCoordinator, the provided Searcher is NOT used for parallel shard execution
+// (to avoid race conditions), but may be used for result merging in the future.
+func (sc *ShardedCoordinator[T]) HybridSearchWithContext(ctx context.Context, query []float32, k int, opts *HybridSearchOptions, s *searcher.Searcher) ([]index.SearchResult, error) {
+	// TODO: Optimize sharded search with context. Currently ignores s for shard execution to avoid race conditions.
+	return sc.HybridSearch(ctx, query, k, opts)
+}
+
 // KNNSearchStream returns an iterator over K-nearest neighbor search results.
 func (sc *ShardedCoordinator[T]) KNNSearchStream(ctx context.Context, query []float32, k int, opts *index.SearchOptions) iter.Seq2[index.SearchResult, error] {
 	// For sharded streaming, we collect all results and yield them.

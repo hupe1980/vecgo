@@ -272,6 +272,20 @@ func (v *ValidatedCoordinator[T]) HybridSearch(ctx context.Context, query []floa
 	return v.inner.HybridSearch(ctx, query, k, opts)
 }
 
+// HybridSearchWithContext validates input and delegates to the inner coordinator.
+func (v *ValidatedCoordinator[T]) HybridSearchWithContext(ctx context.Context, query []float32, k int, opts *HybridSearchOptions, s *searcher.Searcher) ([]index.SearchResult, error) {
+	if err := v.validateVector(query); err != nil {
+		return nil, err
+	}
+	if k <= 0 {
+		return nil, index.ErrInvalidK
+	}
+	if k > v.limits.MaxK {
+		return nil, fmt.Errorf("k %d exceeds limit %d", k, v.limits.MaxK)
+	}
+	return v.inner.HybridSearchWithContext(ctx, query, k, opts, s)
+}
+
 // KNNSearchStream validates input and delegates to the inner coordinator.
 func (v *ValidatedCoordinator[T]) KNNSearchStream(ctx context.Context, query []float32, k int, opts *index.SearchOptions) iter.Seq2[index.SearchResult, error] {
 	// We can't easily return an error from the iterator setup, so we return an iterator that yields an error immediately if validation fails.

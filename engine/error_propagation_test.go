@@ -76,6 +76,10 @@ func (f *failingCoordinator[T]) HybridSearch(ctx context.Context, query []float3
 	return nil, f.err
 }
 
+func (f *failingCoordinator[T]) HybridSearchWithContext(ctx context.Context, query []float32, k int, opts *engine.HybridSearchOptions, s *searcher.Searcher) ([]index.SearchResult, error) {
+	return nil, f.err
+}
+
 func (f *failingCoordinator[T]) KNNSearchStream(ctx context.Context, query []float32, k int, opts *index.SearchOptions) iter.Seq2[index.SearchResult, error] {
 	return func(yield func(index.SearchResult, error) bool) {
 		yield(index.SearchResult{}, f.err)
@@ -183,6 +187,15 @@ func (s *slowCoordinator[T]) BruteSearch(ctx context.Context, query []float32, k
 }
 
 func (s *slowCoordinator[T]) HybridSearch(ctx context.Context, query []float32, k int, opts *engine.HybridSearchOptions) ([]index.SearchResult, error) {
+	select {
+	case <-time.After(s.delay):
+		return nil, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (s *slowCoordinator[T]) HybridSearchWithContext(ctx context.Context, query []float32, k int, opts *engine.HybridSearchOptions, sr *searcher.Searcher) ([]index.SearchResult, error) {
 	select {
 	case <-time.After(s.delay):
 		return nil, nil
@@ -505,27 +518,77 @@ func (tsc *testShardedCoordinator[T]) BruteSearch(ctx context.Context, query []f
 }
 
 // Implement other Coordinator methods as no-ops for testing
-func (tsc *testShardedCoordinator[T]) Insert(ctx context.Context, vector []float32, data T, meta metadata.Metadata) (uint32, error) {
+func (tsc *testShardedCoordinator[T]) Insert(ctx context.Context, vector []float32, data T, meta metadata.Metadata) (uint64, error) {
 	return 0, nil
 }
 
-func (tsc *testShardedCoordinator[T]) BatchInsert(ctx context.Context, vectors [][]float32, dataSlice []T, metadataSlice []metadata.Metadata) ([]uint32, error) {
+func (tsc *testShardedCoordinator[T]) BatchInsert(ctx context.Context, vectors [][]float32, dataSlice []T, metadataSlice []metadata.Metadata) ([]uint64, error) {
 	return nil, nil
 }
 
-func (tsc *testShardedCoordinator[T]) Update(ctx context.Context, id uint32, vector []float32, data T, meta metadata.Metadata) error {
+func (tsc *testShardedCoordinator[T]) Update(ctx context.Context, id uint64, vector []float32, data T, meta metadata.Metadata) error {
 	return nil
 }
 
-func (tsc *testShardedCoordinator[T]) Delete(ctx context.Context, id uint32) error {
+func (tsc *testShardedCoordinator[T]) Delete(ctx context.Context, id uint64) error {
 	return nil
 }
 
-func (tsc *testShardedCoordinator[T]) Get(id uint32) (T, bool) {
+func (tsc *testShardedCoordinator[T]) Get(id uint64) (T, bool) {
 	var zero T
 	return zero, false
 }
 
-func (tsc *testShardedCoordinator[T]) GetMetadata(id uint32) (metadata.Metadata, bool) {
+func (tsc *testShardedCoordinator[T]) GetMetadata(id uint64) (metadata.Metadata, bool) {
 	return nil, false
+}
+
+func (tsc *testShardedCoordinator[T]) KNNSearchWithBuffer(ctx context.Context, query []float32, k int, opts *index.SearchOptions, buf *[]index.SearchResult) error {
+	return nil
+}
+
+func (tsc *testShardedCoordinator[T]) KNNSearchWithContext(ctx context.Context, query []float32, k int, opts *index.SearchOptions, s *searcher.Searcher) error {
+	return nil
+}
+
+func (tsc *testShardedCoordinator[T]) HybridSearch(ctx context.Context, query []float32, k int, opts *engine.HybridSearchOptions) ([]index.SearchResult, error) {
+	return nil, nil
+}
+
+func (tsc *testShardedCoordinator[T]) HybridSearchWithContext(ctx context.Context, query []float32, k int, opts *engine.HybridSearchOptions, s *searcher.Searcher) ([]index.SearchResult, error) {
+	return nil, nil
+}
+
+func (tsc *testShardedCoordinator[T]) KNNSearchStream(ctx context.Context, query []float32, k int, opts *index.SearchOptions) iter.Seq2[index.SearchResult, error] {
+	return func(yield func(index.SearchResult, error) bool) {}
+}
+
+func (tsc *testShardedCoordinator[T]) EnableProductQuantization(cfg index.ProductQuantizationConfig) error {
+	return nil
+}
+
+func (tsc *testShardedCoordinator[T]) DisableProductQuantization() {}
+
+func (tsc *testShardedCoordinator[T]) SaveToWriter(w io.Writer) error {
+	return nil
+}
+
+func (tsc *testShardedCoordinator[T]) SaveToFile(path string) error {
+	return nil
+}
+
+func (tsc *testShardedCoordinator[T]) RecoverFromWAL(ctx context.Context) error {
+	return nil
+}
+
+func (tsc *testShardedCoordinator[T]) Stats() index.Stats {
+	return index.Stats{}
+}
+
+func (tsc *testShardedCoordinator[T]) Checkpoint() error {
+	return nil
+}
+
+func (tsc *testShardedCoordinator[T]) Close() error {
+	return nil
 }

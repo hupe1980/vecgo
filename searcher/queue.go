@@ -217,3 +217,21 @@ func (pq *PriorityQueue) EnsureCapacity(capacity int) {
 		pq.items = newItems
 	}
 }
+
+// ToSortedSlice returns the items in the queue sorted by priority (best first).
+// This operation consumes the queue (empties it).
+func (pq *PriorityQueue) ToSortedSlice() []PriorityQueueItem {
+	res := make([]PriorityQueueItem, 0, len(pq.items))
+	for len(pq.items) > 0 {
+		item, _ := pq.PopItem()
+		res = append(res, item)
+	}
+	// If it's a MaxHeap (keeping K smallest), PopItem returns largest first.
+	// So we get worst-to-best. We need to reverse to get best-to-worst.
+	if pq.isMaxHeap {
+		for i, j := 0, len(res)-1; i < j; i, j = i+1, j-1 {
+			res[i], res[j] = res[j], res[i]
+		}
+	}
+	return res
+}

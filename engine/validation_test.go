@@ -75,6 +75,10 @@ func (m *mockCoordinator[T]) HybridSearch(ctx context.Context, query []float32, 
 	return []index.SearchResult{{ID: 1, Distance: 0.1}}, nil
 }
 
+func (m *mockCoordinator[T]) HybridSearchWithContext(ctx context.Context, query []float32, k int, opts *HybridSearchOptions, s *searcher.Searcher) ([]index.SearchResult, error) {
+	return []index.SearchResult{{ID: 1, Distance: 0.1}}, nil
+}
+
 func (m *mockCoordinator[T]) KNNSearchStream(ctx context.Context, query []float32, k int, opts *index.SearchOptions) iter.Seq2[index.SearchResult, error] {
 	return func(yield func(index.SearchResult, error) bool) {
 		yield(index.SearchResult{ID: 1, Distance: 0.1}, nil)

@@ -95,6 +95,10 @@ type Coordinator[T any] interface {
 	// HybridSearch performs a hybrid search combining vector similarity and metadata filtering.
 	HybridSearch(ctx context.Context, query []float32, k int, opts *HybridSearchOptions) ([]index.SearchResult, error)
 
+	// HybridSearchWithContext performs a hybrid search using the provided Searcher context.
+	// This allows reusing the Searcher's scratch buffers for metadata filtering.
+	HybridSearchWithContext(ctx context.Context, query []float32, k int, opts *HybridSearchOptions, s *searcher.Searcher) ([]index.SearchResult, error)
+
 	// KNNSearchStream returns an iterator over K-nearest neighbor search results.
 	KNNSearchStream(ctx context.Context, query []float32, k int, opts *index.SearchOptions) iter.Seq2[index.SearchResult, error]
 

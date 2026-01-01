@@ -2,6 +2,8 @@ package searcher
 
 import (
 	"sync"
+
+	"github.com/hupe1980/vecgo/metadata"
 )
 
 // Searcher is a reusable execution context for vector search operations.
@@ -27,6 +29,9 @@ type Searcher struct {
 
 	// IOBuffer is a reusable buffer for disk I/O (DiskANN).
 	IOBuffer []byte
+
+	// FilterBitmap is a reusable bitmap for metadata filtering.
+	FilterBitmap *metadata.Bitmap
 
 	// OpsPerformed tracks the number of distance calculations or node visits.
 	OpsPerformed int
@@ -68,6 +73,7 @@ func NewSearcher(maxNodes int, dim int) *Searcher {
 		ScratchCandidates: NewMin(128), // Min-heap for exploration (explores closest first)
 		ScratchVec:        make([]float32, dim),
 		IOBuffer:          make([]byte, 4096), // Default page size
+		FilterBitmap:      metadata.NewBitmap(),
 	}
 }
 
@@ -76,6 +82,7 @@ func (s *Searcher) Reset() {
 	s.Visited.Reset()
 	s.Candidates.Reset()
 	s.ScratchCandidates.Reset()
+	s.FilterBitmap.Clear()
 	// ScratchVec and IOBuffer don't need clearing, just overwriting
 	s.OpsPerformed = 0
 }

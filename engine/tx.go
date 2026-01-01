@@ -907,22 +907,47 @@ func (tx *Tx[T]) flushMemTable() bool {
 
 // HybridSearch performs a hybrid search combining vector similarity and metadata filtering.
 func (tx *Tx[T]) HybridSearch(ctx context.Context, query []float32, k int, opts *HybridSearchOptions) ([]index.SearchResult, error) {
+	// Use a temporary searcher for the operation to benefit from zero-alloc filtering
+	// We guess a capacity, it will grow if needed
+	s := searcher.AcquireSearcher(10000, tx.dimension)
+	defer searcher.ReleaseSearcher(s)
+
+	return tx.HybridSearchWithContext(ctx, query, k, opts, s)
+}
+
+// HybridSearchWithContext performs a hybrid search using the provided Searcher context.
+// This allows reusing the Searcher's scratch buffers for metadata filtering.
+func (tx *Tx[T]) HybridSearchWithContext(ctx context.Context, query []float32, k int, opts *HybridSearchOptions, s *searcher.Searcher) ([]index.SearchResult, error) {
 	if opts == nil {
 		opts = &HybridSearchOptions{EF: 0}
 	}
 
 	// If no metadata filters, fall back to regular KNN search
 	if opts.MetadataFilters == nil || len(opts.MetadataFilters.Filters) == 0 {
-		return tx.KNNSearch(ctx, query, k, &index.SearchOptions{EFSearch: opts.EF})
+		err := tx.KNNSearchWithContext(ctx, query, k, &index.SearchOptions{EFSearch: opts.EF}, s)
+		if err != nil {
+			return nil, err
+		}
+		return toSearchResults(s.Candidates.ToSortedSlice()), nil
 	}
 
 	// Create metadata filter function
 	var metadataFilter func(uint64) bool
 
 	if tx.metaStore != nil {
-		tx.metaStore.RLock()
-		defer tx.metaStore.RUnlock()
-		metadataFilter = tx.metaStore.CreateStreamingFilter(opts.MetadataFilters)
+		// Try to compile to bitmap using Searcher's scratch bitmap
+		if tx.metaStore.CompileFilterTo(opts.MetadataFilters, s.FilterBitmap) {
+			// Fast path: use bitmap
+			bitmap := s.FilterBitmap
+			metadataFilter = func(id uint64) bool {
+				return bitmap.Contains(id)
+			}
+		} else {
+			// Fallback to streaming filter (slow path)
+			tx.metaStore.RLock()
+			metadataFilter = tx.metaStore.CreateStreamingFilter(opts.MetadataFilters)
+			tx.metaStore.RUnlock()
+		}
 	} else {
 		// Should not happen if initialized correctly, but safe fallback
 		return []index.SearchResult{}, nil
@@ -931,25 +956,35 @@ func (tx *Tx[T]) HybridSearch(ctx context.Context, query []float32, k int, opts 
 	if opts.PreFilter {
 		// Pre-filtering
 		searchOpts := &index.SearchOptions{EFSearch: opts.EF, Filter: metadataFilter}
-		return tx.KNNSearch(ctx, query, k, searchOpts)
+		err := tx.KNNSearchWithContext(ctx, query, k, searchOpts, s)
+		if err != nil {
+			return nil, err
+		}
+		return toSearchResults(s.Candidates.ToSortedSlice()), nil
 	}
 
 	// Post-filtering
 	oversampleK := min(k*3, 1000)
 	searchOpts := &index.SearchOptions{EFSearch: opts.EF}
-	bestCandidates, err := tx.KNNSearch(ctx, query, oversampleK, searchOpts)
+	err := tx.KNNSearchWithContext(ctx, query, oversampleK, searchOpts, s)
 	if err != nil {
 		return nil, err
 	}
 
 	// Apply metadata filtering
+	// Note: ToSortedSlice allocates, but we are in the "returning slice" API anyway.
+	// For pure zero-alloc, users should use KNNSearchWithContext directly with a pre-compiled filter.
+	rawResults := s.Candidates.ToSortedSlice()
 	results := make([]index.SearchResult, 0, k)
-	for _, item := range bestCandidates {
+	for _, item := range rawResults {
 		if len(results) >= k {
 			break
 		}
-		if metadataFilter(item.ID) {
-			results = append(results, item)
+		if metadataFilter(item.Node) {
+			results = append(results, index.SearchResult{
+				ID:       item.Node,
+				Distance: item.Distance,
+			})
 		}
 	}
 	return results, nil
@@ -1114,6 +1149,17 @@ func (tx *Tx[T]) autoCheckpoint() error {
 		return fmt.Errorf("failed to rename snapshot: %w", err)
 	}
 	return nil
+}
+
+func toSearchResults(items []searcher.PriorityQueueItem) []index.SearchResult {
+	res := make([]index.SearchResult, len(items))
+	for i, item := range items {
+		res[i] = index.SearchResult{
+			ID:       item.Node,
+			Distance: item.Distance,
+		}
+	}
+	return res
 }
 
 // Close releases all resources held by the transaction coordinator.
