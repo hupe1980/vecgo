@@ -8,7 +8,7 @@ import (
 // BenchmarkArenaReuse simulates real HNSW usage: create arena once, allocate many times, reset between builds.
 // This is the CORRECT way to benchmark arena - mimics actual usage pattern.
 func BenchmarkArenaReuse(b *testing.B) {
-	a := New(DefaultChunkSize)
+	a, _ := New(DefaultChunkSize)
 	defer a.Free()
 
 	runtime.GC()
@@ -19,7 +19,7 @@ func BenchmarkArenaReuse(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		for j := 0; j < 1000; j++ {
-			_ = a.AllocUint32Slice(16)
+			_, _ = a.AllocUint32Slice(16)
 		}
 		a.Reset()
 	}
@@ -66,9 +66,9 @@ func BenchmarkArenaOneShotBuild(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for b.Loop() {
-		a := New(DefaultChunkSize)
+		a, _ := New(DefaultChunkSize)
 		for j := 0; j < 1000; j++ {
-			_ = a.AllocUint32Slice(16)
+			_, _ = a.AllocUint32Slice(16)
 		}
 		a.Free()
 	}

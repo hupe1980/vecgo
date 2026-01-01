@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"slices"
 	"sync"
 	"sync/atomic"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/hupe1980/vecgo/internal/bitset"
 	"github.com/hupe1980/vecgo/internal/container"
 	"github.com/hupe1980/vecgo/internal/queue"
+	"github.com/hupe1980/vecgo/internal/search"
 	"github.com/hupe1980/vecgo/quantization"
 	"github.com/hupe1980/vecgo/vectorstore"
 	"github.com/hupe1980/vecgo/vectorstore/columnar"
@@ -159,7 +161,7 @@ func (f *Flat) EnableProductQuantization(cfg index.ProductQuantizationConfig) er
 	vectors := make([][]float32, 0, maxID)
 
 	// Collect vectors for training
-	for id := uint64(0); id < maxID; id++ {
+	for id := range maxID {
 		if f.deleted.Test(id) {
 			continue
 		}
@@ -183,7 +185,7 @@ func (f *Flat) EnableProductQuantization(cfg index.ProductQuantizationConfig) er
 
 	// Encode all existing vectors
 	pqCodes := container.NewSegmentedArray[[]byte]()
-	for id := uint64(0); id < maxID; id++ {
+	for id := range maxID {
 		if f.deleted.Test(id) {
 			continue
 		}
@@ -571,6 +573,98 @@ func (f *Flat) Update(ctx context.Context, id uint64, v []float32) error {
 	return nil
 }
 
+// SearchWithContext performs a K-nearest neighbor search using a reusable Searcher context.
+// This method is allocation-free in the steady state (except for the result slice).
+func (f *Flat) SearchWithContext(ctx context.Context, s *search.Searcher, q []float32, k int, opts *index.SearchOptions) ([]index.SearchResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	maxID := f.maxID.Load()
+	currentDim := int(f.dimension.Load())
+
+	if k <= 0 {
+		return nil, index.ErrInvalidK
+	}
+	if maxID == 0 {
+		return nil, nil
+	}
+	if currentDim > 0 && len(q) != currentDim {
+		return nil, &index.ErrDimensionMismatch{Expected: currentDim, Actual: len(q)}
+	}
+
+	// Normalize query if needed
+	query := q
+	if f.opts.NormalizeVectors {
+		// Use Searcher scratch for normalization
+		if len(s.ScratchVec) < len(q) {
+			s.ScratchVec = make([]float32, len(q))
+		}
+		copy(s.ScratchVec, q)
+		if !distance.NormalizeL2InPlace(s.ScratchVec) {
+			return nil, fmt.Errorf("flat: cannot normalize zero query")
+		}
+		query = s.ScratchVec
+	}
+
+	// Setup Heap
+	// We use ScratchCandidates (MaxHeap) to keep top K smallest distances.
+	s.ScratchCandidates.Reset()
+
+	var filter func(id uint64) bool
+	if opts != nil && opts.Filter != nil {
+		filter = opts.Filter
+	}
+
+	pq := f.pq.Load()
+
+	// Iterate
+	for id := range maxID {
+		if f.deleted.Test(id) {
+			continue
+		}
+		if filter != nil && !filter(id) {
+			continue
+		}
+
+		var nodeDist float32
+		var hasCode bool
+
+		if f.pqCodes != nil {
+			code, ok := f.pqCodes.Get(id)
+			if ok && code != nil {
+				nodeDist = pq.ComputeAsymmetricDistance(query, code)
+				hasCode = true
+			}
+		}
+
+		if !hasCode {
+			if f.vectors == nil {
+				continue
+			}
+			vec, ok := f.vectors.GetVector(id)
+			if !ok {
+				continue
+			}
+			nodeDist = f.distanceFunc(query, vec)
+		}
+
+		s.ScratchCandidates.PushItemBounded(queue.PriorityQueueItem{Node: id, Distance: nodeDist}, k)
+	}
+
+	// Extract results
+	res := make([]index.SearchResult, 0, s.ScratchCandidates.Len())
+	for s.ScratchCandidates.Len() > 0 {
+		item, _ := s.ScratchCandidates.PopItem()
+		res = append(res, index.SearchResult{ID: item.Node, Distance: item.Distance})
+	}
+
+	// Reverse (MaxHeap pops largest first)
+	slices.Reverse(res)
+
+	return res, nil
+}
+
 // KNNSearch performs a K-nearest neighbor search in the flat index.
 func (f *Flat) KNNSearch(ctx context.Context, q []float32, k int, opts *index.SearchOptions) ([]index.SearchResult, error) {
 	// Extract filter from options (Flat doesn't use efSearch)
@@ -685,7 +779,7 @@ func (f *Flat) BruteSearchWithBuffer(ctx context.Context, query []float32, k int
 		batchIDs := make([]uint64, 0, maxID)
 		batchVectors := make([][]float32, 0, maxID)
 
-		for id := uint64(0); id < maxID; id++ {
+		for id := range maxID {
 			if f.deleted.Test(id) {
 				continue
 			}
@@ -744,7 +838,7 @@ func (f *Flat) BruteSearchWithBuffer(ctx context.Context, query []float32, k int
 		// PQ mode: use asymmetric distance (can't batch due to custom codes)
 		// NOTE: PQ asymmetric distance approximates L2 distance on normalized vectors.
 		// For cosine, vectors are already normalized so L2 ordering is equivalent.
-		for id := uint64(0); id < maxID; id++ {
+		for id := range maxID {
 			if f.deleted.Test(id) {
 				continue
 			}

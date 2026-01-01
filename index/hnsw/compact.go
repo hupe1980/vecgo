@@ -4,6 +4,9 @@ import (
 	"context"
 	"runtime"
 	"sync"
+
+	"github.com/hupe1980/vecgo/internal/core"
+	"github.com/hupe1980/vecgo/internal/queue"
 )
 
 // Compact removes deleted nodes from the graph connections and attempts to repair connectivity.
@@ -11,6 +14,9 @@ import (
 // and if the number of connections drops too low, it searches for replacement neighbors.
 func (h *HNSW) Compact(ctx context.Context) error {
 	g := h.currentGraph.Load()
+	g.arena.IncRef()
+	defer g.arena.DecRef()
+
 	maxID := g.nextIDAtomic.Load()
 	tombstones := g.tombstones
 
@@ -48,7 +54,7 @@ func (h *HNSW) Compact(ctx context.Context) error {
 			if ctx.Err() != nil {
 				break
 			}
-			if h.getNode(g, id) != nil {
+			if h.getNode(g, id).Offset != 0 {
 				jobs <- id
 			}
 		}
@@ -91,7 +97,7 @@ func (h *HNSW) Compact(ctx context.Context) error {
 			if ctx.Err() != nil {
 				break
 			}
-			if h.getNode(g, id) != nil {
+			if h.getNode(g, id).Offset != 0 {
 				jobs <- id
 			}
 		}
@@ -137,7 +143,7 @@ func (h *HNSW) Compact(ctx context.Context) error {
 			if ctx.Err() != nil {
 				break
 			}
-			if h.getNode(g, id) != nil {
+			if h.getNode(g, id).Offset != 0 {
 				jobs <- id
 			}
 		}
@@ -168,6 +174,9 @@ func (h *HNSW) reconcileNode(ctx context.Context, g *graph, id uint64) {
 	if node == nil {
 		return
 	}
+	if node.Offset == 0 {
+		return
+	}
 
 	// Get scratch buffer
 	scratch := h.scratchPool.Get().(*scratch)
@@ -179,13 +188,13 @@ func (h *HNSW) reconcileNode(ctx context.Context, g *graph, id uint64) {
 	currID := epID
 	currDist := h.dist(vec, currID)
 
-	for level := maxLevel; level > node.Level; level-- {
+	for level := maxLevel; level > node.Level(g.arena); level-- {
 		changed := true
 		for changed {
 			changed = false
 			conns := h.getConnections(g, currID, level)
 			for _, neighbor := range conns {
-				nextID := neighbor.ID
+				nextID := uint64(neighbor.ID)
 				d := h.dist(vec, nextID)
 				if d < currDist {
 					currDist = d
@@ -197,50 +206,107 @@ func (h *HNSW) reconcileNode(ctx context.Context, g *graph, id uint64) {
 	}
 
 	// Repair specific layers
-	for level := node.Level; level >= 0; level-- {
+	for level := node.Level(g.arena); level >= 0; level-- {
 		// Search for candidates
 		filter := func(x uint64) bool { return x != id }
+		// searchLayer returns MaxHeap (stores top EF results)
 		candidates, err := h.searchLayer(g, vec, currID, currDist, level, h.opts.EF, filter)
 		if err != nil {
 			return
 		}
 
+		// Deduplicate candidates and merge with existing active neighbors
+		// We use a map to ensure uniqueness.
+		uniqueCandidates := make(map[uint64]float32, candidates.Len()+h.opts.M)
+
+		// Drain candidates from searchLayer
+		for candidates.Len() > 0 {
+			item, _ := candidates.PopItem()
+			uniqueCandidates[item.Node] = item.Distance
+		}
+
+		// Add existing active neighbors
+		conns := h.getConnections(g, id, level)
+		for _, neighbor := range conns {
+			if !g.tombstones.Test(uint64(neighbor.ID)) {
+				nid := uint64(neighbor.ID)
+				// If already present, keep the one with smaller distance (though they should be same)
+				if d, ok := uniqueCandidates[nid]; !ok || neighbor.Dist < d {
+					uniqueCandidates[nid] = neighbor.Dist
+				}
+			}
+		}
+
+		// Push unique candidates back to heap
+		for id, dist := range uniqueCandidates {
+			candidates.PushItemBounded(queue.PriorityQueueItem{Node: id, Distance: dist}, h.opts.EF)
+		}
+
+		var bestNode uint64 = currID
+		var bestDist float32 = currDist
+		foundBest := false
+
 		// If this layer needs repair, update connections
 		if layersToRepair[level] {
-			// Select best M active neighbors
-			newNeighbors := h.selectNeighbors(candidates, h.opts.M, scratch)
-
-			// Now we need to merge with existing tombstones
+			// Re-read current connections to identify tombstones
+			// We must re-read because we need the exact objects to preserve them
 			g.shardedLocks[id%uint64(len(g.shardedLocks))].Lock()
 
-			// Re-read current connections
-			currentConns := node.getConnections(level)
-
-			// Identify tombstones in current connections
 			var tombstonesToKeep []Neighbor
-			for _, neighbor := range currentConns {
-				if g.tombstones.Test(neighbor.ID) {
+			conns := h.getConnections(g, id, level)
+			for _, neighbor := range conns {
+				if g.tombstones.Test(uint64(neighbor.ID)) {
 					tombstonesToKeep = append(tombstonesToKeep, neighbor)
 				}
+			}
+
+			// Calculate how many new neighbors we can add
+			limit := h.maxConnectionsPerLayer
+			if level == 0 {
+				limit = h.maxConnectionsLayer0
+			}
+
+			numToSelect := max(limit-len(tombstonesToKeep), 0)
+
+			// Select best active neighbors
+			// selectNeighbors expects MaxHeap (candidates) and drains it
+			newNeighbors := h.selectNeighbors(candidates, numToSelect, scratch)
+
+			if len(newNeighbors) > 0 {
+				bestNode = newNeighbors[0].Node
+				bestDist = newNeighbors[0].Distance
+				foundBest = true
 			}
 
 			// Combine: New Active + Old Tombstones
 			finalConns := make([]Neighbor, 0, len(newNeighbors)+len(tombstonesToKeep))
 			for _, n := range newNeighbors {
-				finalConns = append(finalConns, Neighbor{ID: n.Node, Dist: n.Distance})
+				finalConns = append(finalConns, Neighbor{ID: core.LocalID(n.Node), Dist: n.Distance})
 			}
 			finalConns = append(finalConns, tombstonesToKeep...)
 
-			node.setConnections(level, finalConns)
+			h.setConnections(g, id, level, finalConns)
 
 			g.shardedLocks[id%uint64(len(g.shardedLocks))].Unlock()
+		} else {
+			// Just find the best candidate for next layer
+			// selectNeighbors drains candidates
+			best := h.selectNeighbors(candidates, 1, scratch)
+			if len(best) > 0 {
+				bestNode = best[0].Node
+				bestDist = best[0].Distance
+				foundBest = true
+			}
 		}
 
+		// Return candidates to pool
+		candidates.Reset()
+		h.maxQueuePool.Put(candidates)
+
 		// Update currID/currDist for next layer
-		if candidates.Len() > 0 {
-			top, _ := candidates.TopItem()
-			currID = top.Node
-			currDist = top.Distance
+		if foundBest {
+			currID = bestNode
+			currDist = bestDist
 		}
 	}
 }
@@ -252,7 +318,7 @@ func (h *HNSW) checkRepairNeeded(g *graph, id uint64) (bool, map[int]bool) {
 	defer g.shardedLocks[id%uint64(len(g.shardedLocks))].RUnlock()
 
 	node := h.getNode(g, id)
-	if node == nil {
+	if node.Offset == 0 {
 		return false, nil
 	}
 
@@ -260,15 +326,11 @@ func (h *HNSW) checkRepairNeeded(g *graph, id uint64) (bool, map[int]bool) {
 	needsRepair := false
 	layersToRepair := make(map[int]bool)
 
-	for l := 0; l <= node.Level; l++ {
-		conns := node.getConnections(l)
-		if len(conns) == 0 {
-			continue
-		}
-
+	for l := 0; l <= node.Level(g.arena); l++ {
 		activeCount := 0
+		conns := h.getConnections(g, id, l)
 		for _, neighbor := range conns {
-			if !tombstones.Test(neighbor.ID) {
+			if !tombstones.Test(uint64(neighbor.ID)) {
 				activeCount++
 			}
 		}
@@ -294,40 +356,27 @@ func (h *HNSW) pruneNodeConnections(ctx context.Context, g *graph, id uint64) {
 	defer g.shardedLocks[id%uint64(len(g.shardedLocks))].Unlock()
 
 	node := h.getNode(g, id)
-	if node == nil {
+	if node.Offset == 0 {
 		return
 	}
 
 	tombstones := g.tombstones
 
-	for l := 0; l <= node.Level; l++ {
-		conns := node.getConnections(l)
-		if len(conns) == 0 {
-			continue
-		}
-
+	for l := 0; l <= node.Level(g.arena); l++ {
 		// Check if we have any tombstones
 		hasTombstones := false
+		var activeConns []Neighbor
+		conns := h.getConnections(g, id, l)
 		for _, neighbor := range conns {
-			if tombstones.Test(neighbor.ID) {
+			if tombstones.Test(uint64(neighbor.ID)) {
 				hasTombstones = true
-				break
+			} else {
+				activeConns = append(activeConns, neighbor)
 			}
 		}
 
 		if hasTombstones {
-			// Create a new slice with only active neighbors
-			activeConns := make([]Neighbor, 0, len(conns))
-			for _, neighbor := range conns {
-				if !tombstones.Test(neighbor.ID) {
-					activeConns = append(activeConns, neighbor)
-				}
-			}
-
-			// Create a new slice to fit perfectly
-			newConns := make([]Neighbor, len(activeConns))
-			copy(newConns, activeConns)
-			node.setConnections(l, newConns)
+			h.setConnections(g, id, l, activeConns)
 		}
 	}
 }
@@ -338,13 +387,13 @@ func (h *HNSW) clearNodeConnections(g *graph, id uint64) {
 	defer g.shardedLocks[id%uint64(len(g.shardedLocks))].Unlock()
 
 	node := h.getNode(g, id)
-	if node == nil {
+	if node.Offset == 0 {
 		return
 	}
 
 	// We can't easily free the node struct itself without re-layout,
 	// but we can release the connection slices.
-	for l := 0; l <= node.Level; l++ {
-		node.setConnections(l, nil)
+	for l := 0; l <= node.Level(g.arena); l++ {
+		h.setConnections(g, id, l, nil)
 	}
 }

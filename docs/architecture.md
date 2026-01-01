@@ -2,6 +2,8 @@
 
 This document provides an in-depth look at Vecgo's internal architecture, helping you understand how the system works and how to extend it.
 
+> **For production optimization and performance tuning**, see [PERFORM.md](../PERFORM.md) which contains detailed contracts, anti-patterns, and implementation recipes for embedded, high-performance deployments.
+
 ## Table of Contents
 
 1. [High-Level Overview](#high-level-overview)
@@ -116,7 +118,7 @@ type Coordinator[T any] interface {
    - Timeout handling: Respects ctx.Done() during parallel search operations
    - **Worker Pool**: Fixed goroutine pool for parallel searches (zero goroutine creation per search)
    - Fan-out search to all shards via worker pool, merge results
-   - **GlobalID encoding**: `[ShardID:8 bits][LocalID:56 bits]`
+    - **GlobalID encoding**: `[ShardID:8 bits][ShardLocalID:56 bits]` (stable, immutable, sharding-friendly)
    - O(1) routing for Update/Delete/Get operations
    - **Performance**: Linear write scaling with number of shards
 
@@ -156,16 +158,24 @@ To scale beyond a single core's capacity, Vecgo implements a **Shared-Nothing Sh
     *   **Write-Ahead Log (WAL)**
     *   **RWMutex** (Lock contention is isolated to the shard)
 
-*   **Global ID Encoding**:
+*   **Global ID Encoding (Stable External IDs)**:
     Vecgo uses a 64-bit `GlobalID` that encodes routing information directly into the ID:
     ```
-    | Shard Index (8 bits) | Local ID (56 bits) |
+    | Shard Index (8 bits) | ShardLocalID (56 bits) |
     |----------------------|--------------------|
     ```
     *   **Max Shards**: 256
     *   **Max Vectors per Shard**: ~72 Quadrillion (effectively infinite)
     *   **Total Capacity**: Infinite for all practical purposes
     *   **Why 64-bit?**: Prevents ID exhaustion in long-running systems and aligns with DiskANN's native storage format.
+
+*   **LanceDB-style identity model (recommended)**:
+    Vecgo separates *application identity* from *engine execution identity*:
+    *   **Business Key** (optional): a user-provided key stored as a normal column (UUID/string/int), indexed for lookups/upserts.
+    *   **GlobalID (`uint64`)**: Vecgo-generated stable ID used for sharding, WAL/snapshots, and public API references.
+    *   **RowID / LocalID (`uint32`)**: dense internal ID used inside a shard/segment for hot paths (graphs, queues, bitsets).
+        - May be returned as `_rowid` for debugging / correlation.
+        - Not a stable external contract unless an explicit “stable row ids” mode is enabled.
 
 *   **Routing**:
     *   **Insert**: Round-robin distribution ensures balanced load.
@@ -178,11 +188,19 @@ Updates in vector databases are complex due to graph topology maintenance. Vecgo
 
 | Index Type | Update Strategy | Description |
 |------------|-----------------|-------------|
-| **Flat** | **In-Place** | Direct overwrite of the vector in the columnar store. Safe and fast ($O(1)$). |
+| **Flat** | **Copy-On-Write (Chunk Swap)** | Updates must not tear under lock-free readers. Write the new bytes into a new buffer (vector- or chunk-granularity) and atomically publish the swap. |
 | **HNSW** | **Delete + Insert** | The old node is soft-deleted (tombstone), and the new vector is inserted as a fresh node. This prevents graph degradation over time. |
 | **DiskANN** | **LSM-Tree** | New writes go to a **MemTable** (HNSW). When full, it is flushed to an **Immutable Disk Segment**. Updates are effectively Delete+Insert across the LSM tree. |
 
 **Default Behavior**: `UpdateModeDeleteInsert` is the default for graph-based indexes to guarantee recall.
+
+Note: “In-place overwrite” is only safe if reads are synchronized with the write (e.g. via a lock). Under lock-free reads, Flat updates must be treated as copy-on-write publication (or delete+insert) to avoid torn vectors.
+
+Concurrency contract (must be upheld everywhere atomic publication is used):
+
+- Fully initialize data first (write all bytes).
+- Publish the pointer/length only after initialization.
+- After publish, treat the published snapshot as immutable.
 
 #### C. Unified Metadata Index (Hybrid Search)
 
@@ -231,7 +249,7 @@ To minimize Garbage Collection (GC) pauses, Vecgo uses custom memory management 
 
 *   **Object Pooling (`internal/pool`)**:
     *   **SearchContext**: Reuses buffers for visited sets (`bitset`), priority queues, and temporary vectors.
-    *   **Benefit**: Zero allocations per search request.
+    *   **Benefit**: Drives search toward near-zero allocations in steady state (verify via benchmarks; treat allocs/op as a regression metric).
     *   **Sync.Pool**: Uses Go's `sync.Pool` to automatically scale with load and release memory when idle.
 
 ---

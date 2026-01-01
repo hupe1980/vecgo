@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/hupe1980/vecgo/index"
+	"github.com/hupe1980/vecgo/internal/core"
 	"github.com/hupe1980/vecgo/persistence"
 	"github.com/hupe1980/vecgo/vectorstore/columnar"
 )
@@ -132,13 +133,14 @@ func (h *HNSW) WriteTo(w io.Writer) (int64, error) {
 		}
 
 		// Write Level
-		if err := binary.Write(cw, binary.LittleEndian, int32(node.Level)); err != nil {
+		level := node.Level(g.arena)
+		if err := binary.Write(cw, binary.LittleEndian, int32(level)); err != nil {
 			return cw.n, err
 		}
 
 		// Write Connections
-		for layer := 0; layer <= node.Level; layer++ {
-			conns := node.getConnections(layer)
+		for layer := 0; layer <= level; layer++ {
+			conns := h.getConnections(g, id, layer)
 			count := uint32(len(conns))
 			if err := binary.Write(cw, binary.LittleEndian, count); err != nil {
 				return cw.n, err
@@ -146,7 +148,7 @@ func (h *HNSW) WriteTo(w io.Writer) (int64, error) {
 			if count > 0 {
 				ids := make([]uint64, len(conns))
 				for i, c := range conns {
-					ids[i] = c.ID
+					ids[i] = uint64(c.ID)
 				}
 				if err := writer.WriteUint64Slice(ids); err != nil {
 					return cw.n, err
@@ -225,7 +227,10 @@ func (h *HNSW) ReadFromWithOptions(r io.Reader, opts Options) error {
 	h.layerMultiplier = float64(metadata.Ml)
 	h.dimensionAtomic.Store(int32(header.Dimension))
 
-	g := newGraph()
+	g, err := newGraph(h.opts.InitialArenaSize)
+	if err != nil {
+		return err
+	}
 	h.currentGraph.Store(g)
 
 	g.entryPointAtomic.Store(metadata.EntryPoint)
@@ -289,7 +294,10 @@ func (h *HNSW) ReadFromWithOptions(r io.Reader, opts Options) error {
 			continue
 		}
 
-		node := newNode(int(level))
+		node, err := h.newNode(g, int(level))
+		if err != nil {
+			return err
+		}
 		h.setNode(g, id, node)
 
 		for layer := 0; layer <= int(level); layer++ {
@@ -304,9 +312,9 @@ func (h *HNSW) ReadFromWithOptions(r io.Reader, opts Options) error {
 				}
 				conns := make([]Neighbor, len(ids))
 				for i, id := range ids {
-					conns[i] = Neighbor{ID: id}
+					conns[i] = Neighbor{ID: core.LocalID(id)}
 				}
-				node.setConnections(layer, conns)
+				h.setConnections(g, uint64(id), layer, conns)
 			}
 		}
 	}
@@ -343,11 +351,12 @@ func (h *HNSW) ReadFromWithOptions(r io.Reader, opts Options) error {
 		if !ok {
 			continue
 		}
-		for l := 0; l <= node.Level; l++ {
-			conns := node.getConnections(l)
+		for l := 0; l <= node.Level(g.arena); l++ {
+			conns := h.getConnections(g, id, l)
 			for i := range conns {
-				conns[i].Dist = h.dist(vec, conns[i].ID)
+				conns[i].Dist = h.dist(vec, uint64(conns[i].ID))
 			}
+			h.setConnections(g, id, l, conns)
 		}
 	}
 

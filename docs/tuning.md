@@ -2,6 +2,8 @@
 
 This guide helps you optimize Vecgo for your specific workload and requirements.
 
+> **For deep production optimization** (allocation budgets, subsystem contracts, anti-patterns, phasing strategy), see [PERFORM.md](../PERFORM.md).
+
 ## Table of Contents
 
 1. [Index Selection](#index-selection)

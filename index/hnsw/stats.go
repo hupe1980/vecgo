@@ -23,8 +23,8 @@ func (h *HNSW) Stats() index.Stats {
 				continue
 			}
 			for j := range seg {
-				node := seg[j].Load()
-				if node == nil {
+				nodePtr := seg[j].Load()
+				if nodePtr == nil {
 					deletedNodes++
 				} else {
 					activeNodes++
@@ -40,27 +40,32 @@ func (h *HNSW) Stats() index.Stats {
 
 	// Iterate all segments again for detailed stats
 	if nodes != nil {
-		for _, seg := range *nodes {
+		for i, seg := range *nodes {
 			if seg == nil {
 				continue
 			}
 			for j := range seg {
-				node := seg[j].Load()
-				if node == nil {
+				nodePtr := seg[j].Load()
+				if nodePtr == nil {
 					continue
 				}
 
-				level := node.Level
+				node := *nodePtr
+				level := node.Level(g.arena)
 				if level < len(levelStats) {
 					levelStats[level]++
 				}
 
+				id := uint64(i)*nodeSegmentSize + uint64(j)
+
 				// Loop through each connection
 				for i2 := level; i2 >= 0; i2-- {
-					connections := node.getConnections(i2)
-					if len(connections) > 0 {
-						total := len(connections)
-						connectionStats[i2] += total
+					count := 0
+					conns := h.getConnections(g, id, i2)
+					count = len(conns)
+
+					if count > 0 {
+						connectionStats[i2] += count
 						connectionNodeStats[i2]++
 					}
 				}
@@ -94,17 +99,11 @@ func (h *HNSW) Stats() index.Stats {
 			"EF": fmt.Sprintf("%d", h.opts.EF),
 		},
 		Storage: map[string]string{
-			"VectorCount": fmt.Sprintf("%d", activeNodes),
-			"Deleted":     fmt.Sprintf("%d", deletedNodes),
-			"Segments":    fmt.Sprintf("%d", numSegments),
+			"ActiveNodes":  fmt.Sprintf("%d", activeNodes),
+			"DeletedNodes": fmt.Sprintf("%d", deletedNodes),
+			"Segments":     fmt.Sprintf("%d", numSegments),
+			"MaxLevel":     fmt.Sprintf("%d", maxLevel),
 		},
 		Levels: levelStatsStructs,
 	}
-}
-
-// String returns a string representation of the HNSW index.
-func (h *HNSW) String() string {
-	stats := h.Stats()
-	return fmt.Sprintf("HNSW(M=%s, EF=%s, Count=%s, Deleted=%s, MaxLevel=%d)",
-		stats.Parameters["M"], stats.Parameters["EF"], stats.Storage["VectorCount"], stats.Storage["Deleted"], h.currentGraph.Load().maxLevelAtomic.Load())
 }

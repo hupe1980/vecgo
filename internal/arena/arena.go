@@ -24,15 +24,24 @@
 package arena
 
 import (
+	"errors"
 	"fmt"
+	"math/bits"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"unsafe"
 )
 
+var (
+	ErrMaxChunksExceeded = errors.New("arena: max chunks exceeded")
+	ErrAllocationFailed  = errors.New("arena: allocation failed")
+)
+
 const (
 	DefaultChunkSize = 1024 * 1024
 	DefaultAlignment = 8
+	MaxChunks        = 4096 // Limit to 4GB addressable space with uint32 offsets (assuming 1MB chunks)
 )
 
 // Stats tracks arena memory usage metrics.
@@ -52,152 +61,151 @@ type Stats struct {
 	TotalAllocs     uint64 // Historical: total allocations
 }
 
+// Ref represents a safe reference to an arena allocation.
+// It includes the generation ID to detect stale references.
+type Ref struct {
+	Gen    uint32
+	Offset uint32
+}
+
+type atomicStats struct {
+	ChunksAllocated atomic.Uint64
+	BytesReserved   atomic.Uint64
+	BytesUsed       atomic.Uint64
+	BytesWasted     atomic.Uint64
+	ActiveChunks    atomic.Uint64
+	TotalAllocs     atomic.Uint64
+}
+
 type chunk struct {
 	data   []byte
 	offset atomic.Int64 // MUST be atomic - accessed concurrently without locks
+	index  uint32       // Index of this chunk in the arena
 }
 
 type Arena struct {
-	chunkSize int
-	alignment int
-	chunks    []*chunk
-	current   atomic.Pointer[chunk]
-	mu        sync.Mutex
-	stats     Stats
+	chunkSize  int
+	chunkBits  int    // Power of 2 exponent for chunk size
+	chunkMask  uint32 // Mask for offset within chunk
+	alignment  int
+	chunks     [MaxChunks]atomic.Pointer[chunk] // Fixed-size array to avoid slice race conditions
+	chunkCount atomic.Uint32                    // Number of active chunks (protected by mu)
+	current    atomic.Pointer[chunk]
+	mu         sync.Mutex
+	stats      atomicStats
+	refs       atomic.Int64  // Reference count for safety
+	generation atomic.Uint32 // Generation counter to detect stale offsets
 }
 
-func New(chunkSize int) *Arena {
+func New(chunkSize int) (*Arena, error) {
 	if chunkSize <= 0 {
 		chunkSize = DefaultChunkSize
 	}
 
+	// Round up to next power of 2 for efficient bitwise operations
+	chunkBits := bits.Len(uint(chunkSize - 1))
+	// If chunkSize is already a power of 2, bits.Len(chunkSize-1) is correct.
+	// Example: 1024 (10000000000) -> 1023 (1111111111) -> Len=10. 1<<10 = 1024. Correct.
+	// Example: 1025 -> 1024 -> Len=11. 1<<11 = 2048. Correct.
+
+	chunkSize = 1 << chunkBits
+	chunkMask := uint32(chunkSize - 1)
+
 	a := &Arena{
 		chunkSize: chunkSize,
+		chunkBits: chunkBits,
+		chunkMask: chunkMask,
 		alignment: DefaultAlignment,
-		chunks:    make([]*chunk, 0, 16),
 	}
+	// Initialize generation to 1 so 0 is invalid
+	a.generation.Store(1)
 
-	a.allocateChunk()
-	return a
+	if err := a.allocateChunk(); err != nil {
+		return nil, err
+	}
+	// Reserve offset 0 as null
+	if _, _, err := a.Alloc(1); err != nil {
+		return nil, err
+	}
+	return a, nil
 }
 
-func (a *Arena) allocateChunk() {
-	newChunk := &chunk{
-		data: make([]byte, a.chunkSize),
-		// offset is atomic.Int64 - zero value is correct
-	}
+// IncRef increments the reference count.
+// Call this when starting a long-running operation that uses the arena.
+func (a *Arena) IncRef() {
+	a.refs.Add(1)
+}
 
+// DecRef decrements the reference count.
+// Call this when finished with the arena.
+func (a *Arena) DecRef() {
+	a.refs.Add(-1)
+}
+
+// Generation returns the current generation of the arena.
+func (a *Arena) Generation() uint32 {
+	return a.generation.Load()
+}
+
+// GetSafe returns a pointer to the data at the given reference.
+// It validates the generation and returns nil if the reference is stale.
+func (a *Arena) GetSafe(ref Ref) unsafe.Pointer {
+	if ref.Gen != a.generation.Load() {
+		return nil
+	}
+	return a.Get(ref.Offset)
+}
+
+func (a *Arena) allocateChunk() error {
 	a.mu.Lock()
-	a.chunks = append(a.chunks, newChunk)
-	a.stats.ChunksAllocated++
-	a.stats.BytesReserved += uint64(a.chunkSize)
-	a.stats.ActiveChunks++
-	a.mu.Unlock()
+	defer a.mu.Unlock()
 
+	idx := a.chunkCount.Load()
+
+	if idx >= MaxChunks {
+		// This is a critical failure for the arena.
+		return ErrMaxChunksExceeded
+	}
+
+	newChunk := &chunk{
+		data:  make([]byte, a.chunkSize),
+		index: idx,
+	}
+
+	// Store in array using atomic pointer (though lock protects against concurrent allocateChunk,
+	// Get() is lock-free and needs to see the pointer safely)
+	a.chunks[idx].Store(newChunk)
+
+	// Update stats
+	a.stats.ChunksAllocated.Add(1)
+	a.stats.BytesReserved.Add(uint64(a.chunkSize))
+	a.stats.ActiveChunks.Add(1)
+
+	// Make visible to Alloc
 	a.current.Store(newChunk)
+
+	// Update count for next allocation
+	a.chunkCount.Add(1)
+	return nil
 }
 
-func (a *Arena) align(size int) int {
-	mask := a.alignment - 1
-	return (size + mask) & ^mask
+// Alloc allocates memory and returns the global offset and the byte slice.
+// The global offset can be used with Get() to retrieve the pointer later.
+func (a *Arena) Alloc(size int) (uint32, []byte, error) {
+	return a.alloc(size, a.alignment)
 }
 
-// AllocPointer allocates memory for a struct of the given size and alignment.
-// It returns an unsafe.Pointer to the allocated memory.
-func (a *Arena) AllocPointer(size, align int) unsafe.Pointer {
+func (a *Arena) alloc(size int, align int) (uint32, []byte, error) {
 	if size <= 0 {
-		return nil
+		return 0, nil, nil
 	}
 
-	// Ensure alignment is power of 2
-	if align <= 0 {
-		align = a.alignment
-	}
-
-	// Calculate padding needed for alignment
-	// We need to know the absolute address to align properly.
-	// However, Go's allocator (make([]byte)) guarantees alignment for the type.
-	// Since we use []byte, it's usually 8-byte aligned.
-	// For 64-byte alignment, we must manually align the offset relative to the chunk start,
-	// AND assume the chunk start is aligned (which we can't strictly guarantee without unsafe tricks,
-	// but usually large allocations are page-aligned).
-	//
-	// To be safe, we align the offset such that (chunkStart + offset) % align == 0.
-	// Since we don't know chunkStart at allocation time (it's dynamic), we can only align the offset.
-	// This assumes chunk.data is aligned to at least `align`.
-	// If `align` > 8, this assumption might fail.
-	//
-	// Workaround: Allocate extra bytes and return aligned pointer within the block.
-	// But we want to keep it simple.
-	// Let's assume standard alignment for now, or just align the offset.
-	//
-	// Actually, for HNSW Node, we want cache line alignment (64 bytes).
-	// We can force chunk.data to be 64-byte aligned by allocating slightly more and slicing.
-	// But let's just align the offset for now.
-
-	// Align size to arena alignment to keep subsequent allocs aligned
-	allocSize := a.align(size)
+	mask := align - 1
+	alignedSize := (size + mask) & ^mask
 
 	for {
 		curr := a.current.Load()
 		if curr == nil {
-			a.allocateChunk()
-			continue
-		}
-
-		oldOffset := curr.offset.Load()
-
-		// Calculate aligned offset
-		// We assume chunk.data[0] is aligned.
-		// If not, we might be off.
-		// But for cache locality, relative alignment is most important.
-		//
-		// To strictly align:
-		// ptr := unsafe.Pointer(&curr.data[oldOffset])
-		// alignedPtr := (uintptr(ptr) + uintptr(align-1)) & ^uintptr(align-1)
-		// padding := alignedPtr - uintptr(ptr)
-		//
-		// But we can't access curr.data[oldOffset] safely without reserving it first?
-		// No, we can read the pointer value.
-		// But curr.data might move if we append? No, it's a slice header. The backing array is fixed.
-		//
-		// Let's just align the offset to `align`.
-		mask := int64(align - 1)
-		alignedOffset := (oldOffset + mask) & ^mask
-		padding := alignedOffset - oldOffset
-
-		newOffset := alignedOffset + int64(allocSize)
-
-		if newOffset <= int64(len(curr.data)) {
-			if curr.offset.CompareAndSwap(oldOffset, newOffset) {
-				a.mu.Lock()
-				a.stats.BytesUsed += uint64(size)
-				a.stats.BytesWasted += uint64(padding) + uint64(allocSize-size)
-				a.stats.TotalAllocs++
-				a.mu.Unlock()
-
-				return unsafe.Pointer(&curr.data[alignedOffset])
-			}
-			continue
-		}
-
-		if a.current.CompareAndSwap(curr, nil) {
-			a.allocateChunk()
-		}
-	}
-}
-
-func (a *Arena) AllocBytes(size int) []byte {
-	if size <= 0 {
-		return nil
-	}
-
-	alignedSize := a.align(size)
-
-	for {
-		curr := a.current.Load()
-		if curr == nil {
-			a.allocateChunk()
 			continue
 		}
 
@@ -205,56 +213,136 @@ func (a *Arena) AllocBytes(size int) []byte {
 		newOffset := oldOffset + int64(alignedSize)
 
 		if newOffset <= int64(len(curr.data)) {
-			// Fast path: CAS allocation from current chunk (lock-free)
 			if curr.offset.CompareAndSwap(oldOffset, newOffset) {
-				// Update stats under lock (stats are not on hot path)
-				a.mu.Lock()
-				a.stats.BytesUsed += uint64(size)
-				a.stats.BytesWasted += uint64(alignedSize - size)
-				a.stats.TotalAllocs++
-				a.mu.Unlock()
+				a.stats.BytesUsed.Add(uint64(size))
+				a.stats.BytesWasted.Add(uint64(alignedSize - size))
+				a.stats.TotalAllocs.Add(1)
 
-				return curr.data[oldOffset:newOffset:newOffset]
+				// Calculate global offset
+				// GlobalOffset = (ChunkIndex << ChunkBits) | ChunkOffset
+				// Ensure ChunkOffset fits in ChunkMask
+				if uint32(oldOffset) > a.chunkMask {
+					return 0, nil, fmt.Errorf("arena: offset exceeds chunk mask")
+				}
+				globalOffset := (curr.index << a.chunkBits) | uint32(oldOffset)
+				return globalOffset, curr.data[oldOffset:newOffset:newOffset], nil
 			}
-			// CAS failed - another goroutine won, retry
 			continue
 		}
 
-		// Current chunk full - need new chunk (slow path)
-		// Use CAS on current to ensure only one goroutine allocates
-		if a.current.CompareAndSwap(curr, nil) {
-			a.allocateChunk()
+		// Current chunk is full. Try to allocate a new one.
+		// We use a lock to ensure only one goroutine allocates a new chunk.
+		// But we must be careful not to block readers.
+		// The `allocateChunk` method locks `a.mu`.
+
+		// Optimization: Check if someone else already allocated a new chunk
+		// by checking if a.current changed.
+		if a.current.Load() != curr {
+			continue
 		}
-		// Either we allocated or another goroutine did - retry from top
+
+		// Try to set current to nil to signal we are allocating
+		if !a.current.CompareAndSwap(curr, nil) {
+			continue
+		}
+
+		if err := a.allocateChunk(); err != nil {
+			// Restore current if allocation failed so others can try (though if max chunks exceeded, they will also fail)
+			// Actually if allocateChunk failed, we are in trouble.
+			// We should probably restore the old current so other threads don't spin on nil?
+			// But if max chunks exceeded, we can't allocate more.
+			// Let's just return error.
+			// But we need to restore a.current to something non-nil or handle the nil case in the loop?
+			// The loop checks `if curr == nil { continue }`.
+			// If we leave it nil, everyone spins.
+			// We should restore it.
+			a.current.Store(curr)
+			return 0, nil, err
+		}
 	}
 }
 
-func (a *Arena) AllocUint32Slice(capacity int) []uint32 {
+// Get returns an unsafe.Pointer to the memory at the given global offset.
+// It performs no bounds checking.
+func (a *Arena) Get(offset uint32) unsafe.Pointer {
+	chunkIdx := offset >> a.chunkBits
+	chunkOffset := offset & a.chunkMask
+
+	// Bounds check
+	if chunkIdx >= a.chunkCount.Load() {
+		panic("arena: stale offset")
+	}
+
+	// Use atomic load to safely read the chunk pointer without locks.
+	// Since chunks are only appended and never removed/moved during allocation,
+	// and we use a fixed-size array, this is safe.
+	// Note: We don't check bounds of chunks array because chunkIdx comes from
+	// a valid offset returned by Alloc, which ensures chunkIdx < MaxChunks.
+	c := a.chunks[chunkIdx].Load()
+
+	if c == nil {
+		panic("Arena.Get: chunk is nil")
+	}
+
+	// In a correct program, c should never be nil if offset is valid.
+	// However, if offset is garbage, this might panic or return garbage.
+	return unsafe.Add(unsafe.Pointer(&c.data[0]), chunkOffset)
+}
+
+// AllocPointer allocates memory for a struct of the given size and alignment.
+func (a *Arena) AllocPointer(size, align int) (unsafe.Pointer, error) {
+	if align <= 0 {
+		align = a.alignment
+	}
+	_, bytes, err := a.alloc(size, align)
+	if err != nil {
+		return nil, err
+	}
+	return unsafe.Pointer(&bytes[0]), nil
+}
+
+func (a *Arena) AllocBytes(size int) ([]byte, error) {
+	_, bytes, err := a.Alloc(size)
+	return bytes, err
+}
+
+func (a *Arena) AllocUint32Slice(capacity int) ([]uint32, error) {
 	if capacity <= 0 {
-		return nil
+		return nil, nil
 	}
 
 	size := capacity * int(unsafe.Sizeof(uint32(0)))
-	bytes := a.AllocBytes(size)
+	_, bytes, err := a.Alloc(size)
+	if err != nil {
+		return nil, err
+	}
 
-	return unsafe.Slice((*uint32)(unsafe.Pointer(&bytes[0])), capacity)[:0:capacity]
+	return unsafe.Slice((*uint32)(unsafe.Pointer(&bytes[0])), capacity)[:0:capacity], nil
 }
 
-func (a *Arena) AllocFloat32Slice(capacity int) []float32 {
+func (a *Arena) AllocFloat32Slice(capacity int) ([]float32, error) {
 	if capacity <= 0 {
-		return nil
+		return nil, nil
 	}
 
 	size := capacity * int(unsafe.Sizeof(float32(0)))
-	bytes := a.AllocBytes(size)
+	_, bytes, err := a.Alloc(size)
+	if err != nil {
+		return nil, err
+	}
 
-	return unsafe.Slice((*float32)(unsafe.Pointer(&bytes[0])), capacity)[:0:capacity]
+	return unsafe.Slice((*float32)(unsafe.Pointer(&bytes[0])), capacity)[:0:capacity], nil
 }
 
 func (a *Arena) Stats() Stats {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.stats
+	return Stats{
+		ChunksAllocated: a.stats.ChunksAllocated.Load(),
+		BytesReserved:   a.stats.BytesReserved.Load(),
+		BytesUsed:       a.stats.BytesUsed.Load(),
+		BytesWasted:     a.stats.BytesWasted.Load(),
+		ActiveChunks:    a.stats.ActiveChunks.Load(),
+		TotalAllocs:     a.stats.TotalAllocs.Load(),
+	}
 }
 
 // Free releases all arena memory back to the garbage collector.
@@ -267,21 +355,30 @@ func (a *Arena) Stats() Stats {
 //
 // After Free(), the arena cannot be reused. Create a new arena instead.
 func (a *Arena) Free() {
+	// Wait for references to drop
+	for a.refs.Load() > 0 {
+		runtime.Gosched()
+	}
+
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
+	// Increment generation to invalidate old references
+	a.generation.Add(1)
+
 	// Clear chunk references to enable GC
-	for i := range a.chunks {
-		a.chunks[i] = nil
+	count := a.chunkCount.Load()
+	for i := 0; i < int(count); i++ {
+		a.chunks[i].Store(nil)
 	}
-	a.chunks = nil
+	a.chunkCount.Store(0)
 	a.current.Store(nil)
 
 	// Update stats to reflect freed state
-	a.stats.ActiveChunks = 0
-	a.stats.BytesReserved = 0
-	a.stats.BytesUsed = 0
-	a.stats.BytesWasted = 0
+	a.stats.ActiveChunks.Store(0)
+	a.stats.BytesReserved.Store(0)
+	a.stats.BytesUsed.Store(0)
+	a.stats.BytesWasted.Store(0)
 }
 
 // Reset clears all allocations and releases extra chunks, keeping only the first chunk.
@@ -293,31 +390,38 @@ func (a *Arena) Free() {
 //
 // Reset is more efficient than Free + New when you need to reuse the arena.
 func (a *Arena) Reset() {
+	// Wait for references to drop
+	for a.refs.Load() > 0 {
+		runtime.Gosched()
+	}
+
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	// Reset all chunk offsets to zero
-	for _, c := range a.chunks {
-		c.offset.Store(0)
-	}
+	// Increment generation to invalidate old references
+	a.generation.Add(1)
 
-	if len(a.chunks) > 0 {
-		firstChunk := a.chunks[0]
+	count := a.chunkCount.Load()
+	if count > 0 {
+		firstChunk := a.chunks[0].Load()
+		// Reset offset of first chunk
+		firstChunk.offset.Store(0)
+
 		// Free extra chunks (keep first for reuse)
-		for i := 1; i < len(a.chunks); i++ {
-			a.chunks[i] = nil
+		for i := 1; i < int(count); i++ {
+			a.chunks[i].Store(nil)
 		}
-		a.chunks = a.chunks[:1]
+		a.chunkCount.Store(1)
 		a.current.Store(firstChunk)
 
 		// Update stats - only first chunk remains
-		a.stats.ActiveChunks = 1
-		a.stats.BytesReserved = uint64(a.chunkSize)
+		a.stats.ActiveChunks.Store(1)
+		a.stats.BytesReserved.Store(uint64(a.chunkSize))
 	}
 
 	// Clear usage stats (historical counts like ChunksAllocated/TotalAllocs unchanged)
-	a.stats.BytesUsed = 0
-	a.stats.BytesWasted = 0
+	a.stats.BytesUsed.Store(0)
+	a.stats.BytesWasted.Store(0)
 }
 
 func (a *Arena) Usage() float64 {

@@ -10,7 +10,10 @@ import (
 
 func TestArena_New(t *testing.T) {
 	t.Run("default chunk size", func(t *testing.T) {
-		a := New(0)
+		a, err := New(0)
+		if err != nil {
+			t.Fatalf("New failed: %v", err)
+		}
 		defer a.Free()
 
 		if a.chunkSize != DefaultChunkSize {
@@ -26,7 +29,10 @@ func TestArena_New(t *testing.T) {
 
 	t.Run("custom chunk size", func(t *testing.T) {
 		customSize := 4096
-		a := New(customSize)
+		a, err := New(customSize)
+		if err != nil {
+			t.Fatalf("New failed: %v", err)
+		}
 		defer a.Free()
 
 		if a.chunkSize != customSize {
@@ -37,10 +43,16 @@ func TestArena_New(t *testing.T) {
 
 func TestArena_AllocBytes(t *testing.T) {
 	t.Run("basic allocation", func(t *testing.T) {
-		a := New(1024)
+		a, err := New(1024)
+		if err != nil {
+			t.Fatalf("New failed: %v", err)
+		}
 		defer a.Free()
 
-		slice := a.AllocBytes(100)
+		slice, err := a.AllocBytes(100)
+		if err != nil {
+			t.Fatalf("AllocBytes failed: %v", err)
+		}
 		// Slice may be slightly larger due to alignment
 		if len(slice) < 100 {
 			t.Errorf("expected length>=100, got %d", len(slice))
@@ -55,22 +67,34 @@ func TestArena_AllocBytes(t *testing.T) {
 	})
 
 	t.Run("zero size", func(t *testing.T) {
-		a := New(1024)
+		a, err := New(1024)
+		if err != nil {
+			t.Fatalf("New failed: %v", err)
+		}
 		defer a.Free()
 
-		slice := a.AllocBytes(0)
+		slice, err := a.AllocBytes(0)
+		if err != nil {
+			t.Fatalf("AllocBytes failed: %v", err)
+		}
 		if slice != nil {
 			t.Error("expected nil for zero size")
 		}
 	})
 
 	t.Run("alignment", func(t *testing.T) {
-		a := New(1024)
+		a, err := New(1024)
+		if err != nil {
+			t.Fatalf("New failed: %v", err)
+		}
 		defer a.Free()
 
 		sizes := []int{1, 3, 5, 7, 9, 15, 17}
 		for _, size := range sizes {
-			slice := a.AllocBytes(size)
+			slice, err := a.AllocBytes(size)
+			if err != nil {
+				t.Fatalf("AllocBytes failed: %v", err)
+			}
 			if slice == nil {
 				t.Fatalf("allocation failed for size=%d", size)
 			}
@@ -84,11 +108,17 @@ func TestArena_AllocBytes(t *testing.T) {
 
 	t.Run("multiple chunks", func(t *testing.T) {
 		chunkSize := 128
-		a := New(chunkSize)
+		a, err := New(chunkSize)
+		if err != nil {
+			t.Fatalf("New failed: %v", err)
+		}
 		defer a.Free()
 
 		for i := 0; i < 10; i++ {
-			slice := a.AllocBytes(64)
+			slice, err := a.AllocBytes(64)
+			if err != nil {
+				t.Fatalf("AllocBytes failed: %v", err)
+			}
 			if slice == nil {
 				t.Fatalf("allocation %d failed", i)
 			}
@@ -103,10 +133,16 @@ func TestArena_AllocBytes(t *testing.T) {
 
 func TestArena_AllocUint32Slice(t *testing.T) {
 	t.Run("basic allocation", func(t *testing.T) {
-		a := New(1024)
+		a, err := New(1024)
+		if err != nil {
+			t.Fatalf("New failed: %v", err)
+		}
 		defer a.Free()
 
-		slice := a.AllocUint32Slice(10)
+		slice, err := a.AllocUint32Slice(10)
+		if err != nil {
+			t.Fatalf("AllocUint32Slice failed: %v", err)
+		}
 		if len(slice) != 0 {
 			t.Errorf("expected length=0, got %d", len(slice))
 		}
@@ -121,22 +157,35 @@ func TestArena_AllocUint32Slice(t *testing.T) {
 	})
 
 	t.Run("zero capacity", func(t *testing.T) {
-		a := New(1024)
+		a, err := New(1024)
+		if err != nil {
+			t.Fatalf("New failed: %v", err)
+		}
 		defer a.Free()
 
-		slice := a.AllocUint32Slice(0)
+		slice, err := a.AllocUint32Slice(0)
+		if err != nil {
+			t.Fatalf("AllocUint32Slice failed: %v", err)
+		}
 		if slice != nil {
 			t.Error("expected nil for zero capacity")
 		}
 	})
 
 	t.Run("multiple allocations", func(t *testing.T) {
-		a := New(1024)
+		a, err := New(1024)
+		if err != nil {
+			t.Fatalf("New failed: %v", err)
+		}
 		defer a.Free()
 
 		slices := make([][]uint32, 10)
 		for i := range slices {
-			slices[i] = a.AllocUint32Slice(5)
+			var err error
+			slices[i], err = a.AllocUint32Slice(5)
+			if err != nil {
+				t.Fatalf("AllocUint32Slice failed: %v", err)
+			}
 			slices[i] = append(slices[i], uint32(i))
 		}
 
@@ -150,10 +199,16 @@ func TestArena_AllocUint32Slice(t *testing.T) {
 
 func TestArena_AllocFloat32Slice(t *testing.T) {
 	t.Run("basic allocation", func(t *testing.T) {
-		a := New(1024)
+		a, err := New(1024)
+		if err != nil {
+			t.Fatalf("New failed: %v", err)
+		}
 		defer a.Free()
 
-		slice := a.AllocFloat32Slice(10)
+		slice, err := a.AllocFloat32Slice(10)
+		if err != nil {
+			t.Fatalf("AllocFloat32Slice failed: %v", err)
+		}
 		if len(slice) != 0 {
 			t.Errorf("expected length=0, got %d", len(slice))
 		}
@@ -170,7 +225,10 @@ func TestArena_AllocFloat32Slice(t *testing.T) {
 
 func TestArena_Stats(t *testing.T) {
 	t.Run("initial stats", func(t *testing.T) {
-		a := New(1024)
+		a, err := New(1024)
+		if err != nil {
+			t.Fatalf("New failed: %v", err)
+		}
 		defer a.Free()
 
 		stats := a.Stats()
@@ -180,13 +238,17 @@ func TestArena_Stats(t *testing.T) {
 		if stats.BytesReserved != 1024 {
 			t.Errorf("expected BytesReserved=1024, got %d", stats.BytesReserved)
 		}
-		if stats.BytesUsed != 0 {
-			t.Errorf("expected BytesUsed=0, got %d", stats.BytesUsed)
+		// New() allocates 1 byte to reserve offset 0
+		if stats.BytesUsed != 1 {
+			t.Errorf("expected BytesUsed=1, got %d", stats.BytesUsed)
 		}
 	})
 
 	t.Run("after allocations", func(t *testing.T) {
-		a := New(1024)
+		a, err := New(1024)
+		if err != nil {
+			t.Fatalf("New failed: %v", err)
+		}
 		defer a.Free()
 
 		a.AllocBytes(100)
@@ -194,17 +256,22 @@ func TestArena_Stats(t *testing.T) {
 		a.AllocUint32Slice(10)
 
 		stats := a.Stats()
-		if stats.BytesUsed != 340 {
-			t.Errorf("expected BytesUsed=340, got %d", stats.BytesUsed)
+		// 1 (initial) + 100 + 200 + 40 (10*4) = 341
+		if stats.BytesUsed != 341 {
+			t.Errorf("expected BytesUsed=341, got %d", stats.BytesUsed)
 		}
-		if stats.TotalAllocs != 3 {
-			t.Errorf("expected TotalAllocs=3, got %d", stats.TotalAllocs)
+		// 1 (initial) + 3 = 4
+		if stats.TotalAllocs != 4 {
+			t.Errorf("expected TotalAllocs=4, got %d", stats.TotalAllocs)
 		}
 	})
 }
 
 func TestArena_Free(t *testing.T) {
-	a := New(1024)
+	a, err := New(1024)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
 
 	a.AllocBytes(100)
 	a.AllocBytes(200)
@@ -224,7 +291,10 @@ func TestArena_Free(t *testing.T) {
 
 func TestArena_Reset(t *testing.T) {
 	t.Run("basic reset", func(t *testing.T) {
-		a := New(1024)
+		a, err := New(1024)
+		if err != nil {
+			t.Fatalf("New failed: %v", err)
+		}
 		defer a.Free()
 
 		a.AllocBytes(100)
@@ -248,7 +318,10 @@ func TestArena_Reset(t *testing.T) {
 	})
 
 	t.Run("reset after multiple chunks", func(t *testing.T) {
-		a := New(256)
+		a, err := New(256)
+		if err != nil {
+			t.Fatalf("New failed: %v", err)
+		}
 		defer a.Free()
 
 		for i := 0; i < 10; i++ {
@@ -270,7 +343,10 @@ func TestArena_Reset(t *testing.T) {
 }
 
 func TestArena_Usage(t *testing.T) {
-	a := New(1000)
+	a, err := New(1000)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
 	defer a.Free()
 
 	usage := a.Usage()
@@ -286,7 +362,10 @@ func TestArena_Usage(t *testing.T) {
 }
 
 func TestArena_Concurrent(t *testing.T) {
-	a := New(DefaultChunkSize)
+	a, err := New(DefaultChunkSize)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
 	defer a.Free()
 
 	const goroutines = 100
@@ -299,7 +378,10 @@ func TestArena_Concurrent(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < allocsPerGoroutine; j++ {
-				slice := a.AllocUint32Slice(16)
+				slice, err := a.AllocUint32Slice(16)
+				if err != nil {
+					panic(err)
+				}
 				slice = append(slice, uint32(j))
 				runtime.KeepAlive(slice)
 			}
@@ -309,9 +391,10 @@ func TestArena_Concurrent(t *testing.T) {
 	wg.Wait()
 
 	stats := a.Stats()
-	if stats.TotalAllocs != goroutines*allocsPerGoroutine {
+	// +1 for initial allocation
+	if stats.TotalAllocs != goroutines*allocsPerGoroutine+1 {
 		t.Errorf("expected TotalAllocs=%d, got %d",
-			goroutines*allocsPerGoroutine, stats.TotalAllocs)
+			goroutines*allocsPerGoroutine+1, stats.TotalAllocs)
 	}
 }
 
@@ -320,14 +403,17 @@ func BenchmarkArena_AllocBytes(b *testing.B) {
 
 	for _, size := range sizes {
 		b.Run(fmt.Sprintf("size=%d", size), func(b *testing.B) {
-			a := New(DefaultChunkSize)
+			a, err := New(DefaultChunkSize)
+			if err != nil {
+				b.Fatalf("New failed: %v", err)
+			}
 			defer a.Free()
 
 			b.ResetTimer()
 			b.ReportAllocs()
 
 			for b.Loop() {
-				_ = a.AllocBytes(size)
+				_, _ = a.AllocBytes(size)
 			}
 		})
 	}
@@ -338,14 +424,17 @@ func BenchmarkArena_AllocUint32Slice(b *testing.B) {
 
 	for _, cap := range capacities {
 		b.Run(fmt.Sprintf("cap=%d", cap), func(b *testing.B) {
-			a := New(DefaultChunkSize)
+			a, err := New(DefaultChunkSize)
+			if err != nil {
+				b.Fatalf("New failed: %v", err)
+			}
 			defer a.Free()
 
 			b.ResetTimer()
 			b.ReportAllocs()
 
 			for b.Loop() {
-				_ = a.AllocUint32Slice(cap)
+				_, _ = a.AllocUint32Slice(cap)
 			}
 		})
 	}
@@ -353,14 +442,17 @@ func BenchmarkArena_AllocUint32Slice(b *testing.B) {
 
 func BenchmarkArena_vs_Make(b *testing.B) {
 	b.Run("arena", func(b *testing.B) {
-		a := New(DefaultChunkSize)
+		a, err := New(DefaultChunkSize)
+		if err != nil {
+			b.Fatalf("New failed: %v", err)
+		}
 		defer a.Free()
 
 		b.ResetTimer()
 		b.ReportAllocs()
 
 		for b.Loop() {
-			_ = a.AllocUint32Slice(16)
+			_, _ = a.AllocUint32Slice(16)
 		}
 	})
 
@@ -375,14 +467,17 @@ func BenchmarkArena_vs_Make(b *testing.B) {
 }
 
 func BenchmarkArena_ConcurrentAllocs(b *testing.B) {
-	a := New(DefaultChunkSize)
+	a, err := New(DefaultChunkSize)
+	if err != nil {
+		b.Fatalf("New failed: %v", err)
+	}
 	defer a.Free()
 
 	b.ResetTimer()
 	b.ReportAllocs()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			_ = a.AllocUint32Slice(16)
+			_, _ = a.AllocUint32Slice(16)
 		}
 	})
 }

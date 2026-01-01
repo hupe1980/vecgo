@@ -14,7 +14,9 @@ import (
 
 	"github.com/hupe1980/vecgo/distance"
 	"github.com/hupe1980/vecgo/index"
+	"github.com/hupe1980/vecgo/internal/arena"
 	"github.com/hupe1980/vecgo/internal/bitset"
+	"github.com/hupe1980/vecgo/internal/core"
 	"github.com/hupe1980/vecgo/internal/queue"
 	"github.com/hupe1980/vecgo/vectorstore"
 	"github.com/hupe1980/vecgo/vectorstore/columnar"
@@ -50,6 +52,9 @@ var _ index.TransactionalIndex = (*HNSW)(nil)
 // OffsetSegment is a fixed-size array of node offsets.
 type OffsetSegment [nodeSegmentSize]atomic.Uint64
 
+// NodeSegment is a fixed-size array of node pointers.
+type NodeSegment [nodeSegmentSize]atomic.Pointer[Node]
+
 // Options represents the options for configuring HNSW.
 type Options struct {
 	Dimension        int
@@ -83,6 +88,9 @@ type graph struct {
 	// Node storage: Segmented array of nodes
 	nodes   atomic.Pointer[[]*NodeSegment]
 	nodesMu sync.Mutex // Protects nodes growth
+
+	// Memory Arena
+	arena *arena.Arena
 
 	// Sharded locks for node updates
 	shardedLocks []sync.RWMutex
@@ -133,13 +141,18 @@ type scratch struct {
 func (*HNSW) Name() string { return "HNSW" }
 
 // Reset clears the HNSW index for reuse.
-func (h *HNSW) Reset() {
-	h.currentGraph.Store(newGraph())
+func (h *HNSW) Reset() error {
+	g, err := newGraph(h.opts.InitialArenaSize)
+	if err != nil {
+		return err
+	}
+	h.currentGraph.Store(g)
 
 	// Reset vectors if supported
 	if reseter, ok := h.vectors.(interface{ Reset() }); ok {
 		reseter.Reset()
 	}
+	return nil
 }
 
 // New creates a new HNSW instance.
@@ -183,7 +196,11 @@ func New(optFns ...func(o *Options)) (*HNSW, error) {
 		shardID:                0,
 		numShards:              1,
 	}
-	h.currentGraph.Store(newGraph())
+	g, err := newGraph(opts.InitialArenaSize)
+	if err != nil {
+		return nil, err
+	}
+	h.currentGraph.Store(g)
 
 	h.initPools()
 
@@ -195,17 +212,31 @@ func New(optFns ...func(o *Options)) (*HNSW, error) {
 	return h, nil
 }
 
-func newGraph() *graph {
+func newGraph(initialArenaSize int) (*graph, error) {
+	a, err := arena.New(initialArenaSize)
+	if err != nil {
+		return nil, err
+	}
+
 	g := &graph{
 		shardedLocks: make([]sync.RWMutex, 1024),
 		tombstones:   bitset.New(1024),
+		arena:        a,
 	}
 	g.maxLevelAtomic.Store(-1)
 	// Initialize first segment
 	nodes := make([]*NodeSegment, 1)
 	nodes[0] = new(NodeSegment)
 	g.nodes.Store(&nodes)
-	return g
+	return g, nil
+}
+
+func (h *HNSW) newNode(g *graph, level int) (*Node, error) {
+	n, err := AllocNode(g.arena, level, h.maxConnectionsPerLayer, h.maxConnectionsLayer0)
+	if err != nil {
+		return nil, err
+	}
+	return &n, nil
 }
 
 func (h *HNSW) initPools() {
@@ -312,7 +343,13 @@ func (h *HNSW) getConnections(g *graph, id uint64, layer int) []Neighbor {
 	if node == nil {
 		return nil
 	}
-	return node.getConnections(layer)
+
+	count := node.GetCount(g.arena, layer, h.maxConnectionsPerLayer, h.maxConnectionsLayer0)
+	res := make([]Neighbor, count)
+	for i := 0; i < count; i++ {
+		res[i] = node.GetConnection(g.arena, layer, i, h.maxConnectionsPerLayer, h.maxConnectionsLayer0)
+	}
+	return res
 }
 
 func (h *HNSW) setConnections(g *graph, id uint64, layer int, conns []Neighbor) {
@@ -321,11 +358,10 @@ func (h *HNSW) setConnections(g *graph, id uint64, layer int, conns []Neighbor) 
 		return
 	}
 
-	// Copy to new slice to ensure safety (COW)
-	newConns := make([]Neighbor, len(conns))
-	copy(newConns, conns)
-
-	node.setConnections(layer, newConns)
+	node.SetCount(g.arena, layer, len(conns), h.maxConnectionsPerLayer, h.maxConnectionsLayer0)
+	for i, neighbor := range conns {
+		node.SetConnection(g.arena, layer, i, neighbor, h.maxConnectionsPerLayer, h.maxConnectionsLayer0)
+	}
 }
 
 func (h *HNSW) addConnection(g *graph, sourceID, targetID uint64, level int, dist float32) {
@@ -337,11 +373,11 @@ func (h *HNSW) addConnection(g *graph, sourceID, targetID uint64, level int, dis
 		return
 	}
 
-	if level > node.Level {
+	if level > node.Level(g.arena) {
 		return // Should not happen
 	}
 
-	conns := node.getConnections(level)
+	conns := h.getConnections(g, sourceID, level)
 
 	// Check if already connected using binary search (conns is sorted)
 	// We assume conns is sorted. If not, we should sort it or use linear scan.
@@ -353,7 +389,7 @@ func (h *HNSW) addConnection(g *graph, sourceID, targetID uint64, level int, dis
 	// Optimization: Use manual loop to avoid overhead of generic slices.Contains
 	found := false
 	for _, c := range conns {
-		if c.ID == targetID {
+		if uint64(c.ID) == targetID {
 			found = true
 			break
 		}
@@ -373,14 +409,14 @@ func (h *HNSW) addConnection(g *graph, sourceID, targetID uint64, level int, dis
 		if cap(conns) >= len(conns)+1 {
 			// We have capacity, append in place (safe because we hold lock and readers only read up to len)
 			newConns = conns[:len(conns)+1]
-			newConns[len(conns)] = Neighbor{ID: targetID, Dist: dist}
+			newConns[len(conns)] = Neighbor{ID: core.LocalID(targetID), Dist: dist}
 		} else {
 			// Allocate with capacity
 			newConns = make([]Neighbor, len(conns)+1, maxM)
 			copy(newConns, conns)
-			newConns[len(conns)] = Neighbor{ID: targetID, Dist: dist}
+			newConns[len(conns)] = Neighbor{ID: core.LocalID(targetID), Dist: dist}
 		}
-		node.setConnections(level, newConns)
+		h.setConnections(g, sourceID, level, newConns)
 	} else {
 		// Prune
 		candidates := h.maxQueuePool.Get().(*queue.PriorityQueue)
@@ -389,7 +425,7 @@ func (h *HNSW) addConnection(g *graph, sourceID, targetID uint64, level int, dis
 
 		// Add existing - use cached distances!
 		for _, c := range conns {
-			candidates.PushItem(queue.PriorityQueueItem{Node: c.ID, Distance: c.Dist})
+			candidates.PushItem(queue.PriorityQueueItem{Node: uint64(c.ID), Distance: c.Dist})
 		}
 		// Add new
 		candidates.PushItem(queue.PriorityQueueItem{Node: targetID, Distance: dist})
@@ -401,12 +437,12 @@ func (h *HNSW) addConnection(g *graph, sourceID, targetID uint64, level int, dis
 		// Allocate final slice with capacity maxM
 		finalConns := make([]Neighbor, len(neighbors), maxM)
 		for i, n := range neighbors {
-			finalConns[i] = Neighbor{ID: n.Node, Dist: n.Distance}
+			finalConns[i] = Neighbor{ID: core.LocalID(n.Node), Dist: n.Distance}
 		}
 
 		h.scratchPool.Put(scratch)
 
-		node.setConnections(level, finalConns)
+		h.setConnections(g, sourceID, level, finalConns)
 	}
 }
 
@@ -433,7 +469,10 @@ func (h *HNSW) Insert(ctx context.Context, v []float32) (uint64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
-	return h.insert(h.currentGraph.Load(), v, 0, -1, false)
+	g := h.currentGraph.Load()
+	g.arena.IncRef()
+	defer g.arena.DecRef()
+	return h.insert(g, v, 0, -1, false)
 }
 
 // ApplyInsert inserts a vector with a specific ID (for WAL replay).
@@ -441,7 +480,10 @@ func (h *HNSW) ApplyInsert(ctx context.Context, id uint64, v []float32) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	_, err := h.insert(h.currentGraph.Load(), v, id, -1, true)
+	g := h.currentGraph.Load()
+	g.arena.IncRef()
+	defer g.arena.DecRef()
+	_, err := h.insert(g, v, id, -1, true)
 	return err
 }
 
@@ -455,6 +497,9 @@ func (h *HNSW) ApplyBatchInsert(ctx context.Context, ids []uint64, vectors [][]f
 	}
 
 	g := h.currentGraph.Load()
+	g.arena.IncRef()
+	defer g.arena.DecRef()
+
 	var wg sync.WaitGroup
 
 	// Limit concurrency to avoid overwhelming the system
@@ -565,7 +610,13 @@ func (h *HNSW) insert(g *graph, v []float32, id uint64, layer int, useProvidedID
 	}
 
 	// Create Node (Heap)
-	node := newNode(layer)
+	node, err := h.newNode(g, layer)
+	if err != nil {
+		if !useProvidedID {
+			h.releaseID(g, id)
+		}
+		return 0, err
+	}
 
 	// Store Vector
 	if err := h.vectors.SetVector(id, vec); err != nil {
@@ -648,9 +699,9 @@ func (h *HNSW) insertNode(g *graph, id uint64, vec []float32, layer int) error {
 			changed = false
 			conns := h.getConnections(g, currID, level)
 			for _, next := range conns {
-				nextDist := h.dist(vec, next.ID)
+				nextDist := h.dist(vec, uint64(next.ID))
 				if nextDist < currDist {
-					currID = next.ID
+					currID = uint64(next.ID)
 					currDist = nextDist
 					changed = true
 				}
@@ -690,7 +741,7 @@ func (h *HNSW) insertNode(g *graph, id uint64, vec []float32, layer int) error {
 		// Extract IDs for setConnections
 		neighborConns := make([]Neighbor, len(neighbors))
 		for i, n := range neighbors {
-			neighborConns[i] = Neighbor{ID: n.Node, Dist: n.Distance}
+			neighborConns[i] = Neighbor{ID: core.LocalID(n.Node), Dist: n.Distance}
 		}
 
 		// Add bidirectional connections
@@ -852,10 +903,10 @@ func (h *HNSW) searchLayer(g *graph, query []float32, epID uint64, epDist float3
 
 		conns := h.getConnections(g, curr.Node, level)
 		for _, next := range conns {
-			if !visited.Test(next.ID) {
-				visited.Set(next.ID)
+			if !visited.Test(uint64(next.ID)) {
+				visited.Set(uint64(next.ID))
 
-				nextDist := h.dist(query, next.ID)
+				nextDist := h.dist(query, uint64(next.ID))
 
 				// Classic HNSW pruning: avoid pushing obviously-bad candidates once we already
 				// have ef results. This substantially reduces heap churn.
@@ -872,12 +923,12 @@ func (h *HNSW) searchLayer(g *graph, query []float32, epID uint64, epDist float3
 				}
 
 				if shouldExplore {
-					candidates.PushItem(queue.PriorityQueueItem{Node: next.ID, Distance: nextDist})
+					candidates.PushItem(queue.PriorityQueueItem{Node: uint64(next.ID), Distance: nextDist})
 
 					// Only add to results if it passes the filter AND is not deleted
-					if (filter == nil || filter(next.ID)) && !g.tombstones.Test(next.ID) {
+					if (filter == nil || filter(uint64(next.ID))) && !g.tombstones.Test(uint64(next.ID)) {
 						// Use bounded push for results to avoid heap churn
-						results.PushItemBounded(queue.PriorityQueueItem{Node: next.ID, Distance: nextDist}, ef)
+						results.PushItemBounded(queue.PriorityQueueItem{Node: uint64(next.ID), Distance: nextDist}, ef)
 					}
 				}
 			}
@@ -903,6 +954,8 @@ func (h *HNSW) Delete(ctx context.Context, id uint64) error {
 		return err
 	}
 	g := h.currentGraph.Load()
+	g.arena.IncRef()
+	defer g.arena.DecRef()
 
 	// Use lock to protect tombstones
 	g.shardedLocks[id%uint64(len(g.shardedLocks))].Lock()
@@ -934,7 +987,7 @@ func (h *HNSW) Update(ctx context.Context, id uint64, v []float32) error {
 	if node == nil {
 		return &index.ErrNodeNotFound{ID: id}
 	}
-	layer := node.Level
+	layer := node.Level(g.arena)
 
 	if err := h.Delete(ctx, id); err != nil {
 		return err
@@ -968,6 +1021,8 @@ func (h *HNSW) KNNSearchWithBuffer(ctx context.Context, q []float32, k int, opts
 	}
 
 	g := h.currentGraph.Load()
+	g.arena.IncRef()
+	defer g.arena.DecRef()
 
 	// Get scratch buffer
 	scratch := h.scratchPool.Get().(*scratch)
@@ -1009,9 +1064,9 @@ func (h *HNSW) KNNSearchWithBuffer(ctx context.Context, q []float32, k int, opts
 			changed = false
 			conns := h.getConnections(g, currID, level)
 			for _, next := range conns {
-				nextDist := h.dist(q, next.ID)
+				nextDist := h.dist(q, uint64(next.ID))
 				if nextDist < currDist {
-					currID = next.ID
+					currID = uint64(next.ID)
 					currDist = nextDist
 					changed = true
 				}
@@ -1103,9 +1158,9 @@ func (h *HNSW) KNNSearchStream(ctx context.Context, q []float32, k int, opts *in
 				changed = false
 				conns := h.getConnections(g, currID, level)
 				for _, next := range conns {
-					nextDist := h.dist(q, next.ID)
+					nextDist := h.dist(q, uint64(next.ID))
 					if nextDist < currDist {
-						currID = next.ID
+						currID = uint64(next.ID)
 						currDist = nextDist
 						changed = true
 					}
@@ -1266,7 +1321,7 @@ func (h *HNSW) recoverEntryPoint(g *graph) {
 				id := uint64(i)*nodeSegmentSize + uint64(j)
 				if !g.tombstones.Test(id) {
 					g.entryPointAtomic.Store(id)
-					g.maxLevelAtomic.Store(int32(node.Level))
+					g.maxLevelAtomic.Store(int32(node.Level(g.arena)))
 					return
 				}
 			}
