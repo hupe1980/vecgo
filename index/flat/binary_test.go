@@ -6,6 +6,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/index"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -47,7 +48,7 @@ func TestBinaryPersistence_SaveLoad(t *testing.T) {
 	// Count nodes in both indexes
 	origCount := 0
 	maxID := f.maxID.Load()
-	for i := uint64(0); i < maxID; i++ {
+	for i := uint32(0); i < maxID; i++ {
 		if !f.deleted.Test(i) {
 			origCount++
 		}
@@ -55,7 +56,7 @@ func TestBinaryPersistence_SaveLoad(t *testing.T) {
 
 	loadedCount := 0
 	loadedMaxID := loaded.maxID.Load()
-	for i := uint64(0); i < loadedMaxID; i++ {
+	for i := uint32(0); i < loadedMaxID; i++ {
 		if !loaded.deleted.Test(i) {
 			loadedCount++
 		}
@@ -71,7 +72,7 @@ func TestBinaryPersistence_SaveLoad(t *testing.T) {
 	results, err := loaded.KNNSearch(ctx, query, 1, nil)
 	require.NoError(t, err)
 	require.Len(t, results, 1)
-	assert.Equal(t, uint64(50), results[0].ID)
+	assert.Equal(t, uint32(50), results[0].ID)
 }
 
 func TestBinaryPersistence_MarshalUnmarshal(t *testing.T) {
@@ -111,7 +112,7 @@ func TestBinaryPersistence_MarshalUnmarshal(t *testing.T) {
 	// Count nodes
 	origCount := 0
 	maxID := f.maxID.Load()
-	for i := uint64(0); i < maxID; i++ {
+	for i := uint32(0); i < maxID; i++ {
 		if !f.deleted.Test(i) {
 			origCount++
 		}
@@ -119,7 +120,7 @@ func TestBinaryPersistence_MarshalUnmarshal(t *testing.T) {
 
 	loadedCount := 0
 	loadedMaxID := loaded.maxID.Load()
-	for i := uint64(0); i < loadedMaxID; i++ {
+	for i := uint32(0); i < loadedMaxID; i++ {
 		if !loaded.deleted.Test(i) {
 			loadedCount++
 		}
@@ -135,7 +136,7 @@ func TestBinaryPersistence_MarshalUnmarshal(t *testing.T) {
 	results, err := loaded.KNNSearch(ctx, query, 1, nil)
 	require.NoError(t, err)
 	require.Len(t, results, 1)
-	assert.Equal(t, uint64(25), results[0].ID)
+	assert.Equal(t, uint32(25), results[0].ID)
 }
 
 func TestBinaryPersistence_WithDeletes(t *testing.T) {
@@ -149,7 +150,7 @@ func TestBinaryPersistence_WithDeletes(t *testing.T) {
 	ctx := context.Background()
 
 	// Insert 20 vectors
-	ids := make([]uint64, 20)
+	ids := make([]core.LocalID, 20)
 	for i := 0; i < 20; i++ {
 		vec := make([]float32, 32)
 		for j := range vec {
@@ -182,7 +183,7 @@ func TestBinaryPersistence_WithDeletes(t *testing.T) {
 	// Count active nodes in loaded index (should have 10 vectors: 0-4, 15-19)
 	loadedCount := 0
 	loadedMaxID := loaded.maxID.Load()
-	for i := uint64(0); i < loadedMaxID; i++ {
+	for i := uint32(0); i < loadedMaxID; i++ {
 		if !loaded.deleted.Test(i) {
 			loadedCount++
 		}
@@ -198,7 +199,7 @@ func TestBinaryPersistence_WithDeletes(t *testing.T) {
 	results, err := loaded.KNNSearch(ctx, query, 1, nil)
 	require.NoError(t, err)
 	require.Len(t, results, 1)
-	assert.Equal(t, uint64(2), results[0].ID)
+	assert.Equal(t, uint32(2), results[0].ID)
 }
 
 func TestBinaryPersistence_LoadUsesPersistedDistanceType(t *testing.T) {

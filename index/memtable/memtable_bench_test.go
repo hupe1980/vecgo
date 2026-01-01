@@ -3,6 +3,7 @@ package memtable
 import (
 	"testing"
 
+	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/distance"
 	"github.com/hupe1980/vecgo/testutil"
 )
@@ -17,7 +18,7 @@ func BenchmarkMemTableSearch(b *testing.B) {
 
 	for i := 0; i < size; i++ {
 		vec := rng.UnitVector(dim)
-		m.Insert(uint64(i), vec)
+		m.Insert(core.LocalID(i), vec)
 	}
 
 	query := rng.UnitVector(dim)

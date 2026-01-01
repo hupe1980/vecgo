@@ -5,6 +5,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/index/flat"
 	"github.com/hupe1980/vecgo/testutil"
@@ -277,7 +278,7 @@ func BenchmarkFlatUpdate(b *testing.B) {
 	rng := testutil.NewRNG(0)
 
 	// Build index
-	ids := make([]uint64, indexSize)
+	ids := make([]core.LocalID, indexSize)
 	for i := 0; i < indexSize; i++ {
 		v := rng.UnitVector(dim)
 		id, _ := f.Insert(ctx, v)
@@ -315,7 +316,7 @@ func BenchmarkFlatDelete(b *testing.B) {
 		ctx := context.Background()
 
 		// Insert vectors to delete
-		ids := make([]uint64, 1000)
+		ids := make([]core.LocalID, 1000)
 		for j := 0; j < 1000; j++ {
 			v := rng.UnitVector(dim)
 			id, _ := f.Insert(ctx, v)

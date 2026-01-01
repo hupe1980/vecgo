@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/metadata"
 )
 
@@ -41,7 +42,7 @@ func benchmarkDurability(b *testing.B, mode DurabilityMode) {
 
 	b.ResetTimer()
 	for i := 0; b.Loop(); i++ {
-		id := uint64(i)
+		id := core.LocalID(i)
 		if err := w.LogPrepareInsert(id, vec, data, meta); err != nil {
 			b.Fatal(err)
 		}
@@ -89,7 +90,7 @@ func benchmarkGroupCommitBatchSize(b *testing.B, batchSize int) {
 
 	b.ResetTimer()
 	for i := 0; b.Loop(); i++ {
-		id := uint64(i)
+		id := core.LocalID(i)
 		if err := w.LogPrepareInsert(id, vec, data, meta); err != nil {
 			b.Fatal(err)
 		}
@@ -137,7 +138,7 @@ func benchmarkGroupCommitInterval(b *testing.B, interval time.Duration) {
 
 	b.ResetTimer()
 	for i := 0; b.Loop(); i++ {
-		id := uint64(i)
+		id := core.LocalID(i)
 		if err := w.LogPrepareInsert(id, vec, data, meta); err != nil {
 			b.Fatal(err)
 		}
@@ -184,7 +185,7 @@ func benchmarkParallelWrites(b *testing.B, mode DurabilityMode) {
 		var i uint64
 		for pb.Next() {
 			i++
-			id := i
+			id := core.LocalID(i)
 			if err := w.LogPrepareInsert(id, vec, data, meta); err != nil {
 				b.Fatal(err)
 			}
@@ -215,7 +216,7 @@ func BenchmarkRecoveryWithGroupCommit(b *testing.B) {
 		meta := metadata.Metadata{"key": metadata.String("value")}
 
 		for i := 0; i < 10000; i++ {
-			id := uint64(i)
+			id := core.LocalID(i)
 			_ = w.LogPrepareInsert(id, vec, data, meta)
 			_ = w.LogCommitInsert(id)
 		}

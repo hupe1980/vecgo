@@ -6,14 +6,16 @@ package metadata
 import (
 	"sync"
 	"unique"
+
+	"github.com/hupe1980/vecgo/core"
 )
 
 // UnifiedIndex combines metadata storage with inverted indexing using Bitmaps.
 // This provides efficient hybrid vector + metadata search with minimal memory overhead.
 //
 // Architecture:
-//   - Primary storage: map[uint64]InternedDocument (metadata by ID, interned keys)
-//   - Inverted index: map[key]map[valueKey]*Bitmap (efficient posting lists)
+//   - Primary storage: map[core.LocalID]InternedDocument (metadata by ID, interned keys)
+//   - Inverted index: map[key]map[valueKey]*LocalBitmap (efficient posting lists)
 //
 // Benefits:
 //   - Memory efficient (Bitmap compression + String Interning)
@@ -23,25 +25,25 @@ type UnifiedIndex struct {
 	mu sync.RWMutex
 
 	// Primary metadata storage (id -> metadata document)
-	documents map[uint64]InternedDocument
+	documents map[core.LocalID]InternedDocument
 
 	// Inverted index for fast filtering
 	// Structure: field -> valueKey -> bitmap of IDs
 	// Bitmaps are compressed and support fast set operations
-	inverted map[unique.Handle[string]]map[unique.Handle[string]]*Bitmap
+	inverted map[unique.Handle[string]]map[unique.Handle[string]]*LocalBitmap
 }
 
 // NewUnifiedIndex creates a new unified metadata index.
 func NewUnifiedIndex() *UnifiedIndex {
 	return &UnifiedIndex{
-		documents: make(map[uint64]InternedDocument),
-		inverted:  make(map[unique.Handle[string]]map[unique.Handle[string]]*Bitmap),
+		documents: make(map[core.LocalID]InternedDocument),
+		inverted:  make(map[unique.Handle[string]]map[unique.Handle[string]]*LocalBitmap),
 	}
 }
 
 // Set stores metadata for an ID and updates the inverted index.
 // This replaces any existing metadata for the ID.
-func (ui *UnifiedIndex) Set(id uint64, doc Document) {
+func (ui *UnifiedIndex) Set(id core.LocalID, doc Document) {
 	if doc == nil {
 		return
 	}
@@ -69,7 +71,7 @@ func (ui *UnifiedIndex) Set(id uint64, doc Document) {
 
 // Get retrieves metadata for an ID.
 // Returns nil if the ID doesn't exist.
-func (ui *UnifiedIndex) Get(id uint64) (Document, bool) {
+func (ui *UnifiedIndex) Get(id core.LocalID) (Document, bool) {
 	ui.mu.RLock()
 	defer ui.mu.RUnlock()
 
@@ -87,7 +89,7 @@ func (ui *UnifiedIndex) Get(id uint64) (Document, bool) {
 }
 
 // Delete removes metadata for an ID and updates the inverted index.
-func (ui *UnifiedIndex) Delete(id uint64) {
+func (ui *UnifiedIndex) Delete(id core.LocalID) {
 	ui.mu.Lock()
 	defer ui.mu.Unlock()
 
@@ -110,11 +112,11 @@ func (ui *UnifiedIndex) Len() int {
 
 // ToMap returns a copy of all documents as a map.
 // This is useful for serialization and snapshot creation.
-func (ui *UnifiedIndex) ToMap() map[uint64]Document {
+func (ui *UnifiedIndex) ToMap() map[core.LocalID]Document {
 	ui.mu.RLock()
 	defer ui.mu.RUnlock()
 
-	result := make(map[uint64]Document, len(ui.documents))
+	result := make(map[core.LocalID]Document, len(ui.documents))
 	for id, iDoc := range ui.documents {
 		doc := make(Document, len(iDoc))
 		for k, v := range iDoc {
@@ -127,12 +129,12 @@ func (ui *UnifiedIndex) ToMap() map[uint64]Document {
 
 // addToIndexLocked adds a document to the inverted index.
 // Caller must hold ui.mu.Lock().
-func (ui *UnifiedIndex) addToIndexLocked(id uint64, doc InternedDocument) {
+func (ui *UnifiedIndex) addToIndexLocked(id core.LocalID, doc InternedDocument) {
 	for key, value := range doc {
 		// Get or create value map for this field
 		valueMap, ok := ui.inverted[key]
 		if !ok {
-			valueMap = make(map[unique.Handle[string]]*Bitmap)
+			valueMap = make(map[unique.Handle[string]]*LocalBitmap)
 			ui.inverted[key] = valueMap
 		}
 
@@ -140,7 +142,7 @@ func (ui *UnifiedIndex) addToIndexLocked(id uint64, doc InternedDocument) {
 		valueKey := unique.Make(value.Key())
 		bitmap, ok := valueMap[valueKey]
 		if !ok {
-			bitmap = NewBitmap()
+			bitmap = NewLocalBitmap()
 			valueMap[valueKey] = bitmap
 		}
 
@@ -151,7 +153,7 @@ func (ui *UnifiedIndex) addToIndexLocked(id uint64, doc InternedDocument) {
 
 // removeFromIndexLocked removes a document from the inverted index.
 // Caller must hold ui.mu.Lock().
-func (ui *UnifiedIndex) removeFromIndexLocked(id uint64, doc InternedDocument) {
+func (ui *UnifiedIndex) removeFromIndexLocked(id core.LocalID, doc InternedDocument) {
 	for key, value := range doc {
 		valueMap, ok := ui.inverted[key]
 		if !ok {
@@ -189,13 +191,13 @@ func (ui *UnifiedIndex) RUnlock() {
 
 // CreateStreamingFilter creates a filter function that checks the index without allocating intermediate bitmaps.
 // The caller MUST hold the read lock (RLock) while using the returned function.
-func (ui *UnifiedIndex) CreateStreamingFilter(fs *FilterSet) func(uint64) bool {
+func (ui *UnifiedIndex) CreateStreamingFilter(fs *FilterSet) func(core.LocalID) bool {
 	if fs == nil || len(fs.Filters) == 0 {
-		return func(uint64) bool { return true }
+		return func(core.LocalID) bool { return true }
 	}
 
 	// Pre-resolve bitmaps for supported operators
-	var checks []func(uint64) bool
+	var checks []func(core.LocalID) bool
 
 	for _, filter := range fs.Filters {
 		switch filter.Operator {
@@ -204,9 +206,9 @@ func (ui *UnifiedIndex) CreateStreamingFilter(fs *FilterSet) func(uint64) bool {
 			bitmap := ui.getBitmapLocked(filter.Key, filter.Value)
 			if bitmap == nil {
 				// No matches for this filter -> AND implies no matches at all
-				return func(uint64) bool { return false }
+				return func(core.LocalID) bool { return false }
 			}
-			checks = append(checks, func(id uint64) bool {
+			checks = append(checks, func(id core.LocalID) bool {
 				return bitmap.Contains(id)
 			})
 
@@ -214,10 +216,10 @@ func (ui *UnifiedIndex) CreateStreamingFilter(fs *FilterSet) func(uint64) bool {
 			// Check if ID is in ANY of the bitmaps
 			arr, ok := filter.Value.AsArray()
 			if !ok {
-				return func(uint64) bool { return false }
+				return func(core.LocalID) bool { return false }
 			}
 
-			var bitmaps []*Bitmap
+			var bitmaps []*LocalBitmap
 			for _, v := range arr {
 				if b := ui.getBitmapLocked(filter.Key, v); b != nil {
 					bitmaps = append(bitmaps, b)
@@ -225,10 +227,10 @@ func (ui *UnifiedIndex) CreateStreamingFilter(fs *FilterSet) func(uint64) bool {
 			}
 
 			if len(bitmaps) == 0 {
-				return func(uint64) bool { return false }
+				return func(core.LocalID) bool { return false }
 			}
 
-			checks = append(checks, func(id uint64) bool {
+			checks = append(checks, func(id core.LocalID) bool {
 				for _, b := range bitmaps {
 					if b.Contains(id) {
 						return true
@@ -241,7 +243,7 @@ func (ui *UnifiedIndex) CreateStreamingFilter(fs *FilterSet) func(uint64) bool {
 			// Fallback for unsupported operators: check document
 			// This is slow but necessary
 			f := filter // capture loop variable
-			checks = append(checks, func(id uint64) bool {
+			checks = append(checks, func(id core.LocalID) bool {
 				doc, ok := ui.documents[id]
 				if !ok {
 					return false
@@ -251,7 +253,7 @@ func (ui *UnifiedIndex) CreateStreamingFilter(fs *FilterSet) func(uint64) bool {
 		}
 	}
 
-	return func(id uint64) bool {
+	return func(id core.LocalID) bool {
 		for _, check := range checks {
 			if !check(id) {
 				return false
@@ -268,8 +270,8 @@ func (ui *UnifiedIndex) CreateStreamingFilter(fs *FilterSet) func(uint64) bool {
 //   - OpEqual: field == value
 //   - OpIn: field IN (value1, value2, ...)
 //   - OpNotEqual, OpGreaterThan, etc.: Falls back to scanning
-func (ui *UnifiedIndex) CompileFilter(fs *FilterSet) *Bitmap {
-	dst := NewBitmap()
+func (ui *UnifiedIndex) CompileFilter(fs *FilterSet) *LocalBitmap {
+	dst := NewLocalBitmap()
 	if ui.CompileFilterTo(fs, dst) {
 		return dst
 	}
@@ -279,7 +281,7 @@ func (ui *UnifiedIndex) CompileFilter(fs *FilterSet) *Bitmap {
 // CompileFilterTo compiles a FilterSet into the provided destination bitmap.
 // Returns true if compilation succeeded (all operators supported), false otherwise.
 // The destination bitmap is cleared before use.
-func (ui *UnifiedIndex) CompileFilterTo(fs *FilterSet, dst *Bitmap) bool {
+func (ui *UnifiedIndex) CompileFilterTo(fs *FilterSet, dst *LocalBitmap) bool {
 	if fs == nil || len(fs.Filters) == 0 {
 		dst.Clear()
 		return true
@@ -301,9 +303,9 @@ func (ui *UnifiedIndex) CompileFilterTo(fs *FilterSet, dst *Bitmap) bool {
 			}
 
 			if first {
-				dst.OrInPlace(bitmap) // Copy first bitmap
+				dst.Or(bitmap) // Copy first bitmap
 			} else {
-				dst.AndInPlace(bitmap)
+				dst.And(bitmap)
 			}
 
 		case OpIn:
@@ -315,19 +317,19 @@ func (ui *UnifiedIndex) CompileFilterTo(fs *FilterSet, dst *Bitmap) bool {
 			if first {
 				for _, v := range arr {
 					if b := ui.getBitmapLocked(filter.Key, v); b != nil {
-						dst.OrInPlace(b)
+						dst.Or(b)
 					}
 				}
 			} else {
 				// We need to intersect dst with (Union of values)
 				// dst = dst AND (v1 OR v2 OR ...)
-				scratch := NewBitmap()
+				scratch := NewLocalBitmap()
 				for _, v := range arr {
 					if b := ui.getBitmapLocked(filter.Key, v); b != nil {
-						scratch.OrInPlace(b)
+						scratch.Or(b)
 					}
 				}
-				dst.AndInPlace(scratch)
+				dst.And(scratch)
 			}
 
 		default:
@@ -345,7 +347,7 @@ func (ui *UnifiedIndex) CompileFilterTo(fs *FilterSet, dst *Bitmap) bool {
 
 // getBitmapLocked retrieves the bitmap for a specific field=value combination.
 // Returns nil if no matches exist. Caller must hold ui.mu.RLock().
-func (ui *UnifiedIndex) getBitmapLocked(key string, value Value) *Bitmap {
+func (ui *UnifiedIndex) getBitmapLocked(key string, value Value) *LocalBitmap {
 	valueMap, ok := ui.inverted[unique.Make(key)]
 	if !ok {
 		return nil
@@ -362,7 +364,7 @@ func (ui *UnifiedIndex) getBitmapLocked(key string, value Value) *Bitmap {
 // ScanFilter evaluates a FilterSet by scanning all documents.
 // This is slower than CompileFilter but supports all operators.
 // Use this as a fallback when CompileFilter returns nil.
-func (ui *UnifiedIndex) ScanFilter(fs *FilterSet) []uint64 {
+func (ui *UnifiedIndex) ScanFilter(fs *FilterSet) []core.LocalID {
 	if fs == nil {
 		return nil
 	}
@@ -370,7 +372,7 @@ func (ui *UnifiedIndex) ScanFilter(fs *FilterSet) []uint64 {
 	ui.mu.RLock()
 	defer ui.mu.RUnlock()
 
-	result := make([]uint64, 0, len(ui.documents))
+	result := make([]core.LocalID, 0, len(ui.documents))
 
 	for id, doc := range ui.documents {
 		if fs.MatchesInterned(doc) {
@@ -387,7 +389,7 @@ func (ui *UnifiedIndex) ScanFilter(fs *FilterSet) []uint64 {
 // Returns:
 //   - Fast path: If compilation succeeds, returns bitmap-based O(1) lookup
 //   - Slow path: Falls back to scanning + evaluating each document
-func (ui *UnifiedIndex) CreateFilterFunc(fs *FilterSet) func(uint64) bool {
+func (ui *UnifiedIndex) CreateFilterFunc(fs *FilterSet) func(core.LocalID) bool {
 	if fs == nil || len(fs.Filters) == 0 {
 		return nil
 	}
@@ -396,7 +398,7 @@ func (ui *UnifiedIndex) CreateFilterFunc(fs *FilterSet) func(uint64) bool {
 	bitmap := ui.CompileFilter(fs)
 	if bitmap != nil {
 		// Fast bitmap-based lookup (O(1) average case)
-		return func(id uint64) bool {
+		return func(id core.LocalID) bool {
 			return bitmap.Contains(id)
 		}
 	}
@@ -405,7 +407,7 @@ func (ui *UnifiedIndex) CreateFilterFunc(fs *FilterSet) func(uint64) bool {
 	ui.mu.RLock()
 	defer ui.mu.RUnlock()
 
-	return func(id uint64) bool {
+	return func(id core.LocalID) bool {
 		doc, ok := ui.documents[id]
 		if !ok {
 			return false

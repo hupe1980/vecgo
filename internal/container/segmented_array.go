@@ -36,7 +36,7 @@ func NewSegmentedArray[T any]() *SegmentedArray[T] {
 
 // Get returns the item at the given index.
 // Returns zero value if index is out of bounds or segment not allocated.
-func (sa *SegmentedArray[T]) Get(index uint64) (T, bool) {
+func (sa *SegmentedArray[T]) Get(index uint32) (T, bool) {
 	segments := sa.segments.Load()
 	if segments == nil {
 		var zero T
@@ -57,7 +57,7 @@ func (sa *SegmentedArray[T]) Get(index uint64) (T, bool) {
 
 // Set sets the item at the given index.
 // It grows the array if necessary.
-func (sa *SegmentedArray[T]) Set(index uint64, value T) {
+func (sa *SegmentedArray[T]) Set(index uint32, value T) {
 	segIdx := int(index >> segmentBits)
 
 	// Fast path: check if segment exists

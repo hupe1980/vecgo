@@ -8,8 +8,8 @@ import (
 	"math/rand"
 	"time"
 
+	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/index"
-	"github.com/hupe1980/vecgo/internal/core"
 	"github.com/hupe1980/vecgo/persistence"
 	"github.com/hupe1980/vecgo/vectorstore/columnar"
 )
@@ -93,7 +93,7 @@ func (h *HNSW) WriteTo(w io.Writer) (int64, error) {
 		MaxLayers:    uint16(g.maxLevelAtomic.Load() + 1),
 		M:            uint16(h.maxConnectionsPerLayer),
 		Ml:           float32(h.layerMultiplier),
-		EntryPoint:   g.entryPointAtomic.Load(),
+		EntryPoint:   uint64(g.entryPointAtomic.Load()),
 		DistanceFunc: uint8(h.opts.DistanceType),
 		Flags: func() uint8 {
 			if h.opts.NormalizeVectors {
@@ -107,7 +107,7 @@ func (h *HNSW) WriteTo(w io.Writer) (int64, error) {
 	}
 
 	// Write nextID
-	if err := binary.Write(cw, binary.LittleEndian, nextID); err != nil {
+	if err := binary.Write(cw, binary.LittleEndian, uint64(nextID)); err != nil {
 		return cw.n, err
 	}
 
@@ -122,8 +122,8 @@ func (h *HNSW) WriteTo(w io.Writer) (int64, error) {
 	}
 
 	// Write Graph Data
-	for id := uint64(0); id < nextID; id++ {
-		node := h.getNode(g, id)
+	for id := uint32(0); id < nextID; id++ {
+		node := h.getNode(g, core.LocalID(id))
 		if node == nil {
 			// Deleted or unused ID
 			if err := binary.Write(cw, binary.LittleEndian, int32(-1)); err != nil {
@@ -140,7 +140,7 @@ func (h *HNSW) WriteTo(w io.Writer) (int64, error) {
 
 		// Write Connections
 		for layer := 0; layer <= level; layer++ {
-			conns := h.getConnections(g, id, layer)
+			conns := h.getConnections(g, core.LocalID(id), layer)
 			count := uint32(len(conns))
 			if err := binary.Write(cw, binary.LittleEndian, count); err != nil {
 				return cw.n, err
@@ -161,8 +161,8 @@ func (h *HNSW) WriteTo(w io.Writer) (int64, error) {
 	// We write vectors contiguously without length prefix for mmap compatibility.
 	// Missing vectors (freed IDs) are written as zeros.
 	zeroVec := make([]float32, h.opts.Dimension)
-	for id := uint64(0); id < nextID; id++ {
-		vec, ok := h.vectors.GetVector(id)
+	for id := uint32(0); id < nextID; id++ {
+		vec, ok := h.vectors.GetVector(core.LocalID(id))
 		if !ok {
 			if err := writer.WriteFloat32Slice(zeroVec); err != nil {
 				return cw.n, err
@@ -233,7 +233,7 @@ func (h *HNSW) ReadFromWithOptions(r io.Reader, opts Options) error {
 	}
 	h.currentGraph.Store(g)
 
-	g.entryPointAtomic.Store(metadata.EntryPoint)
+	g.entryPointAtomic.Store(uint32(metadata.EntryPoint))
 	g.maxLevelAtomic.Store(int32(metadata.MaxLayers) - 1)
 
 	// Initialize runtime fields
@@ -258,8 +258,8 @@ func (h *HNSW) ReadFromWithOptions(r io.Reader, opts Options) error {
 	if err != nil {
 		return err
 	}
-	g.nextIDAtomic.Store(nextIDSlice[0])
-	g.tombstones.Grow(nextIDSlice[0])
+	g.nextIDAtomic.Store(uint32(nextIDSlice[0]))
+	g.tombstones.Grow(uint32(nextIDSlice[0]))
 
 	// Read freeList (Deprecated: Ignore)
 	freeListLenSlice, err := reader.ReadUint64Slice(1)
@@ -284,7 +284,7 @@ func (h *HNSW) ReadFromWithOptions(r io.Reader, opts Options) error {
 
 	// Read Graph Data
 	nextID := g.nextIDAtomic.Load()
-	for id := uint64(0); id < nextID; id++ {
+	for id := uint32(0); id < nextID; id++ {
 		var level int32
 		if err := binary.Read(cr, binary.LittleEndian, &level); err != nil {
 			return err
@@ -298,7 +298,7 @@ func (h *HNSW) ReadFromWithOptions(r io.Reader, opts Options) error {
 		if err != nil {
 			return err
 		}
-		h.setNode(g, id, node)
+		h.setNode(g, core.LocalID(id), node)
 
 		for layer := 0; layer <= int(level); layer++ {
 			var count uint32
@@ -314,7 +314,7 @@ func (h *HNSW) ReadFromWithOptions(r io.Reader, opts Options) error {
 				for i, id := range ids {
 					conns[i] = Neighbor{ID: core.LocalID(id)}
 				}
-				h.setConnections(g, uint64(id), layer, conns)
+				h.setConnections(g, core.LocalID(id), layer, conns)
 			}
 		}
 	}
@@ -329,34 +329,34 @@ func (h *HNSW) ReadFromWithOptions(r io.Reader, opts Options) error {
 	// But h.vectors is an interface.
 
 	vec := make([]float32, vecSize)
-	for id := uint64(0); id < nextID; id++ {
+	for id := uint32(0); id < nextID; id++ {
 		if err := reader.ReadFloat32SliceInto(vec); err != nil {
 			return err
 		}
 		// We need to copy because vec is reused
 		vecCopy := make([]float32, vecSize)
 		copy(vecCopy, vec)
-		if err := h.vectors.SetVector(id, vecCopy); err != nil {
+		if err := h.vectors.SetVector(core.LocalID(id), vecCopy); err != nil {
 			return err
 		}
 	}
 
 	// Recompute distances for all connections
-	for id := uint64(0); id < nextID; id++ {
-		node := h.getNode(g, id)
+	for id := uint32(0); id < nextID; id++ {
+		node := h.getNode(g, core.LocalID(id))
 		if node == nil {
 			continue
 		}
-		vec, ok := h.vectors.GetVector(id)
+		vec, ok := h.vectors.GetVector(core.LocalID(id))
 		if !ok {
 			continue
 		}
 		for l := 0; l <= node.Level(g.arena); l++ {
-			conns := h.getConnections(g, id, l)
+			conns := h.getConnections(g, core.LocalID(id), l)
 			for i := range conns {
-				conns[i].Dist = h.dist(vec, uint64(conns[i].ID))
+				conns[i].Dist = h.dist(vec, conns[i].ID)
 			}
-			h.setConnections(g, id, l, conns)
+			h.setConnections(g, core.LocalID(id), l, conns)
 		}
 	}
 

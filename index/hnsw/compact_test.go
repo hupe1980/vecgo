@@ -5,6 +5,7 @@ import (
 	"math/rand"
 	"testing"
 
+	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/vectorstore/columnar"
 )
 
@@ -39,9 +40,9 @@ func TestCompact(t *testing.T) {
 	}
 
 	// Delete vectors (every second one)
-	deleted := make(map[uint64]bool)
+	deleted := make(map[core.LocalID]bool)
 	for i := 0; i < deleteCount; i++ {
-		id := uint64(i * 2)
+		id := core.LocalID(i * 2)
 		if err := h.Delete(ctx, id); err != nil {
 			t.Fatalf("Delete: %v", err)
 		}
@@ -60,7 +61,7 @@ func TestCompact(t *testing.T) {
 
 	g := h.currentGraph.Load()
 
-	for id := uint64(0); id < uint64(count); id++ {
+	for id := core.LocalID(0); id < core.LocalID(count); id++ {
 		node := h.getNode(g, id)
 		if node.Offset == 0 {
 			continue
@@ -69,7 +70,7 @@ func TestCompact(t *testing.T) {
 		if deleted[id] {
 			// Check if connections are cleared
 			// Exception: Entry point might still have connections to allow traversal
-			if id == g.entryPointAtomic.Load() {
+			if uint32(id) == g.entryPointAtomic.Load() {
 				continue
 			}
 
@@ -88,7 +89,7 @@ func TestCompact(t *testing.T) {
 				conns := h.getConnections(g, id, l)
 				for _, neighbor := range conns {
 					connCount++
-					if deleted[uint64(neighbor.ID)] {
+					if deleted[neighbor.ID] {
 						t.Errorf("Active node %d points to deleted node %d at level %d", id, neighbor.ID, l)
 					}
 				}

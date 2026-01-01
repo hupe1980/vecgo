@@ -36,7 +36,7 @@ func (w *WAL) encodeEntry(entry *Entry) error {
 	// Write vector/data/metadata for operations that carry payload.
 	if entry.Type == OpPrepareInsert || entry.Type == OpPrepareUpdate {
 		// Vector length (4 bytes)
-		vectorLen := uint32(len(entry.Vector))
+		vectorLen := uint32(len(entry.Vector)) //nolint:gosec
 		if err := binary.Write(w.writer, binary.LittleEndian, vectorLen); err != nil {
 			return err
 		}
@@ -50,7 +50,7 @@ func (w *WAL) encodeEntry(entry *Entry) error {
 		}
 
 		// Data length (4 bytes)
-		dataLen := uint32(len(entry.Data))
+		dataLen := uint32(len(entry.Data)) //nolint:gosec
 		if err := binary.Write(w.writer, binary.LittleEndian, dataLen); err != nil {
 			return err
 		}
@@ -71,7 +71,7 @@ func (w *WAL) encodeEntry(entry *Entry) error {
 			}
 			metadataBytes = b
 		}
-		metadataLen := uint32(len(metadataBytes))
+		metadataLen := uint32(len(metadataBytes)) //nolint:gosec
 		if err := binary.Write(w.writer, binary.LittleEndian, metadataLen); err != nil {
 			return err
 		}

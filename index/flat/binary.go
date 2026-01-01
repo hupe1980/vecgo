@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/internal/bitset"
 	"github.com/hupe1980/vecgo/persistence"
@@ -79,7 +80,7 @@ func (f *Flat) WriteTo(w io.Writer) (int64, error) {
 	// Write file header
 	// Count active nodes (total - deleted)
 	activeCount := 0
-	for i := uint64(0); i < maxID; i++ {
+	for i := uint32(0); i < maxID; i++ {
 		if !f.deleted.Test(i) {
 			activeCount++
 		}
@@ -114,7 +115,7 @@ func (f *Flat) WriteTo(w io.Writer) (int64, error) {
 	}
 
 	// Write node count (maxID)
-	binary.LittleEndian.PutUint64(buf8, maxID)
+	binary.LittleEndian.PutUint64(buf8, uint64(maxID))
 	if _, err := cw.Write(buf8); err != nil {
 		return cw.n, err
 	}
@@ -123,7 +124,7 @@ func (f *Flat) WriteTo(w io.Writer) (int64, error) {
 	// For simplicity and alignment, we use 1 byte per node for now.
 	// 0 = nil (deleted), 1 = valid.
 	markers := make([]byte, maxID)
-	for i := uint64(0); i < maxID; i++ {
+	for i := uint32(0); i < maxID; i++ {
 		if !f.deleted.Test(i) {
 			markers[i] = 1
 		}
@@ -142,14 +143,14 @@ func (f *Flat) WriteTo(w io.Writer) (int64, error) {
 
 	// Write Vectors (Contiguous)
 	zeroVec := make([]float32, f.opts.Dimension)
-	for i := uint64(0); i < maxID; i++ {
+	for i := uint32(0); i < maxID; i++ {
 		if f.deleted.Test(i) {
 			if err := writer.WriteFloat32Slice(zeroVec); err != nil {
 				return cw.n, err
 			}
 			continue
 		}
-		vec, err := f.VectorByID(context.Background(), i)
+		vec, err := f.VectorByID(context.Background(), core.LocalID(i))
 		if err != nil {
 			return cw.n, err
 		}
@@ -258,7 +259,7 @@ func (f *Flat) ReadFromWithOptions(r io.Reader, opts Options) error {
 	}
 
 	// Initialize state
-	f.maxID.Store(nodeCount)
+	f.maxID.Store(uint32(nodeCount))
 	// Ensure deleted bitset is large enough
 	// We can't easily resize bitset if it's fixed size?
 	// bitset.New(size) creates a bitset.
@@ -281,7 +282,7 @@ func (f *Flat) ReadFromWithOptions(r io.Reader, opts Options) error {
 		}
 
 		if markers[i] == 0 {
-			f.deleted.Set(i)
+			f.deleted.Set(uint32(i))
 			continue
 		}
 
@@ -289,7 +290,7 @@ func (f *Flat) ReadFromWithOptions(r io.Reader, opts Options) error {
 		vecCopy := make([]float32, vecSize)
 		copy(vecCopy, vec)
 
-		if err := f.vectors.SetVector(i, vecCopy); err != nil {
+		if err := f.vectors.SetVector(core.LocalID(i), vecCopy); err != nil {
 			return fmt.Errorf("failed to store node vector: %w", err)
 		}
 	}

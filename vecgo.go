@@ -128,7 +128,6 @@ import (
 	"github.com/hupe1980/vecgo/index/flat"
 	"github.com/hupe1980/vecgo/index/hnsw"
 	"github.com/hupe1980/vecgo/metadata"
-	"github.com/hupe1980/vecgo/searcher"
 	"github.com/hupe1980/vecgo/wal"
 )
 
@@ -737,7 +736,11 @@ func (vg *Vecgo[T]) Update(ctx context.Context, id uint64, item VectorWithData[T
 
 // SearchResult represents a search result.
 type SearchResult[T any] struct {
-	index.SearchResult
+	// ID is the global identifier of the search result.
+	ID uint64
+
+	// Distance is the distance between the query vector and the result vector.
+	Distance float32
 
 	// Data is the associated data of the search result.
 	Data T
@@ -783,7 +786,7 @@ func (vg *Vecgo[T]) KNNSearch(ctx context.Context, query []float32, k int, optFn
 	}
 
 	// Create SearchOptions for the coordinator
-	searchOpts := &index.SearchOptions{EFSearch: opts.EF}
+	searchOpts := &engine.SearchOptions{EFSearch: opts.EF}
 	if opts.FilterFunc != nil {
 		searchOpts.Filter = opts.FilterFunc
 	}
@@ -803,22 +806,63 @@ func (vg *Vecgo[T]) KNNSearch(ctx context.Context, query []float32, k int, optFn
 	return results, nil
 }
 
-// KNNSearchWithContext performs a K-nearest neighbor search using the provided Searcher context.
-// The results are stored in s.Candidates (MaxHeap).
-func (vg *Vecgo[T]) KNNSearchWithContext(ctx context.Context, query []float32, k int, s *searcher.Searcher, optFns ...func(o *KNNSearchOptions)) error {
+// KNNSearchWithBuffer performs a K-nearest neighbor search and appends results to the provided buffer.
+func (vg *Vecgo[T]) KNNSearchWithBuffer(ctx context.Context, query []float32, k int, buf *[]SearchResult[T], optFns ...func(o *KNNSearchOptions)) error {
+	start := time.Now()
 	opts := KNNSearchOptions{
-		EF: 0, // Use index default
+		EF:         0, // 0 means use index default (HNSW.EF)
+		FilterFunc: nil,
 	}
+
 	for _, fn := range optFns {
 		fn(&opts)
 	}
 
-	searchOpts := &index.SearchOptions{
-		EFSearch: opts.EF,
-		Filter:   opts.FilterFunc,
+	// EF=0 means use index default, only validate if explicitly set
+	if opts.EF > 0 && opts.EF < k {
+		vg.metrics.RecordSearch(k, time.Since(start), ErrInvalidEFValue)
+		vg.logger.LogSearch(ctx, k, 0, ErrInvalidEFValue)
+		return ErrInvalidEFValue
 	}
 
-	return vg.coordinator.KNNSearchWithContext(ctx, query, k, searchOpts, s)
+	// Create SearchOptions for the coordinator
+	searchOpts := &engine.SearchOptions{EFSearch: opts.EF}
+	if opts.FilterFunc != nil {
+		searchOpts.Filter = opts.FilterFunc
+	}
+
+	// Use a temporary buffer for index results
+	var indexResults []engine.SearchResult
+	err := vg.coordinator.KNNSearchWithBuffer(ctx, query, k, searchOpts, &indexResults)
+	if err != nil {
+		err = translateError(err)
+		vg.metrics.RecordSearch(k, time.Since(start), err)
+		vg.logger.LogSearch(ctx, k, 0, err)
+		return err
+	}
+
+	// Enrich and append to user buffer
+	// Note: We can't easily avoid allocation here for Data/Metadata unless we have a way to
+	// fetch them into a buffer too. But SearchResult[T] contains T which might be a pointer or struct.
+	// We just append to the provided slice.
+	for _, item := range indexResults {
+		res := SearchResult[T]{
+			ID:       item.ID,
+			Distance: item.Distance,
+		}
+		if data, ok := vg.coordinator.Get(item.ID); ok {
+			res.Data = data
+		}
+		if meta, ok := vg.coordinator.GetMetadata(item.ID); ok {
+			res.Metadata = meta
+		}
+		*buf = append(*buf, res)
+	}
+
+	duration := time.Since(start)
+	vg.metrics.RecordSearch(k, duration, nil)
+	vg.logger.LogSearch(ctx, k, len(indexResults), nil)
+	return nil
 }
 
 // KNNSearchStream returns an iterator over K-nearest neighbor search results.
@@ -860,7 +904,7 @@ func (vg *Vecgo[T]) KNNSearchStream(ctx context.Context, query []float32, k int,
 		}
 
 		// Create SearchOptions for the coordinator
-		searchOpts := &index.SearchOptions{EFSearch: opts.EF}
+		searchOpts := &engine.SearchOptions{EFSearch: opts.EF}
 		if opts.FilterFunc != nil {
 			searchOpts.Filter = opts.FilterFunc
 		}
@@ -878,7 +922,8 @@ func (vg *Vecgo[T]) KNNSearchStream(ctx context.Context, query []float32, k int,
 
 			// Enrich with data and metadata
 			result := SearchResult[T]{
-				SearchResult: indexResult,
+				ID:       indexResult.ID,
+				Distance: indexResult.Distance,
 			}
 
 			if data, ok := vg.coordinator.Get(indexResult.ID); ok {
@@ -972,7 +1017,7 @@ func (vg *Vecgo[T]) HybridSearch(ctx context.Context, query []float32, k int, op
 }
 
 // extractSearchResults extracts search results from a priority queue.
-func (vg *Vecgo[T]) extractSearchResults(bestCandidates []index.SearchResult) []SearchResult[T] {
+func (vg *Vecgo[T]) extractSearchResults(bestCandidates []engine.SearchResult) []SearchResult[T] {
 	result := make([]SearchResult[T], 0, len(bestCandidates))
 
 	for _, item := range bestCandidates {
@@ -986,10 +1031,8 @@ func (vg *Vecgo[T]) extractSearchResults(bestCandidates []index.SearchResult) []
 		meta, _ := vg.coordinator.GetMetadata(item.ID)
 
 		result = append(result, SearchResult[T]{
-			SearchResult: index.SearchResult{
-				ID:       item.ID,
-				Distance: item.Distance,
-			},
+			ID:       item.ID,
+			Distance: item.Distance,
 			Data:     data,
 			Metadata: meta,
 		})

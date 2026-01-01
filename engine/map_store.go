@@ -2,129 +2,117 @@ package engine
 
 import (
 	"iter"
-	"maps"
 	"sync"
+
+	"github.com/hupe1980/vecgo/core"
 )
 
-// MapStore is an in-memory implementation of Store using a Go map.
-// It's suitable for datasets that fit in memory and provides fast O(1) access.
+// MapStore is a simple in-memory implementation of the Store interface using a Go map.
+// It is thread-safe.
 type MapStore[T any] struct {
 	mu   sync.RWMutex
-	data map[uint64]T
+	data map[core.LocalID]T
 }
 
-// NewMapStore creates a new in-memory map-based store.
+// NewMapStore creates a new MapStore.
 func NewMapStore[T any]() *MapStore[T] {
 	return &MapStore[T]{
-		data: make(map[uint64]T),
+		data: make(map[core.LocalID]T),
 	}
 }
 
 // Get retrieves the data associated with the given ID.
-func (m *MapStore[T]) Get(id uint64) (T, bool) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	v, ok := m.data[id]
-	return v, ok
+func (s *MapStore[T]) Get(id core.LocalID) (T, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	val, ok := s.data[id]
+	return val, ok
 }
 
 // Set stores data associated with the given ID.
-func (m *MapStore[T]) Set(id uint64, data T) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	m.data[id] = data
+func (s *MapStore[T]) Set(id core.LocalID, data T) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.data[id] = data
 	return nil
 }
 
 // Delete removes the data associated with the given ID.
-func (m *MapStore[T]) Delete(id uint64) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if _, ok := m.data[id]; !ok {
+func (s *MapStore[T]) Delete(id core.LocalID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.data[id]; !ok {
 		return ErrNotFound
 	}
-
-	delete(m.data, id)
+	delete(s.data, id)
 	return nil
 }
 
-// BatchGet retrieves data for multiple IDs in a single operation.
-func (m *MapStore[T]) BatchGet(ids []uint64) (map[uint64]T, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	result := make(map[uint64]T, len(ids))
+// BatchGet retrieves data for multiple IDs.
+func (s *MapStore[T]) BatchGet(ids []core.LocalID) (map[core.LocalID]T, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make(map[core.LocalID]T, len(ids))
 	for _, id := range ids {
-		if data, ok := m.data[id]; ok {
-			result[id] = data
+		if val, ok := s.data[id]; ok {
+			result[id] = val
 		}
 	}
-
 	return result, nil
 }
 
-// BatchSet stores multiple id -> data pairs in a single operation.
-func (m *MapStore[T]) BatchSet(items map[uint64]T) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
+// BatchSet stores multiple id -> data pairs.
+func (s *MapStore[T]) BatchSet(items map[core.LocalID]T) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for id, data := range items {
-		m.data[id] = data
+		s.data[id] = data
 	}
-
 	return nil
 }
 
-// BatchDelete removes data for multiple IDs in a single operation.
-func (m *MapStore[T]) BatchDelete(ids []uint64) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
+// BatchDelete removes data for multiple IDs.
+func (s *MapStore[T]) BatchDelete(ids []core.LocalID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for _, id := range ids {
-		delete(m.data, id)
+		delete(s.data, id)
 	}
-
 	return nil
 }
 
 // Len returns the number of items currently stored.
-func (m *MapStore[T]) Len() int {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	return len(m.data)
+func (s *MapStore[T]) Len() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.data)
 }
 
 // Clear removes all items from the store.
-func (m *MapStore[T]) Clear() error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	m.data = make(map[uint64]T)
+func (s *MapStore[T]) Clear() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.data = make(map[core.LocalID]T)
 	return nil
 }
 
-// ToMap returns a copy of all data as a map (for serialization).
-func (m *MapStore[T]) ToMap() map[uint64]T {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	result := make(map[uint64]T, len(m.data))
-	maps.Copy(result, m.data)
-
+// ToMap returns a copy of all data as a map.
+func (s *MapStore[T]) ToMap() map[core.LocalID]T {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make(map[core.LocalID]T, len(s.data))
+	for k, v := range s.data {
+		result[k] = v
+	}
 	return result
 }
 
 // All returns an iterator over all items in the store.
-func (m *MapStore[T]) All() iter.Seq2[uint64, T] {
-	return func(yield func(uint64, T) bool) {
-		m.mu.RLock()
-		defer m.mu.RUnlock()
-
-		for k, v := range m.data {
+func (s *MapStore[T]) All() iter.Seq2[core.LocalID, T] {
+	return func(yield func(core.LocalID, T) bool) {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		for k, v := range s.data {
 			if !yield(k, v) {
 				return
 			}

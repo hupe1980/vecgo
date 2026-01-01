@@ -4,108 +4,83 @@ import (
 	"iter"
 
 	"github.com/RoaringBitmap/roaring/v2"
+	"github.com/hupe1980/vecgo/core"
 )
 
-// Bitmap implements a 32-bit Roaring Bitmap.
+// LocalBitmap implements a 32-bit Roaring Bitmap.
 // It wraps the official roaring implementation.
-// Note: We use 32-bit bitmaps because LocalIDs are uint32.
-type Bitmap struct {
+// Used for internal shard filtering (LocalID).
+type LocalBitmap struct {
 	rb *roaring.Bitmap
 }
 
-// NewBitmap creates a new empty bitmap.
-func NewBitmap() *Bitmap {
-	return &Bitmap{
+// NewLocalBitmap creates a new empty local bitmap.
+func NewLocalBitmap() *LocalBitmap {
+	return &LocalBitmap{
 		rb: roaring.New(),
 	}
 }
 
-// Add adds an ID to the bitmap.
-func (b *Bitmap) Add(id uint64) {
+// Add adds a LocalID to the bitmap.
+func (b *LocalBitmap) Add(id core.LocalID) {
 	b.rb.Add(uint32(id))
 }
 
-// Remove removes an ID from the bitmap.
-func (b *Bitmap) Remove(id uint64) {
+// Remove removes a LocalID from the bitmap.
+func (b *LocalBitmap) Remove(id core.LocalID) {
 	b.rb.Remove(uint32(id))
 }
 
-// Contains checks if an ID is in the bitmap.
-func (b *Bitmap) Contains(id uint64) bool {
+// Contains checks if a LocalID is in the bitmap.
+func (b *LocalBitmap) Contains(id core.LocalID) bool {
 	return b.rb.Contains(uint32(id))
 }
 
 // IsEmpty returns true if the bitmap is empty.
-func (b *Bitmap) IsEmpty() bool {
+func (b *LocalBitmap) IsEmpty() bool {
 	return b.rb.IsEmpty()
 }
 
 // Cardinality returns the number of elements in the bitmap.
-func (b *Bitmap) Cardinality() uint64 {
+func (b *LocalBitmap) Cardinality() uint64 {
 	return b.rb.GetCardinality()
 }
 
 // Clone returns a deep copy of the bitmap.
-func (b *Bitmap) Clone() *Bitmap {
-	return &Bitmap{
+func (b *LocalBitmap) Clone() *LocalBitmap {
+	return &LocalBitmap{
 		rb: b.rb.Clone(),
 	}
 }
 
-// And computes the intersection of two bitmaps.
-// Returns a new bitmap.
-func (b *Bitmap) And(other *Bitmap) *Bitmap {
-	return &Bitmap{
-		rb: roaring.And(b.rb, other.rb),
-	}
-}
-
-// Or computes the union of two bitmaps.
-// Returns a new bitmap.
-func (b *Bitmap) Or(other *Bitmap) *Bitmap {
-	return &Bitmap{
-		rb: roaring.Or(b.rb, other.rb),
-	}
-}
-
-// OrInPlace computes the union of two bitmaps in place.
-func (b *Bitmap) OrInPlace(other *Bitmap) {
-	b.rb.Or(other.rb)
-}
-
-// AndInPlace computes the intersection of two bitmaps in place.
-func (b *Bitmap) AndInPlace(other *Bitmap) {
-	b.rb.And(other.rb)
-}
-
-// Clear clears the bitmap.
-func (b *Bitmap) Clear() {
-	b.rb.Clear()
-}
-
-// Iterator returns an iterator over the IDs in the bitmap.
-func (b *Bitmap) Iterator() iter.Seq[uint64] {
-	return func(yield func(uint64) bool) {
+// Iterator returns an iterator over the bitmap.
+func (b *LocalBitmap) Iterator() iter.Seq[core.LocalID] {
+	return func(yield func(core.LocalID) bool) {
 		it := b.rb.Iterator()
 		for it.HasNext() {
-			if !yield(uint64(it.Next())) {
+			if !yield(core.LocalID(it.Next())) {
 				return
 			}
 		}
 	}
 }
 
-// ToArray returns the IDs as a slice.
-func (b *Bitmap) ToArray() []uint64 {
-	arr := b.rb.ToArray()
-	res := make([]uint64, len(arr))
-	for i, v := range arr {
-		res[i] = uint64(v)
-	}
-	return res
+// And computes the intersection of two bitmaps.
+func (b *LocalBitmap) And(other *LocalBitmap) {
+	b.rb.And(other.rb)
 }
 
-// GetSizeInBytes returns an estimate of the memory usage in bytes.
-func (b *Bitmap) GetSizeInBytes() uint64 {
+// Or computes the union of two bitmaps.
+func (b *LocalBitmap) Or(other *LocalBitmap) {
+	b.rb.Or(other.rb)
+}
+
+// Clear removes all elements from the bitmap.
+func (b *LocalBitmap) Clear() {
+	b.rb.Clear()
+}
+
+// GetSizeInBytes returns the size of the bitmap in bytes.
+func (b *LocalBitmap) GetSizeInBytes() uint64 {
 	return b.rb.GetSizeInBytes()
 }

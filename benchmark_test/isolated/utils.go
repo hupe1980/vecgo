@@ -9,7 +9,7 @@ import (
 func toTestUtilResults(results []index.SearchResult) []testutil.SearchResult {
 	out := make([]testutil.SearchResult, len(results))
 	for i, r := range results {
-		out[i] = testutil.SearchResult{ID: r.ID, Distance: r.Distance}
+		out[i] = testutil.SearchResult{ID: uint64(r.ID), Distance: r.Distance}
 	}
 	return out
 }

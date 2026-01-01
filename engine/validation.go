@@ -10,7 +10,6 @@ import (
 
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/metadata"
-	"github.com/hupe1980/vecgo/searcher"
 )
 
 // ValidationLimits defines bounds for input validation.
@@ -135,7 +134,7 @@ func (v *ValidatedCoordinator[T]) Delete(ctx context.Context, id uint64) error {
 }
 
 // KNNSearch validates query and k, then delegates to the inner coordinator.
-func (v *ValidatedCoordinator[T]) KNNSearch(ctx context.Context, query []float32, k int, opts *index.SearchOptions) ([]index.SearchResult, error) {
+func (v *ValidatedCoordinator[T]) KNNSearch(ctx context.Context, query []float32, k int, opts *SearchOptions) ([]SearchResult, error) {
 	if err := v.validateVector(query); err != nil {
 		return nil, err
 	}
@@ -149,7 +148,7 @@ func (v *ValidatedCoordinator[T]) KNNSearch(ctx context.Context, query []float32
 }
 
 // KNNSearchWithBuffer validates query and k, then delegates to the inner coordinator.
-func (v *ValidatedCoordinator[T]) KNNSearchWithBuffer(ctx context.Context, query []float32, k int, opts *index.SearchOptions, buf *[]index.SearchResult) error {
+func (v *ValidatedCoordinator[T]) KNNSearchWithBuffer(ctx context.Context, query []float32, k int, opts *SearchOptions, buf *[]SearchResult) error {
 	if err := v.validateVector(query); err != nil {
 		return err
 	}
@@ -162,22 +161,8 @@ func (v *ValidatedCoordinator[T]) KNNSearchWithBuffer(ctx context.Context, query
 	return v.inner.KNNSearchWithBuffer(ctx, query, k, opts, buf)
 }
 
-// KNNSearchWithContext validates query and k, then delegates to the inner coordinator.
-func (v *ValidatedCoordinator[T]) KNNSearchWithContext(ctx context.Context, query []float32, k int, opts *index.SearchOptions, s *searcher.Searcher) error {
-	if err := v.validateVector(query); err != nil {
-		return err
-	}
-	if k <= 0 {
-		return index.ErrInvalidK
-	}
-	if k > v.limits.MaxK {
-		return fmt.Errorf("k=%d exceeds limit %d", k, v.limits.MaxK)
-	}
-	return v.inner.KNNSearchWithContext(ctx, query, k, opts, s)
-}
-
 // BruteSearch validates query and k, then delegates to the inner coordinator.
-func (v *ValidatedCoordinator[T]) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint64) bool) ([]index.SearchResult, error) {
+func (v *ValidatedCoordinator[T]) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint64) bool) ([]SearchResult, error) {
 	if err := v.validateVector(query); err != nil {
 		return nil, err
 	}
@@ -259,7 +244,7 @@ func (v *ValidatedCoordinator[T]) SetCount(n int64) {
 }
 
 // HybridSearch validates input and delegates to the inner coordinator.
-func (v *ValidatedCoordinator[T]) HybridSearch(ctx context.Context, query []float32, k int, opts *HybridSearchOptions) ([]index.SearchResult, error) {
+func (v *ValidatedCoordinator[T]) HybridSearch(ctx context.Context, query []float32, k int, opts *HybridSearchOptions) ([]SearchResult, error) {
 	if err := v.validateVector(query); err != nil {
 		return nil, err
 	}
@@ -272,36 +257,22 @@ func (v *ValidatedCoordinator[T]) HybridSearch(ctx context.Context, query []floa
 	return v.inner.HybridSearch(ctx, query, k, opts)
 }
 
-// HybridSearchWithContext validates input and delegates to the inner coordinator.
-func (v *ValidatedCoordinator[T]) HybridSearchWithContext(ctx context.Context, query []float32, k int, opts *HybridSearchOptions, s *searcher.Searcher) ([]index.SearchResult, error) {
-	if err := v.validateVector(query); err != nil {
-		return nil, err
-	}
-	if k <= 0 {
-		return nil, index.ErrInvalidK
-	}
-	if k > v.limits.MaxK {
-		return nil, fmt.Errorf("k %d exceeds limit %d", k, v.limits.MaxK)
-	}
-	return v.inner.HybridSearchWithContext(ctx, query, k, opts, s)
-}
-
 // KNNSearchStream validates input and delegates to the inner coordinator.
-func (v *ValidatedCoordinator[T]) KNNSearchStream(ctx context.Context, query []float32, k int, opts *index.SearchOptions) iter.Seq2[index.SearchResult, error] {
+func (v *ValidatedCoordinator[T]) KNNSearchStream(ctx context.Context, query []float32, k int, opts *SearchOptions) iter.Seq2[SearchResult, error] {
 	// We can't easily return an error from the iterator setup, so we return an iterator that yields an error immediately if validation fails.
 	if err := v.validateVector(query); err != nil {
-		return func(yield func(index.SearchResult, error) bool) {
-			yield(index.SearchResult{}, err)
+		return func(yield func(SearchResult, error) bool) {
+			yield(SearchResult{}, err)
 		}
 	}
 	if k <= 0 {
-		return func(yield func(index.SearchResult, error) bool) {
-			yield(index.SearchResult{}, index.ErrInvalidK)
+		return func(yield func(SearchResult, error) bool) {
+			yield(SearchResult{}, index.ErrInvalidK)
 		}
 	}
 	if k > v.limits.MaxK {
-		return func(yield func(index.SearchResult, error) bool) {
-			yield(index.SearchResult{}, fmt.Errorf("k %d exceeds limit %d", k, v.limits.MaxK))
+		return func(yield func(SearchResult, error) bool) {
+			yield(SearchResult{}, fmt.Errorf("k %d exceeds limit %d", k, v.limits.MaxK))
 		}
 	}
 	return v.inner.KNNSearchStream(ctx, query, k, opts)

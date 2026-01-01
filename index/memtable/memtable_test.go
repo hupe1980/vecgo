@@ -3,6 +3,7 @@ package memtable
 import (
 	"testing"
 
+	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/distance"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -85,14 +86,14 @@ func TestMemTable_Search(t *testing.T) {
 	results := m.Search(query, 2, nil)
 
 	require.Len(t, results, 2)
-	assert.Equal(t, uint64(1), results[0].ID)
+	assert.Equal(t, uint32(1), results[0].ID)
 	assert.InDelta(t, 1.0, results[0].Distance, 0.001)
-	assert.Equal(t, uint64(2), results[1].ID)
+	assert.Equal(t, uint32(2), results[1].ID)
 	assert.InDelta(t, 4.0, results[1].Distance, 0.001)
 
 	// Verify ID 3 is not returned (deleted)
 	for _, res := range results {
-		assert.NotEqual(t, uint64(3), res.ID)
+		assert.NotEqual(t, uint32(3), res.ID)
 	}
 }
 
@@ -105,13 +106,13 @@ func TestMemTable_Search_Filter(t *testing.T) {
 	query := []float32{0.0, 0.0}
 
 	// Filter out ID 1
-	filter := func(id uint64) bool {
+	filter := func(id core.LocalID) bool {
 		return id != 1
 	}
 
 	results := m.Search(query, 10, filter)
 	require.Len(t, results, 1)
-	assert.Equal(t, uint64(2), results[0].ID)
+	assert.Equal(t, uint32(2), results[0].ID)
 }
 
 func TestMemTable_Flush(t *testing.T) {
@@ -127,7 +128,7 @@ func TestMemTable_Flush(t *testing.T) {
 	assert.Equal(t, 0, m.Size())
 
 	// Verify items
-	idMap := make(map[uint64]Item)
+	idMap := make(map[core.LocalID]Item)
 	for _, item := range items {
 		idMap[item.ID] = item
 	}

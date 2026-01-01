@@ -5,12 +5,12 @@ import (
 	"sync/atomic"
 	"unsafe"
 
+	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/internal/arena"
-	"github.com/hupe1980/vecgo/internal/core"
 )
 
 // NodeOffsetSegment is a fixed-size array of node offsets.
-type NodeOffsetSegment [nodeSegmentSize]atomic.Uint32
+type NodeOffsetSegment [nodeSegmentSize]atomic.Uint64
 
 // Neighbor represents a connection to another node with its distance.
 type Neighbor struct {
@@ -34,7 +34,7 @@ func NeighborFromUint64(v uint64) Neighbor {
 // Node is a view over the arena data.
 // It does not store data itself, but provides methods to access data in the arena.
 type Node struct {
-	Offset uint32
+	Offset uint64
 	Gen    uint32
 }
 
@@ -64,7 +64,7 @@ func (n Node) setLevel(a *arena.Arena, level int) {
 }
 
 // connectionBlockOffset calculates the offset of the connection block for the given layer.
-func (n Node) connectionBlockOffset(layer int, m, m0 int) uint32 {
+func (n Node) connectionBlockOffset(layer int, m, m0 int) uint64 {
 	// Base offset after Level
 	offset := n.Offset + 4
 
@@ -74,12 +74,12 @@ func (n Node) connectionBlockOffset(layer int, m, m0 int) uint32 {
 
 	// Skip layer 0
 	// Layer 0 size: 4 (count) + m0 * 8 (neighbors)
-	offset += 4 + uint32(m0)*8
+	offset += 4 + uint64(m0)*8
 
 	// Skip layers 1 to layer-1
 	// Each layer size: 4 (padding) + 4 (count) + m * 8 (neighbors)
 	if layer > 1 {
-		offset += uint32(layer-1) * (4 + 4 + uint32(m)*8)
+		offset += uint64(layer-1) * (4 + 4 + uint64(m)*8)
 	}
 
 	// Add padding for current layer to align neighbors to 8 bytes
@@ -107,7 +107,7 @@ func (n Node) GetConnectionsRaw(a *arena.Arena, layer int, m, m0 int) []uint64 {
 
 func (n Node) GetConnection(a *arena.Arena, layer int, index int, m, m0 int) Neighbor {
 	blockOffset := n.connectionBlockOffset(layer, m, m0)
-	neighborOffset := blockOffset + 4 + uint32(index)*8
+	neighborOffset := blockOffset + 4 + uint64(index)*8
 
 	ptr := a.GetSafe(arena.Ref{Gen: n.Gen, Offset: neighborOffset})
 	if ptr == nil {
@@ -120,7 +120,7 @@ func (n Node) SetConnection(a *arena.Arena, layer int, index int, neighbor Neigh
 	blockOffset := n.connectionBlockOffset(layer, m, m0)
 	// Neighbors start at offset + 4
 	// Index * 8
-	neighborOffset := blockOffset + 4 + uint32(index)*8
+	neighborOffset := blockOffset + 4 + uint64(index)*8
 
 	ptr := a.GetSafe(arena.Ref{Gen: n.Gen, Offset: neighborOffset})
 	if ptr == nil {

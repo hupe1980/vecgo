@@ -78,8 +78,8 @@ func BenchmarkDiskANN(b *testing.B) {
 				approx := make([]testutil.SearchResult, len(res))
 				for j, r := range res {
 					approx[j] = testutil.SearchResult{
-						ID:       r.SearchResult.ID,
-						Distance: r.SearchResult.Distance,
+						ID:       r.ID,
+						Distance: r.Distance,
 					}
 				}
 				recall := testutil.ComputeRecall(groundTruth, approx)

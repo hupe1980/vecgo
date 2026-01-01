@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/hupe1980/vecgo/codec"
+	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/metadata"
 	"github.com/hupe1980/vecgo/persistence"
@@ -98,12 +99,12 @@ func LoadFromFileMmapWithCodec[T any](filename string, c codec.Codec) (*Snapshot
 
 	dataStore := NewMapStore[T]()
 	for i := uint64(0); i < storeCount; i++ {
-		if len(storeBytes) < 12 { // ID (8) + Len (4)
+		if len(storeBytes) < 8 { // ID (4) + Len (4)
 			_ = mf.Close()
 			return nil, fmt.Errorf("truncated store entry header at index %d", i)
 		}
-		id := binary.LittleEndian.Uint64(storeBytes)
-		storeBytes = storeBytes[8:]
+		id := binary.LittleEndian.Uint32(storeBytes)
+		storeBytes = storeBytes[4:]
 
 		l := binary.LittleEndian.Uint32(storeBytes)
 		storeBytes = storeBytes[4:]
@@ -120,7 +121,7 @@ func LoadFromFileMmapWithCodec[T any](filename string, c codec.Codec) (*Snapshot
 			_ = mf.Close()
 			return nil, fmt.Errorf("failed to decode data for id %d: %w", id, err)
 		}
-		if err := dataStore.Set(id, val); err != nil {
+		if err := dataStore.Set(core.LocalID(id), val); err != nil {
 			_ = mf.Close()
 			return nil, fmt.Errorf("failed to set data for id %d: %w", id, err)
 		}
@@ -154,12 +155,12 @@ func LoadFromFileMmapWithCodec[T any](filename string, c codec.Codec) (*Snapshot
 
 	metadataStore := NewMapStore[metadata.Metadata]()
 	for i := uint64(0); i < metaCount; i++ {
-		if len(metadataBytes) < 12 { // ID (8) + Len (4)
+		if len(metadataBytes) < 8 { // ID (4) + Len (4)
 			_ = mf.Close()
 			return nil, fmt.Errorf("truncated metadata entry header at index %d", i)
 		}
-		id := binary.LittleEndian.Uint64(metadataBytes)
-		metadataBytes = metadataBytes[8:]
+		id := binary.LittleEndian.Uint32(metadataBytes)
+		metadataBytes = metadataBytes[4:]
 
 		l := binary.LittleEndian.Uint32(metadataBytes)
 		metadataBytes = metadataBytes[4:]
@@ -176,7 +177,7 @@ func LoadFromFileMmapWithCodec[T any](filename string, c codec.Codec) (*Snapshot
 			_ = mf.Close()
 			return nil, fmt.Errorf("failed to decode metadata for id %d: %w", id, err)
 		}
-		if err := metadataStore.Set(id, meta); err != nil {
+		if err := metadataStore.Set(core.LocalID(id), meta); err != nil {
 			_ = mf.Close()
 			return nil, fmt.Errorf("failed to set metadata for id %d: %w", id, err)
 		}

@@ -8,6 +8,7 @@ import (
 	"sort"
 	"testing"
 
+	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/distance"
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/index/diskann"
@@ -275,7 +276,7 @@ func TestHNSW_Recall(t *testing.T) {
 			for i, vec := range vectors {
 				id, err := h.Insert(ctx, vec)
 				require.NoError(t, err)
-				assert.Equal(t, uint64(i), id)
+				assert.Equal(t, core.LocalID(i), id)
 			}
 
 			// Create filter if needed
@@ -303,14 +304,14 @@ func TestHNSW_Recall(t *testing.T) {
 			for qi, query := range queries {
 				results, err := h.KNNSearch(ctx, query, cfg.K, &index.SearchOptions{
 					EFSearch: 200,
-					Filter:   filter,
+					Filter:   func(id core.LocalID) bool { return filter(uint64(id)) },
 				})
 				require.NoError(t, err)
 
 				// Extract IDs
 				predicted := make([]uint64, len(results))
 				for i, r := range results {
-					predicted[i] = r.ID
+					predicted[i] = uint64(r.ID)
 				}
 
 				// Compute metrics
@@ -373,13 +374,13 @@ func TestHNSW_RecallVsEF(t *testing.T) {
 		for qi, query := range queries {
 			results, err := h.KNNSearch(ctx, query, k, &index.SearchOptions{
 				EFSearch: ef,
-				Filter:   func(id uint64) bool { return true },
+				Filter:   func(id core.LocalID) bool { return true },
 			})
 			require.NoError(t, err)
 
 			predicted := make([]uint64, len(results))
 			for j, r := range results {
-				predicted[j] = r.ID
+				predicted[j] = uint64(r.ID)
 			}
 
 			totalRecall += computeRecall(predicted, groundTruth[qi].TopK, k)
@@ -422,19 +423,19 @@ func TestFlat_Recall(t *testing.T) {
 			for i, vec := range vectors {
 				id, err := f.Insert(ctx, vec)
 				require.NoError(t, err)
-				assert.Equal(t, uint64(i), id)
+				assert.Equal(t, core.LocalID(i), id)
 			}
 
 			totalRecall := 0.0
 			for qi, query := range queries {
 				results, err := f.KNNSearch(ctx, query, cfg.K, &index.SearchOptions{
-					Filter: func(id uint64) bool { return true },
+					Filter: func(id core.LocalID) bool { return true },
 				})
 				require.NoError(t, err)
 
 				predicted := make([]uint64, len(results))
 				for i, r := range results {
-					predicted[i] = r.ID
+					predicted[i] = uint64(r.ID)
 				}
 
 				recall := computeRecall(predicted, groundTruth[qi].TopK, cfg.K)
@@ -522,13 +523,13 @@ func TestDiskANN_Recall(t *testing.T) {
 			totalRecall1 := 0.0
 			for qi, query := range queries {
 				results, err := idx.KNNSearch(ctx, query, cfg.K, &index.SearchOptions{
-					Filter: func(id uint64) bool { return true },
+					Filter: func(id core.LocalID) bool { return true },
 				})
 				require.NoError(t, err)
 
 				predicted := make([]uint64, len(results))
 				for i, r := range results {
-					predicted[i] = r.ID
+					predicted[i] = uint64(r.ID)
 				}
 
 				recall := computeRecall(predicted, groundTruth[qi].TopK, cfg.K)
@@ -582,7 +583,7 @@ func TestHNSW_RecallAfterUpdates(t *testing.T) {
 	// Delete 20% of vectors
 	deleteIDs := make([]uint64, 0, numVectors/5)
 	for i := uint64(0); i < uint64(numVectors); i += 5 {
-		err := h.Delete(ctx, i)
+		err := h.Delete(ctx, core.LocalID(i))
 		require.NoError(t, err)
 		deleteIDs = append(deleteIDs, i)
 	}
@@ -605,13 +606,13 @@ func TestHNSW_RecallAfterUpdates(t *testing.T) {
 	for qi, query := range queries {
 		results, err := h.KNNSearch(ctx, query, k, &index.SearchOptions{
 			EFSearch: 200,
-			Filter:   filter,
+			Filter:   func(id core.LocalID) bool { return filter(uint64(id)) },
 		})
 		require.NoError(t, err)
 
 		predicted := make([]uint64, len(results))
 		for i, r := range results {
-			predicted[i] = r.ID
+			predicted[i] = uint64(r.ID)
 		}
 
 		recall := computeRecall(predicted, groundTruth[qi].TopK, k)
@@ -650,12 +651,12 @@ func TestHNSW_RecallAfterMixedOperations(t *testing.T) {
 	for _, vec := range vectors1 {
 		id, err := h.Insert(ctx, vec)
 		require.NoError(t, err)
-		allVectors[id] = vec
+		allVectors[uint64(id)] = vec
 	}
 
 	// Phase 2: Delete 100 vectors (IDs 0-99)
 	for i := uint64(0); i < 100; i++ {
-		err := h.Delete(ctx, i)
+		err := h.Delete(ctx, core.LocalID(i))
 		require.NoError(t, err)
 		delete(allVectors, i)
 	}
@@ -665,7 +666,7 @@ func TestHNSW_RecallAfterMixedOperations(t *testing.T) {
 	for _, vec := range vectors2 {
 		id, err := h.Insert(ctx, vec)
 		require.NoError(t, err)
-		allVectors[id] = vec
+		allVectors[uint64(id)] = vec
 	}
 
 	// Build ground truth from the actual current state
@@ -714,13 +715,13 @@ func TestHNSW_RecallAfterMixedOperations(t *testing.T) {
 		// Search
 		results, err := h.KNNSearch(ctx, query, k, &index.SearchOptions{
 			EFSearch: 200,
-			Filter:   func(id uint64) bool { return true },
+			Filter:   func(id core.LocalID) bool { return true },
 		})
 		require.NoError(t, err)
 
 		predicted := make([]uint64, len(results))
 		for i, r := range results {
-			predicted[i] = r.ID
+			predicted[i] = uint64(r.ID)
 		}
 
 		recall := computeRecall(predicted, gtTopK, k)
@@ -758,12 +759,12 @@ func TestRecall_EdgeCases(t *testing.T) {
 		require.NoError(t, err)
 
 		results, err := h.KNNSearch(ctx, vec, 10, &index.SearchOptions{
-			Filter: func(id uint64) bool { return true },
+			Filter: func(id core.LocalID) bool { return true },
 		})
 		require.NoError(t, err)
 
 		assert.Len(t, results, 1)
-		assert.Equal(t, uint64(0), results[0].ID)
+		assert.Equal(t, uint32(0), results[0].ID)
 	})
 
 	t.Run("DuplicateVectors", func(t *testing.T) {
@@ -786,7 +787,7 @@ func TestRecall_EdgeCases(t *testing.T) {
 		}
 
 		results, err := h.KNNSearch(ctx, vec, 5, &index.SearchOptions{
-			Filter: func(id uint64) bool { return true },
+			Filter: func(id core.LocalID) bool { return true },
 		})
 		require.NoError(t, err)
 
@@ -816,7 +817,7 @@ func TestRecall_EdgeCases(t *testing.T) {
 		// Search with zero vector
 		zeroVec := make([]float32, 64)
 		results, err := h.KNNSearch(ctx, zeroVec, 10, &index.SearchOptions{
-			Filter: func(id uint64) bool { return true },
+			Filter: func(id core.LocalID) bool { return true },
 		})
 		require.NoError(t, err)
 
@@ -840,7 +841,7 @@ func TestRecall_EdgeCases(t *testing.T) {
 
 		query := rng.UniformVectors(1, 64)[0]
 		results, err := h.KNNSearch(ctx, query, 100, &index.SearchOptions{
-			Filter: func(id uint64) bool { return true },
+			Filter: func(id core.LocalID) bool { return true },
 		})
 		require.NoError(t, err)
 
@@ -976,12 +977,12 @@ func computeIndexMetrics(ctx context.Context, h *hnsw.HNSW, queries [][]float32,
 	for qi, query := range queries {
 		results, _ := h.KNNSearch(ctx, query, k, &index.SearchOptions{
 			EFSearch: ef,
-			Filter:   func(id uint64) bool { return true },
+			Filter:   func(id core.LocalID) bool { return true },
 		})
 
 		predicted := make([]uint64, len(results))
 		for i, r := range results {
-			predicted[i] = r.ID
+			predicted[i] = uint64(r.ID)
 		}
 
 		totalRecall += computeRecall(predicted, gt[qi].TopK, k)
@@ -1002,12 +1003,12 @@ func computeFlatMetrics(ctx context.Context, f *flat.Flat, queries [][]float32, 
 
 	for qi, query := range queries {
 		results, _ := f.KNNSearch(ctx, query, k, &index.SearchOptions{
-			Filter: func(id uint64) bool { return true },
+			Filter: func(id core.LocalID) bool { return true },
 		})
 
 		predicted := make([]uint64, len(results))
 		for i, r := range results {
-			predicted[i] = r.ID
+			predicted[i] = uint64(r.ID)
 		}
 
 		totalRecall += computeRecall(predicted, gt[qi].TopK, k)

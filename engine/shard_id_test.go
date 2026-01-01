@@ -3,59 +3,45 @@ package engine
 import (
 	"testing"
 
+	"github.com/hupe1980/vecgo/core"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestGlobalID_RoundTrip(t *testing.T) {
 	tests := []struct {
-		shardIdx int
-		localID  uint64
+		shardIdx uint32
+		localID  core.LocalID
 	}{
 		{0, 0},
 		{0, 1},
 		{1, 0},
 		{1, 42},
-		{255, 0},              // Max shard
-		{0, MaxLocalID - 1},   // Max local ID
-		{255, MaxLocalID - 1}, // Max both
-		{127, 1000000},        // Middle range
+		{255, 0},                   // Max shard
+		{0, core.MaxLocalID - 1},   // Max local ID
+		{255, core.MaxLocalID - 1}, // Max both
+		{127, 1000000},             // Middle range
 	}
 
 	for _, tt := range tests {
 		gid := NewGlobalID(tt.shardIdx, tt.localID)
-		assert.Equal(t, tt.shardIdx, gid.ShardIndex(), "shard mismatch for gid=%d", gid)
+		assert.Equal(t, tt.shardIdx, gid.ShardID(), "shard mismatch for gid=%d", gid)
 		assert.Equal(t, tt.localID, gid.LocalID(), "local ID mismatch for gid=%d", gid)
 	}
 }
 
-func TestGlobalID_Overflow(t *testing.T) {
-	// Local ID should be masked to 56 bits
-	gid := NewGlobalID(0, 0xFFFFFFFFFFFFFFFF)
-	assert.Equal(t, uint64(0xFFFFFFFFFFFFFF), gid.LocalID())
-	assert.Equal(t, 0, gid.ShardIndex())
-}
-
-func TestGlobalID_IsValid(t *testing.T) {
-	gid := NewGlobalID(5, 100)
-	assert.True(t, gid.IsValid(10))
-	assert.True(t, gid.IsValid(6))
-	assert.False(t, gid.IsValid(5))
-	assert.False(t, gid.IsValid(1))
-}
-
 func TestGlobalID_BitLayout(t *testing.T) {
-	// Verify exact bit layout: [ShardID:8][LocalID:56]
+	// Verify exact bit layout: [ShardID:32][LocalID:32]
 	gid := NewGlobalID(1, 0x42)
-	assert.Equal(t, GlobalID(0x0100000000000042), gid)
+	assert.Equal(t, GlobalID(0x0000000100000042), gid)
 
 	gid2 := NewGlobalID(0xFF, 0xABCDEF)
-	assert.Equal(t, GlobalID(0xFF00000000ABCDEF), gid2)
+	assert.Equal(t, GlobalID(0x000000FF00ABCDEF), gid2)
 }
 
 func BenchmarkGlobalID_Encode(b *testing.B) {
 	var i int
 	for b.Loop() {
-		_ = NewGlobalID(i%256, uint64(i))
+		_ = NewGlobalID(uint32(i%256), core.LocalID(i))
 		i++
 	}
 }
@@ -63,7 +49,7 @@ func BenchmarkGlobalID_Encode(b *testing.B) {
 func BenchmarkGlobalID_Decode(b *testing.B) {
 	gid := NewGlobalID(127, 1000000)
 	for b.Loop() {
-		_ = gid.ShardIndex()
+		_ = gid.ShardID()
 		_ = gid.LocalID()
 	}
 }

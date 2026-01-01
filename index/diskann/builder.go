@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/persistence"
 	"github.com/hupe1980/vecgo/quantization"
@@ -114,12 +115,12 @@ type Builder struct {
 
 	// In-memory data during construction
 	vectors    [][]float32 // All vectors (temporary)
-	graph      [][]uint64  // Adjacency lists
+	graph      [][]uint32  // Adjacency lists
 	pq         *quantization.ProductQuantizer
 	pqCodes    [][]byte // PQ codes for all vectors
 	bq         *quantization.BinaryQuantizer
 	bqCodes    [][]uint64 // BQ codes (uint64 words) for all vectors (optional)
-	entryPoint uint64     // Entry point for search
+	entryPoint uint32     // Entry point for search
 
 	mu sync.Mutex
 }
@@ -160,12 +161,12 @@ func NewBuilder(dim int, distType index.DistanceType, indexPath string, opts *Op
 		distFunc:  index.NewDistanceFunc(distType),
 		indexPath: indexPath,
 		vectors:   make([][]float32, 0, 10000),
-		graph:     make([][]uint64, 0, 10000),
+		graph:     make([][]uint32, 0, 10000),
 	}, nil
 }
 
 // Add adds a single vector to the index.
-func (b *Builder) Add(vec []float32) (uint64, error) {
+func (b *Builder) Add(vec []float32) (core.LocalID, error) {
 	if len(vec) != b.dim {
 		return 0, &index.ErrDimensionMismatch{Expected: b.dim, Actual: len(vec)}
 	}
@@ -173,7 +174,7 @@ func (b *Builder) Add(vec []float32) (uint64, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	id := uint64(len(b.vectors))
+	id := core.LocalID(len(b.vectors))
 
 	// Copy vector
 	v := make([]float32, len(vec))
@@ -181,14 +182,14 @@ func (b *Builder) Add(vec []float32) (uint64, error) {
 	b.vectors = append(b.vectors, v)
 
 	// Initialize empty adjacency list
-	b.graph = append(b.graph, make([]uint64, 0, b.opts.R))
+	b.graph = append(b.graph, make([]uint32, 0, b.opts.R))
 
 	return id, nil
 }
 
 // AddBatch adds multiple vectors to the index.
-func (b *Builder) AddBatch(vectors [][]float32) ([]uint64, error) {
-	ids := make([]uint64, len(vectors))
+func (b *Builder) AddBatch(vectors [][]float32) ([]core.LocalID, error) {
+	ids := make([]core.LocalID, len(vectors))
 	for i, vec := range vectors {
 		id, err := b.Add(vec)
 		if err != nil {
@@ -276,14 +277,14 @@ func (b *Builder) buildVamanaGraph(ctx context.Context) error {
 	rng := rand.New(rand.NewSource(42))
 	for i := 0; i < n; i++ {
 		// Add R/2 random edges initially
-		edges := make(map[uint64]struct{})
+		edges := make(map[uint32]struct{})
 		for len(edges) < R/2 && len(edges) < n-1 {
-			j := uint64(rng.Intn(n))
-			if j != uint64(i) {
+			j := uint32(rng.Intn(n))
+			if j != uint32(i) {
 				edges[j] = struct{}{}
 			}
 		}
-		b.graph[i] = make([]uint64, 0, len(edges))
+		b.graph[i] = make([]uint32, 0, len(edges))
 		for j := range edges {
 			b.graph[i] = append(b.graph[i], j)
 		}
@@ -299,15 +300,15 @@ func (b *Builder) buildVamanaGraph(ctx context.Context) error {
 		}
 
 		// Greedy search from entry point to find neighbors
-		neighbors := b.greedySearch(uint64(i), L)
+		neighbors := b.greedySearch(uint32(i), L)
 
 		// Robust prune to select R neighbors
-		pruned := b.robustPrune(uint64(i), neighbors, R, alpha)
+		pruned := b.robustPrune(uint32(i), neighbors, R, alpha)
 		b.graph[i] = pruned
 
 		// Add reverse edges
 		for _, neighbor := range pruned {
-			b.addEdge(neighbor, uint64(i), R, alpha)
+			b.addEdge(neighbor, uint32(i), R, alpha)
 		}
 	}
 
@@ -315,7 +316,7 @@ func (b *Builder) buildVamanaGraph(ctx context.Context) error {
 }
 
 // selectEntryPoint finds a central node as the entry point.
-func (b *Builder) selectEntryPoint() uint64 {
+func (b *Builder) selectEntryPoint() uint32 {
 	n := len(b.vectors)
 	if n == 0 {
 		return 0
@@ -334,12 +335,12 @@ func (b *Builder) selectEntryPoint() uint64 {
 
 	// Find nearest vector to centroid
 	minDist := float32(math.MaxFloat32)
-	entry := uint64(0)
+	entry := uint32(0)
 	for i, vec := range b.vectors {
 		dist := b.distFunc(centroid, vec)
 		if dist < minDist {
 			minDist = dist
-			entry = uint64(i)
+			entry = uint32(i)
 		}
 	}
 
@@ -347,7 +348,7 @@ func (b *Builder) selectEntryPoint() uint64 {
 }
 
 // greedySearch performs greedy search from entry point to target.
-func (b *Builder) greedySearch(target uint64, L int) []uint64 {
+func (b *Builder) greedySearch(target uint32, L int) []uint32 {
 	targetVec := b.vectors[target]
 
 	// Min-heap for candidates
@@ -355,11 +356,11 @@ func (b *Builder) greedySearch(target uint64, L int) []uint64 {
 	heap.Init(candidates)
 
 	// Visited set
-	visited := make(map[uint64]bool)
+	visited := make(map[uint32]bool)
 
 	// Start from entry point
 	entryDist := b.distFunc(b.vectors[b.entryPoint], targetVec)
-	heap.Push(candidates, distNode{id: b.entryPoint, dist: entryDist})
+	candidates.PushNode(distNode{id: b.entryPoint, dist: entryDist})
 	visited[b.entryPoint] = true
 
 	// Result list (top L closest)
@@ -368,7 +369,7 @@ func (b *Builder) greedySearch(target uint64, L int) []uint64 {
 
 	for candidates.Len() > 0 {
 		// Pop closest candidate
-		curr := heap.Pop(candidates).(distNode)
+		curr := candidates.PopNode()
 
 		// Check if we've expanded enough
 		if len(result) >= L && curr.dist > result[L-1].dist {
@@ -383,7 +384,7 @@ func (b *Builder) greedySearch(target uint64, L int) []uint64 {
 			visited[neighbor] = true
 
 			dist := b.distFunc(b.vectors[neighbor], targetVec)
-			heap.Push(candidates, distNode{id: neighbor, dist: dist})
+			candidates.PushNode(distNode{id: neighbor, dist: dist})
 
 			// Add to result if close enough
 			result = append(result, distNode{id: neighbor, dist: dist})
@@ -402,7 +403,7 @@ func (b *Builder) greedySearch(target uint64, L int) []uint64 {
 		result = result[:L]
 	}
 
-	ids := make([]uint64, len(result))
+	ids := make([]uint32, len(result))
 	for i, r := range result {
 		ids[i] = r.id
 	}
@@ -410,12 +411,12 @@ func (b *Builder) greedySearch(target uint64, L int) []uint64 {
 }
 
 // robustPrune implements the Vamana robust pruning algorithm.
-func (b *Builder) robustPrune(node uint64, candidates []uint64, R int, alpha float32) []uint64 {
+func (b *Builder) robustPrune(node uint32, candidates []uint32, R int, alpha float32) []uint32 {
 	nodeVec := b.vectors[node]
 
 	// Compute distances to all candidates
 	type candidate struct {
-		id   uint64
+		id   uint32
 		dist float32
 	}
 	cands := make([]candidate, 0, len(candidates))
@@ -437,7 +438,7 @@ func (b *Builder) robustPrune(node uint64, candidates []uint64, R int, alpha flo
 	}
 
 	// Greedy selection with diversity
-	selected := make([]uint64, 0, R)
+	selected := make([]uint32, 0, R)
 	for _, c := range cands {
 		if len(selected) >= R {
 			break
@@ -462,7 +463,7 @@ func (b *Builder) robustPrune(node uint64, candidates []uint64, R int, alpha flo
 }
 
 // addEdge adds an edge from src to dst, pruning if necessary.
-func (b *Builder) addEdge(src, dst uint64, R int, alpha float32) {
+func (b *Builder) addEdge(src, dst uint32, R int, alpha float32) {
 	// Check if edge already exists
 	for _, neighbor := range b.graph[src] {
 		if neighbor == dst {
@@ -475,7 +476,7 @@ func (b *Builder) addEdge(src, dst uint64, R int, alpha float32) {
 
 	// Prune if over capacity
 	if len(b.graph[src]) > R {
-		candidates := make([]uint64, len(b.graph[src]))
+		candidates := make([]uint32, len(b.graph[src]))
 		copy(candidates, b.graph[src])
 		b.graph[src] = b.robustPrune(src, candidates, R, alpha)
 	}
@@ -521,7 +522,7 @@ func (b *Builder) writeMetaToWriter(w io.Writer) error {
 	}
 
 	// Write entry point
-	if err := writeUint64ToWriter(w, b.entryPoint); err != nil {
+	if err := writeUint32ToWriter(w, b.entryPoint); err != nil {
 		return err
 	}
 
@@ -571,7 +572,7 @@ func (b *Builder) writeGraphToWriter(w io.Writer) error {
 		}
 		// Write neighbors
 		for _, neighbor := range neighbors {
-			if err := writeUint64ToWriter(w, neighbor); err != nil {
+			if err := writeUint32ToWriter(w, neighbor); err != nil {
 				return err
 			}
 		}
@@ -640,7 +641,7 @@ func (b *Builder) writeVectorsFile() error {
 
 // distNode is a node with distance for heap operations.
 type distNode struct {
-	id   uint64
+	id   uint32
 	dist float32
 }
 
@@ -661,6 +662,52 @@ func (h *distHeap) Pop() interface{} {
 	x := old[n-1]
 	*h = old[:n-1]
 	return x
+}
+
+func (h *distHeap) PushNode(n distNode) {
+	*h = append(*h, n)
+	h.up(len(*h) - 1)
+}
+
+func (h *distHeap) PopNode() distNode {
+	old := *h
+	n := len(old)
+	h.Swap(0, n-1)
+	x := old[n-1]
+	*h = old[:n-1]
+	h.down(0, len(*h))
+	return x
+}
+
+func (h *distHeap) up(j int) {
+	for {
+		i := (j - 1) / 2 // parent
+		if i == j || !h.Less(j, i) {
+			break
+		}
+		h.Swap(i, j)
+		j = i
+	}
+}
+
+func (h *distHeap) down(i0, n int) bool {
+	i := i0
+	for {
+		j1 := 2*i + 1
+		if j1 >= n || j1 < 0 { // j1 < 0 after int overflow
+			break
+		}
+		j := j1 // left child
+		if j2 := j1 + 1; j2 < n && h.Less(j2, j1) {
+			j = j2 // = 2*i + 2  // right child
+		}
+		if !h.Less(j, i) {
+			break
+		}
+		h.Swap(i, j)
+		i = j
+	}
+	return i > i0
 }
 
 // sortDistNodes sorts distance nodes by distance (ascending).

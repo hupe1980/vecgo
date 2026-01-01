@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/metadata"
 )
 
@@ -47,7 +48,7 @@ func FuzzWALEntry(f *testing.F) {
 		}
 
 		// Write entry
-		if err := wal.LogInsert(id, []float32{v1, v2}, data, meta); err != nil {
+		if err := wal.LogInsert(core.LocalID(id), []float32{v1, v2}, data, meta); err != nil {
 			// If metadata was invalid (e.g. KindInvalid from zero-value unmarshal), this is expected.
 			if err.Error() == "failed to encode WAL prepare entry: unknown metadata kind" {
 				_ = wal.Close()
@@ -72,7 +73,7 @@ func FuzzWALEntry(f *testing.F) {
 
 		// Replay committed operations
 		var readOps []struct {
-			id     uint64
+			id     core.LocalID
 			vector []float32
 			data   []byte
 		}
@@ -80,7 +81,7 @@ func FuzzWALEntry(f *testing.F) {
 		if err := walRead.ReplayCommitted(func(entry Entry) error {
 			if entry.Type == OpInsert {
 				readOps = append(readOps, struct {
-					id     uint64
+					id     core.LocalID
 					vector []float32
 					data   []byte
 				}{entry.ID, entry.Vector, entry.Data})
@@ -96,7 +97,7 @@ func FuzzWALEntry(f *testing.F) {
 
 		// Verify the data matches
 		readOp := readOps[0]
-		if readOp.id != id {
+		if readOp.id != core.LocalID(id) {
 			t.Errorf("ID mismatch: got %v, want %v", readOp.id, id)
 		}
 		if len(readOp.vector) != 2 || readOp.vector[0] != v1 || readOp.vector[1] != v2 {
@@ -186,7 +187,7 @@ func FuzzWALMultipleOperations(f *testing.F) {
 		// Write multiple operations
 		for i := uint8(0); i < opCount; i++ {
 			if err := wal.LogInsert(
-				baseID+uint64(i),
+				core.LocalID(baseID+uint64(i)),
 				[]float32{float32(i), float32(i + 1)},
 				[]byte{byte(i)},
 				nil,

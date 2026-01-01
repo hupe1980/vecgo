@@ -13,7 +13,7 @@ func (f *Flat) Stats() index.Stats {
 
 	// Count active nodes
 	deletedNodes := 0
-	for i := uint64(0); i < maxID; i++ {
+	for i := uint32(0); i < maxID; i++ {
 		if f.deleted.Test(i) {
 			deletedNodes++
 		}

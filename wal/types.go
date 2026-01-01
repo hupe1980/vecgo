@@ -3,6 +3,7 @@ package wal
 import (
 	"time"
 
+	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/metadata"
 )
 
@@ -51,7 +52,7 @@ const (
 // Entry represents a single entry in the WAL.
 type Entry struct {
 	Type     OperationType
-	ID       uint64
+	ID       core.LocalID
 	Vector   []float32
 	Data     []byte // Serialized user data
 	Metadata metadata.Metadata

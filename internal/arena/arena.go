@@ -41,7 +41,7 @@ var (
 const (
 	DefaultChunkSize = 1024 * 1024
 	DefaultAlignment = 8
-	MaxChunks        = 4096 // Limit to 4GB addressable space with uint32 offsets (assuming 1MB chunks)
+	MaxChunks        = 65536 // Limit to 64GB addressable space with 1MB chunks
 )
 
 // Stats tracks arena memory usage metrics.
@@ -65,7 +65,7 @@ type Stats struct {
 // It includes the generation ID to detect stale references.
 type Ref struct {
 	Gen    uint32
-	Offset uint32
+	Offset uint64
 }
 
 type atomicStats struct {
@@ -86,7 +86,7 @@ type chunk struct {
 type Arena struct {
 	chunkSize  int
 	chunkBits  int    // Power of 2 exponent for chunk size
-	chunkMask  uint32 // Mask for offset within chunk
+	chunkMask  uint64 // Mask for offset within chunk
 	alignment  int
 	chunks     [MaxChunks]atomic.Pointer[chunk] // Fixed-size array to avoid slice race conditions
 	chunkCount atomic.Uint32                    // Number of active chunks (protected by mu)
@@ -109,7 +109,7 @@ func New(chunkSize int) (*Arena, error) {
 	// Example: 1025 -> 1024 -> Len=11. 1<<11 = 2048. Correct.
 
 	chunkSize = 1 << chunkBits
-	chunkMask := uint32(chunkSize - 1)
+	chunkMask := uint64(chunkSize - 1)
 
 	a := &Arena{
 		chunkSize: chunkSize,
@@ -191,11 +191,11 @@ func (a *Arena) allocateChunk() error {
 
 // Alloc allocates memory and returns the global offset and the byte slice.
 // The global offset can be used with Get() to retrieve the pointer later.
-func (a *Arena) Alloc(size int) (uint32, []byte, error) {
+func (a *Arena) Alloc(size int) (uint64, []byte, error) {
 	return a.alloc(size, a.alignment)
 }
 
-func (a *Arena) alloc(size int, align int) (uint32, []byte, error) {
+func (a *Arena) alloc(size int, align int) (uint64, []byte, error) {
 	if size <= 0 {
 		return 0, nil, nil
 	}
@@ -221,10 +221,10 @@ func (a *Arena) alloc(size int, align int) (uint32, []byte, error) {
 				// Calculate global offset
 				// GlobalOffset = (ChunkIndex << ChunkBits) | ChunkOffset
 				// Ensure ChunkOffset fits in ChunkMask
-				if uint32(oldOffset) > a.chunkMask {
+				if uint64(oldOffset) > a.chunkMask {
 					return 0, nil, fmt.Errorf("arena: offset exceeds chunk mask")
 				}
-				globalOffset := (curr.index << a.chunkBits) | uint32(oldOffset)
+				globalOffset := (uint64(curr.index) << a.chunkBits) | uint64(oldOffset)
 				return globalOffset, curr.data[oldOffset:newOffset:newOffset], nil
 			}
 			continue
@@ -264,12 +264,12 @@ func (a *Arena) alloc(size int, align int) (uint32, []byte, error) {
 
 // Get returns an unsafe.Pointer to the memory at the given global offset.
 // It performs no bounds checking.
-func (a *Arena) Get(offset uint32) unsafe.Pointer {
+func (a *Arena) Get(offset uint64) unsafe.Pointer {
 	chunkIdx := offset >> a.chunkBits
 	chunkOffset := offset & a.chunkMask
 
 	// Bounds check
-	if chunkIdx >= a.chunkCount.Load() {
+	if chunkIdx >= uint64(a.chunkCount.Load()) {
 		panic("arena: stale offset")
 	}
 

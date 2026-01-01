@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/metadata"
 )
 
@@ -65,7 +66,7 @@ func TestWALReplay(t *testing.T) {
 	}
 
 	operations := []struct {
-		id     uint64
+		id     core.LocalID
 		vector []float32
 		data   string
 	}{
@@ -181,7 +182,7 @@ func TestWALCheckpoint(t *testing.T) {
 	defer wal.Close()
 
 	// Write some entries
-	for i := uint64(1); i <= 5; i++ {
+	for i := core.LocalID(1); i <= 5; i++ {
 		err := wal.LogInsert(i, []float32{float32(i)}, encodeData(t, "data"), nil)
 		if err != nil {
 			t.Fatalf("LogInsert failed: %v", err)
@@ -279,7 +280,7 @@ func TestWALSequenceNumbers(t *testing.T) {
 	defer wal.Close()
 
 	// Write entries and verify sequence numbers increase
-	for i := uint64(1); i <= 3; i++ {
+	for i := core.LocalID(1); i <= 3; i++ {
 		err := wal.LogInsert(i, []float32{float32(i)}, encodeData(t, "data"), nil)
 		if err != nil {
 			t.Fatalf("LogInsert failed: %v", err)
@@ -354,12 +355,12 @@ func TestWALCompression(t *testing.T) {
 			"type": metadata.String("document"),
 		}
 
-		err := walCompressed.LogInsert(uint64(i), vector, data, meta)
+		err := walCompressed.LogInsert(core.LocalID(i), vector, data, meta)
 		if err != nil {
 			t.Fatalf("Compressed LogInsert failed: %v", err)
 		}
 
-		err = walUncompressed.LogInsert(uint64(i), vector, data, meta)
+		err = walUncompressed.LogInsert(core.LocalID(i), vector, data, meta)
 		if err != nil {
 			t.Fatalf("Uncompressed LogInsert failed: %v", err)
 		}

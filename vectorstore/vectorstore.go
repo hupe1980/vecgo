@@ -4,7 +4,11 @@
 // vector memory owner, including snapshot/mmap load paths.
 package vectorstore
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/hupe1980/vecgo/core"
+)
 
 var (
 	// ErrWrongDimension is returned when a vector doesn't match the store dimension.
@@ -18,7 +22,7 @@ var (
 // implementation documents otherwise.
 type Store interface {
 	Dimension() int
-	GetVector(id uint64) ([]float32, bool)
-	SetVector(id uint64, v []float32) error
-	DeleteVector(id uint64) error
+	GetVector(id core.LocalID) ([]float32, bool)
+	SetVector(id core.LocalID, v []float32) error
+	DeleteVector(id core.LocalID) error
 }

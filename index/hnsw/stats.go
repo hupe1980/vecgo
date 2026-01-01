@@ -3,6 +3,7 @@ package hnsw
 import (
 	"fmt"
 
+	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/index"
 )
 
@@ -61,7 +62,7 @@ func (h *HNSW) Stats() index.Stats {
 				// Loop through each connection
 				for i2 := level; i2 >= 0; i2-- {
 					count := 0
-					conns := h.getConnections(g, id, i2)
+					conns := h.getConnections(g, core.LocalID(id), i2)
 					count = len(conns)
 
 					if count > 0 {

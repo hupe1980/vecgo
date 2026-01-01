@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/vectorstore/columnar"
 )
 
@@ -48,7 +49,7 @@ func main() {
 	// 4. Soft delete vectors
 	fmt.Println("\n4. Soft deleting vectors 100-199")
 	for i := uint64(100); i < 200; i++ {
-		if err := store.DeleteVector(i); err != nil {
+		if err := store.DeleteVector(core.LocalID(i)); err != nil {
 			log.Fatalf("DeleteVector failed: %v", err)
 		}
 	}
@@ -61,7 +62,7 @@ func main() {
 	// 5. Iterate over live vectors
 	fmt.Println("\n5. Iterating over live vectors (first 5)")
 	count := 0
-	store.Iterate(func(id uint64, vec []float32) bool {
+	store.Iterate(func(id core.LocalID, vec []float32) bool {
 		if count < 5 {
 			fmt.Printf("   ID=%d, vec[0]=%.1f\n", id, vec[0])
 		}

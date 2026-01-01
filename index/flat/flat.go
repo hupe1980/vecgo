@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/distance"
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/internal/bitset"
@@ -49,7 +50,7 @@ var DefaultOptions = Options{
 // It uses a zero-overhead architecture (maxID + BitSet) for O(1) inserts.
 type Flat struct {
 	// State
-	maxID   atomic.Uint64
+	maxID   atomic.Uint32
 	deleted *bitset.BitSet
 	pqCodes *container.SegmentedArray[[]byte]
 
@@ -73,22 +74,22 @@ func (f *Flat) Dimension() int {
 }
 
 // AllocateID reserves a new ID by atomically incrementing the counter.
-func (f *Flat) AllocateID() uint64 {
-	return f.maxID.Add(1) - 1
+func (f *Flat) AllocateID() core.LocalID {
+	return core.LocalID(f.maxID.Add(1) - 1)
 }
 
 // ReleaseID marks an ID as unused.
 // Note: IDs are never reused (ID Stability), so this just clears the slot.
-func (f *Flat) ReleaseID(id uint64) {
+func (f *Flat) ReleaseID(id core.LocalID) {
 	f.writeMu.Lock()
 	defer f.writeMu.Unlock()
 
-	if id >= f.maxID.Load() {
+	if id >= core.LocalID(f.maxID.Load()) {
 		return
 	}
 
 	// Mark as deleted
-	f.deleted.Set(id)
+	f.deleted.Set(uint32(id))
 }
 
 // New creates a new instance of the flat index.
@@ -161,10 +162,10 @@ func (f *Flat) EnableProductQuantization(cfg index.ProductQuantizationConfig) er
 
 	// Collect vectors for training
 	for id := range maxID {
-		if f.deleted.Test(id) {
+		if f.deleted.Test(uint32(id)) {
 			continue
 		}
-		v, ok := f.vectors.GetVector(id)
+		v, ok := f.vectors.GetVector(core.LocalID(id))
 		if ok {
 			vectors = append(vectors, v)
 		}
@@ -185,13 +186,13 @@ func (f *Flat) EnableProductQuantization(cfg index.ProductQuantizationConfig) er
 	// Encode all existing vectors
 	pqCodes := container.NewSegmentedArray[[]byte]()
 	for id := range maxID {
-		if f.deleted.Test(id) {
+		if f.deleted.Test(uint32(id)) {
 			continue
 		}
-		v, ok := f.vectors.GetVector(id)
+		v, ok := f.vectors.GetVector(core.LocalID(id))
 		if ok {
 			code := pq.Encode(v)
-			pqCodes.Set(id, code)
+			pqCodes.Set(uint32(id), code)
 		}
 	}
 
@@ -201,7 +202,7 @@ func (f *Flat) EnableProductQuantization(cfg index.ProductQuantizationConfig) er
 }
 
 // Insert inserts a vector into the flat index.
-func (f *Flat) Insert(ctx context.Context, v []float32) (uint64, error) {
+func (f *Flat) Insert(ctx context.Context, v []float32) (core.LocalID, error) {
 	// Check for cancellation
 	if err := ctx.Err(); err != nil {
 		return 0, err
@@ -240,7 +241,7 @@ func (f *Flat) Insert(ctx context.Context, v []float32) (uint64, error) {
 	// Allocate new ID
 	id := f.maxID.Add(1) - 1
 
-	if err := f.vectors.SetVector(id, vec); err != nil {
+	if err := f.vectors.SetVector(core.LocalID(id), vec); err != nil {
 		return 0, err
 	}
 
@@ -248,15 +249,15 @@ func (f *Flat) Insert(ctx context.Context, v []float32) (uint64, error) {
 		if f.pqCodes == nil {
 			f.pqCodes = container.NewSegmentedArray[[]byte]()
 		}
-		f.pqCodes.Set(id, pq.Encode(vec))
+		f.pqCodes.Set(uint32(id), pq.Encode(vec))
 	}
 
-	return id, nil
+	return core.LocalID(id), nil
 }
 
 // ApplyInsert inserts a vector at an explicit ID.
 // This is intended for deterministic WAL replay.
-func (f *Flat) ApplyInsert(ctx context.Context, id uint64, v []float32) error {
+func (f *Flat) ApplyInsert(ctx context.Context, id core.LocalID, v []float32) error {
 	// Check for cancellation
 	if err := ctx.Err(); err != nil {
 		return err
@@ -288,8 +289,8 @@ func (f *Flat) ApplyInsert(ctx context.Context, id uint64, v []float32) error {
 	}
 
 	// Ensure maxID covers this ID (for recovery)
-	if id >= f.maxID.Load() {
-		f.maxID.Store(id + 1)
+	if uint32(id) >= f.maxID.Load() {
+		f.maxID.Store(uint32(id) + 1)
 	}
 
 	if err := f.vectors.SetVector(id, vec); err != nil {
@@ -301,13 +302,13 @@ func (f *Flat) ApplyInsert(ctx context.Context, id uint64, v []float32) error {
 		if f.pqCodes == nil {
 			f.pqCodes = container.NewSegmentedArray[[]byte]()
 		}
-		f.pqCodes.Set(id, pq.Encode(vec))
+		f.pqCodes.Set(uint32(id), pq.Encode(vec))
 	}
 	return nil
 }
 
 // ApplyBatchInsert inserts multiple vectors with specific IDs.
-func (f *Flat) ApplyBatchInsert(ctx context.Context, ids []uint64, vectors [][]float32) error {
+func (f *Flat) ApplyBatchInsert(ctx context.Context, ids []core.LocalID, vectors [][]float32) error {
 	if len(ids) != len(vectors) {
 		return fmt.Errorf("ids and vectors length mismatch")
 	}
@@ -340,13 +341,13 @@ func (f *Flat) ApplyBatchInsert(ctx context.Context, ids []uint64, vectors [][]f
 		}
 
 		// Update maxID if needed
-		if id >= f.maxID.Load() {
-			f.maxID.Store(id + 1)
+		if uint32(id) >= f.maxID.Load() {
+			f.maxID.Store(uint32(id) + 1)
 		}
 
 		// If the ID was previously deleted, undelete it
-		if f.deleted.Test(id) {
-			f.deleted.Unset(id)
+		if f.deleted.Test(uint32(id)) {
+			f.deleted.Unset(uint32(id))
 		}
 
 		if err := f.vectors.SetVector(id, vec); err != nil {
@@ -357,7 +358,7 @@ func (f *Flat) ApplyBatchInsert(ctx context.Context, ids []uint64, vectors [][]f
 			if f.pqCodes == nil {
 				f.pqCodes = container.NewSegmentedArray[[]byte]()
 			}
-			f.pqCodes.Set(id, pq.Encode(vec))
+			f.pqCodes.Set(uint32(id), pq.Encode(vec))
 		}
 	}
 
@@ -365,28 +366,28 @@ func (f *Flat) ApplyBatchInsert(ctx context.Context, ids []uint64, vectors [][]f
 }
 
 // ApplyUpdate updates a vector at an explicit ID (deterministic WAL replay helper).
-func (f *Flat) ApplyUpdate(ctx context.Context, id uint64, v []float32) error {
+func (f *Flat) ApplyUpdate(ctx context.Context, id core.LocalID, v []float32) error {
 	return f.Update(ctx, id, v)
 }
 
 // ApplyDelete deletes a vector at an explicit ID (deterministic WAL replay helper).
-func (f *Flat) ApplyDelete(ctx context.Context, id uint64) error {
+func (f *Flat) ApplyDelete(ctx context.Context, id core.LocalID) error {
 	return f.Delete(ctx, id)
 }
 
 // VectorByID returns the vector stored for the given ID.
 // WARNING: The returned slice may alias internal memory (especially for mmap stores).
 // Callers should not modify the returned slice. Make a copy if mutation is needed.
-func (f *Flat) VectorByID(ctx context.Context, id uint64) ([]float32, error) {
+func (f *Flat) VectorByID(ctx context.Context, id core.LocalID) ([]float32, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	if id >= f.maxID.Load() {
+	if uint32(id) >= f.maxID.Load() {
 		return nil, &index.ErrNodeNotFound{ID: id}
 	}
 
-	if f.deleted.Test(id) {
+	if f.deleted.Test(uint32(id)) {
 		return nil, &index.ErrNodeDeleted{ID: id}
 	}
 
@@ -408,7 +409,7 @@ func (f *Flat) VectorByID(ctx context.Context, id uint64) ([]float32, error) {
 // Note: BatchInsert appends new IDs.
 func (f *Flat) BatchInsert(ctx context.Context, vectors [][]float32) index.BatchInsertResult {
 	result := index.BatchInsertResult{
-		IDs:    make([]uint64, len(vectors)),
+		IDs:    make([]core.LocalID, len(vectors)),
 		Errors: make([]error, len(vectors)),
 	}
 
@@ -460,10 +461,10 @@ func (f *Flat) BatchInsert(ctx context.Context, vectors [][]float32) index.Batch
 		// Allocate new ID
 		id := f.maxID.Add(1) - 1
 
-		if err := f.vectors.SetVector(id, vec); err != nil {
+		if err := f.vectors.SetVector(core.LocalID(id), vec); err != nil {
 			// If storage fails, we must mark this ID as deleted to avoid "holes"
 			// that look like valid zero-vectors or similar issues.
-			f.deleted.Set(id)
+			f.deleted.Set(uint32(id))
 			result.Errors[i] = err
 			continue
 		}
@@ -472,16 +473,16 @@ func (f *Flat) BatchInsert(ctx context.Context, vectors [][]float32) index.Batch
 			if f.pqCodes == nil {
 				f.pqCodes = container.NewSegmentedArray[[]byte]()
 			}
-			f.pqCodes.Set(id, pq.Encode(vec))
+			f.pqCodes.Set(uint32(id), pq.Encode(vec))
 		}
-		result.IDs[i] = id
+		result.IDs[i] = core.LocalID(id)
 	}
 
 	return result
 }
 
 // Delete removes a vector from the flat index by marking it as deleted.
-func (f *Flat) Delete(ctx context.Context, id uint64) error {
+func (f *Flat) Delete(ctx context.Context, id core.LocalID) error {
 	// Check for cancellation
 	if err := ctx.Err(); err != nil {
 		return err
@@ -493,16 +494,16 @@ func (f *Flat) Delete(ctx context.Context, id uint64) error {
 	f.writeMu.Lock()
 	defer f.writeMu.Unlock()
 
-	if id >= f.maxID.Load() {
+	if uint32(id) >= f.maxID.Load() {
 		return &index.ErrNodeNotFound{ID: id}
 	}
 
-	if f.deleted.Test(id) {
+	if f.deleted.Test(uint32(id)) {
 		return &index.ErrNodeDeleted{ID: id}
 	}
 
 	// Mark as deleted
-	f.deleted.Set(id)
+	f.deleted.Set(uint32(id))
 
 	// Also remove from PQ codes if present?
 	// We don't need to remove from SegmentedArray, just ignore it.
@@ -517,7 +518,7 @@ func (f *Flat) Delete(ctx context.Context, id uint64) error {
 }
 
 // Update updates a vector in the flat index.
-func (f *Flat) Update(ctx context.Context, id uint64, v []float32) error {
+func (f *Flat) Update(ctx context.Context, id core.LocalID, v []float32) error {
 	// Check for cancellation
 	if err := ctx.Err(); err != nil {
 		return err
@@ -533,11 +534,11 @@ func (f *Flat) Update(ctx context.Context, id uint64, v []float32) error {
 	// Get current dimension (atomic read)
 	currentDim := int(f.dimension.Load())
 
-	if id >= f.maxID.Load() {
+	if uint32(id) >= f.maxID.Load() {
 		return &index.ErrNodeNotFound{ID: id}
 	}
 
-	if f.deleted.Test(id) {
+	if f.deleted.Test(uint32(id)) {
 		return &index.ErrNodeDeleted{ID: id}
 	}
 
@@ -566,7 +567,7 @@ func (f *Flat) Update(ctx context.Context, id uint64, v []float32) error {
 		if f.pqCodes == nil {
 			f.pqCodes = container.NewSegmentedArray[[]byte]()
 		}
-		f.pqCodes.Set(id, pq.Encode(vec))
+		f.pqCodes.Set(uint32(id), pq.Encode(vec))
 	}
 
 	return nil
@@ -610,7 +611,7 @@ func (f *Flat) SearchWithContext(ctx context.Context, s *searcher.Searcher, q []
 	// We use ScratchCandidates (MaxHeap) to keep top K smallest distances.
 	s.ScratchCandidates.Reset()
 
-	var filter func(id uint64) bool
+	var filter func(id core.LocalID) bool
 	if opts != nil && opts.Filter != nil {
 		filter = opts.Filter
 	}
@@ -622,7 +623,7 @@ func (f *Flat) SearchWithContext(ctx context.Context, s *searcher.Searcher, q []
 		if f.deleted.Test(id) {
 			continue
 		}
-		if filter != nil && !filter(id) {
+		if filter != nil && !filter(core.LocalID(id)) {
 			continue
 		}
 
@@ -630,7 +631,7 @@ func (f *Flat) SearchWithContext(ctx context.Context, s *searcher.Searcher, q []
 		var hasCode bool
 
 		if f.pqCodes != nil {
-			code, ok := f.pqCodes.Get(id)
+			code, ok := f.pqCodes.Get(uint32(id))
 			if ok && code != nil {
 				nodeDist = pq.ComputeAsymmetricDistance(query, code)
 				hasCode = true
@@ -641,21 +642,21 @@ func (f *Flat) SearchWithContext(ctx context.Context, s *searcher.Searcher, q []
 			if f.vectors == nil {
 				continue
 			}
-			vec, ok := f.vectors.GetVector(id)
+			vec, ok := f.vectors.GetVector(core.LocalID(id))
 			if !ok {
 				continue
 			}
 			nodeDist = f.distanceFunc(query, vec)
 		}
 
-		s.ScratchCandidates.PushItemBounded(searcher.PriorityQueueItem{Node: id, Distance: nodeDist}, k)
+		s.ScratchCandidates.PushItemBounded(searcher.PriorityQueueItem{Node: core.LocalID(id), Distance: nodeDist}, k)
 	}
 
 	// Extract results
 	res := make([]index.SearchResult, 0, s.ScratchCandidates.Len())
 	for s.ScratchCandidates.Len() > 0 {
 		item, _ := s.ScratchCandidates.PopItem()
-		res = append(res, index.SearchResult{ID: item.Node, Distance: item.Distance})
+		res = append(res, index.SearchResult{ID: uint32(item.Node), Distance: item.Distance})
 	}
 
 	// Reverse (MaxHeap pops largest first)
@@ -667,7 +668,7 @@ func (f *Flat) SearchWithContext(ctx context.Context, s *searcher.Searcher, q []
 // KNNSearch performs a K-nearest neighbor search in the flat index.
 func (f *Flat) KNNSearch(ctx context.Context, q []float32, k int, opts *index.SearchOptions) ([]index.SearchResult, error) {
 	// Extract filter from options (Flat doesn't use efSearch)
-	var filter func(id uint64) bool
+	var filter func(id core.LocalID) bool
 	if opts != nil && opts.Filter != nil {
 		filter = opts.Filter
 	}
@@ -676,7 +677,7 @@ func (f *Flat) KNNSearch(ctx context.Context, q []float32, k int, opts *index.Se
 
 // KNNSearchWithBuffer performs a K-nearest neighbor search and appends results to the provided buffer.
 func (f *Flat) KNNSearchWithBuffer(ctx context.Context, q []float32, k int, opts *index.SearchOptions, buf *[]index.SearchResult) error {
-	var filter func(id uint64) bool
+	var filter func(id core.LocalID) bool
 	if opts != nil && opts.Filter != nil {
 		filter = opts.Filter
 	}
@@ -685,7 +686,7 @@ func (f *Flat) KNNSearchWithBuffer(ctx context.Context, q []float32, k int, opts
 
 // KNNSearchWithContext performs a K-nearest neighbor search using the provided Searcher context.
 func (f *Flat) KNNSearchWithContext(ctx context.Context, s *searcher.Searcher, q []float32, k int, opts *index.SearchOptions) error {
-	var filter func(id uint64) bool
+	var filter func(id core.LocalID) bool
 	if opts != nil && opts.Filter != nil {
 		filter = opts.Filter
 	}
@@ -710,7 +711,7 @@ func (f *Flat) KNNSearchWithContext(ctx context.Context, s *searcher.Searcher, q
 func (f *Flat) KNNSearchStream(ctx context.Context, q []float32, k int, opts *index.SearchOptions) iter.Seq2[index.SearchResult, error] {
 	return func(yield func(index.SearchResult, error) bool) {
 		// Extract filter from options
-		var filter func(id uint64) bool
+		var filter func(id core.LocalID) bool
 		if opts != nil && opts.Filter != nil {
 			filter = opts.Filter
 		}
@@ -733,7 +734,7 @@ func (f *Flat) KNNSearchStream(ctx context.Context, q []float32, k int, opts *in
 
 // BruteSearch performs a brute-force search in the flat index.
 // This method is lock-free for reads using the copy-on-write pattern.
-func (f *Flat) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint64) bool) ([]index.SearchResult, error) {
+func (f *Flat) BruteSearch(ctx context.Context, query []float32, k int, filter func(id core.LocalID) bool) ([]index.SearchResult, error) {
 	res := make([]index.SearchResult, 0, k)
 	if err := f.BruteSearchWithBuffer(ctx, query, k, filter, &res); err != nil {
 		return nil, err
@@ -742,7 +743,7 @@ func (f *Flat) BruteSearch(ctx context.Context, query []float32, k int, filter f
 }
 
 // BruteSearchWithBuffer performs a brute-force search and appends results to the provided buffer.
-func (f *Flat) BruteSearchWithBuffer(ctx context.Context, query []float32, k int, filter func(id uint64) bool, buf *[]index.SearchResult) error {
+func (f *Flat) BruteSearchWithBuffer(ctx context.Context, query []float32, k int, filter func(id core.LocalID) bool, buf *[]index.SearchResult) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -770,11 +771,11 @@ func (f *Flat) BruteSearchWithBuffer(ctx context.Context, query []float32, k int
 	}
 
 	actualK := k
-	if uint64(actualK) > maxID {
+	if uint32(actualK) > maxID {
 		actualK = int(maxID)
 	}
 
-	topCandidates := searcher.NewMax(actualK)
+	topCandidates := searcher.NewPriorityQueue(true)
 	heap.Init(topCandidates)
 
 	pq := f.pq.Load()
@@ -784,14 +785,14 @@ func (f *Flat) BruteSearchWithBuffer(ctx context.Context, query []float32, k int
 	// This improves cache locality and SIMD vectorization
 	if pq == nil {
 		// Gather all valid node IDs and vectors
-		batchIDs := make([]uint64, 0, maxID)
+		batchIDs := make([]core.LocalID, 0, maxID)
 		batchVectors := make([][]float32, 0, maxID)
 
 		for id := range maxID {
 			if f.deleted.Test(id) {
 				continue
 			}
-			if filter != nil && !filter(id) {
+			if filter != nil && !filter(core.LocalID(id)) {
 				continue
 			}
 
@@ -799,12 +800,12 @@ func (f *Flat) BruteSearchWithBuffer(ctx context.Context, query []float32, k int
 				continue
 			}
 
-			v, ok := f.vectors.GetVector(id)
+			v, ok := f.vectors.GetVector(core.LocalID(id))
 			if !ok {
 				continue
 			}
 
-			batchIDs = append(batchIDs, id)
+			batchIDs = append(batchIDs, core.LocalID(id))
 			batchVectors = append(batchVectors, v)
 		}
 
@@ -827,27 +828,16 @@ func (f *Flat) BruteSearchWithBuffer(ctx context.Context, query []float32, k int
 			// Build heap from batch results
 			for i, nodeID := range batchIDs {
 				nodeDist := batchDistances[i]
-
-				if topCandidates.Len() < actualK {
-					heap.Push(topCandidates, searcher.PriorityQueueItem{Node: nodeID, Distance: nodeDist})
-					continue
-				}
-
-				largest := topCandidates.Top().(searcher.PriorityQueueItem)
-				if nodeDist < largest.Distance {
-					// We found a closer neighbor.
-					// Remove the farthest one (root of MaxHeap) and add the new one.
-					heap.Pop(topCandidates)
-					heap.Push(topCandidates, searcher.PriorityQueueItem{Node: nodeID, Distance: nodeDist})
-				}
+				topCandidates.PushItemBounded(searcher.PriorityQueueItem{Node: core.LocalID(nodeID), Distance: nodeDist}, actualK)
 			}
 		}
 	} else {
 		// PQ mode: use asymmetric distance (can't batch due to custom codes)
 		// NOTE: PQ asymmetric distance approximates L2 distance on normalized vectors.
 		// For cosine, vectors are already normalized so L2 ordering is equivalent.
-		for id := range maxID {
-			if f.deleted.Test(id) {
+		for i := range maxID {
+			id := core.LocalID(i)
+			if f.deleted.Test(uint32(id)) {
 				continue
 			}
 			if filter != nil && !filter(id) {
@@ -858,7 +848,7 @@ func (f *Flat) BruteSearchWithBuffer(ctx context.Context, query []float32, k int
 			var hasCode bool
 
 			if f.pqCodes != nil {
-				code, ok := f.pqCodes.Get(id)
+				code, ok := f.pqCodes.Get(uint32(id))
 				if ok && code != nil {
 					nodeDist = pq.ComputeAsymmetricDistance(q, code)
 					hasCode = true
@@ -876,16 +866,7 @@ func (f *Flat) BruteSearchWithBuffer(ctx context.Context, query []float32, k int
 				nodeDist = f.distanceFunc(q, vec)
 			}
 
-			if topCandidates.Len() < actualK {
-				heap.Push(topCandidates, searcher.PriorityQueueItem{Node: id, Distance: nodeDist})
-				continue
-			}
-
-			largest := topCandidates.Top().(searcher.PriorityQueueItem)
-			if nodeDist < largest.Distance {
-				heap.Pop(topCandidates)
-				heap.Push(topCandidates, searcher.PriorityQueueItem{Node: id, Distance: nodeDist})
-			}
+			topCandidates.PushItemBounded(searcher.PriorityQueueItem{Node: id, Distance: nodeDist}, actualK)
 		}
 	}
 
@@ -895,8 +876,8 @@ func (f *Flat) BruteSearchWithBuffer(ctx context.Context, query []float32, k int
 
 	startLen := len(*buf)
 	for topCandidates.Len() > 0 {
-		item := heap.Pop(topCandidates).(searcher.PriorityQueueItem)
-		*buf = append(*buf, index.SearchResult{ID: item.Node, Distance: item.Distance})
+		item, _ := topCandidates.PopItem()
+		*buf = append(*buf, index.SearchResult{ID: uint32(item.Node), Distance: item.Distance})
 	}
 
 	// Reverse the appended segment
@@ -955,7 +936,7 @@ func NewSharded(shardID, numShards int, optFns ...func(o *Options)) (*Flat, erro
 }
 
 // BruteSearchWithContext performs a brute-force search using the provided Searcher context.
-func (f *Flat) BruteSearchWithContext(ctx context.Context, s *searcher.Searcher, query []float32, k int, filter func(id uint64) bool) error {
+func (f *Flat) BruteSearchWithContext(ctx context.Context, s *searcher.Searcher, query []float32, k int, filter func(id core.LocalID) bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -986,15 +967,16 @@ func (f *Flat) BruteSearchWithContext(ctx context.Context, s *searcher.Searcher,
 	}
 
 	actualK := k
-	if uint64(actualK) > maxID {
+	if uint64(actualK) > uint64(maxID) {
 		actualK = int(maxID)
 	}
 
 	s.Candidates.Reset()
 
 	// Simple iteration
-	for id := range maxID {
-		if f.deleted.Test(id) {
+	for i := range maxID {
+		id := core.LocalID(i)
+		if f.deleted.Test(uint32(id)) {
 			continue
 		}
 		if filter != nil && !filter(id) {

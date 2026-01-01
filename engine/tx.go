@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/hupe1980/vecgo/codec"
+	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/index/memtable"
 	"github.com/hupe1980/vecgo/metadata"
@@ -69,43 +70,43 @@ type txScratch struct {
 }
 
 // allocateID allocates a new ID from the index
-func (tx *Tx[T]) allocateID() uint64 {
+func (tx *Tx[T]) allocateID() core.LocalID {
 	tx.idMu.Lock()
 	defer tx.idMu.Unlock()
 	return tx.txIndex.AllocateID()
 }
 
 // releaseID releases an ID back to the index
-func (tx *Tx[T]) releaseID(id uint64) {
+func (tx *Tx[T]) releaseID(id core.LocalID) {
 	tx.idMu.Lock()
 	defer tx.idMu.Unlock()
 	tx.txIndex.ReleaseID(id)
 }
 
 // applyInsert applies an insert operation to the index
-func (tx *Tx[T]) applyInsert(ctx context.Context, id uint64, vector []float32) error {
+func (tx *Tx[T]) applyInsert(ctx context.Context, id core.LocalID, vector []float32) error {
 	return tx.txIndex.ApplyInsert(ctx, id, vector)
 }
 
 // applyUpdate applies an update operation to the index
-func (tx *Tx[T]) applyUpdate(ctx context.Context, id uint64, vector []float32) error {
+func (tx *Tx[T]) applyUpdate(ctx context.Context, id core.LocalID, vector []float32) error {
 	return tx.txIndex.ApplyUpdate(ctx, id, vector)
 }
 
 // applyDelete applies a delete operation to the index
-func (tx *Tx[T]) applyDelete(ctx context.Context, id uint64) error {
+func (tx *Tx[T]) applyDelete(ctx context.Context, id core.LocalID) error {
 	return tx.txIndex.ApplyDelete(ctx, id)
 }
 
 // vectorByID retrieves a vector from the index by ID
-func (tx *Tx[T]) vectorByID(ctx context.Context, id uint64) ([]float32, error) {
+func (tx *Tx[T]) vectorByID(ctx context.Context, id core.LocalID) ([]float32, error) {
 	// Zero-lock path for memtable check
 	state := tx.memState.Load()
 	if state != nil {
 		if state.active != nil {
 			if vec, found, isDeleted := state.active.Get(id); found {
 				if isDeleted {
-					return nil, ErrNotFound
+					return nil, &index.ErrNodeNotFound{ID: id}
 				}
 				return vec, nil
 			}
@@ -114,7 +115,7 @@ func (tx *Tx[T]) vectorByID(ctx context.Context, id uint64) ([]float32, error) {
 		for i := len(state.queue) - 1; i >= 0; i-- {
 			if vec, found, isDeleted := state.queue[i].Get(id); found {
 				if isDeleted {
-					return nil, ErrNotFound
+					return nil, &index.ErrNodeNotFound{ID: id}
 				}
 				return vec, nil
 			}
@@ -241,7 +242,7 @@ func (tx *Tx[T]) Insert(ctx context.Context, vector []float32, data T, meta meta
 		return 0, err
 	}
 
-	return id, nil
+	return uint64(id), nil
 }
 
 // BatchInsert inserts multiple vectors+payloads+(optional) metadata atomically.
@@ -256,7 +257,7 @@ func (tx *Tx[T]) BatchInsert(ctx context.Context, vectors [][]float32, dataSlice
 		return nil, nil
 	}
 
-	ids := make([]uint64, len(vectors))
+	ids := make([]core.LocalID, len(vectors))
 	payloads := make([][]byte, len(vectors))
 	for i := range vectors {
 		ids[i] = tx.allocateID()
@@ -278,10 +279,8 @@ func (tx *Tx[T]) BatchInsert(ctx context.Context, vectors [][]float32, dataSlice
 	}
 
 	if tx.syncWrite {
-		for i := range vectors {
-			if err := tx.txIndex.ApplyInsert(ctx, ids[i], vectors[i]); err != nil {
-				return nil, err
-			}
+		if err := tx.txIndex.ApplyBatchInsert(ctx, ids, vectors); err != nil {
+			return nil, err
 		}
 	} else {
 		// Async Indexing: Write to MemTable
@@ -318,7 +317,7 @@ func (tx *Tx[T]) BatchInsert(ctx context.Context, vectors [][]float32, dataSlice
 		}
 	}
 
-	items := make(map[uint64]T, len(ids))
+	items := make(map[core.LocalID]T, len(ids))
 	for i := range ids {
 		items[ids[i]] = dataSlice[i]
 	}
@@ -338,7 +337,7 @@ func (tx *Tx[T]) BatchInsert(ctx context.Context, vectors [][]float32, dataSlice
 	}
 
 	// Safe-by-default: clone metadata to prevent external mutation
-	metaItems := make(map[uint64]metadata.Metadata)
+	metaItems := make(map[core.LocalID]metadata.Metadata)
 	for i := range ids {
 		if metadataSlice[i] != nil {
 			safeMeta := metadata.CloneIfNeeded(metadataSlice[i])
@@ -372,7 +371,12 @@ func (tx *Tx[T]) BatchInsert(ctx context.Context, vectors [][]float32, dataSlice
 		return nil, err
 	}
 
-	return ids, nil
+	// Convert to uint64 for return
+	globalIDs := make([]uint64, len(ids))
+	for i, id := range ids {
+		globalIDs[i] = uint64(id)
+	}
+	return globalIDs, nil
 }
 
 // Update updates vector+payload and optionally metadata.
@@ -382,20 +386,22 @@ func (tx *Tx[T]) Update(ctx context.Context, id uint64, vector []float32, data T
 		return err
 	}
 
-	oldVector, err := tx.vectorByID(ctx, id)
+	localID := core.LocalID(id)
+
+	oldVector, err := tx.vectorByID(ctx, localID)
 	if err != nil {
 		return err
 	}
-	oldData, ok := tx.dataStore.Get(id)
+	oldData, ok := tx.dataStore.Get(localID)
 	if !ok {
-		return ErrNotFound
+		return &index.ErrNodeNotFound{ID: localID}
 	}
 
 	var oldMeta metadata.Metadata
 	oldMetaOK := false
 	if meta != nil {
 		tx.metaMu.RLock()
-		oldMeta, oldMetaOK = tx.metaStore.Get(id)
+		oldMeta, oldMetaOK = tx.metaStore.Get(localID)
 		tx.metaMu.RUnlock()
 	}
 
@@ -404,14 +410,14 @@ func (tx *Tx[T]) Update(ctx context.Context, id uint64, vector []float32, data T
 		return err
 	}
 
-	if err := tx.durability.LogPrepareUpdate(id, vector, payload, meta); err != nil {
+	if err := tx.durability.LogPrepareUpdate(localID, vector, payload, meta); err != nil {
 		return err
 	}
 
 	// Async Indexing: Write to MemTable instead of Index
 	tx.memMu.RLock()
 	state := tx.memState.Load()
-	state.active.Insert(id, vector)
+	state.active.Insert(localID, vector)
 	size := state.active.Size()
 	tx.memMu.RUnlock()
 
@@ -423,11 +429,11 @@ func (tx *Tx[T]) Update(ctx context.Context, id uint64, vector []float32, data T
 		}
 	}
 
-	if err := tx.dataStore.Set(id, data); err != nil {
+	if err := tx.dataStore.Set(localID, data); err != nil {
 		// Rollback: Restore old vector in MemTable
 		tx.memMu.RLock()
 		state := tx.memState.Load()
-		state.active.Insert(id, oldVector)
+		state.active.Insert(localID, oldVector)
 		tx.memMu.RUnlock()
 		return err
 	}
@@ -436,27 +442,27 @@ func (tx *Tx[T]) Update(ctx context.Context, id uint64, vector []float32, data T
 	if meta != nil {
 		safeMeta := metadata.CloneIfNeeded(meta)
 		tx.metaMu.Lock()
-		tx.metaStore.Set(id, safeMeta)
+		tx.metaStore.Set(localID, safeMeta)
 		tx.metaMu.Unlock()
 	}
 
-	if err := tx.durability.LogCommitUpdate(id); err != nil {
+	if err := tx.durability.LogCommitUpdate(localID); err != nil {
 		if meta != nil {
 			tx.metaMu.Lock()
 			if oldMetaOK {
-				tx.metaStore.Set(id, oldMeta)
+				tx.metaStore.Set(localID, oldMeta)
 			} else {
-				tx.metaStore.Delete(id)
+				tx.metaStore.Delete(localID)
 			}
 			tx.metaMu.Unlock()
 		}
-		_ = tx.dataStore.Set(id, oldData)
+		_ = tx.dataStore.Set(localID, oldData)
 		// Revert memtable change is hard, but since we haven't flushed,
 		// the index is still consistent with oldVector.
 		// We should ideally revert the memtable entry too.
 		tx.memMu.RLock()
 		state := tx.memState.Load()
-		state.active.Insert(id, oldVector)
+		state.active.Insert(localID, oldVector)
 		tx.memMu.RUnlock()
 		return err
 	}
@@ -470,26 +476,28 @@ func (tx *Tx[T]) Delete(ctx context.Context, id uint64) error {
 		return err
 	}
 
-	oldVector, err := tx.vectorByID(ctx, id)
+	localID := core.LocalID(id)
+
+	oldVector, err := tx.vectorByID(ctx, localID)
 	if err != nil {
 		return err
 	}
-	oldData, ok := tx.dataStore.Get(id)
+	oldData, ok := tx.dataStore.Get(localID)
 	if !ok {
-		return ErrNotFound
+		return &index.ErrNodeNotFound{ID: localID}
 	}
 	tx.metaMu.RLock()
-	oldMeta, oldMetaOK := tx.metaStore.Get(id)
+	oldMeta, oldMetaOK := tx.metaStore.Get(localID)
 	tx.metaMu.RUnlock()
 
-	if err := tx.durability.LogPrepareDelete(id); err != nil {
+	if err := tx.durability.LogPrepareDelete(localID); err != nil {
 		return err
 	}
 
 	// Async Indexing: Remove from MemTable
 	tx.memMu.RLock()
 	state := tx.memState.Load()
-	state.active.Delete(id)
+	state.active.Delete(localID)
 	tx.memMu.RUnlock()
 
 	// With Tombstones (LSM), we do NOT call applyDelete here.
@@ -497,54 +505,54 @@ func (tx *Tx[T]) Delete(ctx context.Context, id uint64) error {
 	// during the background flush.
 	// vectorByIDLocked checks MemTable first, so it will see the tombstone and return ErrNotFound.
 
-	if err := tx.dataStore.Delete(id); err != nil {
+	if err := tx.dataStore.Delete(localID); err != nil {
 		// Rollback: Restore old vector in MemTable
 		tx.memMu.RLock()
 		state := tx.memState.Load()
-		state.active.Insert(id, oldVector)
+		state.active.Insert(localID, oldVector)
 		tx.memMu.RUnlock()
 		return err
 	}
 	if oldMetaOK {
 		tx.metaMu.Lock()
-		tx.metaStore.Delete(id)
+		tx.metaStore.Delete(localID)
 		tx.metaMu.Unlock()
 	}
 
-	if err := tx.durability.LogCommitDelete(id); err != nil {
+	if err := tx.durability.LogCommitDelete(localID); err != nil {
 		// Rollback: Restore old vector in MemTable
 		tx.memMu.RLock()
 		state := tx.memState.Load()
-		state.active.Insert(id, oldVector)
+		state.active.Insert(localID, oldVector)
 		tx.memMu.RUnlock()
-		_ = tx.dataStore.Set(id, oldData)
+		_ = tx.dataStore.Set(localID, oldData)
 		if oldMetaOK {
 			tx.metaMu.Lock()
-			tx.metaStore.Set(id, oldMeta)
+			tx.metaStore.Set(localID, oldMeta)
 			tx.metaMu.Unlock()
 		}
 		return err
 	}
 
-	tx.releaseID(id)
+	tx.releaseID(localID)
 	return nil
 }
 
 // flushMemTableLocked flushes the MemTable to the main index (caller must hold lock).
 // Get retrieves the data associated with an ID from the data store.
 func (tx *Tx[T]) Get(id uint64) (T, bool) {
-	return tx.dataStore.Get(id)
+	return tx.dataStore.Get(core.LocalID(id))
 }
 
 // GetMetadata retrieves the metadata associated with an ID from the metadata store.
 func (tx *Tx[T]) GetMetadata(id uint64) (metadata.Metadata, bool) {
-	return tx.metaStore.Get(id)
+	return tx.metaStore.Get(core.LocalID(id))
 }
 
 // KNNSearch performs a K-nearest neighbor search on the underlying index.
 // This method is added to satisfy the coordinator[T] interface.
-func (tx *Tx[T]) KNNSearch(ctx context.Context, query []float32, k int, opts *index.SearchOptions) ([]index.SearchResult, error) {
-	var results []index.SearchResult
+func (tx *Tx[T]) KNNSearch(ctx context.Context, query []float32, k int, opts *SearchOptions) ([]SearchResult, error) {
+	var results []SearchResult
 	if err := tx.KNNSearchWithBuffer(ctx, query, k, opts, &results); err != nil {
 		return nil, err
 	}
@@ -552,7 +560,7 @@ func (tx *Tx[T]) KNNSearch(ctx context.Context, query []float32, k int, opts *in
 }
 
 // KNNSearchWithBuffer performs a K-nearest neighbor search and appends results to the provided buffer.
-func (tx *Tx[T]) KNNSearchWithBuffer(ctx context.Context, query []float32, k int, opts *index.SearchOptions, buf *[]index.SearchResult) error {
+func (tx *Tx[T]) KNNSearchWithBuffer(ctx context.Context, query []float32, k int, opts *SearchOptions, buf *[]SearchResult) error {
 	// Capture MemTables safely (Atomic Snapshot) BEFORE searching index.
 	// This ensures we don't miss items that are flushed during the index search.
 	// If an item is flushed during index search:
@@ -573,8 +581,21 @@ func (tx *Tx[T]) KNNSearchWithBuffer(ctx context.Context, query []float32, k int
 	scratch.queueResults = scratch.queueResults[:0]
 	scratch.mergedResults = scratch.mergedResults[:0]
 
+	// Convert SearchOptions
+	var indexOpts *index.SearchOptions
+	if opts != nil {
+		indexOpts = &index.SearchOptions{
+			EFSearch: opts.EFSearch,
+		}
+		if opts.Filter != nil {
+			indexOpts.Filter = func(id core.LocalID) bool {
+				return opts.Filter(uint64(id))
+			}
+		}
+	}
+
 	// 1. Search Main Index
-	if err := tx.txIndex.KNNSearchWithBuffer(ctx, query, k, opts, &scratch.indexResults); err != nil {
+	if err := tx.txIndex.KNNSearchWithBuffer(ctx, query, k, indexOpts, &scratch.indexResults); err != nil {
 		return err
 	}
 
@@ -583,14 +604,15 @@ func (tx *Tx[T]) KNNSearchWithBuffer(ctx context.Context, query []float32, k int
 	// This handles both deletions (tombstones) and updates.
 	n := 0
 	for _, res := range scratch.indexResults {
+		localID := core.LocalID(res.ID)
 		// Check MemTable
-		if found, _ := memT.Contains(res.ID); found {
+		if found, _ := memT.Contains(localID); found {
 			continue
 		}
 		// Check Queue
 		inQueue := false
 		for _, t := range queue {
-			if found, _ := t.Contains(res.ID); found {
+			if found, _ := t.Contains(localID); found {
 				inQueue = true
 				break
 			}
@@ -604,9 +626,11 @@ func (tx *Tx[T]) KNNSearchWithBuffer(ctx context.Context, query []float32, k int
 	scratch.indexResults = scratch.indexResults[:n]
 
 	// 3. Search MemTables
-	var filter func(uint64) bool
-	if opts != nil && opts.Filter != nil {
-		filter = opts.Filter
+	var filter func(core.LocalID) bool
+	if indexOpts != nil && indexOpts.Filter != nil {
+		filter = func(id core.LocalID) bool {
+			return indexOpts.Filter(id)
+		}
 	}
 
 	if err := memT.SearchWithBuffer(query, k, filter, &scratch.memResults); err != nil {
@@ -630,7 +654,12 @@ func (tx *Tx[T]) KNNSearchWithBuffer(ctx context.Context, query []float32, k int
 	index.MergeNSearchResultsInto(&scratch.mergedResults, k, scratch.indexResults, scratch.memResults, scratch.queueResults)
 
 	// Append to output buffer
-	*buf = append(*buf, scratch.mergedResults...)
+	for _, res := range scratch.mergedResults {
+		*buf = append(*buf, SearchResult{
+			ID:       uint64(res.ID),
+			Distance: res.Distance,
+		})
+	}
 
 	return nil
 }
@@ -662,19 +691,20 @@ func (tx *Tx[T]) KNNSearchWithContext(ctx context.Context, query []float32, k in
 
 	for s.Candidates.Len() > 0 {
 		item, _ := s.Candidates.PopItem()
-		scratch.indexResults = append(scratch.indexResults, index.SearchResult{ID: item.Node, Distance: item.Distance})
+		scratch.indexResults = append(scratch.indexResults, index.SearchResult{ID: uint32(item.Node), Distance: item.Distance})
 	}
 
 	// Filter index results and push back valid ones
 	for _, res := range scratch.indexResults {
+		localID := core.LocalID(res.ID)
 		// Check MemTable
-		if found, _ := memT.Contains(res.ID); found {
+		if found, _ := memT.Contains(localID); found {
 			continue
 		}
 		// Check Queue
 		inQueue := false
 		for _, t := range queue {
-			if found, _ := t.Contains(res.ID); found {
+			if found, _ := t.Contains(localID); found {
 				inQueue = true
 				break
 			}
@@ -683,13 +713,15 @@ func (tx *Tx[T]) KNNSearchWithContext(ctx context.Context, query []float32, k in
 			continue
 		}
 		// Keep it
-		s.Candidates.PushItemBounded(searcher.PriorityQueueItem{Node: res.ID, Distance: res.Distance}, k)
+		s.Candidates.PushItemBounded(searcher.PriorityQueueItem{Node: core.LocalID(res.ID), Distance: res.Distance}, k)
 	}
 
 	// 3. Search MemTables
-	var filter func(uint64) bool
+	var filter func(core.LocalID) bool
 	if opts != nil && opts.Filter != nil {
-		filter = opts.Filter
+		filter = func(id core.LocalID) bool {
+			return opts.Filter(id)
+		}
 	}
 
 	if err := memT.SearchWithBuffer(query, k, filter, &scratch.memResults); err != nil {
@@ -704,10 +736,10 @@ func (tx *Tx[T]) KNNSearchWithContext(ctx context.Context, query []float32, k in
 
 	// 4. Add MemTable results
 	for _, res := range scratch.memResults {
-		s.Candidates.PushItemBounded(searcher.PriorityQueueItem{Node: res.ID, Distance: res.Distance}, k)
+		s.Candidates.PushItemBounded(searcher.PriorityQueueItem{Node: core.LocalID(res.ID), Distance: res.Distance}, k)
 	}
 	for _, res := range scratch.queueResults {
-		s.Candidates.PushItemBounded(searcher.PriorityQueueItem{Node: res.ID, Distance: res.Distance}, k)
+		s.Candidates.PushItemBounded(searcher.PriorityQueueItem{Node: core.LocalID(res.ID), Distance: res.Distance}, k)
 	}
 
 	return nil
@@ -715,14 +747,22 @@ func (tx *Tx[T]) KNNSearchWithContext(ctx context.Context, query []float32, k in
 
 // BruteSearch performs a brute-force search on the underlying index.
 // This method is added to satisfy the coordinator[T] interface.
-func (tx *Tx[T]) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint64) bool) ([]index.SearchResult, error) {
+func (tx *Tx[T]) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint64) bool) ([]SearchResult, error) {
 	// Capture MemTables safely (Atomic Snapshot) BEFORE searching index.
 	state := tx.memState.Load()
 	memT := state.active
 	queue := state.queue
 
+	// Adapter for filter: uint64 -> core.LocalID
+	var localFilter func(core.LocalID) bool
+	if filter != nil {
+		localFilter = func(id core.LocalID) bool {
+			return filter(uint64(id))
+		}
+	}
+
 	// 1. Search Main Index
-	indexResults, err := tx.txIndex.BruteSearch(ctx, query, k, filter)
+	indexResults, err := tx.txIndex.BruteSearch(ctx, query, k, localFilter)
 	if err != nil {
 		return nil, err
 	}
@@ -730,12 +770,13 @@ func (tx *Tx[T]) BruteSearch(ctx context.Context, query []float32, k int, filter
 	// 2. Filter Index Results
 	filteredIndexResults := make([]index.SearchResult, 0, len(indexResults))
 	for _, res := range indexResults {
-		if found, _ := memT.Contains(res.ID); found {
+		localID := core.LocalID(res.ID)
+		if found, _ := memT.Contains(localID); found {
 			continue
 		}
 		inQueue := false
 		for _, t := range queue {
-			if found, _ := t.Contains(res.ID); found {
+			if found, _ := t.Contains(localID); found {
 				inQueue = true
 				break
 			}
@@ -747,17 +788,11 @@ func (tx *Tx[T]) BruteSearch(ctx context.Context, query []float32, k int, filter
 	}
 
 	// 3. Search MemTables
-	var memFilter func(uint64) bool
-	if filter != nil {
-		memFilter = func(id uint64) bool {
-			return filter(id)
-		}
-	}
-	memResults := memT.Search(query, k, memFilter)
+	memResults := memT.Search(query, k, localFilter)
 
 	var queueResults []index.SearchResult
 	for _, t := range queue {
-		res := t.Search(query, k, memFilter)
+		res := t.Search(query, k, localFilter)
 		if len(res) > 0 {
 			queueResults = append(queueResults, res...)
 		}
@@ -769,7 +804,16 @@ func (tx *Tx[T]) BruteSearch(ctx context.Context, query []float32, k int, filter
 	}
 
 	// 4. Merge Results
-	return index.MergeNSearchResults(k, filteredIndexResults, memResults, queueResults), nil
+	merged := index.MergeNSearchResults(k, filteredIndexResults, memResults, queueResults)
+
+	results := make([]SearchResult, len(merged))
+	for i, res := range merged {
+		results[i] = SearchResult{
+			ID:       uint64(res.ID),
+			Distance: res.Distance,
+		}
+	}
+	return results, nil
 }
 
 // EnableProductQuantization enables Product Quantization (PQ) on the underlying index.
@@ -853,17 +897,17 @@ func (tx *Tx[T]) flushMemTable() bool {
 		items := tableToFlush.Items()
 
 		// Deduplicate items (latest wins)
-		unique := make(map[uint64]memtable.Item)
+		unique := make(map[core.LocalID]memtable.Item)
 		for _, item := range items {
 			unique[item.ID] = item
 		}
 
-		var insertIDs []uint64
+		var insertIDs []core.LocalID
 		var insertVecs [][]float32
 
 		for _, item := range unique {
 			if item.IsDeleted {
-				err := tx.txIndex.ApplyDelete(ctx, uint64(item.ID))
+				err := tx.txIndex.ApplyDelete(ctx, item.ID)
 				// Ignore if node already deleted or not found
 				if err != nil {
 					errMsg := err.Error()
@@ -875,7 +919,7 @@ func (tx *Tx[T]) flushMemTable() bool {
 					// In a production system, we should log this error properly.
 				}
 			} else {
-				insertIDs = append(insertIDs, uint64(item.ID))
+				insertIDs = append(insertIDs, item.ID)
 				insertVecs = append(insertVecs, item.Vector)
 			}
 		}
@@ -906,18 +950,18 @@ func (tx *Tx[T]) flushMemTable() bool {
 }
 
 // HybridSearch performs a hybrid search combining vector similarity and metadata filtering.
-func (tx *Tx[T]) HybridSearch(ctx context.Context, query []float32, k int, opts *HybridSearchOptions) ([]index.SearchResult, error) {
+func (tx *Tx[T]) HybridSearch(ctx context.Context, query []float32, k int, opts *HybridSearchOptions) ([]SearchResult, error) {
 	// Use a temporary searcher for the operation to benefit from zero-alloc filtering
 	// We guess a capacity, it will grow if needed
-	s := searcher.AcquireSearcher(10000, tx.dimension)
-	defer searcher.ReleaseSearcher(s)
+	s := searcher.Get()
+	defer searcher.Put(s)
 
 	return tx.HybridSearchWithContext(ctx, query, k, opts, s)
 }
 
 // HybridSearchWithContext performs a hybrid search using the provided Searcher context.
 // This allows reusing the Searcher's scratch buffers for metadata filtering.
-func (tx *Tx[T]) HybridSearchWithContext(ctx context.Context, query []float32, k int, opts *HybridSearchOptions, s *searcher.Searcher) ([]index.SearchResult, error) {
+func (tx *Tx[T]) HybridSearchWithContext(ctx context.Context, query []float32, k int, opts *HybridSearchOptions, s *searcher.Searcher) ([]SearchResult, error) {
 	if opts == nil {
 		opts = &HybridSearchOptions{EF: 0}
 	}
@@ -940,22 +984,22 @@ func (tx *Tx[T]) HybridSearchWithContext(ctx context.Context, query []float32, k
 			s.ScratchResults[i], s.ScratchResults[j] = s.ScratchResults[j], s.ScratchResults[i]
 		}
 
-		results := make([]index.SearchResult, len(s.ScratchResults))
+		results := make([]SearchResult, len(s.ScratchResults))
 		for i, item := range s.ScratchResults {
-			results[i] = index.SearchResult{ID: item.Node, Distance: item.Distance}
+			results[i] = SearchResult{ID: uint64(item.Node), Distance: item.Distance}
 		}
 		return results, nil
 	}
 
 	// Create metadata filter function
-	var metadataFilter func(uint64) bool
+	var metadataFilter func(core.LocalID) bool
 
 	if tx.metaStore != nil {
 		// Try to compile to bitmap using Searcher's scratch bitmap
 		if tx.metaStore.CompileFilterTo(opts.MetadataFilters, s.FilterBitmap) {
 			// Fast path: use bitmap
 			bitmap := s.FilterBitmap
-			metadataFilter = func(id uint64) bool {
+			metadataFilter = func(id core.LocalID) bool {
 				return bitmap.Contains(id)
 			}
 		} else {
@@ -966,12 +1010,18 @@ func (tx *Tx[T]) HybridSearchWithContext(ctx context.Context, query []float32, k
 		}
 	} else {
 		// Should not happen if initialized correctly, but safe fallback
-		return []index.SearchResult{}, nil
+		return []SearchResult{}, nil
 	}
 
 	if opts.PreFilter {
 		// Pre-filtering
-		searchOpts := &index.SearchOptions{EFSearch: opts.EF, Filter: metadataFilter}
+		var filter func(core.LocalID) bool
+		if metadataFilter != nil {
+			filter = func(id core.LocalID) bool {
+				return metadataFilter(id)
+			}
+		}
+		searchOpts := &index.SearchOptions{EFSearch: opts.EF, Filter: filter}
 		err := tx.KNNSearchWithContext(ctx, query, k, searchOpts, s)
 		if err != nil {
 			return nil, err
@@ -988,9 +1038,9 @@ func (tx *Tx[T]) HybridSearchWithContext(ctx context.Context, query []float32, k
 			s.ScratchResults[i], s.ScratchResults[j] = s.ScratchResults[j], s.ScratchResults[i]
 		}
 
-		results := make([]index.SearchResult, len(s.ScratchResults))
+		results := make([]SearchResult, len(s.ScratchResults))
 		for i, item := range s.ScratchResults {
-			results[i] = index.SearchResult{ID: item.Node, Distance: item.Distance}
+			results[i] = SearchResult{ID: uint64(item.Node), Distance: item.Distance}
 		}
 		return results, nil
 	}
@@ -1016,14 +1066,14 @@ func (tx *Tx[T]) HybridSearchWithContext(ctx context.Context, query []float32, k
 		s.ScratchResults[i], s.ScratchResults[j] = s.ScratchResults[j], s.ScratchResults[i]
 	}
 
-	results := make([]index.SearchResult, 0, k)
+	results := make([]SearchResult, 0, k)
 	for _, item := range s.ScratchResults {
 		if len(results) >= k {
 			break
 		}
-		if metadataFilter(item.Node) {
-			results = append(results, index.SearchResult{
-				ID:       item.Node,
+		if metadataFilter(core.LocalID(item.Node)) {
+			results = append(results, SearchResult{
+				ID:       uint64(item.Node),
 				Distance: item.Distance,
 			})
 		}
@@ -1032,14 +1082,27 @@ func (tx *Tx[T]) HybridSearchWithContext(ctx context.Context, query []float32, k
 }
 
 // KNNSearchStream returns an iterator over K-nearest neighbor search results.
-func (tx *Tx[T]) KNNSearchStream(ctx context.Context, query []float32, k int, opts *index.SearchOptions) iter.Seq2[index.SearchResult, error] {
+func (tx *Tx[T]) KNNSearchStream(ctx context.Context, query []float32, k int, opts *SearchOptions) iter.Seq2[SearchResult, error] {
 	// Capture MemTables safely (Atomic Snapshot)
 	state := tx.memState.Load()
 	memT := state.active
 	queue := state.queue
 
+	// Convert SearchOptions
+	var indexOpts *index.SearchOptions
+	if opts != nil {
+		indexOpts = &index.SearchOptions{
+			EFSearch: opts.EFSearch,
+		}
+		if opts.Filter != nil {
+			indexOpts.Filter = func(id core.LocalID) bool {
+				return opts.Filter(uint64(id))
+			}
+		}
+	}
+
 	// 1. Stream from Main Index (filtered)
-	indexStream := tx.txIndex.KNNSearchStream(ctx, query, k, opts)
+	indexStream := tx.txIndex.KNNSearchStream(ctx, query, k, indexOpts)
 
 	filteredIndexStream := func(yield func(index.SearchResult, error) bool) {
 		for res, err := range indexStream {
@@ -1049,14 +1112,15 @@ func (tx *Tx[T]) KNNSearchStream(ctx context.Context, query []float32, k int, op
 				}
 				continue
 			}
+			localID := core.LocalID(res.ID)
 			// Check MemTable
-			if _, found, isDeleted := memT.Get(res.ID); found && isDeleted {
+			if _, found, isDeleted := memT.Get(localID); found && isDeleted {
 				continue
 			}
 			// Check Queue
 			inQueue := false
 			for _, t := range queue {
-				if _, found, isDeleted := t.Get(res.ID); found && isDeleted {
+				if _, found, isDeleted := t.Get(localID); found && isDeleted {
 					inQueue = true
 					break
 				}
@@ -1071,9 +1135,11 @@ func (tx *Tx[T]) KNNSearchStream(ctx context.Context, query []float32, k int, op
 	}
 
 	// 2. Search MemTables (returns slice)
-	var filter func(uint64) bool
-	if opts != nil {
-		filter = opts.Filter
+	var filter func(core.LocalID) bool
+	if indexOpts != nil && indexOpts.Filter != nil {
+		filter = func(id core.LocalID) bool {
+			return indexOpts.Filter(id)
+		}
 	}
 	memResults := memT.Search(query, k, filter)
 
@@ -1096,11 +1162,28 @@ func (tx *Tx[T]) KNNSearchStream(ctx context.Context, query []float32, k int, op
 		allMemResults = index.MergeSearchResults(memResults, queueResults, k)
 	}
 
+	var mergedStream iter.Seq2[index.SearchResult, error]
 	if len(allMemResults) == 0 {
-		return filteredIndexStream
+		mergedStream = filteredIndexStream
+	} else {
+		memStream := index.SliceToStream(allMemResults)
+		mergedStream = index.MergeSearchStreams(filteredIndexStream, memStream)
 	}
-	memStream := index.SliceToStream(allMemResults)
-	return index.MergeSearchStreams(filteredIndexStream, memStream)
+
+	// Convert to engine.SearchResult
+	return func(yield func(SearchResult, error) bool) {
+		for res, err := range mergedStream {
+			if err != nil {
+				if !yield(SearchResult{}, err) {
+					return
+				}
+				continue
+			}
+			if !yield(SearchResult{ID: uint64(res.ID), Distance: res.Distance}, nil) {
+				return
+			}
+		}
+	}
 }
 
 // SaveToWriter saves the database to an io.Writer.
@@ -1190,17 +1273,6 @@ func (tx *Tx[T]) autoCheckpoint() error {
 		return fmt.Errorf("failed to rename snapshot: %w", err)
 	}
 	return nil
-}
-
-func toSearchResults(items []searcher.PriorityQueueItem) []index.SearchResult {
-	res := make([]index.SearchResult, len(items))
-	for i, item := range items {
-		res[i] = index.SearchResult{
-			ID:       item.Node,
-			Distance: item.Distance,
-		}
-	}
-	return res
 }
 
 // Close releases all resources held by the transaction coordinator.

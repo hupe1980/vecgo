@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/testutil"
 )
 
@@ -251,8 +252,8 @@ func TestIterate(t *testing.T) {
 	s.Append([]float32{7.0, 8.0, 9.0})
 	s.DeleteVector(1)
 
-	var visited []uint64
-	s.Iterate(func(id uint64, vec []float32) bool {
+	var visited []core.LocalID
+	s.Iterate(func(id core.LocalID, vec []float32) bool {
 		visited = append(visited, id)
 		return true
 	})
@@ -272,7 +273,7 @@ func TestIterate_EarlyStop(t *testing.T) {
 	}
 
 	count := 0
-	s.Iterate(func(id uint64, vec []float32) bool {
+	s.Iterate(func(id core.LocalID, vec []float32) bool {
 		count++
 		return count < 3
 	})
@@ -375,12 +376,12 @@ func TestMmap(t *testing.T) {
 
 	for i := 0; i < 100; i++ {
 		if i == 50 {
-			if _, ok := ms.GetVector(uint64(i)); ok {
+			if _, ok := ms.GetVector(core.LocalID(i)); ok {
 				t.Errorf("GetVector(%d) should return false for deleted vector", i)
 			}
 			continue
 		}
-		got, ok := ms.GetVector(uint64(i))
+		got, ok := ms.GetVector(core.LocalID(i))
 		if !ok {
 			t.Errorf("GetVector(%d) returned false", i)
 			continue
@@ -417,7 +418,7 @@ func TestConcurrentRead(t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < 100; i++ {
 				id := uint64(rng.Intn(1000))
-				s.GetVector(id)
+				s.GetVector(core.LocalID(id))
 			}
 		}()
 	}
@@ -446,7 +447,7 @@ func TestLargeStore(t *testing.T) {
 
 	dim := 128
 	count := 100000
-	s := NewWithCapacity(dim, count)
+	s := New(dim)
 
 	vec := make([]float32, dim)
 	for i := 0; i < count; i++ {
@@ -466,7 +467,7 @@ func TestLargeStore(t *testing.T) {
 
 	for i := 0; i < 100; i++ {
 		id := uint64(rng.Intn(count))
-		got, ok := s.GetVector(id)
+		got, ok := s.GetVector(core.LocalID(id))
 		if !ok {
 			t.Errorf("GetVector(%d) returned false", id)
 			continue
@@ -517,7 +518,7 @@ func BenchmarkGetVector(b *testing.B) {
 	b.ResetTimer()
 	var i int
 	for b.Loop() {
-		s.GetVector(uint64(i % 10000))
+		s.GetVector(core.LocalID(i % 10000))
 		i++
 	}
 }
@@ -532,7 +533,7 @@ func BenchmarkIterate(b *testing.B) {
 
 	b.ResetTimer()
 	for b.Loop() {
-		s.Iterate(func(id uint64, vec []float32) bool {
+		s.Iterate(func(id core.LocalID, vec []float32) bool {
 			return true
 		})
 	}

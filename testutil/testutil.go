@@ -235,7 +235,7 @@ func BruteForceSearch(vectors [][]float32, query []float32, k int) []SearchResul
 
 	for i, v := range vectors {
 		d := squaredL2(query, v)
-		results[i] = result{id: uint64(i), dist: d}
+		results[i] = result{id: uint64(i), dist: d} //nolint:gosec
 	}
 
 	sort.Slice(results, func(i, j int) bool {

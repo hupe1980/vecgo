@@ -66,7 +66,7 @@ func loadFlatMmap(data []byte) (index.Index, int, error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	f.maxID.Store(nodeCount)
+	f.maxID.Store(uint32(nodeCount))
 
 	// Read Markers
 	markers, err := r.ReadBytes(int(nodeCount))
@@ -102,7 +102,7 @@ func loadFlatMmap(data []byte) (index.Index, int, error) {
 	// Reconstruct deleted
 	for i := 0; i < int(nodeCount); i++ {
 		if markers[i] == 0 {
-			f.deleted.Set(uint64(i))
+			f.deleted.Set(uint32(i))
 		}
 	}
 

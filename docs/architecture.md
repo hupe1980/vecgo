@@ -67,17 +67,17 @@ Vecgo separates **External Identity** from **Internal Execution** to optimize fo
     -   Stable, durable, user-facing ID.
     -   Used for routing, API results, and WAL entries.
     -   *Invariant*: Never reused. Tombstones are permanent until compaction.
-    -   **Encoding**: `[ShardID:8 bits][ShardLocalID:56 bits]`
+    -   **Encoding**: `[ShardID:32 bits][LocalID:32 bits]`
 
 2.  **LocalID (`uint32`)**:
     -   Dense, transient, internal index.
     -   Used for **all** hot-path structures: graph adjacency, visited bitsets, heap items.
     -   *Benefit*: Reduces graph edge size by 50% (4 bytes vs 8 bytes), doubles cache density.
-    -   *Scope*: Local to a single Segment (Shard or DiskANN file).
+    -   *Scope*: Local to a single Shard.
 
 3.  **Translation**:
-    -   `Segment.GlobalOf(localID uint32) uint64` (Array lookup: fast).
-    -   `Segment.LocalOf(globalID uint64) (uint32, bool)` (Hash map or sparse array: slower, used only at query entry).
+    -   `GlobalOf(localID)`: `(ShardID << 32) | LocalID` (Bitwise: zero overhead).
+    -   `LocalOf(globalID)`: `globalID & 0xFFFFFFFF` (Bitwise: zero overhead).
 
 ### 2. Vecgo API (`vecgo.go`)
 
@@ -142,7 +142,7 @@ type Coordinator[T any] interface {
    - Timeout handling: Respects ctx.Done() during parallel search operations
    - **Worker Pool**: Fixed goroutine pool for parallel searches (zero goroutine creation per search)
    - Fan-out search to all shards via worker pool, merge results
-    - **GlobalID encoding**: `[ShardID:8 bits][ShardLocalID:56 bits]` (stable, immutable, sharding-friendly)
+    - **GlobalID encoding**: `[ShardID:32 bits][LocalID:32 bits]` (stable, immutable, sharding-friendly)
    - O(1) routing for Update/Delete/Get operations
    - **Performance**: Linear write scaling with number of shards
 
@@ -166,11 +166,10 @@ type Coordinator[T any] interface {
 - `Delete(ctx, id)`: Soft delete (tombstone), trigger compaction if threshold exceeded
 - `Get(ctx, id)`: Decode GlobalID, retrieve vector + metadata from correct shard
 - `KNNSearch(ctx, query, k, filter)`: Fan-out via worker pool, merge top-k results, translate GlobalIDs in filters
-- `KNNSearchWithContext(ctx, query, k, searcher)`: Zero-allocation path using caller-provided scratch memory
 
-## Searcher Context (Zero-Alloc Runtime)
+## Searcher Context (Internal Optimization)
 
-To achieve maximum performance and zero allocations in the steady state, Vecgo introduces the `Searcher` context.
+To achieve maximum performance and zero allocations in the steady state, Vecgo uses the `Searcher` context internally.
 
 **Problem**: Traditional search implementations allocate memory for:
 - Priority queues (candidates)
@@ -179,7 +178,7 @@ To achieve maximum performance and zero allocations in the steady state, Vecgo i
 - IO buffers (disk reads)
 
 **Solution**: The `Searcher` struct owns all these resources.
-- **Reusable**: Created once per goroutine/worker, reset between searches.
+- **Reusable**: Managed by the engine's worker pool.
 - **Typed**: Uses value-based heaps (`PriorityQueueItem`) to avoid pointer overhead.
 - **Sized**: Pre-allocated to the maximum index size.
 
@@ -193,7 +192,7 @@ type Searcher struct {
 }
 ```
 
-When `KNNSearchWithContext` is called, the index uses the provided `Searcher` instead of allocating new structures. This reduces GC pressure to near zero for read-heavy workloads.
+The `ShardedCoordinator` automatically acquires and releases `Searcher` contexts from a pool during parallel execution, ensuring zero-allocation behavior for the search path without exposing complexity to the user.
 
 ### 3. Inner Workings & Optimizations
 
@@ -213,11 +212,11 @@ To scale beyond a single core's capacity, Vecgo implements a **Shared-Nothing Sh
 *   **Global ID Encoding (Stable External IDs)**:
     Vecgo uses a 64-bit `GlobalID` that encodes routing information directly into the ID:
     ```
-    | Shard Index (8 bits) | ShardLocalID (56 bits) |
-    |----------------------|--------------------|
+    | Shard Index (32 bits) | LocalID (32 bits) |
+    |-----------------------|-------------------|
     ```
-    *   **Max Shards**: 256
-    *   **Max Vectors per Shard**: ~72 Quadrillion (effectively infinite)
+    *   **Max Shards**: ~4 Billion
+    *   **Max Vectors per Shard**: ~4 Billion
     *   **Total Capacity**: Infinite for all practical purposes
     *   **Why 64-bit?**: Prevents ID exhaustion in long-running systems and aligns with DiskANN's native storage format.
 
@@ -231,7 +230,7 @@ To scale beyond a single core's capacity, Vecgo implements a **Shared-Nothing Sh
 
 *   **Routing**:
     *   **Insert**: Round-robin distribution ensures balanced load.
-    *   **Update/Delete**: $O(1)$ routing. The shard index is extracted from the ID `(id >> 56)`, allowing direct access to the correct shard without a lookup table.
+    *   **Update/Delete**: $O(1)$ routing. The shard index is extracted from the ID `(id >> 32)`, allowing direct access to the correct shard without a lookup table.
     *   **Search**: Scatter-Gather. The request is fanned out to all shards in parallel using a worker pool. Results are merged (Top-K) at the coordinator level.
 
 #### B. Update Semantics
@@ -390,21 +389,21 @@ type ColumnarStore struct {
 **Operations**:
 ```go
 // Add vector (O(1) amortized)
-func (c *ColumnarStore) Add(vec []float32) uint64 {
-    id := c.count
+func (c *ColumnarStore) Add(vec []float32) core.LocalID {
+    id := core.LocalID(c.count)
     c.vectors = append(c.vectors, vec...)
     c.count++
     return id
 }
 
 // Get vector (O(1))
-func (c *ColumnarStore) Get(id uint64) []float32 {
-    offset := id * c.dimension
+func (c *ColumnarStore) Get(id core.LocalID) []float32 {
+    offset := int(id) * c.dimension
     return c.vectors[offset : offset+c.dimension]
 }
 
 // Delete (soft, O(1))
-func (c *ColumnarStore) Delete(id uint64) {
+func (c *ColumnarStore) Delete(id core.LocalID) {
     c.tombstones[id] = struct{}{}
 }
 ```
@@ -915,10 +914,10 @@ Want to add a new index type? Implement these interfaces:
 ```go
 // Core index interface
 type Index interface {
-    Add(vector []float32) (uint64, error)
-    Search(query []float32, k int) ([]Result, error)
-    Update(id uint64, vector []float32) error
-    Delete(id uint64) error
+    Add(vector []float32) (uint32, error)
+    Search(query []float32, k int) ([]SearchResult, error)
+    Update(id uint32, vector []float32) error
+    Delete(id uint32) error
     Close() error  // Idempotent, waits for background workers
 }
 

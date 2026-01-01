@@ -6,6 +6,7 @@ import (
 	"io"
 
 	"github.com/hupe1980/vecgo/codec"
+	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/metadata"
 	"github.com/hupe1980/vecgo/persistence"
@@ -302,7 +303,7 @@ func LoadFromReaderWithCodec[T any](r io.ReadSeeker, c codec.Codec) (*Snapshot[T
 
 	dataStoreOut := NewMapStore[T]()
 	for i := uint64(0); i < storeCount; i++ {
-		var id uint64
+		var id uint32
 		if err := binary.Read(storeChecksumReader, binary.LittleEndian, &id); err != nil {
 			return nil, fmt.Errorf("failed to read store id: %w", err)
 		}
@@ -324,7 +325,7 @@ func LoadFromReaderWithCodec[T any](r io.ReadSeeker, c codec.Codec) (*Snapshot[T
 		if err := c.Unmarshal(dataBytes, &data); err != nil {
 			return nil, fmt.Errorf("failed to decode store data: %w", err)
 		}
-		dataStoreOut.Set(id, data)
+		dataStoreOut.Set(core.LocalID(id), data)
 	}
 
 	// Drain and verify
@@ -360,7 +361,7 @@ func LoadFromReaderWithCodec[T any](r io.ReadSeeker, c codec.Codec) (*Snapshot[T
 
 	metadataStoreOut := NewMapStore[metadata.Metadata]()
 	for i := uint64(0); i < metaCount; i++ {
-		var id uint64
+		var id uint32
 		if err := binary.Read(metaChecksumReader, binary.LittleEndian, &id); err != nil {
 			return nil, fmt.Errorf("failed to read metadata id: %w", err)
 		}
@@ -382,7 +383,7 @@ func LoadFromReaderWithCodec[T any](r io.ReadSeeker, c codec.Codec) (*Snapshot[T
 		if err := meta.UnmarshalBinary(metaBytes); err != nil {
 			return nil, fmt.Errorf("failed to decode metadata: %w", err)
 		}
-		metadataStoreOut.Set(id, meta)
+		metadataStoreOut.Set(core.LocalID(id), meta)
 	}
 
 	// Drain and verify

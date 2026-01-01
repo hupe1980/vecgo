@@ -1,6 +1,9 @@
 package engine
 
-import "github.com/hupe1980/vecgo/metadata"
+import (
+	"github.com/hupe1980/vecgo/core"
+	"github.com/hupe1980/vecgo/metadata"
+)
 
 // Durability abstracts the prepare/commit logging used by the mutation coordinator.
 //
@@ -11,17 +14,17 @@ import "github.com/hupe1980/vecgo/metadata"
 // This interface intentionally matches the WAL method surface used by Tx.
 // A *wal.WAL satisfies this interface.
 type Durability interface {
-	LogPrepareInsert(id uint64, vector []float32, payload []byte, meta metadata.Metadata) error
-	LogCommitInsert(id uint64) error
+	LogPrepareInsert(id core.LocalID, vector []float32, payload []byte, meta metadata.Metadata) error
+	LogCommitInsert(id core.LocalID) error
 
-	LogPrepareBatchInsert(ids []uint64, vectors [][]float32, payloads [][]byte, metadataSlice []metadata.Metadata) error
-	LogCommitBatchInsert(ids []uint64) error
+	LogPrepareBatchInsert(ids []core.LocalID, vectors [][]float32, payloads [][]byte, metadataSlice []metadata.Metadata) error
+	LogCommitBatchInsert(ids []core.LocalID) error
 
-	LogPrepareUpdate(id uint64, vector []float32, payload []byte, meta metadata.Metadata) error
-	LogCommitUpdate(id uint64) error
+	LogPrepareUpdate(id core.LocalID, vector []float32, payload []byte, meta metadata.Metadata) error
+	LogCommitUpdate(id core.LocalID) error
 
-	LogPrepareDelete(id uint64) error
-	LogCommitDelete(id uint64) error
+	LogPrepareDelete(id core.LocalID) error
+	LogCommitDelete(id core.LocalID) error
 
 	// Close releases any resources held by the durability layer (e.g. file handles).
 	Close() error
@@ -36,18 +39,18 @@ type Durability interface {
 // correctness bifurcation.
 type NoopDurability struct{}
 
-func (NoopDurability) LogPrepareInsert(uint64, []float32, []byte, metadata.Metadata) error {
+func (NoopDurability) LogPrepareInsert(core.LocalID, []float32, []byte, metadata.Metadata) error {
 	return nil
 }
-func (NoopDurability) LogCommitInsert(uint64) error { return nil }
-func (NoopDurability) LogPrepareBatchInsert([]uint64, [][]float32, [][]byte, []metadata.Metadata) error {
+func (NoopDurability) LogCommitInsert(core.LocalID) error { return nil }
+func (NoopDurability) LogPrepareBatchInsert([]core.LocalID, [][]float32, [][]byte, []metadata.Metadata) error {
 	return nil
 }
-func (NoopDurability) LogCommitBatchInsert([]uint64) error { return nil }
-func (NoopDurability) LogPrepareUpdate(uint64, []float32, []byte, metadata.Metadata) error {
+func (NoopDurability) LogCommitBatchInsert([]core.LocalID) error { return nil }
+func (NoopDurability) LogPrepareUpdate(core.LocalID, []float32, []byte, metadata.Metadata) error {
 	return nil
 }
-func (NoopDurability) LogCommitUpdate(uint64) error  { return nil }
-func (NoopDurability) LogPrepareDelete(uint64) error { return nil }
-func (NoopDurability) LogCommitDelete(uint64) error  { return nil }
-func (NoopDurability) Close() error                  { return nil }
+func (NoopDurability) LogCommitUpdate(core.LocalID) error  { return nil }
+func (NoopDurability) LogPrepareDelete(core.LocalID) error { return nil }
+func (NoopDurability) LogCommitDelete(core.LocalID) error  { return nil }
+func (NoopDurability) Close() error                        { return nil }

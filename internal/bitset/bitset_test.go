@@ -101,21 +101,25 @@ func TestBitSet_NextSetBit(t *testing.T) {
 	b.Set(100)
 
 	tests := []struct {
-		start    uint64
-		expected int64
+		start    uint32
+		expected uint32
+		found    bool
 	}{
-		{0, 10},
-		{10, 10},
-		{11, 20},
-		{20, 20},
-		{21, 100},
-		{100, 100},
-		{101, -1},
+		{0, 10, true},
+		{10, 10, true},
+		{11, 20, true},
+		{20, 20, true},
+		{21, 100, true},
+		{100, 100, true},
+		{101, 0, false},
 	}
 
 	for _, tt := range tests {
-		got := b.NextSetBit(tt.start)
-		if got != tt.expected {
+		got, found := b.NextSetBit(tt.start)
+		if found != tt.found {
+			t.Errorf("NextSetBit(%d) found = %v, expected %v", tt.start, found, tt.found)
+		}
+		if found && got != tt.expected {
 			t.Errorf("NextSetBit(%d) = %d, expected %d", tt.start, got, tt.expected)
 		}
 	}

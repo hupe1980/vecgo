@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/testutil"
 )
@@ -44,7 +45,7 @@ func TestMutableIndex(t *testing.T) {
 
 	// Insert vectors one by one
 	vectors := rng.UniformVectors(100, 32)
-	ids := make([]uint64, 100)
+	ids := make([]core.LocalID, 100)
 	for i := 0; i < 100; i++ {
 		id, err := idx.Insert(ctx, vectors[i])
 		if err != nil {
@@ -68,7 +69,7 @@ func TestMutableIndex(t *testing.T) {
 	}
 
 	// First result should be the query itself
-	if results[0].ID != ids[0] {
+	if results[0].ID != uint32(ids[0]) {
 		t.Logf("Warning: First result ID=%d, expected %d (distance=%f)", results[0].ID, ids[0], results[0].Distance)
 	}
 
@@ -91,7 +92,7 @@ func TestMutableIndex(t *testing.T) {
 	}
 
 	for _, r := range results {
-		if r.ID == ids[0] {
+		if r.ID == uint32(ids[0]) {
 			t.Errorf("Search returned deleted vector ID=%d", r.ID)
 		}
 	}
@@ -251,8 +252,8 @@ func TestMutableStats(t *testing.T) {
 	}
 
 	// Delete some
-	for i := uint64(0); i < 5; i++ {
-		if err := idx.Delete(ctx, i); err != nil {
+	for i := uint32(0); i < 5; i++ {
+		if err := idx.Delete(ctx, core.LocalID(i)); err != nil {
 			t.Fatalf("Delete[%d]: %v", i, err)
 		}
 	}
@@ -359,7 +360,7 @@ func TestCompaction(t *testing.T) {
 
 	// Insert 100 vectors
 	vectors := make([][]float32, 100)
-	ids := make([]uint64, 100)
+	ids := make([]core.LocalID, 100)
 	for i := 0; i < 100; i++ {
 		vectors[i] = make([]float32, 16)
 		for j := range vectors[i] {
@@ -474,8 +475,8 @@ func TestAutoCompaction(t *testing.T) {
 	}
 
 	// Delete 15 vectors (30% deletion rate - above threshold)
-	for i := uint64(0); i < 15; i++ {
-		if err := idx.Delete(ctx, i); err != nil {
+	for i := uint32(0); i < 15; i++ {
+		if err := idx.Delete(ctx, core.LocalID(i)); err != nil {
 			t.Fatalf("Delete[%d]: %v", i, err)
 		}
 	}
@@ -531,8 +532,8 @@ func TestCompactionConcurrency(t *testing.T) {
 	}
 
 	// Delete half
-	for i := uint64(0); i < 50; i++ {
-		if err := idx.Delete(ctx, i); err != nil {
+	for i := uint32(0); i < 50; i++ {
+		if err := idx.Delete(ctx, core.LocalID(i)); err != nil {
 			t.Fatalf("Delete[%d]: %v", i, err)
 		}
 	}

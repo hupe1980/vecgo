@@ -12,12 +12,11 @@ import (
 
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/metadata"
-	"github.com/hupe1980/vecgo/searcher"
 )
 
 type testShardResult struct {
 	shardIdx int
-	results  []index.SearchResult
+	results  []SearchResult
 	err      error
 }
 
@@ -28,7 +27,7 @@ type mockShard[T any] struct {
 	searchCount atomic.Int32
 }
 
-func (m *mockShard[T]) KNNSearch(ctx context.Context, query []float32, k int, opts *index.SearchOptions) ([]index.SearchResult, error) {
+func (m *mockShard[T]) KNNSearch(ctx context.Context, query []float32, k int, opts *SearchOptions) ([]SearchResult, error) {
 	m.searchCount.Add(1)
 
 	if m.searchDelay > 0 {
@@ -43,9 +42,9 @@ func (m *mockShard[T]) KNNSearch(ctx context.Context, query []float32, k int, op
 		return nil, m.searchError
 	}
 
-	results := make([]index.SearchResult, k)
+	results := make([]SearchResult, k)
 	for i := range results {
-		results[i] = index.SearchResult{
+		results[i] = SearchResult{
 			ID:       uint64(i),
 			Distance: float32(i) * 0.1,
 		}
@@ -53,7 +52,7 @@ func (m *mockShard[T]) KNNSearch(ctx context.Context, query []float32, k int, op
 	return results, nil
 }
 
-func (m *mockShard[T]) KNNSearchWithBuffer(ctx context.Context, query []float32, k int, opts *index.SearchOptions, buf *[]index.SearchResult) error {
+func (m *mockShard[T]) KNNSearchWithBuffer(ctx context.Context, query []float32, k int, opts *SearchOptions, buf *[]SearchResult) error {
 	res, err := m.KNNSearch(ctx, query, k, opts)
 	if err != nil {
 		return err
@@ -62,11 +61,7 @@ func (m *mockShard[T]) KNNSearchWithBuffer(ctx context.Context, query []float32,
 	return nil
 }
 
-func (m *mockShard[T]) KNNSearchWithContext(ctx context.Context, query []float32, k int, opts *index.SearchOptions, s *searcher.Searcher) error {
-	return nil
-}
-
-func (m *mockShard[T]) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint64) bool) ([]index.SearchResult, error) {
+func (m *mockShard[T]) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint64) bool) ([]SearchResult, error) {
 	return m.KNNSearch(ctx, query, k, nil)
 }
 
@@ -95,15 +90,15 @@ func (m *mockShard[T]) GetMetadata(id uint64) (metadata.Metadata, bool) {
 	return nil, false
 }
 
-func (m *mockShard[T]) HybridSearch(ctx context.Context, query []float32, k int, opts *HybridSearchOptions) ([]index.SearchResult, error) {
+func (m *mockShard[T]) HybridSearch(ctx context.Context, query []float32, k int, opts *HybridSearchOptions) ([]SearchResult, error) {
 	return m.KNNSearch(ctx, query, k, nil)
 }
 
-func (m *mockShard[T]) KNNSearchStream(ctx context.Context, query []float32, k int, opts *index.SearchOptions) iter.Seq2[index.SearchResult, error] {
-	return func(yield func(index.SearchResult, error) bool) {
+func (m *mockShard[T]) KNNSearchStream(ctx context.Context, query []float32, k int, opts *SearchOptions) iter.Seq2[SearchResult, error] {
+	return func(yield func(SearchResult, error) bool) {
 		res, err := m.KNNSearch(ctx, query, k, opts)
 		if err != nil {
-			yield(index.SearchResult{}, err)
+			yield(SearchResult{}, err)
 			return
 		}
 		for _, r := range res {

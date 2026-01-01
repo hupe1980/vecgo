@@ -5,6 +5,7 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/metadata"
 )
 
@@ -105,7 +106,7 @@ func TestMemoryUsageComparison(t *testing.T) {
 				v := string([]byte(values[(i+j)%uniqueValues])) // Force allocation
 				doc[k] = metadata.String(v)
 			}
-			idx.Set(uint64(i), doc)
+			idx.Set(core.LocalID(i), doc)
 		}
 
 		endMem := getHeapUsage()

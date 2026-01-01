@@ -12,6 +12,7 @@ import (
 	"errors"
 	"sync/atomic"
 
+	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/vectorstore"
 )
 
@@ -49,21 +50,21 @@ func (s *Store) SetData(data []float32) {
 
 func (s *Store) Dimension() int { return s.dim }
 
-func (s *Store) GetVector(id uint64) ([]float32, bool) {
+func (s *Store) GetVector(id core.LocalID) ([]float32, bool) {
 	data := *s.data.Load()
-	idx := int(id) * s.dim
+	idx := int(id) * s.dim //nolint:gosec
 	if idx < 0 || idx+s.dim > len(data) {
 		return nil, false
 	}
 	return data[idx : idx+s.dim], true
 }
 
-func (s *Store) SetVector(id uint64, v []float32) error {
+func (s *Store) SetVector(id core.LocalID, v []float32) error {
 	if len(v) != s.dim {
 		return vectorstore.ErrWrongDimension
 	}
 	data := *s.data.Load()
-	idx := int(id) * s.dim
+	idx := int(id) * s.dim //nolint:gosec
 	if idx < 0 || idx+s.dim > len(data) {
 		return errors.New("zerocopy: id out of bounds")
 	}
@@ -72,7 +73,7 @@ func (s *Store) SetVector(id uint64, v []float32) error {
 	return nil
 }
 
-func (s *Store) DeleteVector(id uint64) error {
+func (s *Store) DeleteVector(id core.LocalID) error {
 	// Zero out the vector? Or just ignore?
 	// For mmap read-only, we can't really delete.
 	// But this store might be used for mutable buffers too.

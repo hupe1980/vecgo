@@ -748,9 +748,9 @@ results1 := db.Search(query1).KNN(10).Filter(filter).Execute(ctx)
 results2 := db.Search(query2).KNN(10).Filter(filter).Execute(ctx)
 ```
 
-## Zero-Allocation Search
+## Reduced-Allocation Search
 
-For ultra-low latency and high throughput, use the `Searcher` context to eliminate heap allocations during search.
+For high throughput workloads, use `WithBuffer` to reuse result slice allocations.
 
 ### When to use
 - High QPS workloads (>10k QPS)
@@ -759,43 +759,27 @@ For ultra-low latency and high throughput, use the `Searcher` context to elimina
 
 ### How to implement
 
-1.  **Create a Searcher**: Initialize it once per worker goroutine.
-2.  **Reuse**: Call `Reset()` before each use.
-3.  **Inject**: Use `.WithSearcher(s)` in the query builder.
+1.  **Create a Buffer**: Initialize it once per worker goroutine.
+2.  **Reuse**: Reset length to 0 before each use.
+3.  **Inject**: Use `.WithBuffer(&buf)` in the query builder.
 
 ```go
-import "github.com/hupe1980/vecgo/searcher"
-
 // 1. Initialize (e.g., in a worker pool)
-s := searcher.NewSearcher(maxNodes, dimension)
+buf := make([]vecgo.SearchResult[string], 0, 100)
 
 // 2. Loop
 for job := range jobs {
-    s.Reset() // Critical: Reset state
+    buf = buf[:0] // Critical: Reset length
     
     // 3. Execute
     results, err := db.Search(job.Query).
         KNN(10).
-        WithSearcher(s).
+        WithBuffer(&buf).
         Execute(ctx)
 }
 ```
 
-**Impact**: Reduces allocations from ~100-500/op to **0-5/op** (depending on index type).
-
-### Hybrid Search Optimization
-
-The `Searcher` context also optimizes hybrid search (vector + metadata filtering) by reusing internal bitmaps.
-
-```go
-// Hybrid Search with Zero Allocations
-s.Reset()
-results, err := db.Search(query).
-    KNN(10).
-    Filter(metadata.NewFilterSet(...)).
-    WithSearcher(s). // Reuses s.FilterBitmap for filter compilation
-    Execute(ctx)
-```
+**Impact**: Reduces allocations significantly by reusing the result slice. Note that internal search structures are managed automatically by the engine's worker pool.
 
 ---
 

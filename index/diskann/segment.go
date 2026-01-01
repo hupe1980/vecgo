@@ -12,6 +12,7 @@ import (
 	"sync"
 	"unsafe"
 
+	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/internal/bitset"
 	"github.com/hupe1980/vecgo/internal/mmap"
@@ -22,18 +23,18 @@ import (
 // Segment represents an immutable, disk-resident DiskANN index segment.
 // It supports concurrent searches but no mutations.
 type Segment struct {
-	id        uint64 // Unique segment ID (usually from filename or sequence)
-	baseID    uint64 // The starting Global ID for this segment
+	id        uint64       // Unique segment ID (usually from filename or sequence)
+	baseID    core.LocalID // The starting Global ID for this segment
 	dim       int
-	count     uint64
+	count     uint32
 	distType  index.DistanceType
 	distFunc  index.DistanceFunc
 	opts      *Options
 	fileFlags uint32
 
 	// Graph navigation (in RAM)
-	entryPoint uint64
-	graph      [][]uint64 // Adjacency lists (immutable)
+	entryPoint uint32
+	graph      [][]uint32 // Adjacency lists (immutable)
 
 	// PQ for approximate distances (in RAM)
 	pq      *quantization.ProductQuantizer
@@ -53,7 +54,7 @@ type Segment struct {
 }
 
 // OpenSegment opens an existing DiskANN segment from disk.
-func OpenSegment(path string, baseID uint64, opts *Options) (*Segment, error) {
+func OpenSegment(path string, baseID core.LocalID, opts *Options) (*Segment, error) {
 	if opts == nil {
 		opts = DefaultOptions()
 	}
@@ -117,7 +118,7 @@ func (s *Segment) Close() error {
 }
 
 // Search performs k-nearest neighbor search on the segment.
-func (s *Segment) Search(query []float32, k int, filter func(uint64) bool) ([]index.SearchResult, error) {
+func (s *Segment) Search(query []float32, k int, filter func(core.LocalID) bool) ([]index.SearchResult, error) {
 	if len(query) != s.dim {
 		return nil, &index.ErrDimensionMismatch{Expected: s.dim, Actual: len(query)}
 	}
@@ -135,11 +136,11 @@ func (s *Segment) Search(query []float32, k int, filter func(uint64) bool) ([]in
 	}
 
 	// Adapt filter to internal IDs
-	internalFilter := func(internalID uint64) bool {
+	internalFilter := func(internalID uint32) bool {
 		if filter == nil {
 			return true
 		}
-		return filter(internalID + s.baseID)
+		return filter(core.LocalID(internalID) + s.baseID)
 	}
 
 	// Phase 1: Beam search
@@ -162,19 +163,19 @@ func (s *Segment) Search(query []float32, k int, filter func(uint64) bool) ([]in
 
 	// Map to Global IDs
 	for i := range results {
-		results[i].ID += s.baseID
+		results[i].ID += uint32(s.baseID)
 	}
 
 	return results, nil
 }
 
 // SearchWithBuffer performs KNN search and appends results to the provided buffer.
-func (s *Segment) SearchWithBuffer(ctx context.Context, query []float32, k int, distTable []float32, filter func(uint64) bool, scratch *searchScratch, buf *[]index.SearchResult) error {
+func (s *Segment) SearchWithBuffer(ctx context.Context, query []float32, k int, distTable []float32, filter func(core.LocalID) bool, scratch *searchScratch, buf *[]index.SearchResult) error {
 	// Local filter wrapper to handle Global ID -> Local ID mapping
-	var localFilter func(uint64) bool
+	var localFilter func(uint32) bool
 	if filter != nil {
-		localFilter = func(localID uint64) bool {
-			return filter(s.baseID + localID)
+		localFilter = func(localID uint32) bool {
+			return filter(s.baseID + core.LocalID(localID))
 		}
 	}
 
@@ -205,7 +206,7 @@ func (s *Segment) SearchWithBuffer(ctx context.Context, query []float32, k int, 
 			continue
 		}
 		dist := s.distFunc(query, vec)
-		*buf = append(*buf, index.SearchResult{ID: s.baseID + c.id, Distance: dist})
+		*buf = append(*buf, index.SearchResult{ID: uint32(s.baseID) + c.id, Distance: dist})
 	}
 
 	// Sort the appended part
@@ -223,7 +224,7 @@ func (s *Segment) SearchWithBuffer(ctx context.Context, query []float32, k int, 
 }
 
 // beamSearch performs beam search through the graph.
-func (s *Segment) beamSearch(query []float32, distTable []float32, queryBQ []uint64, topK int, filter func(uint64) bool, scratch *searchScratch) []distNode {
+func (s *Segment) beamSearch(query []float32, distTable []float32, queryBQ []uint64, topK int, filter func(uint32) bool, scratch *searchScratch) []distNode {
 	if len(s.graph) == 0 {
 		return nil
 	}
@@ -232,14 +233,14 @@ func (s *Segment) beamSearch(query []float32, distTable []float32, queryBQ []uin
 	*candidates = (*candidates)[:0]
 
 	entryPoint := s.entryPoint
-	if entryPoint >= uint64(len(s.graph)) {
+	if entryPoint >= uint32(len(s.graph)) {
 		return nil
 	}
 
 	entryDist := s.computeDistance(query, entryPoint, distTable)
 	candidates.push(distNode{id: entryPoint, dist: entryDist})
 
-	maxID := uint64(len(s.graph))
+	maxID := uint32(len(s.graph))
 	visited := scratch.visited
 	visited.ClearAll()
 	if visited.Len() < maxID {
@@ -265,7 +266,7 @@ func (s *Segment) beamSearch(query []float32, distTable []float32, queryBQ []uin
 			}
 		}
 
-		if curr.id < uint64(len(s.graph)) {
+		if curr.id < uint32(len(s.graph)) {
 			for _, neighbor := range s.graph[curr.id] {
 				if neighbor >= maxID || visited.Test(neighbor) {
 					continue
@@ -325,12 +326,12 @@ func (s *Segment) rerank(query []float32, candidates []distNode, k int) []index.
 
 	out := make([]index.SearchResult, len(results))
 	for i, r := range results {
-		out[i] = index.SearchResult{ID: r.id, Distance: r.dist}
+		out[i] = index.SearchResult{ID: uint32(s.baseID) + r.id, Distance: r.dist}
 	}
 	return out
 }
 
-func (s *Segment) computeDistance(v []float32, id uint64, distTable []float32) float32 {
+func (s *Segment) computeDistance(v []float32, id uint32, distTable []float32) float32 {
 	M := s.opts.PQSubvectors
 	offset := int(id) * M
 	if distTable != nil && offset+M <= len(s.pqCodes) {
@@ -343,7 +344,7 @@ func (s *Segment) computeDistance(v []float32, id uint64, distTable []float32) f
 	return s.distFunc(v, vec)
 }
 
-func (s *Segment) getVector(id uint64) []float32 {
+func (s *Segment) getVector(id uint32) []float32 {
 	if s.mmapReader == nil {
 		return nil
 	}
@@ -354,7 +355,7 @@ func (s *Segment) getVector(id uint64) []float32 {
 	return unsafe.Slice((*float32)(unsafe.Pointer(&s.mmapReader.Data[offset])), s.dim)
 }
 
-func (s *Segment) getVisitedBitset(size uint64) *bitset.BitSet {
+func (s *Segment) getVisitedBitset(size uint32) *bitset.BitSet {
 	bs := s.visitedPool.Get().(*bitset.BitSet)
 	bs.ClearAll()
 	if bs.Len() < size {
@@ -388,7 +389,7 @@ func (s *Segment) loadMeta(path string) error {
 
 	s.fileFlags = header.Flags
 	s.dim = int(header.Dimension)
-	s.count = header.Count
+	s.count = uint32(header.Count)
 	s.distType = header.DistType()
 	s.distFunc = index.NewDistanceFunc(s.distType)
 
@@ -396,11 +397,11 @@ func (s *Segment) loadMeta(path string) error {
 	s.opts.PQSubvectors = int(header.PQSubvectors)
 	s.opts.PQCentroids = int(header.PQCentroids)
 
-	var entryBuf [8]byte
+	var entryBuf [4]byte
 	if _, err := io.ReadFull(f, entryBuf[:]); err != nil {
 		return err
 	}
-	s.entryPoint = binary.LittleEndian.Uint64(entryBuf[:])
+	s.entryPoint = binary.LittleEndian.Uint32(entryBuf[:])
 
 	return s.loadPQCodebooks(f, &header)
 }
@@ -446,8 +447,8 @@ func (s *Segment) loadGraph(path string) error {
 	}
 	defer f.Close()
 
-	s.graph = make([][]uint64, s.count)
-	buf := make([]byte, 8)
+	s.graph = make([][]uint32, s.count)
+	buf := make([]byte, 4)
 	degBuf := make([]byte, 4)
 
 	for i := 0; i < int(s.count); i++ {
@@ -455,12 +456,12 @@ func (s *Segment) loadGraph(path string) error {
 			return err
 		}
 		degree := binary.LittleEndian.Uint32(degBuf)
-		s.graph[i] = make([]uint64, degree)
+		s.graph[i] = make([]uint32, degree)
 		for j := uint32(0); j < degree; j++ {
 			if _, err := io.ReadFull(f, buf); err != nil {
 				return err
 			}
-			s.graph[i][j] = binary.LittleEndian.Uint64(buf)
+			s.graph[i][j] = binary.LittleEndian.Uint32(buf)
 		}
 	}
 	return nil
@@ -501,11 +502,11 @@ func (s *Segment) loadBQCodes(path string) error {
 }
 
 // VectorByID retrieves a vector by its global ID.
-func (s *Segment) VectorByID(ctx context.Context, id uint64) ([]float32, error) {
-	if id < s.baseID || id >= s.baseID+s.count {
+func (s *Segment) VectorByID(ctx context.Context, id core.LocalID) ([]float32, error) {
+	if id < s.baseID || id >= s.baseID+core.LocalID(s.count) {
 		return nil, &index.ErrNodeNotFound{ID: id}
 	}
-	localID := id - s.baseID
+	localID := uint32(id - s.baseID)
 	vec := s.getVector(localID)
 	if vec == nil {
 		return nil, &index.ErrNodeNotFound{ID: id}
@@ -562,12 +563,12 @@ func (h candidateHeap) down(i0, n int) {
 }
 
 // SearchWithContext performs KNN search using the provided Searcher context.
-func (s *Segment) SearchWithContext(ctx context.Context, query []float32, k int, distTable []float32, filter func(uint64) bool, sr *searcher.Searcher) error {
+func (s *Segment) SearchWithContext(ctx context.Context, query []float32, k int, distTable []float32, filter func(core.LocalID) bool, sr *searcher.Searcher) error {
 	// Local filter wrapper
-	var localFilter func(uint64) bool
+	var localFilter func(uint32) bool
 	if filter != nil {
-		localFilter = func(localID uint64) bool {
-			return filter(s.baseID + localID)
+		localFilter = func(localID uint32) bool {
+			return filter(s.baseID + core.LocalID(localID))
 		}
 	}
 
@@ -603,7 +604,7 @@ func (s *Segment) SearchWithContext(ctx context.Context, query []float32, k int,
 	// Phase 2: Rerank and push to sr.Candidates (MaxHeap)
 	for _, c := range candidates {
 		// Rerank
-		vec := s.getVector(c.Node)
+		vec := s.getVector(uint32(c.Node))
 		if vec == nil {
 			continue
 		}
@@ -611,23 +612,23 @@ func (s *Segment) SearchWithContext(ctx context.Context, query []float32, k int,
 
 		// Push to result heap (bounded by k)
 		// Note: c.Node is local ID, we need global ID
-		sr.Candidates.PushItemBounded(searcher.PriorityQueueItem{Node: s.baseID + c.Node, Distance: dist}, k)
+		sr.Candidates.PushItemBounded(searcher.PriorityQueueItem{Node: core.LocalID(s.baseID + core.LocalID(c.Node)), Distance: dist}, k)
 	}
 
 	return nil
 }
 
-func (s *Segment) beamSearchWithContext(query []float32, distTable []float32, queryBQ []uint64, topK int, filter func(uint64) bool, sr *searcher.Searcher) []searcher.PriorityQueueItem {
+func (s *Segment) beamSearchWithContext(query []float32, distTable []float32, queryBQ []uint64, topK int, filter func(uint32) bool, sr *searcher.Searcher) []searcher.PriorityQueueItem {
 	if len(s.graph) == 0 {
 		return nil
 	}
 
 	entryPoint := s.entryPoint
-	if entryPoint >= uint64(len(s.graph)) {
+	if entryPoint >= uint32(len(s.graph)) {
 		return nil
 	}
 
-	globalEntryPoint := s.baseID + entryPoint
+	globalEntryPoint := s.baseID + core.LocalID(entryPoint)
 	// Note: We don't check if already visited because we want to start search here regardless.
 	// But we mark it visited.
 	sr.Visited.Visit(globalEntryPoint)
@@ -635,11 +636,11 @@ func (s *Segment) beamSearchWithContext(query []float32, distTable []float32, qu
 	entryDist := s.computeDistance(query, entryPoint, distTable)
 
 	sr.ScratchCandidates.Reset()
-	sr.ScratchCandidates.PushItem(searcher.PriorityQueueItem{Node: entryPoint, Distance: entryDist})
+	sr.ScratchCandidates.PushItem(searcher.PriorityQueueItem{Node: core.LocalID(entryPoint), Distance: entryDist})
 
 	// Keep track of best results found
 	results := sr.ScratchResults
-	results = append(results, searcher.PriorityQueueItem{Node: entryPoint, Distance: entryDist})
+	results = append(results, searcher.PriorityQueueItem{Node: core.LocalID(entryPoint), Distance: entryDist})
 
 	for sr.ScratchCandidates.Len() > 0 {
 		curr, _ := sr.ScratchCandidates.PopItem()
@@ -647,7 +648,7 @@ func (s *Segment) beamSearchWithContext(query []float32, distTable []float32, qu
 		// Expand neighbors
 		neighbors := s.graph[curr.Node]
 		for _, neighborID := range neighbors {
-			globalNeighborID := s.baseID + neighborID
+			globalNeighborID := s.baseID + core.LocalID(neighborID)
 			if sr.Visited.Visited(globalNeighborID) {
 				continue
 			}
@@ -659,7 +660,7 @@ func (s *Segment) beamSearchWithContext(query []float32, distTable []float32, qu
 
 			dist := s.computeDistance(query, neighborID, distTable)
 
-			item := searcher.PriorityQueueItem{Node: neighborID, Distance: dist}
+			item := searcher.PriorityQueueItem{Node: core.LocalID(neighborID), Distance: dist}
 			sr.ScratchCandidates.PushItem(item)
 			results = append(results, item)
 		}

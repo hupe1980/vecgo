@@ -5,16 +5,18 @@ import (
 	"fmt"
 	"io"
 	"iter"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"sync"
 
 	"github.com/hupe1980/vecgo/codec"
+	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/metadata"
-	"github.com/hupe1980/vecgo/searcher"
 )
 
 // ShardedCoordinator wraps multiple independent coordinators (shards) to enable
@@ -23,7 +25,7 @@ import (
 //
 // # ID Encoding
 //
-// ShardedCoordinator uses GlobalID encoding: [ShardID:8 bits][LocalID:56 bits]
+// ShardedCoordinator uses GlobalID encoding: [ShardID:32 bits][LocalID:32 bits]
 // This enables O(1) shard routing for Update/Delete operations without external mapping.
 //
 // # Design
@@ -128,7 +130,7 @@ func NewSharded[T any](
 // Uses GlobalID encoding to extract shard index in O(1).
 func (sc *ShardedCoordinator[T]) shardForID(id uint64) (*Tx[T], error) {
 	gid := GlobalID(id)
-	shardIdx := gid.ShardIndex()
+	shardIdx := int(gid.ShardID())
 	if shardIdx >= sc.numShards {
 		return nil, fmt.Errorf("invalid shard index %d in ID %d (have %d shards)", shardIdx, id, sc.numShards)
 	}
@@ -151,7 +153,7 @@ func (sc *ShardedCoordinator[T]) Insert(ctx context.Context, vector []float32, d
 	}
 
 	// Return global ID with shard encoded
-	return uint64(NewGlobalID(shardIdx, localID)), nil
+	return uint64(NewGlobalID(uint32(shardIdx), core.LocalID(localID))), nil
 }
 
 // BatchInsert adds multiple vectors+payloads+metadata.
@@ -198,25 +200,29 @@ func (sc *ShardedCoordinator[T]) BatchInsert(ctx context.Context, vectors [][]fl
 	// Insert batches into each shard in parallel
 	type shardResult struct {
 		shardIdx int
-		ids      []uint64 // local IDs from shard
+		ids      []core.LocalID // local IDs from shard
 		err      error
 	}
 	resultsCh := make(chan shardResult, sc.numShards)
 
 	for idx, batch := range shardBatches {
 		if len(batch.vectors) == 0 {
-			resultsCh <- shardResult{shardIdx: idx, ids: []uint64{}, err: nil}
+			resultsCh <- shardResult{shardIdx: idx, ids: []core.LocalID{}, err: nil}
 			continue
 		}
 		go func(shardIdx int, b *shardBatch) {
 			ids, err := sc.shards[shardIdx].BatchInsert(ctx, b.vectors, b.dataSlice, b.metadata)
-			resultsCh <- shardResult{shardIdx: shardIdx, ids: ids, err: err}
+			localIDs := make([]core.LocalID, len(ids))
+			for i, id := range ids {
+				localIDs[i] = core.LocalID(id)
+			}
+			resultsCh <- shardResult{shardIdx: shardIdx, ids: localIDs, err: err}
 		}(idx, batch)
 	}
 
 	// Collect results indexed by shard
 	allIDs := make([]uint64, len(vectors))
-	shardIDsMap := make(map[int][]uint64)
+	shardIDsMap := make(map[int][]core.LocalID)
 	for i := 0; i < sc.numShards; i++ {
 		res := <-resultsCh
 		if res.err != nil {
@@ -230,7 +236,7 @@ func (sc *ShardedCoordinator[T]) BatchInsert(ctx context.Context, vectors [][]fl
 		localIDs := shardIDsMap[shardIdx]
 		for i, originalIdx := range batch.indices {
 			// Convert local ID to global ID with shard encoding
-			allIDs[originalIdx] = uint64(NewGlobalID(shardIdx, localIDs[i]))
+			allIDs[originalIdx] = uint64(NewGlobalID(uint32(shardIdx), localIDs[i]))
 		}
 	}
 
@@ -246,7 +252,7 @@ func (sc *ShardedCoordinator[T]) Update(ctx context.Context, id uint64, vector [
 		return err
 	}
 	// Use local ID for shard operation
-	return shard.Update(ctx, gid.LocalID(), vector, data, meta)
+	return shard.Update(ctx, uint64(gid.LocalID()), vector, data, meta)
 }
 
 // Delete removes a vector+payload+metadata atomically from the appropriate shard.
@@ -258,7 +264,7 @@ func (sc *ShardedCoordinator[T]) Delete(ctx context.Context, id uint64) error {
 		return err
 	}
 	// Use local ID for shard operation
-	return shard.Delete(ctx, gid.LocalID())
+	return shard.Delete(ctx, uint64(gid.LocalID()))
 }
 
 // Get retrieves the data associated with an ID from the appropriate shard.
@@ -270,7 +276,7 @@ func (sc *ShardedCoordinator[T]) Get(id uint64) (T, bool) {
 		return zero, false
 	}
 	gid := GlobalID(id)
-	return shard.Get(gid.LocalID())
+	return shard.Get(uint64(gid.LocalID()))
 }
 
 // GetMetadata retrieves the metadata associated with an ID from the appropriate shard.
@@ -281,18 +287,18 @@ func (sc *ShardedCoordinator[T]) GetMetadata(id uint64) (metadata.Metadata, bool
 		return nil, false
 	}
 	gid := GlobalID(id)
-	return shard.GetMetadata(gid.LocalID())
+	return shard.GetMetadata(uint64(gid.LocalID()))
 }
 
 type shardResult struct {
 	shardIdx int
-	results  []index.SearchResult
+	results  []SearchResult
 	err      error
 }
 
 // KNNSearch performs a K-nearest neighbor search across all shards in parallel.
-func (sc *ShardedCoordinator[T]) KNNSearch(ctx context.Context, query []float32, k int, opts *index.SearchOptions) ([]index.SearchResult, error) {
-	var results []index.SearchResult
+func (sc *ShardedCoordinator[T]) KNNSearch(ctx context.Context, query []float32, k int, opts *SearchOptions) ([]SearchResult, error) {
+	var results []SearchResult
 	if err := sc.KNNSearchWithBuffer(ctx, query, k, opts, &results); err != nil {
 		return nil, err
 	}
@@ -300,7 +306,7 @@ func (sc *ShardedCoordinator[T]) KNNSearch(ctx context.Context, query []float32,
 }
 
 // KNNSearchWithBuffer performs approximate K-nearest neighbor search and appends results to the provided buffer.
-func (sc *ShardedCoordinator[T]) KNNSearchWithBuffer(ctx context.Context, query []float32, k int, opts *index.SearchOptions, buf *[]index.SearchResult) error {
+func (sc *ShardedCoordinator[T]) KNNSearchWithBuffer(ctx context.Context, query []float32, k int, opts *SearchOptions, buf *[]SearchResult) error {
 	if k <= 0 {
 		return index.ErrInvalidK
 	}
@@ -315,10 +321,10 @@ func (sc *ShardedCoordinator[T]) KNNSearchWithBuffer(ctx context.Context, query 
 		shardOpts := opts
 		if opts != nil && opts.Filter != nil {
 			userFilter := opts.Filter
-			shardOpts = &index.SearchOptions{
+			shardOpts = &SearchOptions{
 				EFSearch: opts.EFSearch,
 				Filter: func(localID uint64) bool {
-					globalID := uint64(NewGlobalID(shardIdx, localID))
+					globalID := uint64(NewGlobalID(uint32(shardIdx), core.LocalID(localID)))
 					return userFilter(globalID)
 				},
 			}
@@ -338,7 +344,7 @@ func (sc *ShardedCoordinator[T]) KNNSearchWithBuffer(ctx context.Context, query 
 	}
 
 	// Collect results from all shards and convert to global IDs
-	allResults := make([]index.SearchResult, 0, k*sc.numShards)
+	allResults := make([]SearchResult, 0, k*sc.numShards)
 	var errors []error
 
 	for i := 0; i < sc.numShards; i++ {
@@ -349,7 +355,7 @@ func (sc *ShardedCoordinator[T]) KNNSearchWithBuffer(ctx context.Context, query 
 			} else {
 				// Convert local IDs to global IDs
 				for j := range res.results {
-					res.results[j].ID = uint64(NewGlobalID(res.shardIdx, uint64(res.results[j].ID)))
+					res.results[j].ID = uint64(NewGlobalID(uint32(res.shardIdx), core.LocalID(res.results[j].ID)))
 				}
 				allResults = append(allResults, res.results...)
 			}
@@ -367,74 +373,8 @@ func (sc *ShardedCoordinator[T]) KNNSearchWithBuffer(ctx context.Context, query 
 	return nil
 }
 
-// KNNSearchWithContext performs approximate K-nearest neighbor search using the provided Searcher context.
-func (sc *ShardedCoordinator[T]) KNNSearchWithContext(ctx context.Context, query []float32, k int, opts *index.SearchOptions, s *searcher.Searcher) error {
-	if k <= 0 {
-		return index.ErrInvalidK
-	}
-
-	resultsCh := make(chan shardResult, sc.numShards)
-
-	for i := 0; i < sc.numShards; i++ {
-		shardIdx := i
-		shard := sc.shards[i]
-
-		err := sc.workerPool.Submit(ctx, func() {
-			// Acquire local searcher for this shard
-			localS := searcher.AcquireSearcher(10000, len(query)) // Initial guess, will grow if needed
-			defer searcher.ReleaseSearcher(localS)
-
-			err := shard.KNNSearchWithContext(ctx, query, k, opts, localS)
-
-			var res []index.SearchResult
-			if err == nil {
-				// Extract results from localS.Candidates
-				res = make([]index.SearchResult, 0, localS.Candidates.Len())
-				for localS.Candidates.Len() > 0 {
-					item, _ := localS.Candidates.PopItem()
-					res = append(res, index.SearchResult{ID: item.Node, Distance: item.Distance})
-				}
-			}
-
-			select {
-			case resultsCh <- shardResult{shardIdx: shardIdx, results: res, err: err}:
-			case <-ctx.Done():
-			}
-		})
-
-		if err != nil {
-			return fmt.Errorf("worker pool submit failed: %w", err)
-		}
-	}
-
-	// Collect results
-	var errors []error
-	for i := 0; i < sc.numShards; i++ {
-		select {
-		case res := <-resultsCh:
-			if res.err != nil {
-				errors = append(errors, fmt.Errorf("shard %d: %w", res.shardIdx, res.err))
-			} else {
-				// Convert local IDs to global IDs and push to s.Candidates
-				for _, r := range res.results {
-					globalID := uint64(NewGlobalID(res.shardIdx, r.ID))
-					s.Candidates.PushItemBounded(searcher.PriorityQueueItem{Node: globalID, Distance: r.Distance}, k)
-				}
-			}
-		case <-ctx.Done():
-			return fmt.Errorf("search cancelled: %w", ctx.Err())
-		}
-	}
-
-	if len(errors) > 0 {
-		return fmt.Errorf("parallel search failed (%d/%d shards): %v", len(errors), sc.numShards, errors)
-	}
-
-	return nil
-}
-
 // BruteSearch performs a brute-force search across all shards in parallel.
-func (sc *ShardedCoordinator[T]) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint64) bool) ([]index.SearchResult, error) {
+func (sc *ShardedCoordinator[T]) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint64) bool) ([]SearchResult, error) {
 	if k <= 0 {
 		return nil, index.ErrInvalidK
 	}
@@ -448,7 +388,7 @@ func (sc *ShardedCoordinator[T]) BruteSearch(ctx context.Context, query []float3
 		var localFilter func(id uint64) bool
 		if filter != nil {
 			localFilter = func(localID uint64) bool {
-				globalID := uint64(NewGlobalID(shardIdx, localID))
+				globalID := uint64(NewGlobalID(uint32(shardIdx), core.LocalID(localID)))
 				return filter(globalID)
 			}
 		}
@@ -467,7 +407,7 @@ func (sc *ShardedCoordinator[T]) BruteSearch(ctx context.Context, query []float3
 	}
 
 	// Collect results from all shards and convert to global IDs
-	allResults := make([]index.SearchResult, 0, k*sc.numShards)
+	allResults := make([]SearchResult, 0, k*sc.numShards)
 	var errors []error
 
 	for i := 0; i < sc.numShards; i++ {
@@ -478,7 +418,7 @@ func (sc *ShardedCoordinator[T]) BruteSearch(ctx context.Context, query []float3
 			} else {
 				// Convert local IDs to global IDs
 				for j := range res.results {
-					res.results[j].ID = uint64(NewGlobalID(res.shardIdx, uint64(res.results[j].ID)))
+					res.results[j].ID = uint64(NewGlobalID(uint32(res.shardIdx), core.LocalID(res.results[j].ID)))
 				}
 				allResults = append(allResults, res.results...)
 			}
@@ -496,7 +436,7 @@ func (sc *ShardedCoordinator[T]) BruteSearch(ctx context.Context, query []float3
 
 // mergeTopK merges results from multiple shards and returns the top-k globally.
 // Results are sorted by distance (ascending) and limited to k results.
-func mergeTopK(results []index.SearchResult, k int) []index.SearchResult {
+func mergeTopK(results []SearchResult, k int) []SearchResult {
 	if len(results) == 0 {
 		return nil
 	}
@@ -510,7 +450,7 @@ func mergeTopK(results []index.SearchResult, k int) []index.SearchResult {
 	}
 
 	// Build min-heap of top-k results
-	topK := make([]index.SearchResult, 0, k)
+	topK := make([]SearchResult, 0, k)
 	for _, result := range results {
 		if len(topK) < k {
 			// Heap not full, add result
@@ -532,7 +472,7 @@ func mergeTopK(results []index.SearchResult, k int) []index.SearchResult {
 }
 
 // sortResults sorts results by distance (ascending)
-func sortResults(results []index.SearchResult) {
+func sortResults(results []SearchResult) {
 	// Simple insertion sort for small k
 	for i := 1; i < len(results); i++ {
 		key := results[i]
@@ -546,14 +486,14 @@ func sortResults(results []index.SearchResult) {
 }
 
 // buildMaxHeap builds a max-heap (largest distance at root) for top-k tracking
-func buildMaxHeap(arr []index.SearchResult) {
+func buildMaxHeap(arr []SearchResult) {
 	for i := len(arr)/2 - 1; i >= 0; i-- {
 		heapifyDown(arr, i)
 	}
 }
 
 // heapifyDown maintains max-heap property downward from index i
-func heapifyDown(arr []index.SearchResult, i int) {
+func heapifyDown(arr []SearchResult, i int) {
 	n := len(arr)
 	for {
 		largest := i
@@ -626,9 +566,9 @@ func (sc *ShardedCoordinator[T]) Close() error {
 }
 
 // HybridSearch performs a hybrid search across all shards.
-func (sc *ShardedCoordinator[T]) HybridSearch(ctx context.Context, query []float32, k int, opts *HybridSearchOptions) ([]index.SearchResult, error) {
+func (sc *ShardedCoordinator[T]) HybridSearch(ctx context.Context, query []float32, k int, opts *HybridSearchOptions) ([]SearchResult, error) {
 	// Fan out to all shards
-	results := make([][]index.SearchResult, sc.numShards)
+	results := make([][]SearchResult, sc.numShards)
 	errs := make([]error, sc.numShards)
 	var wg sync.WaitGroup
 
@@ -645,7 +585,7 @@ func (sc *ShardedCoordinator[T]) HybridSearch(ctx context.Context, query []float
 			if err == nil {
 				// Convert local IDs to global IDs
 				for j := range res {
-					res[j].ID = uint64(NewGlobalID(shardIdx, res[j].ID))
+					res[j].ID = uint64(NewGlobalID(uint32(shardIdx), core.LocalID(res[j].ID)))
 				}
 			}
 			results[shardIdx] = res
@@ -665,7 +605,7 @@ func (sc *ShardedCoordinator[T]) HybridSearch(ctx context.Context, query []float
 	// We can reuse the merge logic from KNNSearch if we extract it.
 	// But for now, duplicate it or use a simple merge.
 	// Since k is usually small, a simple merge is fine.
-	merged := make([]index.SearchResult, 0, k*sc.numShards)
+	merged := make([]SearchResult, 0, k*sc.numShards)
 	for _, res := range results {
 		merged = append(merged, res...)
 	}
@@ -695,12 +635,12 @@ func (sc *ShardedCoordinator[T]) HybridSearch(ctx context.Context, query []float
 }
 
 // mergeResults merges sorted results from shards into a single sorted result.
-func (sc *ShardedCoordinator[T]) mergeResults(shardResults [][]index.SearchResult, k int) []index.SearchResult {
+func (sc *ShardedCoordinator[T]) mergeResults(shardResults [][]SearchResult, k int) []SearchResult {
 	total := 0
 	for _, res := range shardResults {
 		total += len(res)
 	}
-	flat := make([]index.SearchResult, 0, total)
+	flat := make([]SearchResult, 0, total)
 	for _, res := range shardResults {
 		flat = append(flat, res...)
 	}
@@ -721,22 +661,14 @@ func (sc *ShardedCoordinator[T]) mergeResults(shardResults [][]index.SearchResul
 	return flat
 }
 
-// HybridSearchWithContext performs a hybrid search using the provided Searcher context.
-// Note: For ShardedCoordinator, the provided Searcher is NOT used for parallel shard execution
-// (to avoid race conditions), but may be used for result merging in the future.
-func (sc *ShardedCoordinator[T]) HybridSearchWithContext(ctx context.Context, query []float32, k int, opts *HybridSearchOptions, s *searcher.Searcher) ([]index.SearchResult, error) {
-	// TODO: Optimize sharded search with context. Currently ignores s for shard execution to avoid race conditions.
-	return sc.HybridSearch(ctx, query, k, opts)
-}
-
 // KNNSearchStream returns an iterator over K-nearest neighbor search results.
-func (sc *ShardedCoordinator[T]) KNNSearchStream(ctx context.Context, query []float32, k int, opts *index.SearchOptions) iter.Seq2[index.SearchResult, error] {
+func (sc *ShardedCoordinator[T]) KNNSearchStream(ctx context.Context, query []float32, k int, opts *SearchOptions) iter.Seq2[SearchResult, error] {
 	// For sharded streaming, we collect all results and yield them.
 	// True streaming merge is complex.
-	return func(yield func(index.SearchResult, error) bool) {
+	return func(yield func(SearchResult, error) bool) {
 		results, err := sc.KNNSearch(ctx, query, k, opts)
 		if err != nil {
-			yield(index.SearchResult{}, err)
+			yield(SearchResult{}, err)
 			return
 		}
 		for _, res := range results {
@@ -791,12 +723,63 @@ func (sc *ShardedCoordinator[T]) RecoverFromWAL(ctx context.Context) error {
 	return nil
 }
 
-// Stats returns statistics from the first shard (primary).
+// Stats returns aggregated statistics from all shards.
 func (sc *ShardedCoordinator[T]) Stats() index.Stats {
-	if len(sc.shards) > 0 {
-		return sc.shards[0].Stats()
+	if len(sc.shards) == 0 {
+		return index.Stats{}
 	}
-	return index.Stats{}
+
+	// Start with first shard's stats as baseline (for Options/Parameters)
+	// We clone the maps to avoid mutating the shard's actual stats if they are shared (unlikely but safe)
+	base := sc.shards[0].Stats()
+	agg := index.Stats{
+		Options:     maps.Clone(base.Options),
+		Parameters:  maps.Clone(base.Parameters),
+		Storage:     maps.Clone(base.Storage),
+		Concurrency: maps.Clone(base.Concurrency),
+		Levels:      base.Levels, // Shallow copy slice
+	}
+
+	if agg.Storage == nil {
+		agg.Storage = make(map[string]string)
+	}
+	if agg.Concurrency == nil {
+		agg.Concurrency = make(map[string]string)
+	}
+	if agg.Options == nil {
+		agg.Options = make(map[string]string)
+	}
+
+	// Helper to sum map values
+	sumMap := func(target map[string]string, source map[string]string) {
+		for k, v := range source {
+			// Only sum known numeric keys or keys that look like numbers
+			if val, err := strconv.Atoi(v); err == nil {
+				// Check if target has this key and if it's a number
+				if currentStr, ok := target[k]; ok {
+					if current, err := strconv.Atoi(currentStr); err == nil {
+						target[k] = strconv.Itoa(current + val)
+					}
+					// If target value is not a number, we don't sum (keep baseline)
+				} else {
+					// Target doesn't have it, just set it (assuming 0 baseline)
+					target[k] = v
+				}
+			}
+		}
+	}
+
+	// Iterate over remaining shards
+	for i := 1; i < len(sc.shards); i++ {
+		s := sc.shards[i].Stats()
+		sumMap(agg.Storage, s.Storage)
+		sumMap(agg.Concurrency, s.Concurrency)
+	}
+
+	// Add Shard count info
+	agg.Options["Shards"] = strconv.Itoa(len(sc.shards))
+
+	return agg
 }
 
 // Checkpoint creates a checkpoint in all shards.

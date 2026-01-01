@@ -3,6 +3,7 @@ package metadata
 import (
 	"testing"
 
+	"github.com/hupe1980/vecgo/core"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -88,9 +89,9 @@ func TestUnifiedIndex_CreateStreamingFilter(t *testing.T) {
 			require.NotNil(t, filter)
 
 			var matches []uint64
-			for id := uint64(1); id <= 4; id++ {
+			for id := core.LocalID(1); id <= 4; id++ {
 				if filter(id) {
-					matches = append(matches, id)
+					matches = append(matches, uint64(id))
 				}
 			}
 

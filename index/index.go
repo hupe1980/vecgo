@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/distance"
 	"github.com/hupe1980/vecgo/searcher"
 )
@@ -61,7 +62,7 @@ func (e *ErrDimensionMismatch) Error() string {
 
 // ErrNodeNotFound is a typed error for node lookup failures
 type ErrNodeNotFound struct {
-	ID uint64 // Node ID that was not found
+	ID core.LocalID // Node ID that was not found
 }
 
 // Error returns the error message for node not found
@@ -71,7 +72,7 @@ func (e *ErrNodeNotFound) Error() string {
 
 // ErrNodeDeleted is a typed error for operations on deleted nodes
 type ErrNodeDeleted struct {
-	ID uint64 // Node ID that was deleted
+	ID core.LocalID // Node ID that was deleted
 }
 
 // Error returns the error message for deleted node
@@ -154,7 +155,7 @@ func ValidateBasicOptions(dimension int, distanceType DistanceType) error {
 // SearchResult represents a search result.
 type SearchResult struct {
 	// ID is the identifier of the search result.
-	ID uint64
+	ID uint32
 
 	// Distance is the distance between the query vector and the result vector.
 	Distance float32
@@ -162,8 +163,8 @@ type SearchResult struct {
 
 // BatchInsertResult represents the result of a batch insert operation
 type BatchInsertResult struct {
-	IDs    []uint64 // IDs of successfully inserted vectors
-	Errors []error  // Errors for failed insertions (nil for successful)
+	IDs    []core.LocalID // IDs of successfully inserted vectors
+	Errors []error        // Errors for failed insertions (nil for successful)
 }
 
 // SearchOptions contains parameters for KNN search that are index-specific.
@@ -174,7 +175,7 @@ type SearchOptions struct {
 	EFSearch int
 
 	// Filter function to exclude results during search.
-	Filter func(id uint64) bool
+	Filter func(id core.LocalID) bool
 }
 
 // LevelStats contains per-level index statistics.
@@ -245,17 +246,17 @@ func (s Stats) WriteTo(w io.Writer) (int64, error) {
 // Index represents an index for vector search.
 type Index interface {
 	// Insert adds a vector to the index
-	Insert(ctx context.Context, v []float32) (uint64, error)
+	Insert(ctx context.Context, v []float32) (core.LocalID, error)
 
 	// BatchInsert adds multiple vectors to the index in a single operation.
 	// Returns IDs and errors for each vector. Errors slice will contain nil for successful insertions.
 	BatchInsert(ctx context.Context, vectors [][]float32) BatchInsertResult
 
 	// Delete removes a vector from the index
-	Delete(ctx context.Context, id uint64) error
+	Delete(ctx context.Context, id core.LocalID) error
 
 	// Update updates a vector in the index
-	Update(ctx context.Context, id uint64, v []float32) error
+	Update(ctx context.Context, id core.LocalID, v []float32) error
 
 	// KNNSearch performs a K-nearest neighbor search.
 	// The opts parameter contains index-specific search options (can be nil for defaults).
@@ -277,7 +278,7 @@ type Index interface {
 	KNNSearchStream(ctx context.Context, q []float32, k int, opts *SearchOptions) iter.Seq2[SearchResult, error]
 
 	// BruteSearch performs a brute-force search
-	BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint64) bool) ([]SearchResult, error)
+	BruteSearch(ctx context.Context, query []float32, k int, filter func(id core.LocalID) bool) ([]SearchResult, error)
 
 	// Stats returns statistics about the index.
 	// This method must not write to stdout/stderr.
@@ -297,17 +298,17 @@ type TransactionalIndex interface {
 	Index
 
 	// ID Allocation
-	AllocateID() uint64
-	ReleaseID(id uint64)
+	AllocateID() core.LocalID
+	ReleaseID(id core.LocalID)
 
 	// Apply operations (deterministic, used during recovery)
-	ApplyInsert(ctx context.Context, id uint64, vector []float32) error
-	ApplyBatchInsert(ctx context.Context, ids []uint64, vectors [][]float32) error
-	ApplyUpdate(ctx context.Context, id uint64, vector []float32) error
-	ApplyDelete(ctx context.Context, id uint64) error
+	ApplyInsert(ctx context.Context, id core.LocalID, vector []float32) error
+	ApplyBatchInsert(ctx context.Context, ids []core.LocalID, vectors [][]float32) error
+	ApplyUpdate(ctx context.Context, id core.LocalID, vector []float32) error
+	ApplyDelete(ctx context.Context, id core.LocalID) error
 
 	// Vector retrieval
-	VectorByID(ctx context.Context, id uint64) ([]float32, error)
+	VectorByID(ctx context.Context, id core.LocalID) ([]float32, error)
 }
 
 // Shard represents an index partition in a sharded architecture.
@@ -332,7 +333,7 @@ type Shard interface {
 
 	// ContainsID returns true if this shard owns the given ID.
 	// Ownership is determined by: id % numShards == shardID
-	ContainsID(id uint64) bool
+	ContainsID(id core.LocalID) bool
 
 	// ShardID returns this shard's identifier (0-based index).
 	// For non-sharded indexes, always returns 0.

@@ -17,7 +17,7 @@ test-race:
 # Runs benchmarks and saves output to benchmark_test/current.txt
 bench-current:
     @echo "Running benchmarks..."
-    go test -bench=. -benchmem ./benchmark_test ./benchmark_test/isolated > benchmark_test/current.txt
+    go test -bench=. -benchmem ./benchmark_test ./benchmark_test/isolated | tee benchmark_test/current.txt
     @echo "Done. Results saved to benchmark_test/current.txt"
 
 # Runs isolated benchmarks

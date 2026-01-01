@@ -50,7 +50,7 @@ func TestMmapLoader_VectorAliasesInputBytes(t *testing.T) {
 
 	var found bool
 	maxID := loaded.maxID.Load()
-	if id < maxID && !loaded.deleted.Test(id) {
+	if uint32(id) < maxID && !loaded.deleted.Test(uint32(id)) {
 		found = true
 	}
 	if !found {

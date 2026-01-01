@@ -12,7 +12,6 @@ import (
 	"github.com/hupe1980/vecgo/engine"
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/metadata"
-	"github.com/hupe1980/vecgo/searcher"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -56,33 +55,25 @@ func (f *failingCoordinator[T]) GetMetadata(id uint64) (metadata.Metadata, bool)
 	return nil, false
 }
 
-func (f *failingCoordinator[T]) KNNSearch(ctx context.Context, query []float32, k int, opts *index.SearchOptions) ([]index.SearchResult, error) {
+func (f *failingCoordinator[T]) KNNSearch(ctx context.Context, query []float32, k int, opts *engine.SearchOptions) ([]engine.SearchResult, error) {
 	return nil, f.err
 }
 
-func (f *failingCoordinator[T]) KNNSearchWithBuffer(ctx context.Context, query []float32, k int, opts *index.SearchOptions, buf *[]index.SearchResult) error {
+func (f *failingCoordinator[T]) KNNSearchWithBuffer(ctx context.Context, query []float32, k int, opts *engine.SearchOptions, buf *[]engine.SearchResult) error {
 	return f.err
 }
 
-func (f *failingCoordinator[T]) KNNSearchWithContext(ctx context.Context, query []float32, k int, opts *index.SearchOptions, s *searcher.Searcher) error {
-	return f.err
-}
-
-func (f *failingCoordinator[T]) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint64) bool) ([]index.SearchResult, error) {
+func (f *failingCoordinator[T]) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint64) bool) ([]engine.SearchResult, error) {
 	return nil, f.err
 }
 
-func (f *failingCoordinator[T]) HybridSearch(ctx context.Context, query []float32, k int, opts *engine.HybridSearchOptions) ([]index.SearchResult, error) {
+func (f *failingCoordinator[T]) HybridSearch(ctx context.Context, query []float32, k int, opts *engine.HybridSearchOptions) ([]engine.SearchResult, error) {
 	return nil, f.err
 }
 
-func (f *failingCoordinator[T]) HybridSearchWithContext(ctx context.Context, query []float32, k int, opts *engine.HybridSearchOptions, s *searcher.Searcher) ([]index.SearchResult, error) {
-	return nil, f.err
-}
-
-func (f *failingCoordinator[T]) KNNSearchStream(ctx context.Context, query []float32, k int, opts *index.SearchOptions) iter.Seq2[index.SearchResult, error] {
-	return func(yield func(index.SearchResult, error) bool) {
-		yield(index.SearchResult{}, f.err)
+func (f *failingCoordinator[T]) KNNSearchStream(ctx context.Context, query []float32, k int, opts *engine.SearchOptions) iter.Seq2[engine.SearchResult, error] {
+	return func(yield func(engine.SearchResult, error) bool) {
+		yield(engine.SearchResult{}, f.err)
 	}
 }
 
@@ -150,7 +141,7 @@ func (s *slowCoordinator[T]) GetMetadata(id uint64) (metadata.Metadata, bool) {
 	return nil, false
 }
 
-func (s *slowCoordinator[T]) KNNSearch(ctx context.Context, query []float32, k int, opts *index.SearchOptions) ([]index.SearchResult, error) {
+func (s *slowCoordinator[T]) KNNSearch(ctx context.Context, query []float32, k int, opts *engine.SearchOptions) ([]engine.SearchResult, error) {
 	select {
 	case <-time.After(s.delay):
 		return nil, nil
@@ -159,7 +150,7 @@ func (s *slowCoordinator[T]) KNNSearch(ctx context.Context, query []float32, k i
 	}
 }
 
-func (s *slowCoordinator[T]) KNNSearchWithBuffer(ctx context.Context, query []float32, k int, opts *index.SearchOptions, buf *[]index.SearchResult) error {
+func (s *slowCoordinator[T]) KNNSearchWithBuffer(ctx context.Context, query []float32, k int, opts *engine.SearchOptions, buf *[]engine.SearchResult) error {
 	select {
 	case <-time.After(s.delay):
 		return nil
@@ -168,16 +159,7 @@ func (s *slowCoordinator[T]) KNNSearchWithBuffer(ctx context.Context, query []fl
 	}
 }
 
-func (s *slowCoordinator[T]) KNNSearchWithContext(ctx context.Context, query []float32, k int, opts *index.SearchOptions, sr *searcher.Searcher) error {
-	select {
-	case <-time.After(s.delay):
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-func (s *slowCoordinator[T]) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint64) bool) ([]index.SearchResult, error) {
+func (s *slowCoordinator[T]) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint64) bool) ([]engine.SearchResult, error) {
 	select {
 	case <-time.After(s.delay):
 		return nil, nil
@@ -186,7 +168,7 @@ func (s *slowCoordinator[T]) BruteSearch(ctx context.Context, query []float32, k
 	}
 }
 
-func (s *slowCoordinator[T]) HybridSearch(ctx context.Context, query []float32, k int, opts *engine.HybridSearchOptions) ([]index.SearchResult, error) {
+func (s *slowCoordinator[T]) HybridSearch(ctx context.Context, query []float32, k int, opts *engine.HybridSearchOptions) ([]engine.SearchResult, error) {
 	select {
 	case <-time.After(s.delay):
 		return nil, nil
@@ -195,21 +177,12 @@ func (s *slowCoordinator[T]) HybridSearch(ctx context.Context, query []float32, 
 	}
 }
 
-func (s *slowCoordinator[T]) HybridSearchWithContext(ctx context.Context, query []float32, k int, opts *engine.HybridSearchOptions, sr *searcher.Searcher) ([]index.SearchResult, error) {
-	select {
-	case <-time.After(s.delay):
-		return nil, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-}
-
-func (s *slowCoordinator[T]) KNNSearchStream(ctx context.Context, query []float32, k int, opts *index.SearchOptions) iter.Seq2[index.SearchResult, error] {
-	return func(yield func(index.SearchResult, error) bool) {
+func (s *slowCoordinator[T]) KNNSearchStream(ctx context.Context, query []float32, k int, opts *engine.SearchOptions) iter.Seq2[engine.SearchResult, error] {
+	return func(yield func(engine.SearchResult, error) bool) {
 		select {
 		case <-time.After(s.delay):
 		case <-ctx.Done():
-			yield(index.SearchResult{}, ctx.Err())
+			yield(engine.SearchResult{}, ctx.Err())
 		}
 	}
 }
@@ -433,11 +406,11 @@ func (tsc *testShardedCoordinator[T]) GetShards() []engine.Coordinator[T] {
 	return tsc.shards
 }
 
-func (tsc *testShardedCoordinator[T]) KNNSearch(ctx context.Context, query []float32, k int, opts *index.SearchOptions) ([]index.SearchResult, error) {
+func (tsc *testShardedCoordinator[T]) KNNSearch(ctx context.Context, query []float32, k int, opts *engine.SearchOptions) ([]engine.SearchResult, error) {
 	// Simplified implementation for testing
 	type shardResult struct {
 		shardIdx int
-		results  []index.SearchResult
+		results  []engine.SearchResult
 		err      error
 	}
 	resultsCh := make(chan shardResult, len(tsc.shards))
@@ -452,7 +425,7 @@ func (tsc *testShardedCoordinator[T]) KNNSearch(ctx context.Context, query []flo
 		}(i)
 	}
 
-	allResults := make([]index.SearchResult, 0)
+	allResults := make([]engine.SearchResult, 0)
 	var errors []error
 
 	for i := 0; i < len(tsc.shards); i++ {
@@ -475,11 +448,11 @@ func (tsc *testShardedCoordinator[T]) KNNSearch(ctx context.Context, query []flo
 	return allResults, nil
 }
 
-func (tsc *testShardedCoordinator[T]) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint64) bool) ([]index.SearchResult, error) {
+func (tsc *testShardedCoordinator[T]) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint64) bool) ([]engine.SearchResult, error) {
 	// Similar to KNNSearch
 	type shardResult struct {
 		shardIdx int
-		results  []index.SearchResult
+		results  []engine.SearchResult
 		err      error
 	}
 	resultsCh := make(chan shardResult, len(tsc.shards))
@@ -494,7 +467,7 @@ func (tsc *testShardedCoordinator[T]) BruteSearch(ctx context.Context, query []f
 		}(i)
 	}
 
-	allResults := make([]index.SearchResult, 0)
+	allResults := make([]engine.SearchResult, 0)
 	var errors []error
 
 	for i := 0; i < len(tsc.shards); i++ {
@@ -543,24 +516,16 @@ func (tsc *testShardedCoordinator[T]) GetMetadata(id uint64) (metadata.Metadata,
 	return nil, false
 }
 
-func (tsc *testShardedCoordinator[T]) KNNSearchWithBuffer(ctx context.Context, query []float32, k int, opts *index.SearchOptions, buf *[]index.SearchResult) error {
+func (tsc *testShardedCoordinator[T]) KNNSearchWithBuffer(ctx context.Context, query []float32, k int, opts *engine.SearchOptions, buf *[]engine.SearchResult) error {
 	return nil
 }
 
-func (tsc *testShardedCoordinator[T]) KNNSearchWithContext(ctx context.Context, query []float32, k int, opts *index.SearchOptions, s *searcher.Searcher) error {
-	return nil
-}
-
-func (tsc *testShardedCoordinator[T]) HybridSearch(ctx context.Context, query []float32, k int, opts *engine.HybridSearchOptions) ([]index.SearchResult, error) {
+func (tsc *testShardedCoordinator[T]) HybridSearch(ctx context.Context, query []float32, k int, opts *engine.HybridSearchOptions) ([]engine.SearchResult, error) {
 	return nil, nil
 }
 
-func (tsc *testShardedCoordinator[T]) HybridSearchWithContext(ctx context.Context, query []float32, k int, opts *engine.HybridSearchOptions, s *searcher.Searcher) ([]index.SearchResult, error) {
-	return nil, nil
-}
-
-func (tsc *testShardedCoordinator[T]) KNNSearchStream(ctx context.Context, query []float32, k int, opts *index.SearchOptions) iter.Seq2[index.SearchResult, error] {
-	return func(yield func(index.SearchResult, error) bool) {}
+func (tsc *testShardedCoordinator[T]) KNNSearchStream(ctx context.Context, query []float32, k int, opts *engine.SearchOptions) iter.Seq2[engine.SearchResult, error] {
+	return func(yield func(engine.SearchResult, error) bool) {}
 }
 
 func (tsc *testShardedCoordinator[T]) EnableProductQuantization(cfg index.ProductQuantizationConfig) error {

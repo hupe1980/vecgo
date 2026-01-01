@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/index/hnsw"
 	"github.com/hupe1980/vecgo/testutil"
 )
@@ -28,7 +29,7 @@ func BenchmarkHNSWIsolatedInsert(b *testing.B) {
 			vec := rng.UnitVector(dim)
 			// HNSW requires sequential IDs usually, or we manage them.
 			// HNSW.Insert takes (ctx, id, vector)
-			if err := idx.ApplyInsert(ctx, uint64(i), vec); err != nil {
+			if err := idx.ApplyInsert(ctx, core.LocalID(i), vec); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -56,7 +57,7 @@ func BenchmarkHNSWIsolatedSearch(b *testing.B) {
 	for i := 0; i < size; i++ {
 		vec := rng.UnitVector(dim)
 		vectors[i] = vec
-		if err := idx.ApplyInsert(ctx, uint64(i), vec); err != nil {
+		if err := idx.ApplyInsert(ctx, core.LocalID(i), vec); err != nil {
 			b.Fatal(err)
 		}
 	}

@@ -3,6 +3,8 @@ package engine
 import (
 	"sync"
 	"testing"
+
+	"github.com/hupe1980/vecgo/core"
 )
 
 func TestMapStore(t *testing.T) {
@@ -25,7 +27,7 @@ func TestMapStore(t *testing.T) {
 	}
 
 	// Test BatchSet
-	batch := map[uint64]string{
+	batch := map[core.LocalID]string{
 		2: "two",
 		3: "three",
 		4: "four",
@@ -39,7 +41,7 @@ func TestMapStore(t *testing.T) {
 	}
 
 	// Test BatchGet
-	results, err := st.BatchGet([]uint64{1, 2, 3, 999})
+	results, err := st.BatchGet([]core.LocalID{1, 2, 3, 999})
 	if err != nil {
 		t.Fatalf("BatchGet failed: %v", err)
 	}
@@ -68,7 +70,7 @@ func TestMapStore(t *testing.T) {
 	}
 
 	// Test BatchDelete
-	if err := st.BatchDelete([]uint64{2, 3}); err != nil {
+	if err := st.BatchDelete([]core.LocalID{2, 3}); err != nil {
 		t.Fatalf("BatchDelete failed: %v", err)
 	}
 
@@ -105,7 +107,7 @@ func TestMapStoreConcurrent(t *testing.T) {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			_ = st.Set(uint64(id), id*2)
+			_ = st.Set(core.LocalID(id), id*2)
 		}(i)
 	}
 
@@ -114,7 +116,7 @@ func TestMapStoreConcurrent(t *testing.T) {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			_, _ = st.Get(uint64(id))
+			_, _ = st.Get(core.LocalID(id))
 		}(i)
 	}
 

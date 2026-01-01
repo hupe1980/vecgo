@@ -31,7 +31,6 @@ import (
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/index/memtable"
 	"github.com/hupe1980/vecgo/metadata"
-	"github.com/hupe1980/vecgo/searcher"
 )
 
 // HybridSearchOptions contains options for hybrid search (vector + metadata).
@@ -80,27 +79,19 @@ type Coordinator[T any] interface {
 	GetMetadata(id uint64) (metadata.Metadata, bool)
 
 	// KNNSearch performs approximate K-nearest neighbor search.
-	KNNSearch(ctx context.Context, query []float32, k int, opts *index.SearchOptions) ([]index.SearchResult, error)
+	KNNSearch(ctx context.Context, query []float32, k int, opts *SearchOptions) ([]SearchResult, error)
 
 	// KNNSearchWithBuffer performs approximate K-nearest neighbor search and appends results to the provided buffer.
-	KNNSearchWithBuffer(ctx context.Context, query []float32, k int, opts *index.SearchOptions, buf *[]index.SearchResult) error
-
-	// KNNSearchWithContext performs approximate K-nearest neighbor search using the provided Searcher context.
-	// The results are stored in searcher.Candidates.
-	KNNSearchWithContext(ctx context.Context, query []float32, k int, opts *index.SearchOptions, searcher *searcher.Searcher) error
+	KNNSearchWithBuffer(ctx context.Context, query []float32, k int, opts *SearchOptions, buf *[]SearchResult) error
 
 	// BruteSearch performs exact brute-force search with optional filter.
-	BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint64) bool) ([]index.SearchResult, error)
+	BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint64) bool) ([]SearchResult, error)
 
 	// HybridSearch performs a hybrid search combining vector similarity and metadata filtering.
-	HybridSearch(ctx context.Context, query []float32, k int, opts *HybridSearchOptions) ([]index.SearchResult, error)
-
-	// HybridSearchWithContext performs a hybrid search using the provided Searcher context.
-	// This allows reusing the Searcher's scratch buffers for metadata filtering.
-	HybridSearchWithContext(ctx context.Context, query []float32, k int, opts *HybridSearchOptions, s *searcher.Searcher) ([]index.SearchResult, error)
+	HybridSearch(ctx context.Context, query []float32, k int, opts *HybridSearchOptions) ([]SearchResult, error)
 
 	// KNNSearchStream returns an iterator over K-nearest neighbor search results.
-	KNNSearchStream(ctx context.Context, query []float32, k int, opts *index.SearchOptions) iter.Seq2[index.SearchResult, error]
+	KNNSearchStream(ctx context.Context, query []float32, k int, opts *SearchOptions) iter.Seq2[SearchResult, error]
 
 	// EnableProductQuantization enables Product Quantization (PQ) on the underlying index(es).
 	EnableProductQuantization(cfg index.ProductQuantizationConfig) error

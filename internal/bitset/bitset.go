@@ -25,11 +25,11 @@ type BitSegment [wordsPerSegment]atomic.Uint64
 // BitSet is a thread-safe, lock-free, segmented bitset.
 type BitSet struct {
 	segments atomic.Pointer[[]*BitSegment]
-	size     atomic.Uint64
+	size     atomic.Uint32
 }
 
 // New creates a new BitSet with the given size (in bits).
-func New(size uint64) *BitSet {
+func New(size uint32) *BitSet {
 	b := &BitSet{}
 	b.size.Store(size)
 	b.growSegments(size)
@@ -37,11 +37,11 @@ func New(size uint64) *BitSet {
 }
 
 // growSegments ensures enough segments exist for the given size.
-func (b *BitSet) growSegments(size uint64) {
+func (b *BitSet) growSegments(size uint32) {
 	if size == 0 {
 		return
 	}
-	targetIdx := int((size - 1) >> segmentBits)
+	targetIdx := int((size - 1) >> segmentBits) //nolint:gosec // segment index fits in int
 
 	// Fast path
 	segments := b.segments.Load()
@@ -88,13 +88,13 @@ func (b *BitSet) growSegments(size uint64) {
 }
 
 // Set sets the bit at the given index.
-func (b *BitSet) Set(i uint64) {
+func (b *BitSet) Set(i uint32) {
 	limit := b.size.Load()
 	if i >= limit {
 		return
 	}
 
-	segIdx := int(i >> segmentBits)
+	segIdx := int(i >> segmentBits) //nolint:gosec // segment index fits in int
 	segments := b.segments.Load()
 	if segments == nil || segIdx >= len(*segments) {
 		return
@@ -113,13 +113,13 @@ func (b *BitSet) Set(i uint64) {
 }
 
 // TestAndSet sets the bit at the given index and returns true if it was ALREADY set.
-func (b *BitSet) TestAndSet(i uint64) bool {
+func (b *BitSet) TestAndSet(i uint32) bool {
 	limit := b.size.Load()
 	if i >= limit {
 		return false
 	}
 
-	segIdx := int(i >> segmentBits)
+	segIdx := int(i >> segmentBits) //nolint:gosec // segment index fits in int
 	segments := b.segments.Load()
 	if segments == nil || segIdx >= len(*segments) {
 		return false
@@ -155,13 +155,13 @@ func (b *BitSet) TestAndSet(i uint64) bool {
 }
 
 // Unset clears the bit at the given index.
-func (b *BitSet) Unset(i uint64) {
+func (b *BitSet) Unset(i uint32) {
 	limit := b.size.Load()
 	if i >= limit {
 		return
 	}
 
-	segIdx := int(i >> segmentBits)
+	segIdx := int(i >> segmentBits) //nolint:gosec // segment index fits in int
 	segments := b.segments.Load()
 	if segments == nil || segIdx >= len(*segments) {
 		return
@@ -180,13 +180,13 @@ func (b *BitSet) Unset(i uint64) {
 }
 
 // Test returns true if the bit at the given index is set.
-func (b *BitSet) Test(i uint64) bool {
+func (b *BitSet) Test(i uint32) bool {
 	limit := b.size.Load()
 	if i >= limit {
 		return false
 	}
 
-	segIdx := int(i >> segmentBits)
+	segIdx := int(i >> segmentBits) //nolint:gosec // segment index fits in int
 	segments := b.segments.Load()
 	if segments == nil || segIdx >= len(*segments) {
 		return false
@@ -205,27 +205,27 @@ func (b *BitSet) Test(i uint64) bool {
 }
 
 // NextSetBit returns the index of the next set bit starting from i (inclusive).
-// Returns -1 if no bit is set after i.
-func (b *BitSet) NextSetBit(i uint64) int64 {
+// Returns (index, true) if found, or (0, false) if no bit is set after i.
+func (b *BitSet) NextSetBit(i uint32) (uint32, bool) {
 	limit := b.size.Load()
 	if i >= limit {
-		return -1
+		return 0, false
 	}
 
 	segments := b.segments.Load()
 	if segments == nil {
-		return -1
+		return 0, false
 	}
 
 	// 1. Check the word containing i
-	segIdx := int(i >> segmentBits)
+	segIdx := int(i >> segmentBits) //nolint:gosec // segment index fits in int
 	if segIdx >= len(*segments) {
-		return -1
+		return 0, false
 	}
 
 	offset := i & segmentMask
-	wordIdx := int(offset / 64)
-	bitOffset := int(offset % 64)
+	wordIdx := int(offset / 64)   //nolint:gosec // offset is within segment size
+	bitOffset := int(offset % 64) //nolint:gosec // offset is within segment size
 
 	seg := (*segments)[segIdx]
 	if seg != nil {
@@ -233,7 +233,7 @@ func (b *BitSet) NextSetBit(i uint64) int64 {
 		// Mask out bits before bitOffset
 		val &= ^((1 << bitOffset) - 1)
 		if val != 0 {
-			return int64(uint64(segIdx)*segmentSize + uint64(wordIdx)*64 + uint64(bits.TrailingZeros64(val)))
+			return uint32(uint64(segIdx)*segmentSize + uint64(wordIdx)*64 + uint64(bits.TrailingZeros64(val))), true
 		}
 	}
 
@@ -242,7 +242,7 @@ func (b *BitSet) NextSetBit(i uint64) int64 {
 		for w := wordIdx + 1; w < wordsPerSegment; w++ {
 			val := seg[w].Load()
 			if val != 0 {
-				return int64(uint64(segIdx)*segmentSize + uint64(w)*64 + uint64(bits.TrailingZeros64(val)))
+				return uint32(uint64(segIdx)*segmentSize + uint64(w)*64 + uint64(bits.TrailingZeros64(val))), true
 			}
 		}
 	}
@@ -256,16 +256,16 @@ func (b *BitSet) NextSetBit(i uint64) int64 {
 		for w := 0; w < wordsPerSegment; w++ {
 			val := seg[w].Load()
 			if val != 0 {
-				return int64(uint64(s)*segmentSize + uint64(w)*64 + uint64(bits.TrailingZeros64(val)))
+				return uint32(uint64(s)*segmentSize + uint64(w)*64 + uint64(bits.TrailingZeros64(val))), true
 			}
 		}
 	}
 
-	return -1
+	return 0, false
 }
 
 // Grow ensures the bitset can hold at least size bits.
-func (b *BitSet) Grow(size uint64) {
+func (b *BitSet) Grow(size uint32) {
 	b.growSegments(size)
 	for {
 		cur := b.size.Load()
@@ -284,18 +284,18 @@ func (b *BitSet) WriteTo(w io.Writer) (int64, error) {
 	if err := binary.Write(w, binary.LittleEndian, size); err != nil {
 		return 0, err
 	}
-	n := int64(8)
+	n := int64(4)
 
 	segments := b.segments.Load()
 	if segments == nil {
 		return n, nil
 	}
 
-	numWords := (size + 63) / 64
+	numWords := uint32((uint64(size) + 63) / 64)
 
-	for i := uint64(0); i < numWords; i++ {
-		bitIdx := i * 64
-		segIdx := int(bitIdx >> segmentBits)
+	for i := uint32(0); i < numWords; i++ {
+		bitIdx := uint64(i) * 64
+		segIdx := int(bitIdx >> segmentBits) //nolint:gosec // segment index fits in int
 
 		var val uint64
 		if segIdx < len(*segments) {
@@ -317,7 +317,7 @@ func (b *BitSet) WriteTo(w io.Writer) (int64, error) {
 
 // ReadFrom reads the bitset from the reader.
 func (b *BitSet) ReadFrom(r io.Reader) (int64, error) {
-	var size uint64
+	var size uint32
 	if err := binary.Read(r, binary.LittleEndian, &size); err != nil {
 		return 0, err
 	}
@@ -325,19 +325,19 @@ func (b *BitSet) ReadFrom(r io.Reader) (int64, error) {
 	b.growSegments(size)
 	b.size.Store(size)
 
-	n := int64(8)
-	numWords := (size + 63) / 64
+	n := int64(4)
+	numWords := uint32((uint64(size) + 63) / 64)
 
 	segments := b.segments.Load()
 
-	for i := uint64(0); i < numWords; i++ {
+	for i := uint32(0); i < numWords; i++ {
 		var val uint64
 		if err := binary.Read(r, binary.LittleEndian, &val); err != nil {
 			return n, err
 		}
 
-		bitIdx := i * 64
-		segIdx := int(bitIdx >> segmentBits)
+		bitIdx := uint64(i) * 64
+		segIdx := int(bitIdx >> segmentBits) //nolint:gosec // segment index fits in int
 		if segments != nil && segIdx < len(*segments) {
 			seg := (*segments)[segIdx]
 			if seg != nil {
@@ -352,8 +352,8 @@ func (b *BitSet) ReadFrom(r io.Reader) (int64, error) {
 }
 
 // Count returns the number of set bits.
-func (b *BitSet) Count() int {
-	count := 0
+func (b *BitSet) Count() uint32 {
+	count := uint32(0)
 	segments := b.segments.Load()
 	if segments == nil {
 		return 0
@@ -366,7 +366,7 @@ func (b *BitSet) Count() int {
 			for i := 0; i < wordsPerSegment; i++ {
 				val := seg[i].Load()
 				if val != 0 {
-					count += bits.OnesCount64(val)
+					count += uint32(bits.OnesCount64(val))
 				}
 			}
 		}
@@ -374,8 +374,8 @@ func (b *BitSet) Count() int {
 	}
 
 	size := b.size.Load()
-	numWords := (size + 63) / 64
-	currentWord := uint64(0)
+	numWords := uint32((uint64(size) + 63) / 64)
+	currentWord := uint32(0)
 
 	for _, seg := range *segments {
 		if currentWord >= numWords {
@@ -387,14 +387,14 @@ func (b *BitSet) Count() int {
 		}
 
 		limit := wordsPerSegment
-		if remaining := int(numWords - currentWord); remaining < limit {
+		if remaining := int(numWords - currentWord); remaining < limit { //nolint:gosec // difference fits in int
 			limit = remaining
 		}
 
 		for i := 0; i < limit; i++ {
 			val := seg[i].Load()
 			if val != 0 {
-				count += bits.OnesCount64(val)
+				count += uint32(bits.OnesCount64(val))
 			}
 		}
 		currentWord += wordsPerSegment
@@ -418,7 +418,7 @@ func (b *BitSet) ClearAll() {
 }
 
 // Len returns the size of the bitset in bits.
-func (b *BitSet) Len() uint64 {
+func (b *BitSet) Len() uint32 {
 	return b.size.Load()
 }
 
@@ -426,7 +426,7 @@ func (b *BitSet) Len() uint64 {
 // It uses a dirty list to allow O(K) reset where K is the number of set bits.
 type FastBitSet struct {
 	bits  []uint64
-	dirty []uint64
+	dirty []uint32
 }
 
 // NewFast creates a new FastBitSet.
@@ -435,13 +435,13 @@ func NewFast(capacity int) *FastBitSet {
 	// bits needed = (capacity + 63) / 64
 	return &FastBitSet{
 		bits:  make([]uint64, (capacity+63)/64),
-		dirty: make([]uint64, 0, 128), // Initial capacity for dirty list
+		dirty: make([]uint32, 0, 128), // Initial capacity for dirty list
 	}
 }
 
 // Set marks a bit as set.
-func (b *FastBitSet) Set(id uint64) {
-	wordIdx := int(id >> 6)
+func (b *FastBitSet) Set(id uint32) {
+	wordIdx := int(id >> 6) //nolint:gosec // word index fits in int
 	bitMask := uint64(1) << (id & 63)
 
 	if wordIdx >= len(b.bits) {
@@ -455,8 +455,8 @@ func (b *FastBitSet) Set(id uint64) {
 }
 
 // TestAndSet sets the bit and returns true if it was already set.
-func (b *FastBitSet) TestAndSet(id uint64) bool {
-	wordIdx := int(id >> 6)
+func (b *FastBitSet) TestAndSet(id uint32) bool {
+	wordIdx := int(id >> 6) //nolint:gosec // word index fits in int
 	bitMask := uint64(1) << (id & 63)
 
 	if wordIdx >= len(b.bits) {
@@ -473,8 +473,8 @@ func (b *FastBitSet) TestAndSet(id uint64) bool {
 }
 
 // Test returns true if the bit is set.
-func (b *FastBitSet) Test(id uint64) bool {
-	wordIdx := int(id >> 6)
+func (b *FastBitSet) Test(id uint32) bool {
+	wordIdx := int(id >> 6) //nolint:gosec // word index fits in int
 	if wordIdx >= len(b.bits) {
 		return false
 	}
@@ -484,7 +484,7 @@ func (b *FastBitSet) Test(id uint64) bool {
 // Reset clears all set bits.
 func (b *FastBitSet) Reset() {
 	for _, id := range b.dirty {
-		wordIdx := int(id >> 6)
+		wordIdx := int(id >> 6) //nolint:gosec // word index fits in int
 		bitMask := uint64(1) << (id & 63)
 		b.bits[wordIdx] &^= bitMask
 	}

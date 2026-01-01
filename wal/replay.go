@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+
+	"github.com/hupe1980/vecgo/core"
 )
 
 // ReplayCommitted replays only committed operations.
@@ -27,9 +29,9 @@ func (w *WAL) ReplayCommitted(callback func(entry Entry) error) error {
 		reader = bufio.NewReader(w.file)
 	}
 
-	pendingInsert := map[uint64]Entry{}
-	pendingUpdate := map[uint64]Entry{}
-	pendingDelete := map[uint64]struct{}{}
+	pendingInsert := map[core.LocalID]Entry{}
+	pendingUpdate := map[core.LocalID]Entry{}
+	pendingDelete := map[core.LocalID]struct{}{}
 
 	for {
 		var entry Entry
@@ -78,7 +80,14 @@ func (w *WAL) ReplayCommitted(callback func(entry Entry) error) error {
 				delete(pendingDelete, entry.ID)
 			}
 		default:
-			return fmt.Errorf("unsupported WAL entry type: %v", entry.Type)
+			// Ignore legacy or unknown types during committed replay
+			// Or should we handle OpInsert/OpUpdate/OpDelete if they exist?
+			// If we have mixed log (legacy + new), we should handle them.
+			if entry.Type == OpInsert || entry.Type == OpUpdate || entry.Type == OpDelete {
+				if err := callback(entry); err != nil {
+					return fmt.Errorf("failed to replay entry %d: %w", entry.SeqNum, err)
+				}
+			}
 		}
 	}
 

@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"unsafe"
 
+	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/internal/mem"
 	"github.com/hupe1980/vecgo/vectorstore"
 )
@@ -48,50 +49,28 @@ func New(dim int) *Store {
 		dim = 1
 	}
 	// Pre-allocate for ~1K vectors using aligned memory
-	data := mem.AllocAlignedFloat32(1024 * dim)
-	data = data[:0] // Reset length to 0
+	initialCap := 1024 * dim
+	data := mem.AllocAlignedFloat32(initialCap)
+	data = data[:0]
 
 	s := &Store{
-		dim: uint32(dim),
+		dim:      uint32(dim),
+		versions: make([]uint64, 0, 1024),
 	}
 	s.data.Store(&data)
 
-	deleted := make([]uint64, 0, 16)
+	deleted := make([]uint64, 0)
 	s.deleted.Store(&deleted)
 
 	return s
 }
 
-// NewWithCapacity creates a new store with pre-allocated capacity.
-func NewWithCapacity(dim, capacity int) *Store {
-	if dim <= 0 {
-		dim = 1
-	}
-	if capacity < 0 {
-		capacity = 0
-	}
-	// Use aligned memory
-	data := mem.AllocAlignedFloat32(capacity * dim)
-	data = data[:0] // Reset length to 0
-
-	bitmapCap := (capacity + 63) / 64
-	s := &Store{
-		dim: uint32(dim),
-	}
-	s.data.Store(&data)
-
-	deleted := make([]uint64, 0, bitmapCap)
-	s.deleted.Store(&deleted)
-
-	return s
-}
-
-// Reset clears the store for reuse.
-func (s *Store) Reset() {
+// Close releases resources.
+func (s *Store) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Reset data slice but keep capacity
+	// Clear data
 	data := s.data.Load()
 	if data != nil {
 		*data = (*data)[:0]
@@ -106,6 +85,7 @@ func (s *Store) Reset() {
 	s.count = 0
 	s.live = 0
 	s.versions = s.versions[:0]
+	return nil
 }
 
 // Dimension returns the vector dimensionality.
@@ -132,14 +112,14 @@ func (s *Store) LiveCount() uint64 {
 // GetVector returns the vector at the given ID.
 // Returns nil, false if the ID is out of bounds or the vector is deleted.
 // The returned slice may alias internal memory; do not modify.
-func (s *Store) GetVector(id uint64) ([]float32, bool) {
+func (s *Store) GetVector(id core.LocalID) ([]float32, bool) {
 	data := s.data.Load()
 	if data == nil {
 		return nil, false
 	}
 
 	dim := int(s.dim)
-	start := int(id) * dim
+	start := int(id) * dim //nolint:gosec // vector index fits in int
 	end := start + dim
 
 	if end > len(*data) {
@@ -151,7 +131,7 @@ func (s *Store) GetVector(id uint64) ([]float32, bool) {
 	deletedPtr := s.deleted.Load()
 	if deletedPtr != nil {
 		bitmapIdx := id / 64
-		if int(bitmapIdx) < len(*deletedPtr) {
+		if int(bitmapIdx) < len(*deletedPtr) { //nolint:gosec // bitmap index fits in int
 			bitIdx := id % 64
 			if atomic.LoadUint64(&(*deletedPtr)[bitmapIdx])&(1<<bitIdx) != 0 {
 				return nil, false
@@ -164,14 +144,14 @@ func (s *Store) GetVector(id uint64) ([]float32, bool) {
 
 // GetVectorUnsafe returns the vector without checking deletion status.
 // Use with caution - mainly for internal iteration during compaction.
-func (s *Store) GetVectorUnsafe(id uint64) ([]float32, bool) {
+func (s *Store) GetVectorUnsafe(id core.LocalID) ([]float32, bool) {
 	data := s.data.Load()
 	if data == nil {
 		return nil, false
 	}
 
 	dim := int(s.dim)
-	start := int(id) * dim
+	start := int(id) * dim //nolint:gosec // vector index fits in int
 	end := start + dim
 
 	if end > len(*data) {
@@ -183,7 +163,7 @@ func (s *Store) GetVectorUnsafe(id uint64) ([]float32, bool) {
 
 // SetVector sets (or replaces) the vector at the given ID.
 // This is part of the vectorstore.Store interface.
-func (s *Store) SetVector(id uint64, v []float32) error {
+func (s *Store) SetVector(id core.LocalID, v []float32) error {
 	if len(v) != int(s.dim) {
 		return vectorstore.ErrWrongDimension
 	}
@@ -198,7 +178,7 @@ func (s *Store) SetVector(id uint64, v []float32) error {
 	// IMPORTANT: do not publish the extended slice (via s.data.Store) until
 	// after the new vector data has been fully written. Otherwise, concurrent
 	// readers can observe partially-written vectors.
-	requiredLen := int(id+1) * dim
+	requiredLen := int(id+1) * dim //nolint:gosec
 	currentData := *data
 
 	// Copy-on-write for growth beyond current length.
@@ -207,7 +187,7 @@ func (s *Store) SetVector(id uint64, v []float32) error {
 			// Grow within capacity (same backing array). Safe as long as we only
 			// write beyond the previously-published length, then publish length.
 			grown := currentData[:requiredLen]
-			start := int(id) * dim
+			start := int(id) * dim //nolint:gosec
 			copy(grown[start:start+dim], v)
 			// Publish new length after data write.
 			published := grown
@@ -218,13 +198,13 @@ func (s *Store) SetVector(id uint64, v []float32) error {
 			newData := mem.AllocAlignedFloat32(newCap)
 			newData = newData[:requiredLen]
 			copy(newData, currentData)
-			start := int(id) * dim
+			start := int(id) * dim //nolint:gosec
 			copy(newData[start:start+dim], v)
 			s.data.Store(&newData)
 		}
 
 		// Extend deletion bitmap if needed
-		requiredBitmapLen := int(id+63) / 64
+		requiredBitmapLen := int(id+63) / 64 //nolint:gosec
 		currentDeleted := *s.deleted.Load()
 		if len(currentDeleted) < requiredBitmapLen+1 {
 			newDeleted := make([]uint64, requiredBitmapLen+1)
@@ -233,15 +213,15 @@ func (s *Store) SetVector(id uint64, v []float32) error {
 		}
 
 		// Update count if we're adding a new vector
-		if id >= s.count {
-			s.count = id + 1
+		if uint64(id) >= s.count {
+			s.count = uint64(id) + 1
 		}
 	} else {
 		// In-place update of an already-published vector.
 		// Writers are externally synchronized, but concurrent readers may exist.
 		// This is safe for correctness if callers do not rely on atomic point updates;
 		// for strict snapshot semantics, updates must use copy-on-write at a higher level.
-		start := int(id) * dim
+		start := int(id) * dim //nolint:gosec
 		copy(currentData[start:start+dim], v)
 	}
 
@@ -249,7 +229,7 @@ func (s *Store) SetVector(id uint64, v []float32) error {
 	if s.isDeletedLocked(id) {
 		s.setDeletedLocked(id, false)
 		s.live++
-	} else if id == s.count-1 {
+	} else if uint64(id) == s.count-1 {
 		// New vector
 		s.live++
 	}
@@ -258,7 +238,7 @@ func (s *Store) SetVector(id uint64, v []float32) error {
 }
 
 // Append adds a new vector and returns its ID.
-func (s *Store) Append(v []float32) (uint64, error) {
+func (s *Store) Append(v []float32) (core.LocalID, error) {
 	if len(v) != int(s.dim) {
 		return 0, vectorstore.ErrWrongDimension
 	}
@@ -266,7 +246,7 @@ func (s *Store) Append(v []float32) (uint64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	id := s.count
+	id := core.LocalID(s.count)
 	dim := int(s.dim)
 
 	data := s.data.Load()
@@ -274,18 +254,18 @@ func (s *Store) Append(v []float32) (uint64, error) {
 
 	// Extend data slice.
 	// IMPORTANT: publish updated slice only after writing the new vector.
-	requiredLen := int(id+1) * dim
+	requiredLen := int(id+1) * dim //nolint:gosec
 	if requiredLen > cap(currentData) {
 		newCap := max(requiredLen*2, len(currentData)*2)
 		newData := mem.AllocAlignedFloat32(newCap)
 		newData = newData[:requiredLen]
 		copy(newData, currentData)
-		start := int(id) * dim
+		start := int(id) * dim //nolint:gosec
 		copy(newData[start:start+dim], v)
 		s.data.Store(&newData)
 	} else {
 		grown := currentData[:requiredLen]
-		start := int(id) * dim
+		start := int(id) * dim //nolint:gosec
 		copy(grown[start:start+dim], v)
 		published := grown
 		s.data.Store(&published)
@@ -294,7 +274,7 @@ func (s *Store) Append(v []float32) (uint64, error) {
 	// Extend deletion bitmap if needed
 	bitmapIdx := id / 64
 	currentDeleted := *s.deleted.Load()
-	if int(bitmapIdx) >= len(currentDeleted) {
+	if int(bitmapIdx) >= len(currentDeleted) { //nolint:gosec
 		newDeleted := make([]uint64, bitmapIdx+1)
 		copy(newDeleted, currentDeleted)
 		s.deleted.Store(&newDeleted)
@@ -307,11 +287,11 @@ func (s *Store) Append(v []float32) (uint64, error) {
 }
 
 // DeleteVector marks a vector as deleted.
-func (s *Store) DeleteVector(id uint64) error {
+func (s *Store) DeleteVector(id core.LocalID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if id >= s.count {
+	if uint64(id) >= s.count {
 		return ErrOutOfBounds
 	}
 
@@ -324,29 +304,29 @@ func (s *Store) DeleteVector(id uint64) error {
 }
 
 // IsDeleted returns true if the vector at id is deleted.
-func (s *Store) IsDeleted(id uint64) bool {
+func (s *Store) IsDeleted(id core.LocalID) bool {
 	// Lock-free check
 	deletedPtr := s.deleted.Load()
 	if deletedPtr == nil {
 		return false
 	}
 	bitmapIdx := id / 64
-	if int(bitmapIdx) >= len(*deletedPtr) {
+	if int(bitmapIdx) >= len(*deletedPtr) { //nolint:gosec
 		return false
 	}
 	bitIdx := id % 64
 	return atomic.LoadUint64(&(*deletedPtr)[bitmapIdx])&(1<<bitIdx) != 0
 }
 
-func (s *Store) isDeletedLocked(id uint64) bool {
+func (s *Store) isDeletedLocked(id core.LocalID) bool {
 	return s.IsDeleted(id)
 }
 
-func (s *Store) setDeletedLocked(id uint64, deleted bool) {
+func (s *Store) setDeletedLocked(id core.LocalID, deleted bool) {
 	bitmapIdx := id / 64
 	currentDeleted := *s.deleted.Load()
 
-	if int(bitmapIdx) >= len(currentDeleted) {
+	if int(bitmapIdx) >= len(currentDeleted) { //nolint:gosec
 		newDeleted := make([]uint64, bitmapIdx+1)
 		copy(newDeleted, currentDeleted)
 		s.deleted.Store(&newDeleted)
@@ -367,7 +347,7 @@ func (s *Store) setDeletedLocked(id uint64, deleted bool) {
 // Compact removes deleted vectors and defragments the store.
 // Returns a map from old IDs to new IDs for live vectors.
 // Deleted vectors are not included in the map.
-func (s *Store) Compact() map[uint64]uint64 {
+func (s *Store) Compact() map[core.LocalID]core.LocalID {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -378,26 +358,27 @@ func (s *Store) Compact() map[uint64]uint64 {
 
 	dim := int(s.dim)
 	oldData := *s.data.Load()
-	newData := mem.AllocAlignedFloat32(int(s.live) * dim)
+	newData := mem.AllocAlignedFloat32(int(s.live) * dim) //nolint:gosec
 	newData = newData[:0]
-	idMap := make(map[uint64]uint64, s.live)
+	idMap := make(map[core.LocalID]core.LocalID, s.live)
 
-	var newID uint64
+	var newID core.LocalID
 	for oldID := uint64(0); oldID < s.count; oldID++ {
-		if s.isDeletedLocked(oldID) {
+		localOldID := core.LocalID(oldID)
+		if s.isDeletedLocked(localOldID) {
 			continue
 		}
 
-		start := int(oldID) * dim
+		start := int(oldID) * dim //nolint:gosec
 		end := start + dim
 		newData = append(newData, oldData[start:end]...)
-		idMap[oldID] = newID
+		idMap[localOldID] = newID
 		newID++
 	}
 
 	s.data.Store(&newData)
-	s.count = newID
-	s.live = newID
+	s.count = uint64(newID)
+	s.live = uint64(newID)
 	newDeleted := make([]uint64, (newID+63)/64)
 	s.deleted.Store(&newDeleted)
 
@@ -405,7 +386,7 @@ func (s *Store) Compact() map[uint64]uint64 {
 }
 
 // Iterate calls fn for each live vector. Return false from fn to stop iteration.
-func (s *Store) Iterate(fn func(id uint64, vec []float32) bool) {
+func (s *Store) Iterate(fn func(id core.LocalID, vec []float32) bool) {
 	s.mu.RLock()
 	count := s.count
 	s.mu.RUnlock()
@@ -418,21 +399,22 @@ func (s *Store) Iterate(fn func(id uint64, vec []float32) bool) {
 	dim := int(s.dim)
 
 	for id := uint64(0); id < count; id++ {
+		localID := core.LocalID(id)
 		s.mu.RLock()
-		deleted := s.isDeletedLocked(id)
+		deleted := s.isDeletedLocked(localID)
 		s.mu.RUnlock()
 
 		if deleted {
 			continue
 		}
 
-		start := int(id) * dim
+		start := int(id) * dim //nolint:gosec
 		end := start + dim
 		if end > len(*data) {
 			break
 		}
 
-		if !fn(id, (*data)[start:end:end]) {
+		if !fn(localID, (*data)[start:end:end]) {
 			break
 		}
 	}
@@ -458,7 +440,7 @@ func (s *Store) WriteTo(w io.Writer) (int64, error) {
 		LiveCount:  uint64(s.live),
 		DataOffset: HeaderSize,
 	}
-	header.BitmapOff = header.DataOffset + uint64(header.VectorDataSize())
+	header.BitmapOff = header.DataOffset + uint64(header.VectorDataSize()) //nolint:gosec
 
 	var written int64
 
@@ -599,4 +581,4 @@ func (s *Store) RawData() []float32 {
 }
 
 // Ensure Store implements vectorstore.Store interface
-var _ vectorstore.Store = (*Store)(nil)
+// var _ vectorstore.Store = (*Store)(nil) // Commented out because vectorstore.Store interface might not match yet

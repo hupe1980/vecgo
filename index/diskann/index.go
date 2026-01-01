@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/index/hnsw"
 	"github.com/hupe1980/vecgo/internal/bitset"
@@ -59,15 +60,15 @@ type Index struct {
 	mu              sync.RWMutex
 	segments        []*Segment
 	memTable        *hnsw.HNSW
-	memTableStartID uint64         // Global ID of the first vector in MemTable
-	memTableCount   atomic.Uint64  // Number of vectors in MemTable
+	memTableStartID core.LocalID   // Global ID of the first vector in MemTable
+	memTableCount   atomic.Uint32  // Number of vectors in MemTable
 	memTablePresent *bitset.BitSet // IDs currently in MemTable (to mask stale segment data)
 
 	// Logical Count
-	count atomic.Uint64
+	count atomic.Uint32
 
 	// ID Management
-	nextIDAtomic atomic.Uint64
+	nextIDAtomic atomic.Uint32
 	deleted      *bitset.BitSet
 
 	// Compaction
@@ -86,7 +87,7 @@ type searchScratch struct {
 	results        []index.SearchResult   // Final merged results
 	segmentResults [][]index.SearchResult // Per-segment results (slice of slices)
 	flatResults    []index.SearchResult   // Flat buffer for all segment results
-	seen           map[uint64]struct{}    // Deduplication map (fallback)
+	seen           map[uint32]struct{}    // Deduplication map (fallback)
 	seenBits       *bitset.BitSet         // Deduplication bitset (primary)
 
 	// Segment Search Buffers
@@ -179,7 +180,7 @@ func Open(indexPath string, opts *Options) (*Index, error) {
 	sort.Strings(segmentPaths) // Ensure deterministic order
 
 	// Load segments
-	maxID := uint64(0)
+	maxID := core.LocalID(0)
 	for _, path := range segmentPaths {
 		var baseID uint64
 		var dummy string
@@ -188,14 +189,14 @@ func Open(indexPath string, opts *Options) (*Index, error) {
 			continue
 		}
 
-		seg, err := OpenSegment(path, baseID, opts)
+		seg, err := OpenSegment(path, core.LocalID(baseID), opts)
 		if err != nil {
 			return nil, fmt.Errorf("diskann: open segment %s: %w", path, err)
 		}
 		idx.segments = append(idx.segments, seg)
 		idx.count.Add(seg.count)
 
-		segMax := baseID + seg.count
+		segMax := core.LocalID(baseID) + core.LocalID(seg.count)
 		if segMax > maxID {
 			maxID = segMax
 		}
@@ -216,8 +217,8 @@ func Open(indexPath string, opts *Options) (*Index, error) {
 		}
 		idx.segments = append(idx.segments, seg)
 		idx.count.Add(seg.count)
-		if seg.count > maxID {
-			maxID = seg.count
+		if core.LocalID(seg.count) > maxID {
+			maxID = core.LocalID(seg.count)
 		}
 		if idx.dim == 0 {
 			idx.dim = seg.dim
@@ -226,7 +227,7 @@ func Open(indexPath string, opts *Options) (*Index, error) {
 		}
 	}
 
-	idx.nextIDAtomic.Store(maxID)
+	idx.nextIDAtomic.Store(uint32(maxID))
 	idx.memTableStartID = maxID
 
 	// Initialize MemTable
@@ -250,7 +251,7 @@ func (idx *Index) initPools() {
 			results:        make([]index.SearchResult, 0, 1024),
 			segmentResults: make([][]index.SearchResult, 0, 16),
 			flatResults:    make([]index.SearchResult, 0, 4096),
-			seen:           make(map[uint64]struct{}, 1024),
+			seen:           make(map[uint32]struct{}, 1024),
 			seenBits:       bitset.New(1024),
 			candidates:     make(candidateHeap, 0, 128),
 			visited:        bitset.New(1024),
@@ -311,19 +312,19 @@ func (idx *Index) resetMemTable() error {
 // ============================================================================
 
 // AllocateID reserves a new ID for insertion.
-func (idx *Index) AllocateID() uint64 {
-	return idx.nextIDAtomic.Add(1) - 1
+func (idx *Index) AllocateID() core.LocalID {
+	return core.LocalID(idx.nextIDAtomic.Add(1) - 1)
 }
 
 // ReleaseID is a no-op in this LSM implementation.
-func (idx *Index) ReleaseID(id uint64) {}
+func (idx *Index) ReleaseID(id core.LocalID) {}
 
 // ============================================================================
 // Index Mutations (Insert/Delete/Update)
 // ============================================================================
 
 // Insert adds a vector to the index.
-func (idx *Index) Insert(ctx context.Context, v []float32) (uint64, error) {
+func (idx *Index) Insert(ctx context.Context, v []float32) (core.LocalID, error) {
 	id := idx.AllocateID()
 	if err := idx.ApplyInsert(ctx, id, v); err != nil {
 		return 0, err
@@ -333,7 +334,7 @@ func (idx *Index) Insert(ctx context.Context, v []float32) (uint64, error) {
 }
 
 // ApplyInsert adds a vector with a specific ID to the MemTable.
-func (idx *Index) ApplyInsert(ctx context.Context, id uint64, v []float32) error {
+func (idx *Index) ApplyInsert(ctx context.Context, id core.LocalID, v []float32) error {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 
@@ -348,17 +349,17 @@ func (idx *Index) ApplyInsert(ctx context.Context, id uint64, v []float32) error
 	}
 
 	// Update shadowing bitset and stats
-	idx.memTablePresent.Set(id)
+	idx.memTablePresent.Set(uint32(id))
 	idx.memTableCount.Add(1)
 
 	// Clear deletion bit if it was previously deleted
-	idx.deleted.Unset(id)
+	idx.deleted.Unset(uint32(id))
 
 	return nil
 }
 
 // ApplyBatchInsert adds multiple vectors with specific IDs to the MemTable.
-func (idx *Index) ApplyBatchInsert(ctx context.Context, ids []uint64, vectors [][]float32) error {
+func (idx *Index) ApplyBatchInsert(ctx context.Context, ids []core.LocalID, vectors [][]float32) error {
 	if len(ids) != len(vectors) {
 		return fmt.Errorf("ids and vectors length mismatch")
 	}
@@ -378,22 +379,22 @@ func (idx *Index) ApplyBatchInsert(ctx context.Context, ids []uint64, vectors []
 
 	// Update shadowing bitset and stats
 	for _, id := range ids {
-		idx.memTablePresent.Set(id)
-		idx.deleted.Unset(id)
+		idx.memTablePresent.Set(uint32(id))
+		idx.deleted.Unset(uint32(id))
 	}
-	idx.memTableCount.Add(uint64(len(ids)))
+	idx.memTableCount.Add(uint32(len(ids)))
 
 	return nil
 }
 
 // Delete removes a vector from the index.
-func (idx *Index) Delete(ctx context.Context, id uint64) error {
+func (idx *Index) Delete(ctx context.Context, id core.LocalID) error {
 	return idx.ApplyDelete(ctx, id)
 }
 
 // ApplyDelete marks a vector as deleted.
-func (idx *Index) ApplyDelete(ctx context.Context, id uint64) error {
-	idx.deleted.Set(id)
+func (idx *Index) ApplyDelete(ctx context.Context, id core.LocalID) error {
+	idx.deleted.Set(uint32(id))
 
 	// Also delete from MemTable if present to keep it clean
 	idx.mu.RLock()
@@ -408,12 +409,12 @@ func (idx *Index) ApplyDelete(ctx context.Context, id uint64) error {
 }
 
 // Update updates a vector in the index.
-func (idx *Index) Update(ctx context.Context, id uint64, v []float32) error {
+func (idx *Index) Update(ctx context.Context, id core.LocalID, v []float32) error {
 	return idx.ApplyUpdate(ctx, id, v)
 }
 
 // ApplyUpdate updates a vector with a specific ID.
-func (idx *Index) ApplyUpdate(ctx context.Context, id uint64, v []float32) error {
+func (idx *Index) ApplyUpdate(ctx context.Context, id core.LocalID, v []float32) error {
 	// In LSM, update is Insert with same ID.
 	return idx.ApplyInsert(ctx, id, v)
 }
@@ -421,7 +422,7 @@ func (idx *Index) ApplyUpdate(ctx context.Context, id uint64, v []float32) error
 // BatchInsert adds multiple vectors.
 func (idx *Index) BatchInsert(ctx context.Context, vectors [][]float32) index.BatchInsertResult {
 	result := index.BatchInsertResult{
-		IDs:    make([]uint64, len(vectors)),
+		IDs:    make([]core.LocalID, len(vectors)),
 		Errors: make([]error, len(vectors)),
 	}
 
@@ -435,14 +436,14 @@ func (idx *Index) BatchInsert(ctx context.Context, vectors [][]float32) index.Ba
 }
 
 // VectorByID retrieves a vector by its ID.
-func (idx *Index) VectorByID(ctx context.Context, id uint64) ([]float32, error) {
+func (idx *Index) VectorByID(ctx context.Context, id core.LocalID) ([]float32, error) {
 	idx.mu.RLock()
 	deleted := idx.deleted
 	memTable := idx.memTable
 	segments := idx.segments
 	idx.mu.RUnlock()
 
-	if deleted.Test(id) {
+	if deleted.Test(uint32(id)) {
 		return nil, &index.ErrNodeDeleted{ID: id}
 	}
 
@@ -511,14 +512,16 @@ func (idx *Index) KNNSearchWithBuffer(ctx context.Context, query []float32, k in
 	}()
 
 	// Wrap filter to exclude deleted items
-	var userFilter func(uint64) bool
-	if opts != nil {
-		userFilter = opts.Filter
+	var userFilter func(core.LocalID) bool
+	if opts != nil && opts.Filter != nil {
+		userFilter = func(id core.LocalID) bool {
+			return opts.Filter(id)
+		}
 	}
 
 	// Base filter: deleted check
-	baseFilter := func(id uint64) bool {
-		if deleted.Test(id) {
+	baseFilter := func(id core.LocalID) bool {
+		if deleted.Test(uint32(id)) {
 			return false
 		}
 		if userFilter != nil {
@@ -528,18 +531,20 @@ func (idx *Index) KNNSearchWithBuffer(ctx context.Context, query []float32, k in
 	}
 
 	// Segment filter: base filter + check if shadowed by MemTable
-	segmentFilter := func(id uint64) bool {
+	segmentFilter := func(id core.LocalID) bool {
 		if !baseFilter(id) {
 			return false
 		}
 		// Check shadowing
-		return !memTablePresent.Test(id)
+		return !memTablePresent.Test(uint32(id))
 	}
 
 	// Search MemTable
 	if memTable != nil {
 		memOpts := index.SearchOptions{
-			Filter: baseFilter,
+			Filter: func(id core.LocalID) bool {
+				return baseFilter(id)
+			},
 		}
 		if opts != nil {
 			memOpts.EFSearch = opts.EFSearch
@@ -687,14 +692,16 @@ func (idx *Index) KNNSearchWithContext(ctx context.Context, s *searcher.Searcher
 	idx.mu.RUnlock()
 
 	// Wrap filter to exclude deleted items
-	var userFilter func(uint64) bool
-	if opts != nil {
-		userFilter = opts.Filter
+	var userFilter func(core.LocalID) bool
+	if opts != nil && opts.Filter != nil {
+		userFilter = func(id core.LocalID) bool {
+			return opts.Filter(id)
+		}
 	}
 
 	// Base filter: deleted check
-	baseFilter := func(id uint64) bool {
-		if deleted.Test(id) {
+	baseFilter := func(id core.LocalID) bool {
+		if deleted.Test(uint32(id)) {
 			return false
 		}
 		if userFilter != nil {
@@ -704,18 +711,20 @@ func (idx *Index) KNNSearchWithContext(ctx context.Context, s *searcher.Searcher
 	}
 
 	// Segment filter: base filter + check if shadowed by MemTable
-	segmentFilter := func(id uint64) bool {
+	segmentFilter := func(id core.LocalID) bool {
 		if !baseFilter(id) {
 			return false
 		}
 		// Check shadowing
-		return !memTablePresent.Test(id)
+		return !memTablePresent.Test(uint32(id))
 	}
 
 	// Search MemTable
 	if memTable != nil {
 		memOpts := index.SearchOptions{
-			Filter: baseFilter,
+			Filter: func(id core.LocalID) bool {
+				return baseFilter(id)
+			},
 		}
 		if opts != nil {
 			memOpts.EFSearch = opts.EFSearch
@@ -739,7 +748,7 @@ func (idx *Index) KNNSearchWithContext(ctx context.Context, s *searcher.Searcher
 }
 
 // BruteSearch performs a brute-force search on the index.
-func (idx *Index) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint64) bool) ([]index.SearchResult, error) {
+func (idx *Index) BruteSearch(ctx context.Context, query []float32, k int, filter func(id core.LocalID) bool) ([]index.SearchResult, error) {
 	idx.mu.RLock()
 	maxID := idx.nextIDAtomic.Load()
 	idx.mu.RUnlock()
@@ -747,9 +756,10 @@ func (idx *Index) BruteSearch(ctx context.Context, query []float32, k int, filte
 	h := &maxDistHeap{}
 	heap.Init(h)
 
-	for id := uint64(0); id < maxID; id++ {
+	for id := uint32(0); id < maxID; id++ {
+		localID := core.LocalID(id)
 		// Check filter
-		if filter != nil && !filter(id) {
+		if filter != nil && !filter(localID) {
 			continue
 		}
 
@@ -758,7 +768,7 @@ func (idx *Index) BruteSearch(ctx context.Context, query []float32, k int, filte
 			continue
 		}
 
-		vec, err := idx.VectorByID(ctx, id)
+		vec, err := idx.VectorByID(ctx, localID)
 		if err != nil {
 			continue
 		}
@@ -766,18 +776,18 @@ func (idx *Index) BruteSearch(ctx context.Context, query []float32, k int, filte
 		dist := idx.distFunc(query, vec)
 
 		if h.Len() < k {
-			heap.Push(h, distNode{id: id, dist: dist})
+			h.PushNode(distNode{id: id, dist: dist})
 		} else if dist < (*h)[0].dist {
-			heap.Pop(h)
-			heap.Push(h, distNode{id: id, dist: dist})
+			h.PopNode()
+			h.PushNode(distNode{id: id, dist: dist})
 		}
 	}
 
 	// Extract results
 	results := make([]index.SearchResult, h.Len())
 	for i := h.Len() - 1; i >= 0; i-- {
-		node := heap.Pop(h).(distNode)
-		results[i] = index.SearchResult{ID: node.id, Distance: node.dist}
+		node := h.PopNode()
+		results[i] = index.SearchResult{ID: uint32(node.id), Distance: node.dist}
 	}
 
 	return results, nil
@@ -888,16 +898,16 @@ func (idx *Index) Flush(ctx context.Context) error {
 	// Extract vectors from MemTable
 	// We iterate from baseID to nextID
 	endID := idx.nextIDAtomic.Load()
-	vectors := make([][]float32, 0, endID-baseID)
+	vectors := make([][]float32, 0, endID-uint32(baseID))
 
-	for id := baseID; id < endID; id++ {
+	for id := baseID; uint32(id) < endID; id++ {
 		// Check if deleted
-		isDeleted := idx.deleted.Test(id)
+		isDeleted := idx.deleted.Test(uint32(id))
 
 		var vec []float32
 		if !isDeleted {
 			var err error
-			vec, err = idx.memTable.VectorByID(ctx, id)
+			vec, err = idx.memTable.VectorByID(ctx, core.LocalID(id))
 			if err != nil {
 				// Should not happen for live vectors in MemTable
 				// But if it does, we treat it as deleted/zero
@@ -931,7 +941,7 @@ func (idx *Index) Flush(ctx context.Context) error {
 	if err := idx.resetMemTable(); err != nil {
 		return err
 	}
-	idx.memTableStartID = endID
+	idx.memTableStartID = core.LocalID(endID)
 
 	return nil
 }
@@ -974,11 +984,11 @@ func (idx *Index) Compact(ctx context.Context) error {
 	oldSegments := idx.segments
 
 	for _, seg := range oldSegments {
-		for i := uint64(0); i < seg.count; i++ {
-			globalID := seg.baseID + i
+		for i := uint32(0); i < seg.count; i++ {
+			globalID := seg.baseID + core.LocalID(i)
 
 			// Check deleted
-			isDeleted := idx.deleted.Test(globalID)
+			isDeleted := idx.deleted.Test(uint32(globalID))
 
 			if isDeleted {
 				vectorsRemoved++
@@ -1019,7 +1029,7 @@ func (idx *Index) Compact(ctx context.Context) error {
 	// Replace segments
 	idx.segments = []*Segment{newSeg}
 	idx.count.Store(newSeg.count)
-	idx.memTableStartID = newSeg.count
+	idx.memTableStartID = core.LocalID(newSeg.count)
 	idx.nextIDAtomic.Store(newSeg.count)
 
 	// Reset deleted
@@ -1109,6 +1119,52 @@ func (h *maxDistHeap) Pop() interface{} {
 	x := old[n-1]
 	*h = old[:n-1]
 	return x
+}
+
+func (h *maxDistHeap) PushNode(n distNode) {
+	*h = append(*h, n)
+	h.up(len(*h) - 1)
+}
+
+func (h *maxDistHeap) PopNode() distNode {
+	old := *h
+	n := len(old)
+	h.Swap(0, n-1)
+	x := old[n-1]
+	*h = old[:n-1]
+	h.down(0, len(*h))
+	return x
+}
+
+func (h *maxDistHeap) up(j int) {
+	for {
+		i := (j - 1) / 2 // parent
+		if i == j || !h.Less(j, i) {
+			break
+		}
+		h.Swap(i, j)
+		j = i
+	}
+}
+
+func (h *maxDistHeap) down(i0, n int) bool {
+	i := i0
+	for {
+		j1 := 2*i + 1
+		if j1 >= n || j1 < 0 { // j1 < 0 after int overflow
+			break
+		}
+		j := j1 // left child
+		if j2 := j1 + 1; j2 < n && h.Less(j2, j1) {
+			j = j2 // = 2*i + 2  // right child
+		}
+		if !h.Less(j, i) {
+			break
+		}
+		h.Swap(i, j)
+		i = j
+	}
+	return i > i0
 }
 
 // ============================================================================

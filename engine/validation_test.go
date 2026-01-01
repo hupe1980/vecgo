@@ -13,7 +13,6 @@ import (
 
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/metadata"
-	"github.com/hupe1980/vecgo/searcher"
 )
 
 // mockCoordinator implements Coordinator for testing validation layer
@@ -54,34 +53,26 @@ func (m *mockCoordinator[T]) GetMetadata(id uint64) (metadata.Metadata, bool) {
 	return nil, false
 }
 
-func (m *mockCoordinator[T]) KNNSearch(ctx context.Context, query []float32, k int, opts *index.SearchOptions) ([]index.SearchResult, error) {
-	return []index.SearchResult{{ID: 1, Distance: 0.1}}, nil
+func (m *mockCoordinator[T]) KNNSearch(ctx context.Context, query []float32, k int, opts *SearchOptions) ([]SearchResult, error) {
+	return []SearchResult{{ID: 1, Distance: 0.1}}, nil
 }
 
-func (m *mockCoordinator[T]) KNNSearchWithBuffer(ctx context.Context, query []float32, k int, opts *index.SearchOptions, buf *[]index.SearchResult) error {
-	*buf = append(*buf, index.SearchResult{ID: 1, Distance: 0.1})
+func (m *mockCoordinator[T]) KNNSearchWithBuffer(ctx context.Context, query []float32, k int, opts *SearchOptions, buf *[]SearchResult) error {
+	*buf = append(*buf, SearchResult{ID: 1, Distance: 0.1})
 	return nil
 }
 
-func (m *mockCoordinator[T]) KNNSearchWithContext(ctx context.Context, query []float32, k int, opts *index.SearchOptions, s *searcher.Searcher) error {
-	return nil
+func (m *mockCoordinator[T]) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint64) bool) ([]SearchResult, error) {
+	return []SearchResult{{ID: 1, Distance: 0.1}}, nil
 }
 
-func (m *mockCoordinator[T]) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint64) bool) ([]index.SearchResult, error) {
-	return []index.SearchResult{{ID: 1, Distance: 0.1}}, nil
+func (m *mockCoordinator[T]) HybridSearch(ctx context.Context, query []float32, k int, opts *HybridSearchOptions) ([]SearchResult, error) {
+	return []SearchResult{{ID: 1, Distance: 0.1}}, nil
 }
 
-func (m *mockCoordinator[T]) HybridSearch(ctx context.Context, query []float32, k int, opts *HybridSearchOptions) ([]index.SearchResult, error) {
-	return []index.SearchResult{{ID: 1, Distance: 0.1}}, nil
-}
-
-func (m *mockCoordinator[T]) HybridSearchWithContext(ctx context.Context, query []float32, k int, opts *HybridSearchOptions, s *searcher.Searcher) ([]index.SearchResult, error) {
-	return []index.SearchResult{{ID: 1, Distance: 0.1}}, nil
-}
-
-func (m *mockCoordinator[T]) KNNSearchStream(ctx context.Context, query []float32, k int, opts *index.SearchOptions) iter.Seq2[index.SearchResult, error] {
-	return func(yield func(index.SearchResult, error) bool) {
-		yield(index.SearchResult{ID: 1, Distance: 0.1}, nil)
+func (m *mockCoordinator[T]) KNNSearchStream(ctx context.Context, query []float32, k int, opts *SearchOptions) iter.Seq2[SearchResult, error] {
+	return func(yield func(SearchResult, error) bool) {
+		yield(SearchResult{ID: 1, Distance: 0.1}, nil)
 	}
 }
 

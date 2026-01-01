@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/hupe1980/vecgo/index"
-	"github.com/hupe1980/vecgo/internal/core"
+	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/vectorstore/columnar"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

@@ -31,7 +31,7 @@ type Searcher struct {
 	IOBuffer []byte
 
 	// FilterBitmap is a reusable bitmap for metadata filtering.
-	FilterBitmap *metadata.Bitmap
+	FilterBitmap *metadata.LocalBitmap
 
 	// ScratchResults is a reusable buffer for collecting intermediate results (e.g. DiskANN beam search).
 	ScratchResults []PriorityQueueItem
@@ -49,58 +49,37 @@ var searcherPool = sync.Pool{
 	},
 }
 
-// AcquireSearcher retrieves a Searcher from the pool and prepares it for use.
-// It ensures the Searcher has sufficient capacity for maxNodes and dim.
-func AcquireSearcher(maxNodes int, dim int) *Searcher {
-	s := searcherPool.Get().(*Searcher)
-	s.Visited.EnsureCapacity(maxNodes)
-	if cap(s.ScratchVec) < dim {
-		s.ScratchVec = make([]float32, dim)
-	} else {
-		s.ScratchVec = s.ScratchVec[:dim]
+// NewSearcher creates a new searcher with the given initial capacities.
+func NewSearcher(visitedCap, queueCap int) *Searcher {
+	return &Searcher{
+		Visited:           NewVisitedSet(visitedCap),
+		Candidates:        NewPriorityQueue(true),  // MaxHeap for results (keep smallest)
+		ScratchCandidates: NewPriorityQueue(false), // MinHeap for exploration (explore closest)
+		FilterBitmap:      metadata.NewLocalBitmap(),
+		ScratchResults:    make([]PriorityQueueItem, 0, queueCap),
 	}
-	// Reset scratch buffers
-	s.ScratchResults = s.ScratchResults[:0]
-	s.BQBuffer = s.BQBuffer[:0]
-	s.OpsPerformed = 0
+}
+
+// Get returns a Searcher from the pool.
+func Get() *Searcher {
+	s := searcherPool.Get().(*Searcher)
+	s.Reset()
 	return s
 }
 
-// ReleaseSearcher resets the Searcher and returns it to the pool.
-func ReleaseSearcher(s *Searcher) {
-	s.Reset()
+// Put returns a Searcher to the pool.
+func Put(s *Searcher) {
 	searcherPool.Put(s)
 }
 
-// NewSearcher creates a new Searcher with the given configuration.
-// maxNodes is the maximum number of nodes in the index (for visited set sizing).
-// dim is the vector dimension (for scratch vector sizing).
-func NewSearcher(maxNodes int, dim int) *Searcher {
-	return &Searcher{
-		Visited:           NewVisitedSet(maxNodes),
-		Candidates:        NewMax(128), // Max-heap for results (keeps K smallest, evicts largest)
-		ScratchCandidates: NewMin(128), // Min-heap for exploration (explores closest first)
-		ScratchVec:        make([]float32, dim),
-		IOBuffer:          make([]byte, 4096), // Default page size
-		FilterBitmap:      metadata.NewBitmap(),
-		ScratchResults:    make([]PriorityQueueItem, 0, 128),
-		BQBuffer:          make([]uint64, 0, 8), // Enough for 512 dimensions
-	}
-}
-
-// Reset clears the searcher state for reuse without freeing memory.
+// Reset clears the searcher state for reuse.
 func (s *Searcher) Reset() {
 	s.Visited.Reset()
-	s.Candidates.Reset()
-	s.ScratchCandidates.Reset()
+	// Re-create heaps to clear them (faster than popping all)
+	// Or just slice to 0 if we implement Reset on PriorityQueue
+	s.Candidates = NewPriorityQueue(true)
+	s.ScratchCandidates = NewPriorityQueue(false)
 	s.FilterBitmap.Clear()
-	// ScratchVec and IOBuffer don't need clearing, just overwriting
+	s.ScratchResults = s.ScratchResults[:0]
 	s.OpsPerformed = 0
-}
-
-// EnsureQueueCapacity ensures that the candidate queues have sufficient capacity.
-// This should be called before search with the expected ef/k values.
-func (s *Searcher) EnsureQueueCapacity(capacity int) {
-	s.Candidates.EnsureCapacity(capacity)
-	s.ScratchCandidates.EnsureCapacity(capacity)
 }

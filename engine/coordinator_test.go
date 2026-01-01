@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/hupe1980/vecgo/codec"
+	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/index/flat"
 	"github.com/hupe1980/vecgo/metadata"
@@ -44,10 +45,10 @@ func TestCoordinator_InsertUpdateDelete(t *testing.T) {
 		t.Fatalf("Insert failed: %v", err)
 	}
 
-	if got, ok := dataStore.Get(id); !ok || got != "a" {
+	if got, ok := dataStore.Get(core.LocalID(id)); !ok || got != "a" {
 		t.Fatalf("dataStore.Get: got=%q ok=%v", got, ok)
 	}
-	if got, ok := metaStore.Get(id); !ok {
+	if got, ok := metaStore.Get(core.LocalID(id)); !ok {
 		t.Fatalf("metaStore.Get: ok=%v got=%v", ok, got)
 	} else if s, ok := got["k"].AsString(); !ok || s != "v" {
 		t.Fatalf("metaStore.Get: k=%v ok=%v", got["k"], ok)
@@ -57,10 +58,10 @@ func TestCoordinator_InsertUpdateDelete(t *testing.T) {
 	if err := coord.Update(ctx, id, []float32{3, 2, 1}, "b", nil); err != nil {
 		t.Fatalf("Update failed: %v", err)
 	}
-	if got, ok := dataStore.Get(id); !ok || got != "b" {
+	if got, ok := dataStore.Get(core.LocalID(id)); !ok || got != "b" {
 		t.Fatalf("dataStore.Get after update: got=%q ok=%v", got, ok)
 	}
-	if got, ok := metaStore.Get(id); !ok {
+	if got, ok := metaStore.Get(core.LocalID(id)); !ok {
 		t.Fatalf("metaStore.Get after update(nil): ok=%v got=%v", ok, got)
 	} else if s, ok := got["k"].AsString(); !ok || s != "v" {
 		t.Fatalf("metaStore.Get after update(nil): k=%v ok=%v", got["k"], ok)
@@ -69,7 +70,7 @@ func TestCoordinator_InsertUpdateDelete(t *testing.T) {
 	if err := coord.Delete(ctx, id); err != nil {
 		t.Fatalf("Delete failed: %v", err)
 	}
-	if _, ok := dataStore.Get(id); ok {
+	if _, ok := dataStore.Get(core.LocalID(id)); ok {
 		t.Fatalf("expected data deleted")
 	}
 }

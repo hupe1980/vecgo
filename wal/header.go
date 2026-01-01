@@ -26,7 +26,7 @@ func writeWALHeader(w io.Writer, info walHeaderInfo) (int64, error) {
 	}
 	level := uint8(0)
 	if info.Compressed {
-		level = uint8(info.CompressionLevel)
+		level = uint8(info.CompressionLevel) //nolint:gosec
 	}
 
 	buf := make([]byte, 0, walHeaderFixedLen)

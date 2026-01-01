@@ -8,6 +8,7 @@ import (
 	"iter"
 	"testing"
 
+	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/persistence"
 	"github.com/hupe1980/vecgo/searcher"
 	"github.com/stretchr/testify/assert"
@@ -17,12 +18,12 @@ import (
 // MockIndex implements Index interface
 type MockIndex struct{}
 
-func (m *MockIndex) Insert(ctx context.Context, v []float32) (uint64, error) { return 0, nil }
+func (m *MockIndex) Insert(ctx context.Context, v []float32) (core.LocalID, error) { return 0, nil }
 func (m *MockIndex) BatchInsert(ctx context.Context, vectors [][]float32) BatchInsertResult {
 	return BatchInsertResult{}
 }
-func (m *MockIndex) Delete(ctx context.Context, id uint64) error              { return nil }
-func (m *MockIndex) Update(ctx context.Context, id uint64, v []float32) error { return nil }
+func (m *MockIndex) Delete(ctx context.Context, id core.LocalID) error              { return nil }
+func (m *MockIndex) Update(ctx context.Context, id core.LocalID, v []float32) error { return nil }
 func (m *MockIndex) KNNSearch(ctx context.Context, q []float32, k int, opts *SearchOptions) ([]SearchResult, error) {
 	return nil, nil
 }
@@ -35,7 +36,7 @@ func (m *MockIndex) KNNSearchWithContext(ctx context.Context, s *searcher.Search
 func (m *MockIndex) KNNSearchStream(ctx context.Context, q []float32, k int, opts *SearchOptions) iter.Seq2[SearchResult, error] {
 	return func(yield func(SearchResult, error) bool) {}
 }
-func (m *MockIndex) BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint64) bool) ([]SearchResult, error) {
+func (m *MockIndex) BruteSearch(ctx context.Context, query []float32, k int, filter func(id core.LocalID) bool) ([]SearchResult, error) {
 	return nil, nil
 }
 func (m *MockIndex) Stats() Stats   { return Stats{} }

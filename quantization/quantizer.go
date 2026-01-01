@@ -202,7 +202,7 @@ func (sq *ScalarQuantizer) MarshalBinary() ([]byte, error) {
 	}
 
 	buf := make([]byte, 4+sq.dimension*8)
-	binary.LittleEndian.PutUint32(buf[0:4], uint32(sq.dimension))
+	binary.LittleEndian.PutUint32(buf[0:4], uint32(sq.dimension)) //nolint:gosec
 
 	offset := 4
 	for i := 0; i < sq.dimension; i++ {

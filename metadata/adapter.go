@@ -32,7 +32,7 @@ func FromAny(v any) (Value, error) {
 	case int64:
 		return Int(x), nil
 	case uint:
-		return Int(int64(x)), nil
+		return Int(int64(x)), nil //nolint:gosec
 	case uint8:
 		return Int(int64(x)), nil
 	case uint16:

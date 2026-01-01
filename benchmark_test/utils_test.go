@@ -135,11 +135,9 @@ func groundTruthSearchFiltered(ctx context.Context, vectorsWithIDs map[uint32][]
 	results := make([]vecgo.SearchResult[int], k)
 	for i := 0; i < k; i++ {
 		results[i] = vecgo.SearchResult[int]{
-			SearchResult: index.SearchResult{
-				ID:       distances[i].id,
-				Distance: distances[i].dist,
-			},
-			Data: int(distances[i].id),
+			ID:       distances[i].id,
+			Distance: distances[i].dist,
+			Data:     int(distances[i].id),
 		}
 	}
 	return results
@@ -201,7 +199,7 @@ func setupFlatIndex(b *testing.B, dim, size int) *vecgo.Vecgo[int] {
 func toTestUtilResults(results []index.SearchResult) []testutil.SearchResult {
 	out := make([]testutil.SearchResult, len(results))
 	for i, r := range results {
-		out[i] = testutil.SearchResult{ID: r.ID, Distance: r.Distance}
+		out[i] = testutil.SearchResult{ID: uint64(r.ID), Distance: r.Distance}
 	}
 	return out
 }

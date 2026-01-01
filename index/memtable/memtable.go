@@ -3,6 +3,7 @@ package memtable
 import (
 	"sync"
 
+	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/internal/mem"
 	"github.com/hupe1980/vecgo/searcher"
@@ -10,7 +11,7 @@ import (
 
 // Item represents a vector in the memtable.
 type Item struct {
-	ID        uint64
+	ID        core.LocalID
 	Vector    []float32
 	IsDeleted bool
 }
@@ -20,175 +21,103 @@ type Item struct {
 // It uses a Struct of Arrays (SoA) layout for better cache locality.
 type MemTable struct {
 	mu        sync.RWMutex
-	ids       []uint64
+	ids       []core.LocalID
 	vectors   []float32 // Flattened vectors
 	deleted   []bool
+	idToIndex map[core.LocalID]int // Map for O(1) lookups
 	distFunc  index.DistanceFunc
 	dimension int
 	zeroVec   []float32 // Pre-allocated zero vector for deletes
 	heapPool  sync.Pool
-	mapPool   sync.Pool
 }
 
 // New creates a new MemTable.
 func New(dimension int, distFunc index.DistanceFunc) *MemTable {
 	m := &MemTable{
-		ids:       make([]uint64, 0, 1024),
+		ids:       make([]core.LocalID, 0, 1024),
 		vectors:   mem.AllocAlignedFloat32(1024 * dimension)[:0],
 		deleted:   make([]bool, 0, 1024),
+		idToIndex: make(map[core.LocalID]int, 1024),
 		distFunc:  distFunc,
 		dimension: dimension,
 		zeroVec:   make([]float32, dimension),
 		heapPool: sync.Pool{
 			New: func() any {
-				return searcher.NewMax(32)
-			},
-		},
-		mapPool: sync.Pool{
-			New: func() any {
-				return make(map[uint64]struct{}, 1024)
+				return searcher.NewPriorityQueue(true)
 			},
 		},
 	}
 	return m
 }
 
-// Reset clears the memtable for reuse.
-func (m *MemTable) Reset() {
+// Insert adds or updates a vector in the memtable.
+func (m *MemTable) Insert(id core.LocalID, vector []float32) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	m.ids = m.ids[:0]
-	m.vectors = m.vectors[:0]
-	m.deleted = m.deleted[:0]
-}
-
-// Insert adds a vector to the memtable.
-func (m *MemTable) Insert(id uint64, vector []float32) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	// Append-only (SoA)
-	m.ids = append(m.ids, id)
-	m.appendVectors(vector)
-	m.deleted = append(m.deleted, false)
-}
-
-func (m *MemTable) appendVectors(vec []float32) {
-	needed := len(m.vectors) + len(vec)
-	if needed > cap(m.vectors) {
-		// Grow strategy: 2x or needed
-		newCap := cap(m.vectors) * 2
-		if newCap < needed {
-			newCap = needed
-		}
-		// Allocate aligned
-		newVecs := mem.AllocAlignedFloat32(newCap)
-		copy(newVecs, m.vectors)
-		m.vectors = newVecs[:len(m.vectors)]
+	if idx, ok := m.idToIndex[id]; ok {
+		// Update existing
+		copy(m.vectors[idx*m.dimension:], vector)
+		m.deleted[idx] = false
+		return
 	}
-	m.vectors = append(m.vectors, vec...)
+
+	// Append new
+	idx := len(m.ids)
+	m.ids = append(m.ids, id)
+	m.vectors = append(m.vectors, vector...)
+	m.deleted = append(m.deleted, false)
+	m.idToIndex[id] = idx
+}
+
+// Delete marks a vector as deleted (tombstone).
+func (m *MemTable) Delete(id core.LocalID) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if idx, ok := m.idToIndex[id]; ok {
+		m.deleted[idx] = true
+		// Clear vector data to avoid holding references/memory if needed
+		copy(m.vectors[idx*m.dimension:], m.zeroVec)
+		return
+	}
+
+	// If not found, append a tombstone
+	idx := len(m.ids)
+	m.ids = append(m.ids, id)
+	m.vectors = append(m.vectors, m.zeroVec...)
+	m.deleted = append(m.deleted, true)
+	m.idToIndex[id] = idx
 }
 
 // Get retrieves a vector from the memtable.
 // Returns (vector, found, isDeleted).
-func (m *MemTable) Get(id uint64) ([]float32, bool, bool) {
+func (m *MemTable) Get(id core.LocalID) ([]float32, bool, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	// Scan backwards for latest version
-	// SoA scan is faster due to cache locality of ids slice
-	for i := len(m.ids) - 1; i >= 0; i-- {
-		if m.ids[i] == id {
-			if m.deleted[i] {
-				return nil, true, true
-			}
-			// Extract vector from flattened slice
-			start := i * m.dimension
-			end := start + m.dimension
-			// Return slice view (read-only)
-			// WARNING: Caller must not modify the returned slice.
-			return m.vectors[start:end], true, false
+	if idx, ok := m.idToIndex[id]; ok {
+		if m.deleted[idx] {
+			return nil, true, true
 		}
+		// Return a copy to ensure safety
+		vec := make([]float32, m.dimension)
+		copy(vec, m.vectors[idx*m.dimension:(idx+1)*m.dimension])
+		return vec, true, false
 	}
 	return nil, false, false
 }
 
-// Contains checks if an ID exists in the memtable and returns (found, isDeleted).
-// This avoids allocating the vector copy.
-func (m *MemTable) Contains(id uint64) (bool, bool) {
+// Contains checks if an ID exists in the memtable.
+// Returns (found, isDeleted).
+func (m *MemTable) Contains(id core.LocalID) (bool, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	for i := len(m.ids) - 1; i >= 0; i-- {
-		if m.ids[i] == id {
-			return true, m.deleted[i]
-		}
+	if idx, ok := m.idToIndex[id]; ok {
+		return true, m.deleted[idx]
 	}
 	return false, false
-}
-
-// Delete marks a vector as deleted in the memtable (Tombstone).
-func (m *MemTable) Delete(id uint64) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	// Append tombstone
-	m.ids = append(m.ids, id)
-	// We need to append dummy vector data to keep alignment
-	// Use pre-allocated zero vector to avoid allocation
-	m.appendVectors(m.zeroVec)
-	m.deleted = append(m.deleted, true)
-}
-
-// Flush returns all items in the memtable and clears it.
-// This is an atomic operation.
-func (m *MemTable) Flush() []Item {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if len(m.ids) == 0 {
-		return nil
-	}
-
-	// Reconstruct Items from SoA
-	items := make([]Item, len(m.ids))
-
-	// Batch allocate vectors for all items to reduce GC pressure
-	// Calculate total size needed
-	totalFloats := len(m.ids) * m.dimension
-	if totalFloats > 0 {
-		vecs := mem.AllocAlignedFloat32(totalFloats)
-		copy(vecs, m.vectors)
-
-		for i := range m.ids {
-			items[i] = Item{
-				ID:        m.ids[i],
-				IsDeleted: m.deleted[i],
-			}
-			if !m.deleted[i] {
-				start := i * m.dimension
-				end := start + m.dimension
-				// Point to the batch allocated slice
-				items[i].Vector = vecs[start:end]
-			}
-		}
-	} else {
-		// Should be covered by len(m.ids) == 0 check above, but safe fallback
-		for i := range m.ids {
-			items[i] = Item{
-				ID:        m.ids[i],
-				IsDeleted: m.deleted[i],
-			}
-		}
-	}
-
-	// Reset (Reuse buffers instead of reallocating)
-	m.ids = m.ids[:0]
-	m.vectors = m.vectors[:0]
-	m.deleted = m.deleted[:0]
-
-	return items
 }
 
 // Size returns the number of items in the memtable.
@@ -198,101 +127,108 @@ func (m *MemTable) Size() int {
 	return len(m.ids)
 }
 
-// Search performs a search on the memtable using linear scan.
-func (m *MemTable) Search(query []float32, k int, filter func(uint64) bool) []index.SearchResult {
-	var res []index.SearchResult
-	_ = m.SearchWithBuffer(query, k, filter, &res)
-	return res
-}
-
-// SearchWithBuffer performs a search on the memtable using linear scan and appends to buf.
-func (m *MemTable) SearchWithBuffer(query []float32, k int, filter func(uint64) bool, buf *[]index.SearchResult) error {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	// Use pooled heap
-	h := m.heapPool.Get().(*searcher.PriorityQueue)
-	h.Reset()
-	defer m.heapPool.Put(h)
-
-	// Linear scan
-	// We iterate backwards to find the latest version of each ID
-	seen := m.mapPool.Get().(map[uint64]struct{})
-	clear(seen)
-	defer m.mapPool.Put(seen)
-
-	for i := len(m.ids) - 1; i >= 0; i-- {
-		id := m.ids[i]
-		if _, ok := seen[id]; ok {
-			continue
-		}
-		seen[id] = struct{}{}
-
-		if m.deleted[i] {
-			continue
-		}
-
-		if filter != nil && !filter(id) {
-			continue
-		}
-
-		// Compute distance
-		start := i * m.dimension
-		end := start + m.dimension
-		vec := m.vectors[start:end]
-		dist := m.distFunc(query, vec)
-
-		// Push to heap
-		h.PushItemBounded(searcher.PriorityQueueItem{Node: id, Distance: dist}, k)
-	}
-
-	// Extract from heap (reverse order)
-	startLen := len(*buf)
-	for h.Len() > 0 {
-		item, _ := h.PopItem()
-		*buf = append(*buf, index.SearchResult{ID: item.Node, Distance: item.Distance})
-	}
-
-	// Reverse the appended segment to get nearest first
-	res := *buf
-	for i, j := startLen, len(res)-1; i < j; i, j = i+1, j-1 {
-		res[i], res[j] = res[j], res[i]
-	}
-
-	return nil
-}
-
-// Items returns a copy of all items in the memtable without clearing it.
+// Items returns all items in the memtable.
 func (m *MemTable) Items() []Item {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	items := make([]Item, len(m.ids))
-
-	// Batch allocate vectors
-	totalFloats := len(m.ids) * m.dimension
-	if totalFloats > 0 {
-		vecs := mem.AllocAlignedFloat32(totalFloats)
-		copy(vecs, m.vectors)
-
-		for i := range m.ids {
-			items[i] = Item{
-				ID:        m.ids[i],
-				IsDeleted: m.deleted[i],
-			}
-			if !m.deleted[i] {
-				start := i * m.dimension
-				end := start + m.dimension
-				items[i].Vector = vecs[start:end]
-			}
-		}
-	} else {
-		for i := range m.ids {
-			items[i] = Item{
-				ID:        m.ids[i],
-				IsDeleted: m.deleted[i],
-			}
+	for i := range m.ids {
+		vec := make([]float32, m.dimension)
+		copy(vec, m.vectors[i*m.dimension:(i+1)*m.dimension])
+		items[i] = Item{
+			ID:        m.ids[i],
+			Vector:    vec,
+			IsDeleted: m.deleted[i],
 		}
 	}
 	return items
+}
+
+// Flush returns all items and resets the memtable.
+func (m *MemTable) Flush() []Item {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	items := make([]Item, len(m.ids))
+	for i := range m.ids {
+		var vec []float32
+		if !m.deleted[i] {
+			vec = make([]float32, m.dimension)
+			copy(vec, m.vectors[i*m.dimension:(i+1)*m.dimension])
+		}
+		items[i] = Item{
+			ID:        m.ids[i],
+			Vector:    vec,
+			IsDeleted: m.deleted[i],
+		}
+	}
+
+	// Reset
+	m.ids = m.ids[:0]
+	m.vectors = m.vectors[:0]
+	m.deleted = m.deleted[:0]
+	// Re-allocate map to avoid memory leak if it was huge, or just clear it?
+	// clear(m.idToIndex) is Go 1.21+.
+	// For now, let's make a new one to be safe and release old memory.
+	m.idToIndex = make(map[core.LocalID]int, 1024)
+
+	return items
+}
+
+// Search performs a brute-force search on the memtable.
+func (m *MemTable) Search(query []float32, k int, filter func(core.LocalID) bool) []index.SearchResult {
+	var results []index.SearchResult
+	m.SearchWithBuffer(query, k, filter, &results)
+	return results
+}
+
+// SearchWithBuffer performs a brute-force search and appends to buffer.
+func (m *MemTable) SearchWithBuffer(query []float32, k int, filter func(core.LocalID) bool, buf *[]index.SearchResult) error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	pq := m.heapPool.Get().(*searcher.PriorityQueue)
+	pq.Reset()
+	defer m.heapPool.Put(pq)
+
+	// Scan all items
+	for i, id := range m.ids {
+		if m.deleted[i] {
+			continue
+		}
+		if filter != nil && !filter(id) {
+			continue
+		}
+
+		vec := m.vectors[i*m.dimension : (i+1)*m.dimension]
+		dist := m.distFunc(query, vec)
+
+		pq.PushItemBounded(searcher.PriorityQueueItem{
+			Node:     id,
+			Distance: dist,
+		}, k)
+	}
+
+	// Extract results
+	n := pq.Len()
+	startIdx := len(*buf)
+	// Ensure capacity
+	if cap(*buf) < startIdx+n {
+		newBuf := make([]index.SearchResult, len(*buf), startIdx+n)
+		copy(newBuf, *buf)
+		*buf = newBuf
+	}
+	*buf = (*buf)[:startIdx+n]
+
+	// Pop in reverse order (worst to best)
+	for i := n - 1; i >= 0; i-- {
+		item, _ := pq.PopItem()
+		(*buf)[startIdx+i] = index.SearchResult{
+			ID:       uint32(item.Node),
+			Distance: item.Distance,
+		}
+	}
+
+	return nil
 }

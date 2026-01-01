@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/index"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -32,7 +33,7 @@ func TestFlat_ProductQuantization_EnableDisable(t *testing.T) {
 	require.True(t, f.ProductQuantizationEnabled())
 
 	require.NotNil(t, f.pqCodes)
-	code0, ok := f.pqCodes.Get(id0)
+	code0, ok := f.pqCodes.Get(uint32(id0))
 	require.True(t, ok)
 	require.NotNil(t, code0)
 
@@ -41,15 +42,15 @@ func TestFlat_ProductQuantization_EnableDisable(t *testing.T) {
 	require.NotNil(t, pq)
 	expected := pq.ComputeAsymmetricDistance(query, code0)
 
-	res, err := f.BruteSearch(context.Background(), query, 1, func(id uint64) bool { return id == id0 })
+	res, err := f.BruteSearch(context.Background(), query, 1, func(id core.LocalID) bool { return id == id0 })
 	require.NoError(t, err)
 	require.Len(t, res, 1)
-	assert.Equal(t, id0, res[0].ID)
+	assert.Equal(t, id0, core.LocalID(res[0].ID))
 	assert.InDelta(t, expected, res[0].Distance, 1e-6)
 
 	idNew, err := f.Insert(context.Background(), []float32{2, 2, 2, 2})
 	require.NoError(t, err)
-	codeNew, ok := f.pqCodes.Get(idNew)
+	codeNew, ok := f.pqCodes.Get(uint32(idNew))
 	require.True(t, ok)
 	require.NotNil(t, codeNew)
 

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/hupe1980/vecgo/codec"
+	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/index/hnsw"
 	"github.com/hupe1980/vecgo/metadata"
@@ -174,7 +175,7 @@ func TestAsyncIndex_Race_FlushAndDelete(t *testing.T) {
 		// No, we want to check if it's in the system (MemTable OR Index).
 
 		// Let's use a helper that locks
-		vec, err := tx.vectorByID(ctx, ids[i])
+		vec, err := tx.vectorByID(ctx, core.LocalID(ids[i]))
 
 		require.NoError(t, err)
 		results, err := tx.HybridSearch(ctx, vec, 1, nil)

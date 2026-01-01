@@ -36,7 +36,7 @@ func WriteConnections(w io.Writer, connections [][]uint64) error {
 	writer := NewBinaryIndexWriter(w)
 	for _, layer := range connections {
 		// Write count as uint32
-		count := uint32(len(layer))
+		count := uint32(len(layer)) //nolint:gosec
 		if err := binary.Write(w, binary.LittleEndian, count); err != nil {
 			return err
 		}

@@ -5,7 +5,7 @@ import (
 	"runtime"
 	"sync"
 
-	"github.com/hupe1980/vecgo/internal/core"
+	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/searcher"
 )
 
@@ -28,12 +28,12 @@ func (h *HNSW) Compact(ctx context.Context) error {
 	// keeping the tombstones as bridges for now.
 	{
 		var wg sync.WaitGroup
-		jobs := make(chan uint64, 1024)
+		jobs := make(chan core.LocalID, 1024)
 
 		worker := func() {
 			defer wg.Done()
-			s := searcher.AcquireSearcher(int(maxID), h.opts.Dimension)
-			defer searcher.ReleaseSearcher(s)
+			s := searcher.Get()
+			defer searcher.Put(s)
 			scratch := h.scratchPool.Get().(*scratch)
 			defer h.scratchPool.Put(scratch)
 
@@ -42,7 +42,7 @@ func (h *HNSW) Compact(ctx context.Context) error {
 					return
 				}
 				// Skip deleted nodes in this phase
-				if tombstones.Test(id) {
+				if tombstones.Test(uint32(id)) {
 					continue
 				}
 				// Repair active nodes, keeping tombstones
@@ -55,7 +55,7 @@ func (h *HNSW) Compact(ctx context.Context) error {
 			go worker()
 		}
 
-		for id := uint64(0); id < maxID; id++ {
+		for id := core.LocalID(0); id < core.LocalID(maxID); id++ {
 			if ctx.Err() != nil {
 				break
 			}
@@ -76,7 +76,7 @@ func (h *HNSW) Compact(ctx context.Context) error {
 	// we can safely remove the tombstones from their connection lists.
 	{
 		var wg sync.WaitGroup
-		jobs := make(chan uint64, 1024)
+		jobs := make(chan core.LocalID, 1024)
 
 		worker := func() {
 			defer wg.Done()
@@ -85,7 +85,7 @@ func (h *HNSW) Compact(ctx context.Context) error {
 					return
 				}
 				// Skip deleted nodes in this phase
-				if tombstones.Test(id) {
+				if tombstones.Test(uint32(id)) {
 					continue
 				}
 				// Remove tombstones from connections
@@ -98,7 +98,7 @@ func (h *HNSW) Compact(ctx context.Context) error {
 			go worker()
 		}
 
-		for id := uint64(0); id < maxID; id++ {
+		for id := core.LocalID(0); id < core.LocalID(maxID); id++ {
 			if ctx.Err() != nil {
 				break
 			}
@@ -119,7 +119,7 @@ func (h *HNSW) Compact(ctx context.Context) error {
 	// we can safely clear the outgoing connections of deleted nodes to reclaim memory.
 	{
 		var wg sync.WaitGroup
-		jobs := make(chan uint64, 1024)
+		jobs := make(chan core.LocalID, 1024)
 
 		worker := func() {
 			defer wg.Done()
@@ -128,10 +128,10 @@ func (h *HNSW) Compact(ctx context.Context) error {
 					return
 				}
 				// Only process deleted nodes
-				if tombstones.Test(id) {
+				if tombstones.Test(uint32(id)) {
 					// CRITICAL: Do not clear connections of the entry point, even if deleted.
 					// It serves as the gateway to the graph until a new entry point is chosen.
-					if id == g.entryPointAtomic.Load() {
+					if uint32(id) == g.entryPointAtomic.Load() {
 						continue
 					}
 					h.clearNodeConnections(g, id)
@@ -144,7 +144,7 @@ func (h *HNSW) Compact(ctx context.Context) error {
 			go worker()
 		}
 
-		for id := uint64(0); id < maxID; id++ {
+		for id := core.LocalID(0); id < core.LocalID(maxID); id++ {
 			if ctx.Err() != nil {
 				break
 			}
@@ -162,7 +162,7 @@ func (h *HNSW) Compact(ctx context.Context) error {
 // reconcileNode checks if an active node needs repair (due to deleted neighbors).
 // If so, it finds new active neighbors and appends them to the connection list,
 // preserving the deleted neighbors as bridges.
-func (h *HNSW) reconcileNode(s *searcher.Searcher, scratch *scratch, ctx context.Context, g *graph, id uint64) {
+func (h *HNSW) reconcileNode(s *searcher.Searcher, scratch *scratch, ctx context.Context, g *graph, id core.LocalID) {
 	// Step 1: Check if repair is needed (Read-only check)
 	needsRepair, layersToRepair := h.checkRepairNeeded(g, id)
 	if !needsRepair {
@@ -186,7 +186,7 @@ func (h *HNSW) reconcileNode(s *searcher.Searcher, scratch *scratch, ctx context
 	// Greedy descent to node.Level
 	epID := g.entryPointAtomic.Load()
 	maxLevel := int(g.maxLevelAtomic.Load())
-	currID := epID
+	currID := core.LocalID(epID)
 	currDist := h.dist(vec, currID)
 
 	for level := maxLevel; level > node.Level(g.arena); level-- {
@@ -194,7 +194,7 @@ func (h *HNSW) reconcileNode(s *searcher.Searcher, scratch *scratch, ctx context
 		for changed {
 			changed = false
 			h.visitConnections(g, currID, level, func(neighbor Neighbor) bool {
-				nextID := uint64(neighbor.ID)
+				nextID := neighbor.ID
 				d := h.dist(vec, nextID)
 				if d < currDist {
 					currDist = d
@@ -209,7 +209,7 @@ func (h *HNSW) reconcileNode(s *searcher.Searcher, scratch *scratch, ctx context
 	// Repair specific layers
 	for level := node.Level(g.arena); level >= 0; level-- {
 		// Search for candidates
-		filter := func(x uint64) bool { return x != id }
+		filter := func(x core.LocalID) bool { return x != id }
 		// searchLayer populates s.Candidates
 		h.searchLayer(s, g, vec, currID, currDist, level, h.opts.EF, filter)
 
@@ -218,7 +218,7 @@ func (h *HNSW) reconcileNode(s *searcher.Searcher, scratch *scratch, ctx context
 
 		// Deduplicate candidates and merge with existing active neighbors
 		// We use a map to ensure uniqueness.
-		uniqueCandidates := make(map[uint64]float32, candidates.Len()+h.opts.M)
+		uniqueCandidates := make(map[core.LocalID]float32, candidates.Len()+h.opts.M)
 
 		// Drain candidates from searchLayer
 		for candidates.Len() > 0 {
@@ -229,8 +229,8 @@ func (h *HNSW) reconcileNode(s *searcher.Searcher, scratch *scratch, ctx context
 		// Add existing active neighbors
 		conns := h.getConnections(g, id, level)
 		for _, neighbor := range conns {
-			if !g.tombstones.Test(uint64(neighbor.ID)) {
-				nid := uint64(neighbor.ID)
+			if !g.tombstones.Test(uint32(neighbor.ID)) {
+				nid := neighbor.ID
 				// If already present, keep the one with smaller distance (though they should be same)
 				if d, ok := uniqueCandidates[nid]; !ok || neighbor.Dist < d {
 					uniqueCandidates[nid] = neighbor.Dist
@@ -243,7 +243,7 @@ func (h *HNSW) reconcileNode(s *searcher.Searcher, scratch *scratch, ctx context
 			candidates.PushItemBounded(searcher.PriorityQueueItem{Node: id, Distance: dist}, h.opts.EF)
 		}
 
-		var bestNode uint64 = currID
+		var bestNode core.LocalID = currID
 		var bestDist float32 = currDist
 		foundBest := false
 
@@ -251,12 +251,12 @@ func (h *HNSW) reconcileNode(s *searcher.Searcher, scratch *scratch, ctx context
 		if layersToRepair[level] {
 			// Re-read current connections to identify tombstones
 			// We must re-read because we need the exact objects to preserve them
-			g.shardedLocks[id%uint64(len(g.shardedLocks))].Lock()
+			g.shardedLocks[uint64(id)%uint64(len(g.shardedLocks))].Lock()
 
 			var tombstonesToKeep []Neighbor
 			conns := h.getConnections(g, id, level)
 			for _, neighbor := range conns {
-				if g.tombstones.Test(uint64(neighbor.ID)) {
+				if g.tombstones.Test(uint32(neighbor.ID)) {
 					tombstonesToKeep = append(tombstonesToKeep, neighbor)
 				}
 			}
@@ -288,7 +288,7 @@ func (h *HNSW) reconcileNode(s *searcher.Searcher, scratch *scratch, ctx context
 
 			h.setConnections(g, id, level, finalConns)
 
-			g.shardedLocks[id%uint64(len(g.shardedLocks))].Unlock()
+			g.shardedLocks[uint64(id)%uint64(len(g.shardedLocks))].Unlock()
 		} else {
 			// Just find the best candidate for next layer
 			// selectNeighbors drains candidates
@@ -313,9 +313,9 @@ func (h *HNSW) reconcileNode(s *searcher.Searcher, scratch *scratch, ctx context
 
 // checkRepairNeeded checks if a node needs repair.
 // Returns true and a map of layers that need repair.
-func (h *HNSW) checkRepairNeeded(g *graph, id uint64) (bool, map[int]bool) {
-	g.shardedLocks[id%uint64(len(g.shardedLocks))].RLock()
-	defer g.shardedLocks[id%uint64(len(g.shardedLocks))].RUnlock()
+func (h *HNSW) checkRepairNeeded(g *graph, id core.LocalID) (bool, map[int]bool) {
+	g.shardedLocks[uint64(id)%uint64(len(g.shardedLocks))].RLock()
+	defer g.shardedLocks[uint64(id)%uint64(len(g.shardedLocks))].RUnlock()
 
 	node := h.getNode(g, id)
 	if node.Offset == 0 {
@@ -330,7 +330,7 @@ func (h *HNSW) checkRepairNeeded(g *graph, id uint64) (bool, map[int]bool) {
 		activeCount := 0
 		conns := h.getConnections(g, id, l)
 		for _, neighbor := range conns {
-			if !tombstones.Test(uint64(neighbor.ID)) {
+			if !tombstones.Test(uint32(neighbor.ID)) {
 				activeCount++
 			}
 		}
@@ -351,9 +351,9 @@ func (h *HNSW) checkRepairNeeded(g *graph, id uint64) (bool, map[int]bool) {
 }
 
 // pruneNodeConnections removes deleted neighbors from an active node.
-func (h *HNSW) pruneNodeConnections(ctx context.Context, g *graph, id uint64) {
-	g.shardedLocks[id%uint64(len(g.shardedLocks))].Lock()
-	defer g.shardedLocks[id%uint64(len(g.shardedLocks))].Unlock()
+func (h *HNSW) pruneNodeConnections(ctx context.Context, g *graph, id core.LocalID) {
+	g.shardedLocks[uint64(id)%uint64(len(g.shardedLocks))].Lock()
+	defer g.shardedLocks[uint64(id)%uint64(len(g.shardedLocks))].Unlock()
 
 	node := h.getNode(g, id)
 	if node.Offset == 0 {
@@ -368,7 +368,7 @@ func (h *HNSW) pruneNodeConnections(ctx context.Context, g *graph, id uint64) {
 		var activeConns []Neighbor
 		conns := h.getConnections(g, id, l)
 		for _, neighbor := range conns {
-			if tombstones.Test(uint64(neighbor.ID)) {
+			if tombstones.Test(uint32(neighbor.ID)) {
 				hasTombstones = true
 			} else {
 				activeConns = append(activeConns, neighbor)
@@ -382,9 +382,9 @@ func (h *HNSW) pruneNodeConnections(ctx context.Context, g *graph, id uint64) {
 }
 
 // clearNodeConnections releases memory for a deleted node's connections.
-func (h *HNSW) clearNodeConnections(g *graph, id uint64) {
-	g.shardedLocks[id%uint64(len(g.shardedLocks))].Lock()
-	defer g.shardedLocks[id%uint64(len(g.shardedLocks))].Unlock()
+func (h *HNSW) clearNodeConnections(g *graph, id core.LocalID) {
+	g.shardedLocks[uint64(id)%uint64(len(g.shardedLocks))].Lock()
+	defer g.shardedLocks[uint64(id)%uint64(len(g.shardedLocks))].Unlock()
 
 	node := h.getNode(g, id)
 	if node.Offset == 0 {

@@ -6,6 +6,7 @@ import (
 	"io"
 	"unsafe"
 
+	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/internal/mmap"
 )
 
@@ -32,13 +33,15 @@ type MmapStore struct {
 //
 // Example:
 //
-//	store, closer, err := columnar.OpenMmap("vectors.col")
-//	if err != nil {
-//	    return err
-//	}
-//	defer closer.Close()
+// store, closer, err := columnar.OpenMmap("vectors.col")
 //
-//	vec, ok := store.GetVector(42)
+//	if err != nil {
+//	   return err
+//	}
+//
+// defer closer.Close()
+//
+// vec, ok := store.GetVector(42)
 func OpenMmap(filename string) (*MmapStore, io.Closer, error) {
 	reader, err := mmap.Open(filename)
 	if err != nil {
@@ -52,25 +55,14 @@ func OpenMmap(filename string) (*MmapStore, io.Closer, error) {
 	}
 
 	// Read header
-	headerBuf := make([]byte, HeaderSize)
-	if _, err := reader.ReadAt(headerBuf, 0); err != nil {
+	header := *(*FileHeader)(unsafe.Pointer(&reader.Data[0]))
+	if header.Magic != FormatMagic {
 		reader.Close()
-		return nil, nil, fmt.Errorf("columnar: read header: %w", err)
+		return nil, nil, fmt.Errorf("columnar: invalid magic number")
 	}
-
-	var header FileHeader
-	header.Magic = binary.LittleEndian.Uint32(headerBuf[0:4])
-	header.Version = binary.LittleEndian.Uint32(headerBuf[4:8])
-	header.Flags = binary.LittleEndian.Uint32(headerBuf[8:12])
-	header.Dimension = binary.LittleEndian.Uint32(headerBuf[12:16])
-	header.Count = binary.LittleEndian.Uint64(headerBuf[16:24])
-	header.LiveCount = binary.LittleEndian.Uint64(headerBuf[24:32])
-	header.DataOffset = binary.LittleEndian.Uint64(headerBuf[32:40])
-	header.BitmapOff = binary.LittleEndian.Uint64(headerBuf[40:48])
-
-	if err := header.Validate(); err != nil {
+	if header.Version != FormatVersion {
 		reader.Close()
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("columnar: unsupported version: %d", header.Version)
 	}
 
 	store := &MmapStore{
@@ -80,37 +72,34 @@ func OpenMmap(filename string) (*MmapStore, io.Closer, error) {
 		reader: reader,
 	}
 
-	// Advise random access for vector data as we expect random reads during search
-	_ = reader.Madvise(mmap.AdviceRandom)
-
 	// Read vector data
-	vecDataSize := int(header.Count) * int(header.Dimension) * 4
-	if vecDataSize > 0 {
-		offset := int(header.DataOffset)
-		if offset+vecDataSize > len(reader.Data) {
+	if header.Count > 0 {
+		offset := int(header.DataOffset)                      //nolint:gosec
+		size := int(header.Count) * int(header.Dimension) * 4 //nolint:gosec
+		if offset+size > len(reader.Data) {
 			reader.Close()
-			return nil, nil, fmt.Errorf("columnar: file too small for vectors")
+			return nil, nil, fmt.Errorf("columnar: file too small for data")
 		}
 
 		// Ensure alignment for float32 (4 bytes)
 		if offset%4 != 0 {
-			// Fallback to copy if not aligned
-			vecBytes := make([]byte, vecDataSize)
-			copy(vecBytes, reader.Data[offset:offset+vecDataSize])
-			store.data = make([]float32, int(header.Count)*int(header.Dimension))
+			// Fallback to copy if not aligned (rare)
+			vecBytes := make([]byte, size)
+			copy(vecBytes, reader.Data[offset:offset+size])
+			store.data = make([]float32, int(header.Count)*int(header.Dimension)) //nolint:gosec
 			for i := range store.data {
 				store.data[i] = *(*float32)(unsafe.Pointer(&vecBytes[i*4]))
 			}
 		} else {
 			// Zero-copy access
-			store.data = unsafe.Slice((*float32)(unsafe.Pointer(&reader.Data[offset])), int(header.Count)*int(header.Dimension))
+			store.data = unsafe.Slice((*float32)(unsafe.Pointer(&reader.Data[offset])), int(header.Count)*int(header.Dimension)) //nolint:gosec
 		}
 	}
 
 	// Read deletion bitmap
-	bitmapLen := (int(header.Count) + 63) / 64
+	bitmapLen := (int(header.Count) + 63) / 64 //nolint:gosec
 	if bitmapLen > 0 {
-		offset := int(header.BitmapOff)
+		offset := int(header.BitmapOff) //nolint:gosec
 		size := bitmapLen * 8
 		if offset+size > len(reader.Data) {
 			reader.Close()
@@ -153,8 +142,8 @@ func (s *MmapStore) LiveCount() uint64 {
 // GetVector returns the vector at the given ID.
 // Returns nil, false if the ID is out of bounds or the vector is deleted.
 // The returned slice aliases mmap'd memory; do not modify.
-func (s *MmapStore) GetVector(id uint64) ([]float32, bool) {
-	if id >= s.count {
+func (s *MmapStore) GetVector(id core.LocalID) ([]float32, bool) {
+	if uint64(id) >= s.count {
 		return nil, false
 	}
 
@@ -164,7 +153,7 @@ func (s *MmapStore) GetVector(id uint64) ([]float32, bool) {
 	}
 
 	dim := int(s.dim)
-	start := int(id) * dim
+	start := int(id) * dim //nolint:gosec // vector index fits in int
 	end := start + dim
 
 	if end > len(s.data) {
@@ -175,13 +164,13 @@ func (s *MmapStore) GetVector(id uint64) ([]float32, bool) {
 }
 
 // GetVectorUnsafe returns the vector without checking deletion status.
-func (s *MmapStore) GetVectorUnsafe(id uint64) ([]float32, bool) {
-	if id >= s.count {
+func (s *MmapStore) GetVectorUnsafe(id core.LocalID) ([]float32, bool) {
+	if uint64(id) >= s.count {
 		return nil, false
 	}
 
 	dim := int(s.dim)
-	start := int(id) * dim
+	start := int(id) * dim //nolint:gosec // vector index fits in int
 	end := start + dim
 
 	if end > len(s.data) {
@@ -192,23 +181,23 @@ func (s *MmapStore) GetVectorUnsafe(id uint64) ([]float32, bool) {
 }
 
 // SetVector is not supported on read-only mmap stores.
-func (s *MmapStore) SetVector(id uint64, v []float32) error {
+func (s *MmapStore) SetVector(id core.LocalID, v []float32) error {
 	return fmt.Errorf("columnar: mmap store is read-only")
 }
 
 // DeleteVector is not supported on read-only mmap stores.
-func (s *MmapStore) DeleteVector(id uint64) error {
+func (s *MmapStore) DeleteVector(id core.LocalID) error {
 	return fmt.Errorf("columnar: mmap store is read-only")
 }
 
 // IsDeleted returns true if the vector at id is deleted.
-func (s *MmapStore) IsDeleted(id uint64) bool {
+func (s *MmapStore) IsDeleted(id core.LocalID) bool {
 	return s.isDeleted(id)
 }
 
-func (s *MmapStore) isDeleted(id uint64) bool {
+func (s *MmapStore) isDeleted(id core.LocalID) bool {
 	bitmapIdx := id / 64
-	if int(bitmapIdx) >= len(s.deleted) {
+	if int(bitmapIdx) >= len(s.deleted) { //nolint:gosec
 		return false
 	}
 	bitIdx := id % 64
@@ -216,21 +205,22 @@ func (s *MmapStore) isDeleted(id uint64) bool {
 }
 
 // Iterate calls fn for each live vector. Return false from fn to stop iteration.
-func (s *MmapStore) Iterate(fn func(id uint64, vec []float32) bool) {
+func (s *MmapStore) Iterate(fn func(id core.LocalID, vec []float32) bool) {
 	dim := int(s.dim)
 
 	for id := uint64(0); id < s.count; id++ {
-		if s.isDeleted(id) {
+		localID := core.LocalID(id)
+		if s.isDeleted(localID) {
 			continue
 		}
 
-		start := int(id) * dim
+		start := int(id) * dim //nolint:gosec
 		end := start + dim
 		if end > len(s.data) {
 			break
 		}
 
-		if !fn(id, s.data[start:end:end]) {
+		if !fn(localID, s.data[start:end:end]) {
 			break
 		}
 	}

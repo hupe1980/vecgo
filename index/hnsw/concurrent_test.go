@@ -5,6 +5,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/index"
 )
 
@@ -190,7 +191,7 @@ func TestConcurrentDeletes(t *testing.T) {
 	const numVectors = 1000
 
 	// Insert vectors
-	ids := make([]uint64, numVectors)
+	ids := make([]core.LocalID, numVectors)
 	for i := 0; i < numVectors; i++ {
 		vector := make([]float32, dim)
 		for j := range vector {
