@@ -163,9 +163,16 @@ func (sq *ScalarQuantizer) Decode(b []byte) []float32 {
 	}
 
 	decoded := make([]float32, len(b))
+	invScales := sq.invScales
+	mins := sq.mins
+
+	// Bounds check elimination hint
+	if len(invScales) < len(b) || len(mins) < len(b) {
+		panic("invalid quantizer state")
+	}
 
 	for i, val := range b {
-		decoded[i] = float32(val)*sq.invScales[i] + sq.mins[i]
+		decoded[i] = float32(val)*invScales[i] + mins[i]
 	}
 
 	return decoded

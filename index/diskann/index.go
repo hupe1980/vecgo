@@ -1,7 +1,6 @@
 package diskann
 
 import (
-	"container/heap"
 	"context"
 	"fmt"
 	"iter"
@@ -820,7 +819,6 @@ func (idx *Index) BruteSearch(ctx context.Context, query []float32, k int, filte
 	idx.mu.RUnlock()
 
 	h := &maxDistHeap{}
-	heap.Init(h)
 
 	for id := uint32(0); id < maxID; id++ {
 		localID := core.LocalID(id)
@@ -1176,18 +1174,6 @@ type maxDistHeap []distNode
 func (h maxDistHeap) Len() int           { return len(h) }
 func (h maxDistHeap) Less(i, j int) bool { return h[i].dist > h[j].dist } // Max heap
 func (h maxDistHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
-
-func (h *maxDistHeap) Push(x interface{}) {
-	*h = append(*h, x.(distNode))
-}
-
-func (h *maxDistHeap) Pop() interface{} {
-	old := *h
-	n := len(old)
-	x := old[n-1]
-	*h = old[:n-1]
-	return x
-}
 
 func (h *maxDistHeap) PushNode(n distNode) {
 	*h = append(*h, n)

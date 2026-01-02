@@ -58,6 +58,8 @@ type WAL struct {
 	// Blocking Group Commit
 	syncCond        *sync.Cond // Condition variable for blocking group commit
 	persistedSeqNum uint64     // Highest sequence number persisted to disk
+
+	scratch [16]byte // Scratch buffer for binary encoding (protected by mu)
 }
 
 // FilePath returns the path to the WAL file.

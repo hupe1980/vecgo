@@ -82,7 +82,7 @@ func (b HNSWBuilder[T]) DotProduct() HNSWBuilder[T] {
 
 // M sets the maximum number of connections per layer.
 // Higher values improve recall but increase memory usage.
-// Default: 16. Recommended range: 8-64.
+// Default: 24. Recommended range: 12-64.
 func (b HNSWBuilder[T]) M(m int) HNSWBuilder[T] {
 	b.m = m
 	return b

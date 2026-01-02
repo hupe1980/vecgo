@@ -15,9 +15,13 @@ type MapStore[T any] struct {
 }
 
 // NewMapStore creates a new MapStore.
-func NewMapStore[T any]() *MapStore[T] {
+func NewMapStore[T any](capacity ...int) *MapStore[T] {
+	initialCap := 0
+	if len(capacity) > 0 {
+		initialCap = capacity[0]
+	}
 	return &MapStore[T]{
-		data: make(map[core.LocalID]T),
+		data: make(map[core.LocalID]T, initialCap),
 	}
 }
 

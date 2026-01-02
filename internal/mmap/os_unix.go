@@ -19,9 +19,7 @@ func osMap(f *os.File, size int) ([]byte, func([]byte) error, error) {
 		return nil, nil, err
 	}
 
-	return data, func(b []byte) error {
-		return unix.Munmap(b)
-	}, nil
+	return data, unix.Munmap, nil
 }
 
 func osAdvise(data []byte, pattern AccessPattern) error {

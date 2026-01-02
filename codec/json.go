@@ -29,6 +29,15 @@ func (JSON) Unmarshal(data []byte, v any) error { return json.Unmarshal(data, v)
 // Name returns the unique name of the codec ("json").
 func (JSON) Name() string { return "json" }
 
+// Append encodes the value to JSON and appends it to dst.
+func (JSON) Append(dst []byte, v any) ([]byte, error) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	return append(dst, b...), nil
+}
+
 // Default is the default codec used by the library.
 //
 // NOTE: This affects newly-created snapshots/WALs. Existing persisted files are

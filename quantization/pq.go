@@ -204,22 +204,36 @@ func (pq *ProductQuantizer) Decode(codes []byte) []float32 {
 	}
 
 	reconstructed := make([]float32, pq.dimension)
+	codebooks := pq.codebooks
+	scales := pq.scales
+	offsets := pq.offsets
+	subvectorDim := pq.subvectorDim
+	numCentroids := pq.numCentroids
 
 	// Reconstruct each subvector from its centroid
 	for m := 0; m < pq.numSubvectors; m++ {
 		centroidIdx := int(codes[m])
 
-		scale := pq.scales[m]
-		offset := pq.offsets[m]
+		scale := scales[m]
+		offset := offsets[m]
 
-		codebookStart := m * pq.numCentroids * pq.subvectorDim
-		centroidStart := codebookStart + centroidIdx*pq.subvectorDim
+		// Calculate offsets
+		codebookStart := m * numCentroids * subvectorDim
+		centroidStart := codebookStart + centroidIdx*subvectorDim
+		start := m * subvectorDim
 
-		// Dequantize
-		start := m * pq.subvectorDim
-		for i := 0; i < pq.subvectorDim; i++ {
-			qVal := pq.codebooks[centroidStart+i]
-			reconstructed[start+i] = float32(qVal)*scale + offset
+		// Bounds check elimination hint for the inner loop
+		// We know centroidStart + subvectorDim <= len(codebooks)
+		// and start + subvectorDim <= len(reconstructed)
+		// But it's hard to hint for dynamic ranges.
+		// Let's try to slice the arrays to fixed ranges if possible, or just use local variables.
+
+		// Slicing might help
+		src := codebooks[centroidStart : centroidStart+subvectorDim]
+		dst := reconstructed[start : start+subvectorDim]
+
+		for i := 0; i < subvectorDim; i++ {
+			dst[i] = float32(src[i])*scale + offset
 		}
 	}
 

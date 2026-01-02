@@ -75,10 +75,8 @@ func Put(s *Searcher) {
 // Reset clears the searcher state for reuse.
 func (s *Searcher) Reset() {
 	s.Visited.Reset()
-	// Re-create heaps to clear them (faster than popping all)
-	// Or just slice to 0 if we implement Reset on PriorityQueue
-	s.Candidates = NewPriorityQueue(true)
-	s.ScratchCandidates = NewPriorityQueue(false)
+	s.Candidates.Reset()
+	s.ScratchCandidates.Reset()
 	s.FilterBitmap.Clear()
 	s.ScratchResults = s.ScratchResults[:0]
 	s.OpsPerformed = 0

@@ -35,7 +35,7 @@ const (
 	minimumM = 2
 
 	// DefaultM is the default number of bidirectional links.
-	DefaultM = 8
+	DefaultM = 24
 
 	// DefaultEF is the default size of the dynamic candidate list.
 	DefaultEF = 200
@@ -136,6 +136,9 @@ type scratch struct {
 	heuristicCandidates []searcher.PriorityQueueItem
 	heuristicResult     []searcher.PriorityQueueItem
 	heuristicResultVecs [][]float32
+
+	// Connection scratch buffer
+	connections []Neighbor
 }
 
 // Name returns the name of the index.
@@ -245,14 +248,21 @@ func (h *HNSW) newNode(g *graph, level int) (*Node, error) {
 }
 
 func (h *HNSW) initPools() {
+	// Pre-calculate max possible connections to size scratch buffers correctly
+	maxConns := h.maxConnectionsPerLayer
+	if h.maxConnectionsLayer0 > maxConns {
+		maxConns = h.maxConnectionsLayer0
+	}
+
 	h.scratchPool = &sync.Pool{
 		New: func() any {
 			return &scratch{
 				floats:              make([]float32, h.opts.Dimension),
 				results:             make([]index.SearchResult, 0, h.opts.EF),
 				heuristicCandidates: make([]searcher.PriorityQueueItem, 0, h.opts.EF),
-				heuristicResult:     make([]searcher.PriorityQueueItem, 0, h.opts.M),
-				heuristicResultVecs: make([][]float32, 0, h.opts.M),
+				heuristicResult:     make([]searcher.PriorityQueueItem, 0, maxConns),
+				heuristicResultVecs: make([][]float32, 0, maxConns),
+				connections:         make([]Neighbor, 0, maxConns),
 			}
 		},
 	}
@@ -334,18 +344,29 @@ func (h *HNSW) growNodes(g *graph, id core.LocalID) {
 
 // Helper methods for node access
 
-func (h *HNSW) getConnections(g *graph, id core.LocalID, layer int) []Neighbor {
+func (h *HNSW) getConnectionsBuf(g *graph, id core.LocalID, layer int, buf []Neighbor) []Neighbor {
 	node := h.getNode(g, id)
 	if node == nil {
-		return nil
+		return buf[:0]
 	}
 
 	count := node.GetCount(g.arena, layer, h.maxConnectionsPerLayer, h.maxConnectionsLayer0)
-	res := make([]Neighbor, count)
-	for i := 0; i < count; i++ {
-		res[i] = node.GetConnection(g.arena, layer, i, h.maxConnectionsPerLayer, h.maxConnectionsLayer0)
+	if cap(buf) < count {
+		// If buffer is too small, allocate a new one.
+		// We don't want to grow the scratch buffer permanently if we hit a very dense node,
+		// but for HNSW max connections are bounded by M/M0.
+		// So this allocation should be rare if scratch is sized correctly.
+		buf = make([]Neighbor, count)
 	}
-	return res
+	buf = buf[:count]
+	for i := 0; i < count; i++ {
+		buf[i] = node.GetConnection(g.arena, layer, i, h.maxConnectionsPerLayer, h.maxConnectionsLayer0)
+	}
+	return buf
+}
+
+func (h *HNSW) getConnections(g *graph, id core.LocalID, layer int) []Neighbor {
+	return h.getConnectionsBuf(g, id, layer, nil)
 }
 
 // visitConnections iterates over the connections of a node without allocating a slice.
@@ -390,7 +411,7 @@ func (h *HNSW) addConnection(s *searcher.Searcher, scratch *scratch, g *graph, s
 		return // Should not happen
 	}
 
-	conns := h.getConnections(g, sourceID, level)
+	conns := h.getConnectionsBuf(g, sourceID, level, scratch.connections)
 
 	// Check if already connected using binary search (conns is sorted)
 	// We assume conns is sorted. If not, we should sort it or use linear scan.
@@ -417,42 +438,66 @@ func (h *HNSW) addConnection(s *searcher.Searcher, scratch *scratch, g *graph, s
 	}
 
 	if len(conns) < maxM {
-		// Just append
-		var newConns []Neighbor
-		if cap(conns) >= len(conns)+1 {
-			// We have capacity, append in place (safe because we hold lock and readers only read up to len)
-			newConns = conns[:len(conns)+1]
-			newConns[len(conns)] = Neighbor{ID: targetID, Dist: dist}
-		} else {
-			// Allocate with capacity
-			newConns = make([]Neighbor, len(conns)+1, maxM)
-			copy(newConns, conns)
-			newConns[len(conns)] = Neighbor{ID: targetID, Dist: dist}
-		}
-		h.setConnections(g, sourceID, level, newConns)
+		h.addConnectionSimple(g, sourceID, level, conns, targetID, dist)
 	} else {
-		// Prune
-		candidates := s.Candidates
-		candidates.Reset()
-
-		// Add existing - use cached distances!
-		for _, c := range conns {
-			candidates.PushItem(searcher.PriorityQueueItem{Node: c.ID, Distance: c.Dist})
-		}
-		// Add new
-		candidates.PushItem(searcher.PriorityQueueItem{Node: targetID, Distance: dist})
-
-		// Use scratch for selectNeighbors
-		neighbors := h.selectNeighbors(candidates, maxM, scratch)
-
-		// Allocate final slice with capacity maxM
-		finalConns := make([]Neighbor, len(neighbors), maxM)
-		for i, n := range neighbors {
-			finalConns[i] = Neighbor{ID: n.Node, Dist: n.Distance}
-		}
-
-		h.setConnections(g, sourceID, level, finalConns)
+		h.addConnectionPrune(s, scratch, g, sourceID, level, conns, targetID, dist, maxM)
 	}
+}
+
+func (h *HNSW) addConnectionSimple(g *graph, sourceID core.LocalID, level int, conns []Neighbor, targetID core.LocalID, dist float32) {
+	// Just append
+	// We can modify conns in place if it has capacity, because getConnectionsBuf
+	// returns a slice backed by scratch.connections (or a new alloc if too small).
+	// BUT: scratch.connections is reused. We must be careful not to persist
+	// a slice backed by scratch into the graph if setConnections stored the slice.
+	// However, setConnections copies data into the node (arena).
+	// So we just need a temporary slice to pass to setConnections.
+
+	var newConns []Neighbor
+	if cap(conns) >= len(conns)+1 {
+		newConns = conns[:len(conns)+1]
+	} else {
+		newConns = make([]Neighbor, len(conns)+1) // Correctly size new buffer
+		copy(newConns, conns)
+	}
+	newConns[len(conns)] = Neighbor{ID: targetID, Dist: dist}
+	h.setConnections(g, sourceID, level, newConns)
+}
+
+func (h *HNSW) addConnectionPrune(s *searcher.Searcher, scratch *scratch, g *graph, sourceID core.LocalID, level int, conns []Neighbor, targetID core.LocalID, dist float32, maxM int) {
+	// Prune
+	candidates := s.Candidates
+	candidates.Reset()
+
+	// Add existing - use cached distances!
+	for _, c := range conns {
+		candidates.PushItem(searcher.PriorityQueueItem{Node: c.ID, Distance: c.Dist})
+	}
+	// Add new
+	candidates.PushItem(searcher.PriorityQueueItem{Node: targetID, Distance: dist})
+
+	// Use scratch for selectNeighbors
+	neighbors := h.selectNeighbors(candidates, maxM, scratch)
+
+	// Reuse scratch.connections for finalConns if possible, or allocate if needed.
+	// But wait, setConnections copies data. So we can use scratch.connections!
+	// We need to be careful not to overwrite what we are reading if we were reading from scratch.connections.
+	// In this block, 'conns' (the input) is backed by scratch.connections.
+	// 'neighbors' is backed by scratch.heuristicResult.
+	// So we can safely reuse scratch.connections for the output to setConnections,
+	// effectively overwriting the input 'conns' which we don't need anymore.
+
+	// Ensure scratch.connections has enough capacity (it should, maxM)
+	if cap(scratch.connections) < len(neighbors) {
+		scratch.connections = make([]Neighbor, len(neighbors), maxM)
+	}
+	finalConns := scratch.connections[:len(neighbors)]
+
+	for i, n := range neighbors {
+		finalConns[i] = Neighbor{ID: n.Node, Dist: n.Distance}
+	}
+
+	h.setConnections(g, sourceID, level, finalConns)
 }
 
 // AllocateID returns a new ID.
@@ -513,26 +558,33 @@ func (h *HNSW) ApplyBatchInsert(ctx context.Context, ids []core.LocalID, vectors
 
 	// Limit concurrency to avoid overwhelming the system
 	concurrency := runtime.GOMAXPROCS(0)
-	sem := make(chan struct{}, concurrency)
+	if len(vectors) < concurrency {
+		concurrency = len(vectors)
+	}
 
 	var firstErr error
 	var errMu sync.Mutex
+	var idx atomic.Int64
 
-	for i := range vectors {
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(idx int) {
+	wg.Add(concurrency)
+	for i := 0; i < concurrency; i++ {
+		go func() {
 			defer wg.Done()
-			defer func() { <-sem }()
-
-			if _, err := h.insert(g, vectors[idx], ids[idx], -1, true); err != nil {
-				errMu.Lock()
-				if firstErr == nil {
-					firstErr = err
+			for {
+				i := int(idx.Add(1) - 1)
+				if i >= len(vectors) {
+					return
 				}
-				errMu.Unlock()
+
+				if _, err := h.insert(g, vectors[i], ids[i], -1, true); err != nil {
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = err
+					}
+					errMu.Unlock()
+				}
 			}
-		}(i)
+		}()
 	}
 	wg.Wait()
 	return firstErr
@@ -840,6 +892,10 @@ func (h *HNSW) extractSortedCandidates(candidates *searcher.PriorityQueue, scrat
 	for i, j := 0, len(temp)-1; i < j; i, j = i+1, j-1 {
 		temp[i], temp[j] = temp[j], temp[i]
 	}
+
+	// Update scratch buffer
+	scratch.heuristicCandidates = temp
+
 	return temp
 }
 
@@ -874,6 +930,11 @@ func (h *HNSW) applyHeuristic(candidates []searcher.PriorityQueueItem, m int, sc
 			resultVecs = append(resultVecs, candVec)
 		}
 	}
+
+	// Update scratch buffers to reflect the new length
+	scratch.heuristicResult = result
+	scratch.heuristicResultVecs = resultVecs
+
 	return result
 }
 
@@ -1360,8 +1421,12 @@ func (h *HNSW) VectorByID(ctx context.Context, id core.LocalID) ([]float32, erro
 	return vec, nil
 }
 
-// Close closes the index.
+// Close closes the index and releases resources.
 func (h *HNSW) Close() error {
+	g := h.currentGraph.Load()
+	if g != nil && g.arena != nil {
+		g.arena.Free()
+	}
 	return nil
 }
 

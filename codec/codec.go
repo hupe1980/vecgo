@@ -12,6 +12,7 @@ type Codec interface {
 	Marshal(v any) ([]byte, error)
 	Unmarshal(data []byte, v any) error
 	Name() string
+	Append(dst []byte, v any) ([]byte, error)
 }
 
 // ByName returns a built-in codec by its stable name.

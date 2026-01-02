@@ -182,11 +182,11 @@ func (tx *Tx[T]) applyInsert(ctx context.Context, id core.LocalID, vector []floa
 
 func (tx *Tx[T]) checkFlush(size int) {
 	// Trigger flush if MemTable is getting large
-	if size >= 1000 {
+	if size >= 2000 {
 		tx.memMu.Lock()
 		// Reload state to ensure we are still the one to swap
 		state := tx.memState.Load()
-		if state.active.Size() >= 1000 {
+		if state.active.Size() >= 2000 {
 			// Swap: active -> queue, newActive -> active
 			newActive := memtable.New(tx.dimension, tx.distFunc)
 			// Create new queue slice to ensure immutability of the snapshot
@@ -219,7 +219,7 @@ func (tx *Tx[T]) checkBackpressure() {
 		qLen := len(state.queue)
 		tx.memMu.RUnlock()
 
-		if qLen < 10 { // Limit queue depth to 10 tables
+		if qLen < 50 { // Limit queue depth to 50 tables
 			break
 		}
 		time.Sleep(10 * time.Millisecond)

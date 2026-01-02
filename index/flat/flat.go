@@ -2,7 +2,6 @@
 package flat
 
 import (
-	"container/heap"
 	"context"
 	"fmt"
 	"iter"
@@ -779,7 +778,6 @@ func (f *Flat) BruteSearchWithBuffer(ctx context.Context, query []float32, k int
 	}
 
 	topCandidates := searcher.NewPriorityQueue(true)
-	heap.Init(topCandidates)
 
 	pq := f.pq.Load()
 

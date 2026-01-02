@@ -108,7 +108,8 @@ func loadDataStoreSectionMmap[T any](data []byte, sections map[uint16]snapshotSe
 	storeCount := binary.LittleEndian.Uint64(storeBytes)
 	storeBytes = storeBytes[8:]
 
-	dataStore := NewMapStore[T]()
+	//nolint:gosec // storeCount is read from file, assuming 64-bit system for large snapshots
+	dataStore := NewMapStore[T](int(storeCount))
 	for i := uint64(0); i < storeCount; i++ {
 		if len(storeBytes) < 8 { // ID (4) + Len (4)
 			return nil, fmt.Errorf("truncated store entry header at index %d", i)
@@ -160,7 +161,8 @@ func loadMetadataStoreSectionMmap(data []byte, sections map[uint16]snapshotSecti
 	metaCount := binary.LittleEndian.Uint64(metadataBytes)
 	metadataBytes = metadataBytes[8:]
 
-	metadataStore := NewMapStore[metadata.Metadata]()
+	//nolint:gosec // metaCount is read from file, assuming 64-bit system for large snapshots
+	metadataStore := NewMapStore[metadata.Metadata](int(metaCount))
 	for i := uint64(0); i < metaCount; i++ {
 		if len(metadataBytes) < 8 { // ID (4) + Len (4)
 			return nil, fmt.Errorf("truncated metadata entry header at index %d", i)

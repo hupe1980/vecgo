@@ -93,15 +93,19 @@ func SaveToWriter[T any](w io.Writer, idx index.Index, dataStore Store[T], metad
 		return err
 	}
 
-	storeOff, storeLen, storeChecksum, err := writeStoreSection[T](cw, dataStore, func(data T) ([]byte, error) {
-		return c.Marshal(data)
+	storeOff, storeLen, storeChecksum, err := writeStoreSection[T](cw, dataStore, func(dst []byte, data T) ([]byte, error) {
+		return c.Append(dst, data)
 	})
 	if err != nil {
 		return err
 	}
 
-	metaOff, metaLen, metaChecksum, err := writeStoreSection[metadata.Metadata](cw, metadataStore, func(meta metadata.Metadata) ([]byte, error) {
-		return meta.MarshalBinary()
+	metaOff, metaLen, metaChecksum, err := writeStoreSection[metadata.Metadata](cw, metadataStore, func(dst []byte, meta metadata.Metadata) ([]byte, error) {
+		b, err := meta.MarshalBinary()
+		if err != nil {
+			return nil, err
+		}
+		return append(dst, b...), nil
 	})
 	if err != nil {
 		return err
@@ -179,7 +183,7 @@ func writeIndexSection(cw *countingWriter, idx index.Index) (uint64, uint64, uin
 	return startOff, endOff - startOff, checksumWriter.Sum(), nil
 }
 
-func writeStoreSection[T any](cw *countingWriter, store Store[T], encode func(T) ([]byte, error)) (uint64, uint64, uint32, error) {
+func writeStoreSection[T any](cw *countingWriter, store Store[T], encode func([]byte, T) ([]byte, error)) (uint64, uint64, uint32, error) {
 	startOff, err := conv.Int64ToUint64(cw.n)
 	if err != nil {
 		return 0, 0, 0, err
@@ -190,26 +194,39 @@ func writeStoreSection[T any](cw *countingWriter, store Store[T], encode func(T)
 	if err != nil {
 		return 0, 0, 0, err
 	}
-	if err := binary.Write(checksumWriter, binary.LittleEndian, count); err != nil {
+
+	// Use scratch buffer for integers to avoid binary.Write allocations
+	var scratch [8]byte
+	binary.LittleEndian.PutUint64(scratch[:], count)
+	if _, err := checksumWriter.Write(scratch[:]); err != nil {
 		return 0, 0, 0, err
 	}
 
+	var dataBuf []byte
+
 	for id, data := range store.All() {
-		dataBytes, err := encode(data)
+		dataBuf = dataBuf[:0]
+		dataBytes, err := encode(dataBuf, data)
 		if err != nil {
 			return 0, 0, 0, fmt.Errorf("failed to encode data for id %d: %w", id, err)
 		}
+		// Update buffer reference in case it grew
+		dataBuf = dataBytes
 
-		if err := binary.Write(checksumWriter, binary.LittleEndian, id); err != nil {
+		binary.LittleEndian.PutUint32(scratch[:4], uint32(id))
+		if _, err := checksumWriter.Write(scratch[:4]); err != nil {
 			return 0, 0, 0, err
 		}
+
 		dbLen, err := conv.IntToUint32(len(dataBytes))
 		if err != nil {
 			return 0, 0, 0, err
 		}
-		if err := binary.Write(checksumWriter, binary.LittleEndian, dbLen); err != nil {
+		binary.LittleEndian.PutUint32(scratch[:4], dbLen)
+		if _, err := checksumWriter.Write(scratch[:4]); err != nil {
 			return 0, 0, 0, err
 		}
+
 		if _, err := checksumWriter.Write(dataBytes); err != nil {
 			return 0, 0, 0, err
 		}
@@ -354,30 +371,40 @@ func loadStoreSection[T any](r io.ReadSeeker, entry snapshotSectionEntry, decode
 	reader := io.LimitReader(r, length)
 	checksumReader := persistence.NewChecksumReader(reader)
 
-	var count uint64
-	if err := binary.Read(checksumReader, binary.LittleEndian, &count); err != nil {
+	var scratch [8]byte
+	if _, err := io.ReadFull(checksumReader, scratch[:]); err != nil {
 		return nil, fmt.Errorf("failed to read count: %w", err)
 	}
+	count := binary.LittleEndian.Uint64(scratch[:])
+
 	if count > (entry.Len-8)/12 {
 		return nil, fmt.Errorf("count %d exceeds max possible for section size %d", count, entry.Len)
 	}
 
-	store := NewMapStore[T]()
+	//nolint:gosec // count is validated against section length, and we assume 64-bit system for large snapshots
+	store := NewMapStore[T](int(count))
+	var dataBuf []byte
+
 	for i := uint64(0); i < count; i++ {
-		var id uint32
-		if err := binary.Read(checksumReader, binary.LittleEndian, &id); err != nil {
+		if _, err := io.ReadFull(checksumReader, scratch[:4]); err != nil {
 			return nil, fmt.Errorf("failed to read id: %w", err)
 		}
-		var dataLen uint32
-		if err := binary.Read(checksumReader, binary.LittleEndian, &dataLen); err != nil {
+		id := binary.LittleEndian.Uint32(scratch[:4])
+
+		if _, err := io.ReadFull(checksumReader, scratch[:4]); err != nil {
 			return nil, fmt.Errorf("failed to read data length: %w", err)
 		}
+		dataLen := binary.LittleEndian.Uint32(scratch[:4])
 
 		if uint64(dataLen) > entry.Len {
 			return nil, fmt.Errorf("data length %d exceeds section length %d", dataLen, entry.Len)
 		}
 
-		dataBytes := make([]byte, dataLen)
+		if cap(dataBuf) < int(dataLen) {
+			dataBuf = make([]byte, int(dataLen))
+		}
+		dataBytes := dataBuf[:int(dataLen)]
+
 		if _, err := io.ReadFull(checksumReader, dataBytes); err != nil {
 			return nil, fmt.Errorf("failed to read data: %w", err)
 		}

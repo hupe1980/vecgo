@@ -2,13 +2,8 @@
 package searcher
 
 import (
-	"container/heap"
-
 	"github.com/hupe1980/vecgo/core"
 )
-
-// Compile time check to ensure PriorityQueue satisfies the heap interface.
-var _ heap.Interface = (*PriorityQueue)(nil)
 
 // PriorityQueueItem represents an item in the priority queue.
 // Optimized: value-based (no pointers), removed Index field (not needed)
@@ -17,11 +12,17 @@ type PriorityQueueItem struct {
 	Distance float32      // Distance is the priority of the item in the queue.
 }
 
-// PriorityQueue implements heap.Interface and holds PriorityQueueItems.
-// Optimized: value-based storage for better cache locality and zero allocations
+// PriorityQueue implements a binary heap holding PriorityQueueItems.
+// Optimized: value-based storage for better cache locality and zero allocations.
+// It does NOT implement container/heap to avoid interface overhead.
 type PriorityQueue struct {
-	isMaxHeap bool                // true = max heap, false = min heap (renamed for clarity)
-	items     []PriorityQueueItem // Value-based storage (no pointer indirection)
+	isMaxHeap bool                // true = max heap, false = min heap
+	items     []PriorityQueueItem // Value-based storage
+}
+
+// Reset clears the priority queue for reuse.
+func (pq *PriorityQueue) Reset() {
+	pq.items = pq.items[:0]
 }
 
 // TopItem returns the top element of the heap.
@@ -101,21 +102,6 @@ func (pq *PriorityQueue) Swap(i, j int) {
 	pq.items[i], pq.items[j] = pq.items[j], pq.items[i]
 }
 
-// Push pushes the element x onto the heap.
-func (pq *PriorityQueue) Push(x any) {
-	item := x.(PriorityQueueItem)
-	pq.items = append(pq.items, item)
-}
-
-// Pop removes and returns the minimum element (according to Less) from the heap.
-func (pq *PriorityQueue) Pop() any {
-	old := pq.items
-	n := len(old)
-	item := old[n-1]
-	pq.items = old[0 : n-1]
-	return item
-}
-
 // PopItem removes and returns the top element from the heap.
 func (pq *PriorityQueue) PopItem() (PriorityQueueItem, bool) {
 	n := len(pq.items)
@@ -173,9 +159,4 @@ func (pq *PriorityQueue) siftDown(i int) {
 		pq.Swap(i, child)
 		i = child
 	}
-}
-
-// Reset clears the priority queue.
-func (pq *PriorityQueue) Reset() {
-	pq.items = pq.items[:0]
 }

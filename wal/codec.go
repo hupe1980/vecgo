@@ -18,18 +18,12 @@ func (w *WAL) encodeEntry(entry *Entry) error {
 		return fmt.Errorf("unsupported on-disk WAL entry type: %v", entry.Type)
 	}
 
-	// Write operation type (1 byte)
-	if err := binary.Write(w.writer, binary.LittleEndian, entry.Type); err != nil {
-		return err
-	}
+	// Write header: Type (1) + SeqNum (8) + ID (4) = 13 bytes
+	w.scratch[0] = byte(entry.Type)
+	binary.LittleEndian.PutUint64(w.scratch[1:], entry.SeqNum)
+	binary.LittleEndian.PutUint32(w.scratch[9:], uint32(entry.ID))
 
-	// Write sequence number (8 bytes)
-	if err := binary.Write(w.writer, binary.LittleEndian, entry.SeqNum); err != nil {
-		return err
-	}
-
-	// Write ID (4 bytes)
-	if err := binary.Write(w.writer, binary.LittleEndian, entry.ID); err != nil {
+	if _, err := w.writer.Write(w.scratch[:13]); err != nil {
 		return err
 	}
 
@@ -47,7 +41,8 @@ func (w *WAL) encodeEntry(entry *Entry) error {
 func (w *WAL) encodePayload(entry *Entry) error {
 	// Vector length (4 bytes)
 	vectorLen := uint32(len(entry.Vector)) //nolint:gosec
-	if err := binary.Write(w.writer, binary.LittleEndian, vectorLen); err != nil {
+	binary.LittleEndian.PutUint32(w.scratch[:4], vectorLen)
+	if _, err := w.writer.Write(w.scratch[:4]); err != nil {
 		return err
 	}
 
@@ -61,7 +56,8 @@ func (w *WAL) encodePayload(entry *Entry) error {
 
 	// Data length (4 bytes)
 	dataLen := uint32(len(entry.Data)) //nolint:gosec
-	if err := binary.Write(w.writer, binary.LittleEndian, dataLen); err != nil {
+	binary.LittleEndian.PutUint32(w.scratch[:4], dataLen)
+	if _, err := w.writer.Write(w.scratch[:4]); err != nil {
 		return err
 	}
 
@@ -82,7 +78,8 @@ func (w *WAL) encodePayload(entry *Entry) error {
 		metadataBytes = b
 	}
 	metadataLen := uint32(len(metadataBytes)) //nolint:gosec
-	if err := binary.Write(w.writer, binary.LittleEndian, metadataLen); err != nil {
+	binary.LittleEndian.PutUint32(w.scratch[:4], metadataLen)
+	if _, err := w.writer.Write(w.scratch[:4]); err != nil {
 		return err
 	}
 	if metadataLen > 0 {

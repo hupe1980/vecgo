@@ -203,6 +203,11 @@ func AllocNode(a *arena.Arena, level int, m, m0 int) (Node, error) {
 
 	size := 4 + (4 + m0*8) + level*(4+4+m*8)
 
+	// Optimization: Alloc returns a pointer to the start of the allocation.
+	// We can use this to initialize the node without calling GetSafe repeatedly.
+	// But Alloc returns offset, not pointer.
+	// We can use GetSafe once.
+
 	offset, _, err := a.Alloc(size)
 	if err != nil {
 		return Node{}, err

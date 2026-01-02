@@ -1,3 +1,4 @@
+// Package mmap provides memory-mapped file functionality.
 package mmap
 
 import (
@@ -19,11 +20,12 @@ type Mapping struct {
 // Open maps the file at path into memory.
 // The file is mapped as read-only.
 func Open(path string) (*Mapping, error) {
+	//nolint:gosec // path is provided by caller
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	fi, err := f.Stat()
 	if err != nil {

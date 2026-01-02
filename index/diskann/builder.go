@@ -1,7 +1,6 @@
 package diskann
 
 import (
-	"container/heap"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -360,7 +359,6 @@ func (b *Builder) greedySearch(target uint32, l int) []uint32 {
 
 	// Min-heap for candidates
 	candidates := &distHeap{}
-	heap.Init(candidates)
 
 	// Visited set
 	visited := make(map[uint32]bool)
@@ -637,18 +635,6 @@ type distHeap []distNode
 func (h distHeap) Len() int           { return len(h) }
 func (h distHeap) Less(i, j int) bool { return h[i].dist < h[j].dist }
 func (h distHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
-
-func (h *distHeap) Push(x interface{}) {
-	*h = append(*h, x.(distNode))
-}
-
-func (h *distHeap) Pop() interface{} {
-	old := *h
-	n := len(old)
-	x := old[n-1]
-	*h = old[:n-1]
-	return x
-}
 
 func (h *distHeap) PushNode(n distNode) {
 	*h = append(*h, n)

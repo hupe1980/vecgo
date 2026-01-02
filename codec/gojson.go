@@ -16,3 +16,12 @@ func (GoJSON) Unmarshal(data []byte, v any) error { return gojson.Unmarshal(data
 
 // Name returns the unique name of the codec ("go-json").
 func (GoJSON) Name() string { return "go-json" }
+
+// Append encodes the value to JSON and appends it to dst.
+func (GoJSON) Append(dst []byte, v any) ([]byte, error) {
+	b, err := gojson.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	return append(dst, b...), nil
+}
