@@ -60,35 +60,35 @@ func NoopLogger() *Logger {
 // WithContext adds context values to the logger.
 func (l *Logger) WithContext(ctx context.Context) *Logger {
 	return &Logger{
-		Logger: l.Logger.With(),
+		Logger: l.With(),
 	}
 }
 
 // WithID adds an ID field to the logger (useful for tagging operations).
 func (l *Logger) WithID(id uint64) *Logger {
 	return &Logger{
-		Logger: l.Logger.With("id", id),
+		Logger: l.With("id", id),
 	}
 }
 
 // WithK adds a k (neighbor count) field to the logger.
 func (l *Logger) WithK(k int) *Logger {
 	return &Logger{
-		Logger: l.Logger.With("k", k),
+		Logger: l.With("k", k),
 	}
 }
 
 // WithDimension adds a dimension field to the logger.
 func (l *Logger) WithDimension(dim int) *Logger {
 	return &Logger{
-		Logger: l.Logger.With("dimension", dim),
+		Logger: l.With("dimension", dim),
 	}
 }
 
 // WithCount adds a count field to the logger.
 func (l *Logger) WithCount(count int) *Logger {
 	return &Logger{
-		Logger: l.Logger.With("count", count),
+		Logger: l.With("count", count),
 	}
 }
 
