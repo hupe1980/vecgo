@@ -43,7 +43,7 @@ func (w *WAL) encodeEntry(entry *Entry) error {
 
 		// Vector data (N * 4 bytes) - zero-copy write
 		if vectorLen > 0 {
-			byteSlice := unsafe.Slice((*byte)(unsafe.Pointer(&entry.Vector[0])), vectorLen*4)
+			byteSlice := unsafe.Slice((*byte)(unsafe.Pointer(&entry.Vector[0])), vectorLen*4) //nolint:gosec // unsafe is required for performance
 			if _, err := w.writer.Write(byteSlice); err != nil {
 				return err
 			}
@@ -118,7 +118,7 @@ func (w *WAL) decodeEntry(reader io.Reader, entry *Entry) error {
 		// Vector data
 		if vectorLen > 0 {
 			entry.Vector = make([]float32, vectorLen)
-			byteSlice := unsafe.Slice((*byte)(unsafe.Pointer(&entry.Vector[0])), vectorLen*4)
+			byteSlice := unsafe.Slice((*byte)(unsafe.Pointer(&entry.Vector[0])), vectorLen*4) //nolint:gosec // unsafe is required for performance
 			if _, err := io.ReadFull(reader, byteSlice); err != nil {
 				return err
 			}

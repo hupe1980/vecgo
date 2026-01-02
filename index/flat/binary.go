@@ -9,6 +9,7 @@ import (
 	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/internal/bitset"
+	"github.com/hupe1980/vecgo/internal/conv"
 	"github.com/hupe1980/vecgo/persistence"
 	"github.com/hupe1980/vecgo/vectorstore/columnar"
 )
@@ -85,9 +86,17 @@ func (f *Flat) WriteTo(w io.Writer) (int64, error) {
 			activeCount++
 		}
 	}
+	activeCountU64, err := conv.IntToUint64(activeCount)
+	if err != nil {
+		return cw.n, err
+	}
+	dimU32, err := conv.IntToUint32(int(f.dimension.Load()))
+	if err != nil {
+		return cw.n, err
+	}
 	header := &persistence.FileHeader{
-		VectorCount: uint64(activeCount),
-		Dimension:   uint32(f.dimension.Load()),
+		VectorCount: activeCountU64,
+		Dimension:   dimU32,
 		IndexType:   persistence.IndexTypeFlat,
 		DataOffset:  64, // After header
 	}
@@ -97,7 +106,11 @@ func (f *Flat) WriteTo(w io.Writer) (int64, error) {
 
 	// Write Flat metadata: distance type + flags.
 	buf := make([]byte, 8)
-	binary.LittleEndian.PutUint32(buf[0:4], uint32(f.opts.DistanceType))
+	distTypeU32, err := conv.IntToUint32(int(f.opts.DistanceType))
+	if err != nil {
+		return cw.n, err
+	}
+	binary.LittleEndian.PutUint32(buf[0:4], distTypeU32)
 	var flags uint32
 	if f.opts.NormalizeVectors {
 		flags |= 1
@@ -123,7 +136,11 @@ func (f *Flat) WriteTo(w io.Writer) (int64, error) {
 	// Write Markers (Validity Bitmap)
 	// For simplicity and alignment, we use 1 byte per node for now.
 	// 0 = nil (deleted), 1 = valid.
-	markers := make([]byte, maxID)
+	maxIDInt, err := conv.Uint32ToInt(maxID)
+	if err != nil {
+		return cw.n, err
+	}
+	markers := make([]byte, maxIDInt)
 	for i := uint32(0); i < maxID; i++ {
 		if !f.deleted.Test(i) {
 			markers[i] = 1
@@ -191,8 +208,16 @@ func (f *Flat) ReadFromWithOptions(r io.Reader, opts Options) error {
 		return &index.ErrDimensionMismatch{Expected: opts.Dimension, Actual: int(header.Dimension)}
 	}
 	f.opts = opts
-	f.opts.Dimension = int(header.Dimension)
-	f.dimension.Store(int32(header.Dimension))
+	dimInt, err := conv.Uint32ToInt(header.Dimension)
+	if err != nil {
+		return err
+	}
+	f.opts.Dimension = dimInt
+	dimI32, err := conv.Uint32ToInt32(header.Dimension)
+	if err != nil {
+		return err
+	}
+	f.dimension.Store(dimI32)
 
 	if f.deleted == nil {
 		f.deleted = bitset.New(1024)
@@ -229,7 +254,11 @@ func (f *Flat) ReadFromWithOptions(r io.Reader, opts Options) error {
 
 	if freeListLen > 0 {
 		// Consume and discard free list data
-		if _, err := reader.ReadUint64Slice(int(freeListLen)); err != nil {
+		freeListLenInt, err := conv.Uint64ToInt(freeListLen)
+		if err != nil {
+			return err
+		}
+		if _, err := reader.ReadUint64Slice(freeListLenInt); err != nil {
 			return err
 		}
 	}
@@ -245,7 +274,11 @@ func (f *Flat) ReadFromWithOptions(r io.Reader, opts Options) error {
 	}
 
 	// Read Markers
-	markers := make([]byte, nodeCount)
+	nodeCountInt, err := conv.Uint64ToInt(nodeCount)
+	if err != nil {
+		return err
+	}
+	markers := make([]byte, nodeCountInt)
 	if _, err := io.ReadFull(r, markers); err != nil {
 		return fmt.Errorf("failed to read markers: %w", err)
 	}
@@ -253,7 +286,11 @@ func (f *Flat) ReadFromWithOptions(r io.Reader, opts Options) error {
 	// Skip padding
 	padding := (4 - (nodeCount % 4)) % 4
 	if padding > 0 {
-		if _, err := io.ReadFull(r, make([]byte, padding)); err != nil {
+		paddingInt, err := conv.Uint64ToInt(padding)
+		if err != nil {
+			return err
+		}
+		if _, err := io.ReadFull(r, make([]byte, paddingInt)); err != nil {
 			return fmt.Errorf("failed to read padding: %w", err)
 		}
 	}
@@ -272,7 +309,10 @@ func (f *Flat) ReadFromWithOptions(r io.Reader, opts Options) error {
 	// Let's assume it grows.
 
 	// Read Vectors
-	vecSize := int(header.Dimension)
+	vecSize, err := conv.Uint32ToInt(header.Dimension)
+	if err != nil {
+		return err
+	}
 	vec := make([]float32, vecSize)
 
 	for i := uint64(0); i < nodeCount; i++ {
@@ -281,8 +321,13 @@ func (f *Flat) ReadFromWithOptions(r io.Reader, opts Options) error {
 			return fmt.Errorf("failed to read node vector: %w", err)
 		}
 
+		iU32, err := conv.Uint64ToUint32(i)
+		if err != nil {
+			return err
+		}
+
 		if markers[i] == 0 {
-			f.deleted.Set(uint32(i))
+			f.deleted.Set(iU32)
 			continue
 		}
 
@@ -290,7 +335,7 @@ func (f *Flat) ReadFromWithOptions(r io.Reader, opts Options) error {
 		vecCopy := make([]float32, vecSize)
 		copy(vecCopy, vec)
 
-		if err := f.vectors.SetVector(core.LocalID(i), vecCopy); err != nil {
+		if err := f.vectors.SetVector(core.LocalID(iU32), vecCopy); err != nil {
 			return fmt.Errorf("failed to store node vector: %w", err)
 		}
 	}

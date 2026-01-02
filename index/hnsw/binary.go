@@ -10,6 +10,7 @@ import (
 
 	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/index"
+	"github.com/hupe1980/vecgo/internal/conv"
 	"github.com/hupe1980/vecgo/persistence"
 	"github.com/hupe1980/vecgo/vectorstore/columnar"
 )
@@ -78,9 +79,16 @@ func (h *HNSW) WriteTo(w io.Writer) (int64, error) {
 	nextID := g.nextIDAtomic.Load()
 
 	// Write file header
+	tombstonesCount := uint64(g.tombstones.Count())
+
+	dimU32, err := conv.Int32ToUint32(h.dimensionAtomic.Load())
+	if err != nil {
+		return cw.n, err
+	}
+
 	header := &persistence.FileHeader{
-		VectorCount: uint64(int64(nextID) - int64(g.tombstones.Count())),
-		Dimension:   uint32(h.dimensionAtomic.Load()),
+		VectorCount: uint64(nextID) - tombstonesCount,
+		Dimension:   dimU32,
 		IndexType:   persistence.IndexTypeHNSW,
 		DataOffset:  64, // After header
 	}
@@ -89,12 +97,25 @@ func (h *HNSW) WriteTo(w io.Writer) (int64, error) {
 	}
 
 	// Write HNSW metadata
+	maxLayersU16, err := conv.Int32ToUint16(g.maxLevelAtomic.Load() + 1)
+	if err != nil {
+		return cw.n, err
+	}
+	mU16, err := conv.IntToUint16(h.maxConnectionsPerLayer)
+	if err != nil {
+		return cw.n, err
+	}
+	distFuncU8, err := conv.IntToUint8(int(h.opts.DistanceType))
+	if err != nil {
+		return cw.n, err
+	}
+
 	metadata := &persistence.HNSWMetadata{
-		MaxLayers:    uint16(g.maxLevelAtomic.Load() + 1),
-		M:            uint16(h.maxConnectionsPerLayer),
+		MaxLayers:    maxLayersU16,
+		M:            mU16,
 		Ml:           float32(h.layerMultiplier),
 		EntryPoint:   uint64(g.entryPointAtomic.Load()),
-		DistanceFunc: uint8(h.opts.DistanceType),
+		DistanceFunc: distFuncU8,
 		Flags: func() uint8 {
 			if h.opts.NormalizeVectors {
 				return 1
@@ -134,14 +155,21 @@ func (h *HNSW) WriteTo(w io.Writer) (int64, error) {
 
 		// Write Level
 		level := node.Level(g.arena)
-		if err := binary.Write(cw, binary.LittleEndian, int32(level)); err != nil {
+		levelI32, err := conv.IntToInt32(level)
+		if err != nil {
+			return cw.n, err
+		}
+		if err := binary.Write(cw, binary.LittleEndian, levelI32); err != nil {
 			return cw.n, err
 		}
 
 		// Write Connections
 		for layer := 0; layer <= level; layer++ {
 			conns := h.getConnections(g, core.LocalID(id), layer)
-			count := uint32(len(conns))
+			count, err := conv.IntToUint32(len(conns))
+			if err != nil {
+				return cw.n, err
+			}
 			if err := binary.Write(cw, binary.LittleEndian, count); err != nil {
 				return cw.n, err
 			}
@@ -207,8 +235,12 @@ func (h *HNSW) ReadFromWithOptions(r io.Reader, opts Options) error {
 	}
 
 	// Initialize basic fields
-	if opts.Dimension != 0 && opts.Dimension != int(header.Dimension) {
-		return &index.ErrDimensionMismatch{Expected: opts.Dimension, Actual: int(header.Dimension)}
+	dimInt, err := conv.Uint32ToInt(header.Dimension)
+	if err != nil {
+		return err
+	}
+	if opts.Dimension != 0 && opts.Dimension != dimInt {
+		return &index.ErrDimensionMismatch{Expected: opts.Dimension, Actual: dimInt}
 	}
 	h.opts = opts
 	dt := index.DistanceType(metadata.DistanceFunc)
@@ -221,11 +253,15 @@ func (h *HNSW) ReadFromWithOptions(r io.Reader, opts Options) error {
 		h.opts.NormalizeVectors = true
 	}
 	h.opts.M = int(metadata.M)
-	h.opts.Dimension = int(header.Dimension)
+	h.opts.Dimension = dimInt
 	h.maxConnectionsPerLayer = int(metadata.M)
 	h.maxConnectionsLayer0 = 2 * int(metadata.M)
 	h.layerMultiplier = float64(metadata.Ml)
-	h.dimensionAtomic.Store(int32(header.Dimension))
+	dimI32, err := conv.Uint32ToInt32(header.Dimension)
+	if err != nil {
+		return err
+	}
+	h.dimensionAtomic.Store(dimI32)
 
 	g, err := newGraph(h.opts.InitialArenaSize)
 	if err != nil {
@@ -233,7 +269,11 @@ func (h *HNSW) ReadFromWithOptions(r io.Reader, opts Options) error {
 	}
 	h.currentGraph.Store(g)
 
-	g.entryPointAtomic.Store(uint32(metadata.EntryPoint))
+	epU32, err := conv.Uint64ToUint32(metadata.EntryPoint)
+	if err != nil {
+		return err
+	}
+	g.entryPointAtomic.Store(epU32)
 	g.maxLevelAtomic.Store(int32(metadata.MaxLayers) - 1)
 
 	// Initialize runtime fields
@@ -250,7 +290,7 @@ func (h *HNSW) ReadFromWithOptions(r io.Reader, opts Options) error {
 	if opts.Vectors != nil {
 		h.vectors = opts.Vectors
 	} else {
-		h.vectors = columnar.New(int(header.Dimension))
+		h.vectors = columnar.New(dimInt)
 	}
 
 	// Read nextID
@@ -258,8 +298,12 @@ func (h *HNSW) ReadFromWithOptions(r io.Reader, opts Options) error {
 	if err != nil {
 		return err
 	}
-	g.nextIDAtomic.Store(uint32(nextIDSlice[0]))
-	g.tombstones.Grow(uint32(nextIDSlice[0]))
+	nextIDU32, err := conv.Uint64ToUint32(nextIDSlice[0])
+	if err != nil {
+		return err
+	}
+	g.nextIDAtomic.Store(nextIDU32)
+	g.tombstones.Grow(nextIDU32)
 
 	// Read freeList (Deprecated: Ignore)
 	freeListLenSlice, err := reader.ReadUint64Slice(1)
@@ -269,7 +313,11 @@ func (h *HNSW) ReadFromWithOptions(r io.Reader, opts Options) error {
 	freeListLen := freeListLenSlice[0]
 	if freeListLen > 0 {
 		// Consume and discard free list data
-		if _, err := reader.ReadUint64Slice(int(freeListLen)); err != nil {
+		freeListLenInt, err := conv.Uint64ToInt(freeListLen)
+		if err != nil {
+			return err
+		}
+		if _, err := reader.ReadUint64Slice(freeListLenInt); err != nil {
 			return err
 		}
 	}
@@ -306,13 +354,21 @@ func (h *HNSW) ReadFromWithOptions(r io.Reader, opts Options) error {
 				return err
 			}
 			if count > 0 {
-				ids, err := reader.ReadUint64Slice(int(count))
+				countInt, err := conv.Uint32ToInt(count)
+				if err != nil {
+					return err
+				}
+				ids, err := reader.ReadUint64Slice(countInt)
 				if err != nil {
 					return err
 				}
 				conns := make([]Neighbor, len(ids))
 				for i, id := range ids {
-					conns[i] = Neighbor{ID: core.LocalID(id)}
+					idU32, err := conv.Uint64ToUint32(id)
+					if err != nil {
+						return err
+					}
+					conns[i] = Neighbor{ID: core.LocalID(idU32)}
 				}
 				h.setConnections(g, core.LocalID(id), layer, conns)
 			}

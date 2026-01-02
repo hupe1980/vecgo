@@ -15,6 +15,7 @@ import (
 	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/internal/bitset"
+	"github.com/hupe1980/vecgo/internal/conv"
 	"github.com/hupe1980/vecgo/internal/mmap"
 	"github.com/hupe1980/vecgo/quantization"
 	"github.com/hupe1980/vecgo/searcher"
@@ -232,14 +233,18 @@ func (s *Segment) beamSearch(query []float32, distTable []float32, queryBQ []uin
 	*candidates = (*candidates)[:0]
 
 	entryPoint := s.entryPoint
-	if entryPoint >= uint32(len(s.graph)) {
+	graphLen, err := conv.IntToUint32(len(s.graph))
+	if err != nil {
+		return nil
+	}
+	if entryPoint >= graphLen {
 		return nil
 	}
 
 	entryDist := s.computeDistance(query, entryPoint, distTable)
 	candidates.push(distNode{id: entryPoint, dist: entryDist})
 
-	maxID := uint32(len(s.graph))
+	maxID := graphLen
 	visited := scratch.visited
 	visited.ClearAll()
 	if visited.Len() < maxID {
@@ -265,7 +270,7 @@ func (s *Segment) beamSearch(query []float32, distTable []float32, queryBQ []uin
 			}
 		}
 
-		if curr.id < uint32(len(s.graph)) {
+		if curr.id < graphLen {
 			for _, neighbor := range s.graph[curr.id] {
 				if neighbor >= maxID || visited.Test(neighbor) {
 					continue
@@ -279,7 +284,11 @@ func (s *Segment) beamSearch(query []float32, distTable []float32, queryBQ []uin
 				// BQ Prefilter
 				if queryBQ != nil {
 					words := (s.dim + 63) / 64
-					offset := int(neighbor) * words
+					neighborInt, err := conv.Uint32ToInt(neighbor)
+					if err != nil {
+						continue
+					}
+					offset := neighborInt * words
 					if offset+words <= len(s.bqCodes) {
 						norm := quantization.NormalizedHammingDistance(queryBQ, s.bqCodes[offset:offset+words], s.dim)
 						if norm > s.opts.BinaryPrefilterMaxNormalizedDistance {
@@ -332,7 +341,11 @@ func (s *Segment) rerank(query []float32, candidates []distNode, k int) []index.
 
 func (s *Segment) computeDistance(v []float32, id uint32, distTable []float32) float32 {
 	M := s.opts.PQSubvectors
-	offset := int(id) * M
+	idInt, err := conv.Uint32ToInt(id)
+	if err != nil {
+		return math.MaxFloat32
+	}
+	offset := idInt * M
 	if distTable != nil && offset+M <= len(s.pqCodes) {
 		return s.pq.AdcDistance(distTable, s.pqCodes[offset:offset+M])
 	}
@@ -351,13 +364,13 @@ func (s *Segment) getVector(id uint32) []float32 {
 	if offset < 0 || offset+s.dim*4 > len(s.mmapReader.Data) {
 		return nil
 	}
-	return unsafe.Slice((*float32)(unsafe.Pointer(&s.mmapReader.Data[offset])), s.dim)
+	return unsafe.Slice((*float32)(unsafe.Pointer(&s.mmapReader.Data[offset])), s.dim) //nolint:gosec // unsafe is required for performance
 }
 
 // Loading methods (copied/adapted from index.go)
 
 func (s *Segment) loadMeta(path string) error {
-	f, err := os.Open(filepath.Join(path, MetaFilename))
+	f, err := os.Open(filepath.Join(path, MetaFilename)) //nolint:gosec // path is trusted
 	if err != nil {
 		return err
 	}
@@ -373,7 +386,11 @@ func (s *Segment) loadMeta(path string) error {
 
 	s.fileFlags = header.Flags
 	s.dim = int(header.Dimension)
-	s.count = uint32(header.Count)
+	countU32, err := conv.Uint64ToUint32(header.Count)
+	if err != nil {
+		return err
+	}
+	s.count = countU32
 	s.distType = header.DistType()
 	s.distFunc = index.NewDistanceFunc(s.distType)
 
@@ -425,7 +442,7 @@ func (s *Segment) loadPQCodebooks(r io.Reader, header *FileHeader) error {
 }
 
 func (s *Segment) loadGraph(path string) error {
-	f, err := os.Open(filepath.Join(path, GraphFilename))
+	f, err := os.Open(filepath.Join(path, GraphFilename)) //nolint:gosec // path is trusted
 	if err != nil {
 		return err
 	}
@@ -452,14 +469,18 @@ func (s *Segment) loadGraph(path string) error {
 }
 
 func (s *Segment) loadPQCodes(path string) error {
-	f, err := os.Open(filepath.Join(path, PQCodesFilename))
+	f, err := os.Open(filepath.Join(path, PQCodesFilename)) //nolint:gosec // path is trusted
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 
 	M := s.opts.PQSubvectors
-	s.pqCodes = make([]byte, int(s.count)*M)
+	countInt, err := conv.Uint32ToInt(s.count)
+	if err != nil {
+		return err
+	}
+	s.pqCodes = make([]byte, countInt*M)
 	if _, err := io.ReadFull(f, s.pqCodes); err != nil {
 		return err
 	}
@@ -467,7 +488,7 @@ func (s *Segment) loadPQCodes(path string) error {
 }
 
 func (s *Segment) loadBQCodes(path string) error {
-	f, err := os.Open(filepath.Join(path, BQCodesFilename))
+	f, err := os.Open(filepath.Join(path, BQCodesFilename)) //nolint:gosec // path is trusted
 	if err != nil {
 		return err
 	}
@@ -602,7 +623,11 @@ func (s *Segment) beamSearchWithContext(query []float32, distTable []float32, qu
 	}
 
 	entryPoint := s.entryPoint
-	if entryPoint >= uint32(len(s.graph)) {
+	graphLen, err := conv.IntToUint32(len(s.graph))
+	if err != nil {
+		return nil
+	}
+	if entryPoint >= graphLen {
 		return nil
 	}
 
@@ -639,7 +664,11 @@ func (s *Segment) beamSearchWithContext(query []float32, distTable []float32, qu
 			// BQ Prefilter
 			if queryBQ != nil {
 				words := (s.dim + 63) / 64
-				offset := int(neighborID) * words
+				neighborIDInt, err := conv.Uint32ToInt(neighborID)
+				if err != nil {
+					continue
+				}
+				offset := neighborIDInt * words
 				if offset+words <= len(s.bqCodes) {
 					norm := quantization.NormalizedHammingDistance(queryBQ, s.bqCodes[offset:offset+words], s.dim)
 					if norm > s.opts.BinaryPrefilterMaxNormalizedDistance {

@@ -3,6 +3,8 @@ package arena
 import (
 	"errors"
 	"sync/atomic"
+
+	"github.com/hupe1980/vecgo/internal/conv"
 )
 
 var (
@@ -57,7 +59,11 @@ func (a *FlatArena) Alloc(size uint64) (uint64, error) {
 		// For now, let's assume fixed size or lock for alloc if dynamic.
 		// To be safe and simple:
 
-		if int(next) > len(a.buf) {
+		nextInt, err := conv.Uint64ToInt(next)
+		if err != nil {
+			return 0, ErrArenaFull
+		}
+		if nextInt > len(a.buf) {
 			return 0, ErrArenaFull
 		}
 

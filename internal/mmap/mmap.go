@@ -52,7 +52,7 @@ func (m *File) Madvise(advice int) error {
 
 // Open maps the file at path into memory as read-only.
 func Open(path string) (*File, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) //nolint:gosec // mmap utility
 	if err != nil {
 		return nil, err
 	}

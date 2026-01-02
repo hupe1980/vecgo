@@ -7,6 +7,7 @@ import (
 
 	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/internal/arena"
+	"github.com/hupe1980/vecgo/internal/conv"
 )
 
 // NodeOffsetSegment is a fixed-size array of node offsets.
@@ -25,9 +26,11 @@ func (n Neighbor) AsUint64() uint64 {
 
 // NeighborFromUint64 converts uint64 back to Neighbor.
 func NeighborFromUint64(v uint64) Neighbor {
+	idU32, _ := conv.Uint64ToUint32(v >> 32)
+	distU32, _ := conv.Uint64ToUint32(v & 0xFFFFFFFF)
 	return Neighbor{
-		ID:   core.LocalID(v >> 32),
-		Dist: math.Float32frombits(uint32(v)),
+		ID:   core.LocalID(idU32),
+		Dist: math.Float32frombits(distU32),
 	}
 }
 
@@ -53,7 +56,11 @@ func (n Node) Level(a *arena.Arena) int {
 		// Stale reference or invalid offset
 		return -1
 	}
-	return int(*(*uint32)(ptr))
+	lvl, err := conv.Uint32ToInt(*(*uint32)(ptr))
+	if err != nil {
+		return -1 // Should not happen for valid levels
+	}
+	return lvl
 }
 
 func (n Node) setLevel(a *arena.Arena, level int) {
@@ -61,7 +68,11 @@ func (n Node) setLevel(a *arena.Arena, level int) {
 	if ptr == nil {
 		return
 	}
-	*(*uint32)(ptr) = uint32(level)
+	lvlU32, err := conv.IntToUint32(level)
+	if err != nil {
+		return
+	}
+	*(*uint32)(ptr) = lvlU32
 }
 
 // connectionBlockOffset calculates the offset of the connection block for the given layer.
@@ -75,12 +86,15 @@ func (n Node) connectionBlockOffset(layer int, m, m0 int) uint64 {
 
 	// Skip layer 0
 	// Layer 0 size: 4 (count) + m0 * 8 (neighbors)
-	offset += 4 + uint64(m0)*8
+	m0U64, _ := conv.IntToUint64(m0)
+	offset += 4 + m0U64*8
 
 	// Skip layers 1 to layer-1
 	// Each layer size: 4 (padding) + 4 (count) + m * 8 (neighbors)
 	if layer > 1 {
-		offset += uint64(layer-1) * (4 + 4 + uint64(m)*8)
+		layerMinus1U64, _ := conv.IntToUint64(layer - 1)
+		mU64, _ := conv.IntToUint64(m)
+		offset += layerMinus1U64 * (4 + 4 + mU64*8)
 	}
 
 	// Add padding for current layer to align neighbors to 8 bytes
@@ -101,15 +115,20 @@ func (n Node) GetConnectionsRaw(a *arena.Arena, layer int, m, m0 int) []uint64 {
 	}
 
 	count := atomic.LoadUint32((*uint32)(ptr))
-	neighborsPtr := unsafe.Pointer(uintptr(ptr) + 4)
+	neighborsPtr := unsafe.Pointer(uintptr(ptr) + 4) //nolint:gosec // unsafe is required for performance
 
-	return unsafe.Slice((*uint64)(neighborsPtr), count)
+	countInt, err := conv.Uint32ToInt(count)
+	if err != nil {
+		return nil
+	}
+	return unsafe.Slice((*uint64)(neighborsPtr), countInt) //nolint:gosec // unsafe is required for performance
 }
 
 // GetConnection returns the neighbor at the given index for the given layer.
 func (n Node) GetConnection(a *arena.Arena, layer int, index int, m, m0 int) Neighbor {
 	blockOffset := n.connectionBlockOffset(layer, m, m0)
-	neighborOffset := blockOffset + 4 + uint64(index)*8
+	indexU64, _ := conv.IntToUint64(index)
+	neighborOffset := blockOffset + 4 + indexU64*8
 
 	ptr := a.GetSafe(arena.Ref{Gen: n.Gen, Offset: neighborOffset})
 	if ptr == nil {
@@ -123,7 +142,8 @@ func (n Node) SetConnection(a *arena.Arena, layer int, index int, neighbor Neigh
 	blockOffset := n.connectionBlockOffset(layer, m, m0)
 	// Neighbors start at offset + 4
 	// Index * 8
-	neighborOffset := blockOffset + 4 + uint64(index)*8
+	indexU64, _ := conv.IntToUint64(index)
+	neighborOffset := blockOffset + 4 + indexU64*8
 
 	ptr := a.GetSafe(arena.Ref{Gen: n.Gen, Offset: neighborOffset})
 	if ptr == nil {
@@ -139,7 +159,11 @@ func (n Node) SetCount(a *arena.Arena, layer int, count int, m, m0 int) {
 	if ptr == nil {
 		return
 	}
-	atomic.StoreUint32((*uint32)(ptr), uint32(count))
+	countU32, err := conv.IntToUint32(count)
+	if err != nil {
+		return
+	}
+	atomic.StoreUint32((*uint32)(ptr), countU32)
 }
 
 // GetCount returns the number of connections for the given layer.
@@ -149,7 +173,11 @@ func (n Node) GetCount(a *arena.Arena, layer int, m, m0 int) int {
 	if ptr == nil {
 		return 0
 	}
-	return int(atomic.LoadUint32((*uint32)(ptr)))
+	count, err := conv.Uint32ToInt(atomic.LoadUint32((*uint32)(ptr)))
+	if err != nil {
+		return 0
+	}
+	return count
 }
 
 // Init initializes the node in the arena.

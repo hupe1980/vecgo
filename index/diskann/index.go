@@ -18,6 +18,7 @@ import (
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/index/hnsw"
 	"github.com/hupe1980/vecgo/internal/bitset"
+	"github.com/hupe1980/vecgo/internal/conv"
 	"github.com/hupe1980/vecgo/searcher"
 )
 
@@ -116,7 +117,7 @@ func New(dim int, distType index.DistanceType, indexPath string, opts *Options) 
 	}
 
 	// Ensure directory exists
-	if err := os.MkdirAll(indexPath, 0755); err != nil {
+	if err := os.MkdirAll(indexPath, 0750); err != nil {
 		return nil, fmt.Errorf("diskann: create directory: %w", err)
 	}
 
@@ -189,14 +190,18 @@ func Open(indexPath string, opts *Options) (*Index, error) {
 			continue
 		}
 
-		seg, err := OpenSegment(path, core.LocalID(baseID), opts)
+		bid, err := conv.Uint64ToUint32(baseID)
+		if err != nil {
+			return nil, fmt.Errorf("diskann: segment baseID overflow: %w", err)
+		}
+		seg, err := OpenSegment(path, core.LocalID(bid), opts)
 		if err != nil {
 			return nil, fmt.Errorf("diskann: open segment %s: %w", path, err)
 		}
 		idx.segments = append(idx.segments, seg)
 		idx.count.Add(seg.count)
 
-		segMax := core.LocalID(baseID) + core.LocalID(seg.count)
+		segMax := core.LocalID(bid) + core.LocalID(seg.count)
 		if segMax > maxID {
 			maxID = segMax
 		}
@@ -382,7 +387,8 @@ func (idx *Index) ApplyBatchInsert(ctx context.Context, ids []core.LocalID, vect
 		idx.memTablePresent.Set(uint32(id))
 		idx.deleted.Unset(uint32(id))
 	}
-	idx.memTableCount.Add(uint32(len(ids)))
+	idsLen, _ := conv.IntToUint32(len(ids))
+	idx.memTableCount.Add(idsLen)
 
 	return nil
 }
@@ -1041,8 +1047,10 @@ func (idx *Index) Compact(ctx context.Context) error {
 	// Update stats
 	idx.compactionMu.Lock()
 	idx.compactionStats.TotalCompactions++
-	idx.compactionStats.VectorsRemovedTotal += uint64(vectorsRemoved)
-	idx.compactionStats.LastVectorsRemoved = uint32(vectorsRemoved)
+	vrU64, _ := conv.IntToUint64(vectorsRemoved)
+	idx.compactionStats.VectorsRemovedTotal += vrU64
+	vrU32, _ := conv.IntToUint32(vectorsRemoved)
+	idx.compactionStats.LastVectorsRemoved = vrU32
 	idx.compactionStats.LastCompactionTime = time.Now().Unix()
 	idx.compactionStats.LastCompactionDuration = time.Since(start).Milliseconds()
 	idx.compactionMu.Unlock()

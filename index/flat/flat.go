@@ -15,6 +15,7 @@ import (
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/internal/bitset"
 	"github.com/hupe1980/vecgo/internal/container"
+	"github.com/hupe1980/vecgo/internal/conv"
 	"github.com/hupe1980/vecgo/quantization"
 	"github.com/hupe1980/vecgo/searcher"
 	"github.com/hupe1980/vecgo/vectorstore"
@@ -121,7 +122,11 @@ func New(optFns ...func(o *Options)) (*Flat, error) {
 		numShards:    1, // Default: 1 shard (non-sharded mode)
 		deleted:      bitset.New(1024),
 	}
-	f.dimension.Store(int32(opts.Dimension))
+	dimI32, err := conv.IntToInt32(opts.Dimension)
+	if err != nil {
+		return nil, err
+	}
+	f.dimension.Store(dimI32)
 
 	return f, nil
 }
@@ -776,8 +781,15 @@ func (f *Flat) BruteSearchWithBuffer(ctx context.Context, query []float32, k int
 	}
 
 	actualK := k
-	if uint32(actualK) > maxID {
-		actualK = int(maxID)
+	actualKU32, err := conv.IntToUint32(actualK)
+	if err != nil {
+		return err
+	}
+	if actualKU32 > maxID {
+		actualK, err = conv.Uint32ToInt(maxID)
+		if err != nil {
+			return err
+		}
 	}
 
 	topCandidates := searcher.NewPriorityQueue(true)
@@ -973,7 +985,11 @@ func (f *Flat) BruteSearchWithContext(ctx context.Context, s *searcher.Searcher,
 
 	actualK := k
 	if uint64(actualK) > uint64(maxID) {
-		actualK = int(maxID)
+		var err error
+		actualK, err = conv.Uint32ToInt(maxID)
+		if err != nil {
+			return err
+		}
 	}
 
 	s.Candidates.Reset()

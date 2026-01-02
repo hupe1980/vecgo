@@ -101,7 +101,7 @@ func (r *SliceReader) ReadUint32SliceCopy(n int) ([]uint32, error) {
 		return nil, err
 	}
 	out := make([]uint32, n)
-	copy(unsafe.Slice((*byte)(unsafe.Pointer(&out[0])), n*4), bb)
+	copy(unsafe.Slice((*byte)(unsafe.Pointer(&out[0])), n*4), bb) //nolint:gosec // unsafe is required for performance
 	return out, nil
 }
 
@@ -115,7 +115,7 @@ func (r *SliceReader) ReadFloat32SliceView(n int) ([]float32, error) {
 		return nil, err
 	}
 	// bb comes from a mmapped region; we return a view into it.
-	return unsafe.Slice((*float32)(unsafe.Pointer(&bb[0])), n), nil
+	return unsafe.Slice((*float32)(unsafe.Pointer(&bb[0])), n), nil //nolint:gosec // unsafe is required for performance
 }
 
 // ReadUint64 reads a uint64 from the slice.
@@ -137,6 +137,6 @@ func (r *SliceReader) ReadUint64SliceCopy(n int) ([]uint64, error) {
 		return nil, err
 	}
 	out := make([]uint64, n)
-	copy(unsafe.Slice((*byte)(unsafe.Pointer(&out[0])), n*8), bb)
+	copy(unsafe.Slice((*byte)(unsafe.Pointer(&out[0])), n*8), bb) //nolint:gosec // unsafe is required for performance
 	return out, nil
 }

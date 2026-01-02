@@ -16,6 +16,7 @@ import (
 	"github.com/hupe1980/vecgo/codec"
 	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/index"
+	"github.com/hupe1980/vecgo/internal/conv"
 	"github.com/hupe1980/vecgo/metadata"
 )
 
@@ -153,7 +154,12 @@ func (sc *ShardedCoordinator[T]) Insert(ctx context.Context, vector []float32, d
 	}
 
 	// Return global ID with shard encoded
-	return uint64(NewGlobalID(uint32(shardIdx), core.LocalID(localID))), nil
+	shardID, _ := conv.IntToUint32(shardIdx)
+	lid, err := conv.Uint64ToUint32(localID)
+	if err != nil {
+		return 0, fmt.Errorf("local ID overflow: %w", err)
+	}
+	return uint64(NewGlobalID(shardID, core.LocalID(lid))), nil
 }
 
 // BatchInsert adds multiple vectors+payloads+metadata.
@@ -214,7 +220,12 @@ func (sc *ShardedCoordinator[T]) BatchInsert(ctx context.Context, vectors [][]fl
 			ids, err := sc.shards[shardIdx].BatchInsert(ctx, b.vectors, b.dataSlice, b.metadata)
 			localIDs := make([]core.LocalID, len(ids))
 			for i, id := range ids {
-				localIDs[i] = core.LocalID(id)
+				lid, convErr := conv.Uint64ToUint32(id)
+				if convErr != nil {
+					resultsCh <- shardResult{shardIdx: shardIdx, err: fmt.Errorf("local ID overflow: %w", convErr)}
+					return
+				}
+				localIDs[i] = core.LocalID(lid)
 			}
 			resultsCh <- shardResult{shardIdx: shardIdx, ids: localIDs, err: err}
 		}(idx, batch)
@@ -234,9 +245,10 @@ func (sc *ShardedCoordinator[T]) BatchInsert(ctx context.Context, vectors [][]fl
 	// Map shard-local IDs to global IDs in original order
 	for shardIdx, batch := range shardBatches {
 		localIDs := shardIDsMap[shardIdx]
+		shardID, _ := conv.IntToUint32(shardIdx)
 		for i, originalIdx := range batch.indices {
 			// Convert local ID to global ID with shard encoding
-			allIDs[originalIdx] = uint64(NewGlobalID(uint32(shardIdx), localIDs[i]))
+			allIDs[originalIdx] = uint64(NewGlobalID(shardID, localIDs[i]))
 		}
 	}
 
@@ -324,7 +336,9 @@ func (sc *ShardedCoordinator[T]) KNNSearchWithBuffer(ctx context.Context, query 
 			shardOpts = &SearchOptions{
 				EFSearch: opts.EFSearch,
 				Filter: func(localID uint64) bool {
-					globalID := uint64(NewGlobalID(uint32(shardIdx), core.LocalID(localID)))
+					shardID, _ := conv.IntToUint32(shardIdx)
+					lid, _ := conv.Uint64ToUint32(localID)
+					globalID := uint64(NewGlobalID(shardID, core.LocalID(lid)))
 					return userFilter(globalID)
 				},
 			}
@@ -354,8 +368,10 @@ func (sc *ShardedCoordinator[T]) KNNSearchWithBuffer(ctx context.Context, query 
 				errors = append(errors, fmt.Errorf("shard %d: %w", res.shardIdx, res.err))
 			} else {
 				// Convert local IDs to global IDs
+				shardID, _ := conv.IntToUint32(res.shardIdx)
 				for j := range res.results {
-					res.results[j].ID = uint64(NewGlobalID(uint32(res.shardIdx), core.LocalID(res.results[j].ID)))
+					lid, _ := conv.Uint64ToUint32(res.results[j].ID)
+					res.results[j].ID = uint64(NewGlobalID(shardID, core.LocalID(lid)))
 				}
 				allResults = append(allResults, res.results...)
 			}
@@ -388,7 +404,9 @@ func (sc *ShardedCoordinator[T]) BruteSearch(ctx context.Context, query []float3
 		var localFilter func(id uint64) bool
 		if filter != nil {
 			localFilter = func(localID uint64) bool {
-				globalID := uint64(NewGlobalID(uint32(shardIdx), core.LocalID(localID)))
+				shardID, _ := conv.IntToUint32(shardIdx)
+				lid, _ := conv.Uint64ToUint32(localID)
+				globalID := uint64(NewGlobalID(shardID, core.LocalID(lid)))
 				return filter(globalID)
 			}
 		}
@@ -417,8 +435,10 @@ func (sc *ShardedCoordinator[T]) BruteSearch(ctx context.Context, query []float3
 				errors = append(errors, fmt.Errorf("shard %d: %w", res.shardIdx, res.err))
 			} else {
 				// Convert local IDs to global IDs
+				shardID, _ := conv.IntToUint32(res.shardIdx)
 				for j := range res.results {
-					res.results[j].ID = uint64(NewGlobalID(uint32(res.shardIdx), core.LocalID(res.results[j].ID)))
+					lid, _ := conv.Uint64ToUint32(res.results[j].ID)
+					res.results[j].ID = uint64(NewGlobalID(shardID, core.LocalID(lid)))
 				}
 				allResults = append(allResults, res.results...)
 			}
@@ -583,9 +603,10 @@ func (sc *ShardedCoordinator[T]) HybridSearch(ctx context.Context, query []float
 			defer wg.Done()
 			res, err := sc.shards[shardIdx].HybridSearch(ctx, query, k, opts)
 			if err == nil {
-				// Convert local IDs to global IDs
+				shardID, _ := conv.IntToUint32(shardIdx)
 				for j := range res {
-					res[j].ID = uint64(NewGlobalID(uint32(shardIdx), core.LocalID(res[j].ID)))
+					lid, _ := conv.Uint64ToUint32(res[j].ID)
+					res[j].ID = uint64(NewGlobalID(shardID, core.LocalID(lid)))
 				}
 			}
 			results[shardIdx] = res
@@ -686,7 +707,7 @@ func (sc *ShardedCoordinator[T]) SaveToWriter(w io.Writer) error {
 
 // SaveToFile saves each shard to a subdirectory.
 func (sc *ShardedCoordinator[T]) SaveToFile(path string) error {
-	if err := os.MkdirAll(path, 0755); err != nil {
+	if err := os.MkdirAll(path, 0750); err != nil {
 		return err
 	}
 	for i, shard := range sc.shards {

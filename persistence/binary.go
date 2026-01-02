@@ -46,7 +46,7 @@ func (bw *BinaryIndexWriter) WriteFloat32Slice(vec []float32) error {
 	}
 
 	// Direct memory conversion (no allocation)
-	byteSlice := unsafe.Slice((*byte)(unsafe.Pointer(&vec[0])), len(vec)*4)
+	byteSlice := unsafe.Slice((*byte)(unsafe.Pointer(&vec[0])), len(vec)*4) //nolint:gosec // G103: Zero-copy optimization
 	_, err := bw.w.Write(byteSlice)
 	return err
 }
@@ -63,7 +63,7 @@ func (bw *BinaryIndexWriter) WriteUint32Slice(slice []uint32) error {
 		return err
 	}
 
-	byteSlice := unsafe.Slice((*byte)(unsafe.Pointer(&slice[0])), len(slice)*4)
+	byteSlice := unsafe.Slice((*byte)(unsafe.Pointer(&slice[0])), len(slice)*4) //nolint:gosec // G103: Zero-copy optimization
 	_, err := bw.w.Write(byteSlice)
 	return err
 }
@@ -80,7 +80,7 @@ func (bw *BinaryIndexWriter) WriteUint64Slice(slice []uint64) error {
 		return err
 	}
 
-	byteSlice := unsafe.Slice((*byte)(unsafe.Pointer(&slice[0])), len(slice)*8)
+	byteSlice := unsafe.Slice((*byte)(unsafe.Pointer(&slice[0])), len(slice)*8) //nolint:gosec // unsafe is required for performance
 	_, err := bw.w.Write(byteSlice)
 	return err
 }
@@ -120,7 +120,7 @@ func (br *BinaryIndexReader) ReadFloat32Slice(count int) ([]float32, error) {
 		return nil, nil
 	}
 	vec := make([]float32, count)
-	byteSlice := unsafe.Slice((*byte)(unsafe.Pointer(&vec[0])), count*4)
+	byteSlice := unsafe.Slice((*byte)(unsafe.Pointer(&vec[0])), count*4) //nolint:gosec // unsafe is required for performance
 	if _, err := io.ReadFull(br.r, byteSlice); err != nil {
 		return nil, err
 	}
@@ -132,7 +132,7 @@ func (br *BinaryIndexReader) ReadFloat32SliceInto(vec []float32) error {
 	if len(vec) == 0 {
 		return nil
 	}
-	byteSlice := unsafe.Slice((*byte)(unsafe.Pointer(&vec[0])), len(vec)*4)
+	byteSlice := unsafe.Slice((*byte)(unsafe.Pointer(&vec[0])), len(vec)*4) //nolint:gosec // unsafe is required for performance
 	if _, err := io.ReadFull(br.r, byteSlice); err != nil {
 		return err
 	}
@@ -145,7 +145,7 @@ func (br *BinaryIndexReader) ReadUint32Slice(count int) ([]uint32, error) {
 		return nil, nil
 	}
 	slice := make([]uint32, count)
-	byteSlice := unsafe.Slice((*byte)(unsafe.Pointer(&slice[0])), count*4)
+	byteSlice := unsafe.Slice((*byte)(unsafe.Pointer(&slice[0])), count*4) //nolint:gosec // unsafe is required for performance
 	if _, err := io.ReadFull(br.r, byteSlice); err != nil {
 		return nil, err
 	}
@@ -158,7 +158,7 @@ func (br *BinaryIndexReader) ReadUint64Slice(count int) ([]uint64, error) {
 		return nil, nil
 	}
 	slice := make([]uint64, count)
-	byteSlice := unsafe.Slice((*byte)(unsafe.Pointer(&slice[0])), count*8)
+	byteSlice := unsafe.Slice((*byte)(unsafe.Pointer(&slice[0])), count*8) //nolint:gosec // unsafe is required for performance
 	if _, err := io.ReadFull(br.r, byteSlice); err != nil {
 		return nil, err
 	}
@@ -182,7 +182,7 @@ func SaveToFile(filename string, writeFunc func(io.Writer) error) error {
 	}()
 
 	// Match typical file permissions (best-effort).
-	_ = tmp.Chmod(0644)
+	_ = tmp.Chmod(0600)
 
 	// Use buffered writer to batch writes (critical for performance)
 	buf := bufio.NewWriterSize(tmp, 256*1024) // 256KB buffer
@@ -205,7 +205,7 @@ func SaveToFile(filename string, writeFunc func(io.Writer) error) error {
 	}
 
 	// Best-effort: fsync the directory so the rename is durable on POSIX.
-	if d, err := os.Open(dir); err == nil {
+	if d, err := os.Open(dir); err == nil { //nolint:gosec // path is trusted
 		_ = d.Sync()
 		_ = d.Close()
 	}
@@ -217,7 +217,7 @@ func SaveToFile(filename string, writeFunc func(io.Writer) error) error {
 
 // LoadFromFile is a helper to load data from a file.
 func LoadFromFile(filename string, readFunc func(io.Reader) error) error {
-	f, err := os.Open(filename)
+	f, err := os.Open(filename) //nolint:gosec // path is trusted
 	if err != nil {
 		return err
 	}

@@ -17,6 +17,7 @@ import (
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/internal/arena"
 	"github.com/hupe1980/vecgo/internal/bitset"
+	"github.com/hupe1980/vecgo/internal/conv"
 	"github.com/hupe1980/vecgo/searcher"
 	"github.com/hupe1980/vecgo/vectorstore"
 	"github.com/hupe1980/vecgo/vectorstore/columnar"
@@ -203,7 +204,11 @@ func New(optFns ...func(o *Options)) (*HNSW, error) {
 
 	h.initPools()
 
-	h.dimensionAtomic.Store(int32(opts.Dimension))
+	dimI32, err := conv.IntToInt32(opts.Dimension)
+	if err != nil {
+		return nil, err
+	}
+	h.dimensionAtomic.Store(dimI32)
 	if h.vectors == nil {
 		h.vectors = columnar.New(opts.Dimension)
 	}
@@ -1225,19 +1230,31 @@ func (h *HNSW) BruteSearch(ctx context.Context, query []float32, k int, filter f
 				if node == nil {
 					continue
 				}
-				nodeID := uint64(i)*nodeSegmentSize + uint64(j)
-				if filter != nil && !filter(core.LocalID(nodeID)) {
+				iU64, err := conv.IntToUint64(i)
+				if err != nil {
+					return nil, err
+				}
+				jU64, err := conv.IntToUint64(j)
+				if err != nil {
+					return nil, err
+				}
+				nodeID := iU64*nodeSegmentSize + jU64
+				nodeIDU32, err := conv.Uint64ToUint32(nodeID)
+				if err != nil {
+					return nil, err
+				}
+				if filter != nil && !filter(core.LocalID(nodeIDU32)) {
 					continue
 				}
 
-				d := h.dist(query, core.LocalID(nodeID))
+				d := h.dist(query, core.LocalID(nodeIDU32))
 				if pq.Len() < k {
-					pq.PushItem(searcher.PriorityQueueItem{Node: core.LocalID(nodeID), Distance: d})
+					pq.PushItem(searcher.PriorityQueueItem{Node: core.LocalID(nodeIDU32), Distance: d})
 				} else {
 					top, _ := pq.TopItem()
 					if d < top.Distance {
 						_, _ = pq.PopItem()
-						pq.PushItem(searcher.PriorityQueueItem{Node: core.LocalID(nodeID), Distance: d})
+						pq.PushItem(searcher.PriorityQueueItem{Node: core.LocalID(nodeIDU32), Distance: d})
 					}
 				}
 			}
@@ -1268,15 +1285,25 @@ func (h *HNSW) layerForApplyInsert(id uint64) int {
 }
 
 // VectorCount returns the number of vectors in the index.
-func (h *HNSW) VectorCount() int { return int(h.currentGraph.Load().countAtomic.Load()) }
+func (h *HNSW) VectorCount() int {
+	c := h.currentGraph.Load().countAtomic.Load()
+	if c > int64(math.MaxInt) {
+		return math.MaxInt
+	}
+	return int(c)
+}
 
 // ContainsID checks if an ID exists in the index.
 func (h *HNSW) ContainsID(id uint64) bool {
 	g := h.currentGraph.Load()
-	if g.tombstones.Test(uint32(id)) {
+	idU32, err := conv.Uint64ToUint32(id)
+	if err != nil {
 		return false
 	}
-	return h.getNode(g, core.LocalID(id)) != nil
+	if g.tombstones.Test(idU32) {
+		return false
+	}
+	return h.getNode(g, core.LocalID(idU32)) != nil
 }
 
 // ShardID returns the shard ID.
@@ -1326,9 +1353,21 @@ func (h *HNSW) recoverEntryPoint(g *graph) {
 			node := segment[j].Load()
 			if node != nil {
 				// Found one!
-				id := uint64(i)*nodeSegmentSize + uint64(j) //nolint:gosec // i is non-negative
-				if !g.tombstones.Test(uint32(id)) {
-					g.entryPointAtomic.Store(uint32(id))
+				iU64, err := conv.IntToUint64(i)
+				if err != nil {
+					continue
+				}
+				jU64, err := conv.IntToUint64(j)
+				if err != nil {
+					continue
+				}
+				id := iU64*nodeSegmentSize + jU64
+				idU32, err := conv.Uint64ToUint32(id)
+				if err != nil {
+					continue
+				}
+				if !g.tombstones.Test(idU32) {
+					g.entryPointAtomic.Store(idU32)
 					g.maxLevelAtomic.Store(int32(node.Level(g.arena))) //nolint:gosec // level is small
 					return
 				}

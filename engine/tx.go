@@ -15,6 +15,7 @@ import (
 	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/index"
 	"github.com/hupe1980/vecgo/index/memtable"
+	"github.com/hupe1980/vecgo/internal/conv"
 	"github.com/hupe1980/vecgo/metadata"
 	"github.com/hupe1980/vecgo/searcher"
 	"github.com/hupe1980/vecgo/wal"
@@ -369,7 +370,11 @@ func (tx *Tx[T]) Update(ctx context.Context, id uint64, vector []float32, data T
 		return err
 	}
 
-	localID := core.LocalID(id)
+	lid, err := conv.Uint64ToUint32(id)
+	if err != nil {
+		return err
+	}
+	localID := core.LocalID(lid)
 
 	oldVector, err := tx.vectorByID(ctx, localID)
 	if err != nil {
@@ -459,7 +464,11 @@ func (tx *Tx[T]) Delete(ctx context.Context, id uint64) error {
 		return err
 	}
 
-	localID := core.LocalID(id)
+	lid, err := conv.Uint64ToUint32(id)
+	if err != nil {
+		return err
+	}
+	localID := core.LocalID(lid)
 
 	oldVector, err := tx.vectorByID(ctx, localID)
 	if err != nil {
@@ -523,12 +532,21 @@ func (tx *Tx[T]) Delete(ctx context.Context, id uint64) error {
 
 // Get retrieves the data associated with an ID from the data store.
 func (tx *Tx[T]) Get(id uint64) (T, bool) {
-	return tx.dataStore.Get(core.LocalID(id))
+	lid, err := conv.Uint64ToUint32(id)
+	if err != nil {
+		var zero T
+		return zero, false
+	}
+	return tx.dataStore.Get(core.LocalID(lid))
 }
 
 // GetMetadata retrieves the metadata associated with an ID from the metadata store.
 func (tx *Tx[T]) GetMetadata(id uint64) (metadata.Metadata, bool) {
-	return tx.metaStore.Get(core.LocalID(id))
+	lid, err := conv.Uint64ToUint32(id)
+	if err != nil {
+		return nil, false
+	}
+	return tx.metaStore.Get(core.LocalID(lid))
 }
 
 // KNNSearch performs a K-nearest neighbor search on the underlying index.

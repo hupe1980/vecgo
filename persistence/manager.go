@@ -372,7 +372,7 @@ func (pm *Manager) Close() error {
 //	})
 func AtomicSaveToDir(dir string, files map[string]func(io.Writer) error) error {
 	// Ensure directory exists
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0750); err != nil {
 		return fmt.Errorf("persistence: failed to create directory %s: %w", dir, err)
 	}
 
@@ -431,7 +431,7 @@ func AtomicSaveToDir(dir string, files map[string]func(io.Writer) error) error {
 	tempFiles = nil
 
 	// Best-effort: fsync directory
-	if d, err := os.Open(dir); err == nil {
+	if d, err := os.Open(dir); err == nil { //nolint:gosec // path is trusted
 		_ = d.Sync()
 		_ = d.Close()
 	}

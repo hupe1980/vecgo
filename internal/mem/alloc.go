@@ -23,7 +23,7 @@ func AllocAligned(size int) []byte {
 	buf := make([]byte, totalSize)
 
 	// Calculate the offset to the first aligned byte
-	ptr := unsafe.Pointer(&buf[0])
+	ptr := unsafe.Pointer(&buf[0]) //nolint:gosec // unsafe is required for memory alignment
 	addr := uintptr(ptr)
 	offset := (Alignment - (addr & (Alignment - 1))) & (Alignment - 1)
 
@@ -44,8 +44,8 @@ func AllocAlignedFloat32(size int) []float32 {
 	// Convert []byte to []float32
 	// This is safe because AllocAligned guarantees 64-byte alignment,
 	// which is also 4-byte aligned (required for float32).
-	ptr := unsafe.Pointer(&byteSlice[0])
-	return unsafe.Slice((*float32)(ptr), size)
+	ptr := unsafe.Pointer(&byteSlice[0])       //nolint:gosec // unsafe is required for memory alignment
+	return unsafe.Slice((*float32)(ptr), size) //nolint:gosec // unsafe is required for memory alignment
 }
 
 // AllocAlignedInt8 allocates an int8 slice of the given size with 64-byte alignment.
@@ -54,6 +54,6 @@ func AllocAlignedInt8(size int) []int8 {
 		return nil
 	}
 	byteSlice := AllocAligned(size)
-	ptr := unsafe.Pointer(&byteSlice[0])
-	return unsafe.Slice((*int8)(ptr), size)
+	ptr := unsafe.Pointer(&byteSlice[0])    //nolint:gosec // unsafe is required for memory alignment
+	return unsafe.Slice((*int8)(ptr), size) //nolint:gosec // unsafe is required for memory alignment
 }

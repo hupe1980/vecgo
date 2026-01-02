@@ -8,6 +8,7 @@ import (
 	"github.com/hupe1980/vecgo/codec"
 	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/index"
+	"github.com/hupe1980/vecgo/internal/conv"
 	"github.com/hupe1980/vecgo/metadata"
 	"github.com/hupe1980/vecgo/persistence"
 	"github.com/hupe1980/vecgo/wal"
@@ -89,7 +90,11 @@ func SaveToWriter[T any](w io.Writer, idx index.Index, dataStore Store[T], metad
 	var hdr [16]byte
 	copy(hdr[0:4], snapshotMagic[:])
 	binary.LittleEndian.PutUint16(hdr[4:6], snapshotFormatVersion)
-	binary.LittleEndian.PutUint16(hdr[8:10], uint16(len(codecName)))
+	nameLenU16, err := conv.IntToUint16(len(codecName))
+	if err != nil {
+		return err
+	}
+	binary.LittleEndian.PutUint16(hdr[8:10], nameLenU16)
 	binary.LittleEndian.PutUint16(hdr[10:12], 3)
 	if _, err := w.Write(hdr[:]); err != nil {
 		return err
@@ -120,20 +125,34 @@ func SaveToWriter[T any](w io.Writer, idx index.Index, dataStore Store[T], metad
 	if !ok {
 		return fmt.Errorf("snapshot: index type %T does not support binary persistence", idx)
 	}
-	idxOff := uint64(cw.n)
+	idxOff, err := conv.Int64ToUint64(cw.n)
+	if err != nil {
+		return err
+	}
 	checksumWriter := persistence.NewChecksumWriter(cw)
 	if _, err := bw.WriteTo(checksumWriter); err != nil {
 		return fmt.Errorf("failed to write index: %w", err)
 	}
-	idxLen := uint64(cw.n) - idxOff
+	cwN, err := conv.Int64ToUint64(cw.n)
+	if err != nil {
+		return err
+	}
+	idxLen := cwN - idxOff
 	idxChecksum := checksumWriter.Sum()
 
 	// Data store: Streamed entries with checksum.
-	storeOff := uint64(cw.n)
+	storeOff, err := conv.Int64ToUint64(cw.n)
+	if err != nil {
+		return err
+	}
 	storeChecksumWriter := persistence.NewChecksumWriter(cw)
 
 	// Write count
-	if err := binary.Write(storeChecksumWriter, binary.LittleEndian, uint64(dataStore.Len())); err != nil {
+	dsLen, err := conv.IntToUint64(dataStore.Len())
+	if err != nil {
+		return err
+	}
+	if err := binary.Write(storeChecksumWriter, binary.LittleEndian, dsLen); err != nil {
 		return err
 	}
 
@@ -148,7 +167,11 @@ func SaveToWriter[T any](w io.Writer, idx index.Index, dataStore Store[T], metad
 			return err
 		}
 		// Write Len
-		if err := binary.Write(storeChecksumWriter, binary.LittleEndian, uint32(len(dataBytes))); err != nil {
+		dbLen, err := conv.IntToUint32(len(dataBytes))
+		if err != nil {
+			return err
+		}
+		if err := binary.Write(storeChecksumWriter, binary.LittleEndian, dbLen); err != nil {
 			return err
 		}
 		// Write Bytes
@@ -156,15 +179,26 @@ func SaveToWriter[T any](w io.Writer, idx index.Index, dataStore Store[T], metad
 			return err
 		}
 	}
-	storeLen := uint64(cw.n) - storeOff
+	cwN, err = conv.Int64ToUint64(cw.n)
+	if err != nil {
+		return err
+	}
+	storeLen := cwN - storeOff
 	storeChecksum := storeChecksumWriter.Sum()
 
 	// Metadata store: Streamed entries with checksum.
-	metaOff := uint64(cw.n)
+	metaOff, err := conv.Int64ToUint64(cw.n)
+	if err != nil {
+		return err
+	}
 	metaChecksumWriter := persistence.NewChecksumWriter(cw)
 
 	// Write count
-	if err := binary.Write(metaChecksumWriter, binary.LittleEndian, uint64(metadataStore.Len())); err != nil {
+	msLen, err := conv.IntToUint64(metadataStore.Len())
+	if err != nil {
+		return err
+	}
+	if err := binary.Write(metaChecksumWriter, binary.LittleEndian, msLen); err != nil {
 		return err
 	}
 
@@ -179,7 +213,11 @@ func SaveToWriter[T any](w io.Writer, idx index.Index, dataStore Store[T], metad
 			return err
 		}
 		// Write Len
-		if err := binary.Write(metaChecksumWriter, binary.LittleEndian, uint32(len(metaBytes))); err != nil {
+		mbLen, err := conv.IntToUint32(len(metaBytes))
+		if err != nil {
+			return err
+		}
+		if err := binary.Write(metaChecksumWriter, binary.LittleEndian, mbLen); err != nil {
 			return err
 		}
 		// Write Bytes
@@ -187,11 +225,18 @@ func SaveToWriter[T any](w io.Writer, idx index.Index, dataStore Store[T], metad
 			return err
 		}
 	}
-	metaLen := uint64(cw.n) - metaOff
+	cwN, err = conv.Int64ToUint64(cw.n)
+	if err != nil {
+		return err
+	}
+	metaLen := cwN - metaOff
 	metaChecksum := metaChecksumWriter.Sum()
 
 	// Directory
-	dirOff := uint64(cw.n)
+	dirOff, err := conv.Int64ToUint64(cw.n)
+	if err != nil {
+		return err
+	}
 	if err := writeSnapshotDirectory(cw, []snapshotSectionEntry{
 		{Type: snapshotSectionIndex, Offset: idxOff, Len: idxLen, Checksum: idxChecksum},
 		{Type: snapshotSectionDataStore, Offset: storeOff, Len: storeLen, Checksum: storeChecksum},
@@ -199,7 +244,11 @@ func SaveToWriter[T any](w io.Writer, idx index.Index, dataStore Store[T], metad
 	}); err != nil {
 		return err
 	}
-	dirLen := uint64(cw.n) - dirOff
+	cwN, err = conv.Int64ToUint64(cw.n)
+	if err != nil {
+		return err
+	}
+	dirLen := cwN - dirOff
 
 	// Footer
 	return writeSnapshotFooter(cw, dirOff, dirLen)
@@ -254,13 +303,21 @@ func LoadFromReaderWithCodec[T any](r io.ReadSeeker, c codec.Codec) (*Snapshot[T
 	if !ok {
 		return nil, fmt.Errorf("snapshot missing index section")
 	}
-	if _, err := r.Seek(int64(idxEntry.Offset), io.SeekStart); err != nil {
+	idxOff, err := conv.Uint64ToInt64(idxEntry.Offset)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := r.Seek(idxOff, io.SeekStart); err != nil {
 		return nil, err
 	}
 
 	// Read index data and verify checksum
 	// Streamed load to avoid O(N) memory spike
-	idxReader := io.LimitReader(r, int64(idxEntry.Len))
+	idxLen, err := conv.Uint64ToInt64(idxEntry.Len)
+	if err != nil {
+		return nil, err
+	}
+	idxReader := io.LimitReader(r, idxLen)
 	idxChecksumReader := persistence.NewChecksumReader(idxReader)
 
 	// Load index from verified data
@@ -285,12 +342,20 @@ func LoadFromReaderWithCodec[T any](r io.ReadSeeker, c codec.Codec) (*Snapshot[T
 	if !ok {
 		return nil, fmt.Errorf("snapshot missing store section")
 	}
-	if _, err := r.Seek(int64(storeEntry.Offset), io.SeekStart); err != nil {
+	storeOff, err := conv.Uint64ToInt64(storeEntry.Offset)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := r.Seek(storeOff, io.SeekStart); err != nil {
 		return nil, err
 	}
 
 	// Streamed load for Data Store
-	storeReader := io.LimitReader(r, int64(storeEntry.Len))
+	storeLen, err := conv.Uint64ToInt64(storeEntry.Len)
+	if err != nil {
+		return nil, err
+	}
+	storeReader := io.LimitReader(r, storeLen)
 	storeChecksumReader := persistence.NewChecksumReader(storeReader)
 
 	var storeCount uint64
@@ -343,12 +408,20 @@ func LoadFromReaderWithCodec[T any](r io.ReadSeeker, c codec.Codec) (*Snapshot[T
 	if !ok {
 		return nil, fmt.Errorf("snapshot missing metadata section")
 	}
-	if _, err := r.Seek(int64(metaEntry.Offset), io.SeekStart); err != nil {
+	metaOff, err := conv.Uint64ToInt64(metaEntry.Offset)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := r.Seek(metaOff, io.SeekStart); err != nil {
 		return nil, err
 	}
 
 	// Streamed load for Metadata Store
-	metaReader := io.LimitReader(r, int64(metaEntry.Len))
+	metaLen, err := conv.Uint64ToInt64(metaEntry.Len)
+	if err != nil {
+		return nil, err
+	}
+	metaReader := io.LimitReader(r, metaLen)
 	metaChecksumReader := persistence.NewChecksumReader(metaReader)
 
 	var metaCount uint64
@@ -424,7 +497,11 @@ func writeSnapshotDirectory(w io.Writer, entries []snapshotSectionEntry) error {
 	var hdr [12]byte
 	copy(hdr[0:4], snapshotDirMagic[:])
 	binary.LittleEndian.PutUint16(hdr[4:6], snapshotFormatVersion)
-	binary.LittleEndian.PutUint32(hdr[8:12], uint32(len(entries)))
+	entriesLen, err := conv.IntToUint32(len(entries))
+	if err != nil {
+		return err
+	}
+	binary.LittleEndian.PutUint32(hdr[8:12], entriesLen)
 	if _, err := w.Write(hdr[:]); err != nil {
 		return err
 	}
@@ -527,13 +604,20 @@ func readSnapshotDirectoryFromSeeker(r io.ReadSeeker) (codecName string, section
 	if dirOffsetU > maxInt64u || dirLenU > maxInt64u {
 		return "", nil, fmt.Errorf("invalid directory offsets")
 	}
-	dataEndU := uint64(end - 24)
+	dataEndU, err := conv.Int64ToUint64(end - 24)
+	if err != nil {
+		return "", nil, err
+	}
 	if dirLenU < 12 || dirOffsetU > dataEndU || dirLenU > dataEndU-dirOffsetU {
 		return "", nil, fmt.Errorf("invalid directory range")
 	}
 
 	// Directory header
-	if _, err := r.Seek(int64(dirOffsetU), io.SeekStart); err != nil {
+	dirOffset, err := conv.Uint64ToInt64(dirOffsetU)
+	if err != nil {
+		return "", nil, err
+	}
+	if _, err := r.Seek(dirOffset, io.SeekStart); err != nil {
 		return "", nil, err
 	}
 	var dh [12]byte
@@ -568,7 +652,10 @@ func readSnapshotDirectoryFromSeeker(r io.ReadSeeker) (codecName string, section
 		}
 
 		// Sections must not point into the header (including codec name).
-		headerEndU := uint64(16 + nameLen)
+		headerEndU, err := conv.IntToUint64(16 + nameLen)
+		if err != nil {
+			return "", nil, err
+		}
 		if off < headerEndU {
 			return "", nil, fmt.Errorf("invalid snapshot section offset")
 		}

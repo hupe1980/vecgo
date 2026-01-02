@@ -5,6 +5,7 @@ import (
 
 	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/index"
+	"github.com/hupe1980/vecgo/internal/conv"
 )
 
 // Stats returns statistics about the HNSW graph.
@@ -57,11 +58,14 @@ func (h *HNSW) Stats() index.Stats {
 					levelStats[level]++
 				}
 
-				id := uint64(i)*nodeSegmentSize + uint64(j)
+				iU64, _ := conv.IntToUint64(i)
+				jU64, _ := conv.IntToUint64(j)
+				id := iU64*nodeSegmentSize + jU64
 
 				// Loop through each connection
 				for i2 := level; i2 >= 0; i2-- {
-					conns := h.getConnections(g, core.LocalID(id), i2)
+					idU32, _ := conv.Uint64ToUint32(id)
+					conns := h.getConnections(g, core.LocalID(idU32), i2)
 					count := len(conns)
 
 					if count > 0 {

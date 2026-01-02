@@ -75,14 +75,14 @@ func New(optFns ...func(o *Options)) (*WAL, error) {
 	}
 
 	// Ensure directory exists
-	if err := os.MkdirAll(opts.Path, 0755); err != nil {
+	if err := os.MkdirAll(opts.Path, 0750); err != nil {
 		return nil, fmt.Errorf("failed to create WAL directory: %w", err)
 	}
 
 	filePath := filepath.Join(opts.Path, "vecgo.wal")
 
 	// Open or create WAL file (we manage seek explicitly)
-	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_RDWR, 0644)
+	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_RDWR, 0600) //nolint:gosec // G304: Path is configurable
 	if err != nil {
 		return nil, fmt.Errorf("failed to open WAL file: %w", err)
 	}
@@ -605,7 +605,7 @@ func (w *WAL) truncate() error {
 	}
 
 	// Create new empty file
-	file, err := os.OpenFile(w.filePath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0644)
+	file, err := os.OpenFile(w.filePath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0600)
 	if err != nil {
 		return fmt.Errorf("failed to truncate WAL file: %w", err)
 	}

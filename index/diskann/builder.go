@@ -14,6 +14,7 @@ import (
 
 	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/index"
+	"github.com/hupe1980/vecgo/internal/conv"
 	"github.com/hupe1980/vecgo/persistence"
 	"github.com/hupe1980/vecgo/quantization"
 )
@@ -149,7 +150,7 @@ func NewBuilder(dim int, distType index.DistanceType, indexPath string, opts *Op
 	}
 
 	// Ensure directory exists
-	if err := os.MkdirAll(indexPath, 0755); err != nil {
+	if err := os.MkdirAll(indexPath, 0750); err != nil {
 		return nil, fmt.Errorf("diskann: create index directory: %w", err)
 	}
 
@@ -173,7 +174,11 @@ func (b *Builder) Add(vec []float32) (core.LocalID, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	id := core.LocalID(len(b.vectors))
+	lid, err := conv.IntToUint32(len(b.vectors))
+	if err != nil {
+		return 0, err
+	}
+	id := core.LocalID(lid)
 
 	// Copy vector
 	v := make([]float32, len(vec))
@@ -278,8 +283,10 @@ func (b *Builder) buildVamanaGraph(ctx context.Context) error {
 		// Add R/2 random edges initially
 		edges := make(map[uint32]struct{})
 		for len(edges) < R/2 && len(edges) < n-1 {
-			j := uint32(rng.Intn(n))
-			if j != uint32(i) {
+			jInt := rng.Intn(n)
+			j, _ := conv.IntToUint32(jInt)
+			iU32, _ := conv.IntToUint32(i)
+			if j != iU32 {
 				edges[j] = struct{}{}
 			}
 		}
@@ -299,15 +306,16 @@ func (b *Builder) buildVamanaGraph(ctx context.Context) error {
 		}
 
 		// Greedy search from entry point to find neighbors
-		neighbors := b.greedySearch(uint32(i), L)
+		iU32, _ := conv.IntToUint32(i)
+		neighbors := b.greedySearch(iU32, L)
 
 		// Robust prune to select R neighbors
-		pruned := b.robustPrune(uint32(i), neighbors, R, alpha)
+		pruned := b.robustPrune(iU32, neighbors, R, alpha)
 		b.graph[i] = pruned
 
 		// Add reverse edges
 		for _, neighbor := range pruned {
-			b.addEdge(neighbor, uint32(i), R, alpha)
+			b.addEdge(neighbor, iU32, R, alpha)
 		}
 	}
 
@@ -339,7 +347,7 @@ func (b *Builder) selectEntryPoint() uint32 {
 		dist := b.distFunc(centroid, vec)
 		if dist < minDist {
 			minDist = dist
-			entry = uint32(i)
+			entry, _ = conv.IntToUint32(i)
 		}
 	}
 
@@ -502,18 +510,25 @@ func (b *Builder) writeMetaToWriter(w io.Writer) error {
 	if b.opts.EnableBinaryPrefilter {
 		flags |= FlagBQEnabled
 	}
+	dim, _ := conv.IntToUint32(b.dim)
+	distType, _ := conv.IntToUint32(int(b.distType))
+	r, _ := conv.IntToUint32(b.opts.R)
+	l, _ := conv.IntToUint32(b.opts.L)
+	pqSub, _ := conv.IntToUint32(b.opts.PQSubvectors)
+	pqCen, _ := conv.IntToUint32(b.opts.PQCentroids)
+
 	header := FileHeader{
 		Magic:        FormatMagic,
 		Version:      FormatVersion,
 		Flags:        flags,
-		Dimension:    uint32(b.dim),
+		Dimension:    dim,
 		Count:        uint64(len(b.vectors)),
-		DistanceType: uint32(b.distType),
-		R:            uint32(b.opts.R),
-		L:            uint32(b.opts.L),
+		DistanceType: distType,
+		R:            r,
+		L:            l,
 		Alpha:        uint32(b.opts.Alpha * 1000),
-		PQSubvectors: uint32(b.opts.PQSubvectors),
-		PQCentroids:  uint32(b.opts.PQCentroids),
+		PQSubvectors: pqSub,
+		PQCentroids:  pqCen,
 	}
 
 	if _, err := header.WriteTo(w); err != nil {
@@ -555,7 +570,8 @@ func (b *Builder) writePQCodebooksToWriter(w io.Writer) error {
 func (b *Builder) writeGraphToWriter(w io.Writer) error {
 	for _, neighbors := range b.graph {
 		// Write degree
-		if err := writeUint32ToWriter(w, uint32(len(neighbors))); err != nil {
+		nLen, _ := conv.IntToUint32(len(neighbors))
+		if err := writeUint32ToWriter(w, nLen); err != nil {
 			return err
 		}
 		// Write neighbors

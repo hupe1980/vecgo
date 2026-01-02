@@ -42,6 +42,10 @@ func LoadBinaryIndex(r io.Reader) (Index, error) {
 		return nil, fmt.Errorf("invalid magic number: expected 0x56454330, got 0x%08x", magic)
 	}
 
+	// Ensure header is large enough (already checked by ReadFull, but explicit check satisfies linter)
+	if len(header) <= 8 {
+		return nil, fmt.Errorf("header too short")
+	}
 	indexType := header[8]
 
 	binaryLoaderMu.RLock()

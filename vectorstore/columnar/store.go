@@ -2,6 +2,7 @@ package columnar
 
 import (
 	"encoding/binary"
+	"fmt"
 	"hash/crc32"
 	"io"
 	"sync"
@@ -9,6 +10,7 @@ import (
 	"unsafe"
 
 	"github.com/hupe1980/vecgo/core"
+	"github.com/hupe1980/vecgo/internal/conv"
 	"github.com/hupe1980/vecgo/internal/mem"
 	"github.com/hupe1980/vecgo/vectorstore"
 )
@@ -50,8 +52,13 @@ func New(dim int) *Store {
 	data := mem.AllocAlignedFloat32(initialCap)
 	data = data[:0]
 
+	dimU32, err := conv.IntToUint32(dim)
+	if err != nil {
+		// Should not happen as dim > 0 checked above
+		panic(err)
+	}
 	s := &Store{
-		dim:      uint32(dim),
+		dim:      dimU32,
 		versions: make([]uint64, 0, 1024),
 	}
 	s.data.Store(&data)
@@ -116,7 +123,11 @@ func (s *Store) GetVector(id core.LocalID) ([]float32, bool) {
 	}
 
 	dim := int(s.dim)
-	start := int(id) * dim
+	idInt, err := conv.Uint32ToInt(uint32(id))
+	if err != nil {
+		return nil, false
+	}
+	start := idInt * dim
 	end := start + dim
 
 	if end > len(*data) {
@@ -128,9 +139,13 @@ func (s *Store) GetVector(id core.LocalID) ([]float32, bool) {
 	deletedPtr := s.deleted.Load()
 	if deletedPtr != nil {
 		bitmapIdx := id / 64
-		if int(bitmapIdx) < len(*deletedPtr) {
+		bitmapIdxInt, err := conv.Uint32ToInt(uint32(bitmapIdx))
+		if err != nil {
+			return nil, false
+		}
+		if bitmapIdxInt < len(*deletedPtr) {
 			bitIdx := id % 64
-			if atomic.LoadUint64(&(*deletedPtr)[bitmapIdx])&(1<<bitIdx) != 0 {
+			if atomic.LoadUint64(&(*deletedPtr)[bitmapIdxInt])&(1<<bitIdx) != 0 {
 				return nil, false
 			}
 		}
@@ -148,7 +163,11 @@ func (s *Store) GetVectorUnsafe(id core.LocalID) ([]float32, bool) {
 	}
 
 	dim := int(s.dim)
-	start := int(id) * dim
+	idInt, err := conv.Uint32ToInt(uint32(id))
+	if err != nil {
+		return nil, false
+	}
+	start := idInt * dim
 	end := start + dim
 
 	if end > len(*data) {
@@ -175,7 +194,11 @@ func (s *Store) SetVector(id core.LocalID, v []float32) error {
 	// IMPORTANT: do not publish the extended slice (via s.data.Store) until
 	// after the new vector data has been fully written. Otherwise, concurrent
 	// readers can observe partially-written vectors.
-	requiredLen := int(id+1) * dim
+	idInt, err := conv.Uint32ToInt(uint32(id))
+	if err != nil {
+		return err
+	}
+	requiredLen := (idInt + 1) * dim
 	currentData := *data
 
 	// Copy-on-write for growth beyond current length.
@@ -184,7 +207,7 @@ func (s *Store) SetVector(id core.LocalID, v []float32) error {
 			// Grow within capacity (same backing array). Safe as long as we only
 			// write beyond the previously-published length, then publish length.
 			grown := currentData[:requiredLen]
-			start := int(id) * dim
+			start := idInt * dim
 			copy(grown[start:start+dim], v)
 			// Publish new length after data write.
 			published := grown
@@ -195,13 +218,13 @@ func (s *Store) SetVector(id core.LocalID, v []float32) error {
 			newData := mem.AllocAlignedFloat32(newCap)
 			newData = newData[:requiredLen]
 			copy(newData, currentData)
-			start := int(id) * dim
+			start := idInt * dim
 			copy(newData[start:start+dim], v)
 			s.data.Store(&newData)
 		}
 
 		// Extend deletion bitmap if needed
-		requiredBitmapLen := int(id+63) / 64
+		requiredBitmapLen := (idInt + 63) / 64
 		currentDeleted := *s.deleted.Load()
 		if len(currentDeleted) < requiredBitmapLen+1 {
 			newDeleted := make([]uint64, requiredBitmapLen+1)
@@ -218,7 +241,7 @@ func (s *Store) SetVector(id core.LocalID, v []float32) error {
 		// Writers are externally synchronized, but concurrent readers may exist.
 		// This is safe for correctness if callers do not rely on atomic point updates;
 		// for strict snapshot semantics, updates must use copy-on-write at a higher level.
-		start := int(id) * dim
+		start := idInt * dim
 		copy(currentData[start:start+dim], v)
 	}
 
@@ -243,7 +266,11 @@ func (s *Store) Append(v []float32) (core.LocalID, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	id := core.LocalID(s.count)
+	idU32, err := conv.Uint64ToUint32(s.count)
+	if err != nil {
+		return 0, err
+	}
+	id := core.LocalID(idU32)
 	dim := int(s.dim)
 
 	data := s.data.Load()
@@ -251,18 +278,22 @@ func (s *Store) Append(v []float32) (core.LocalID, error) {
 
 	// Extend data slice.
 	// IMPORTANT: publish updated slice only after writing the new vector.
-	requiredLen := int(id+1) * dim
+	idInt, err := conv.Uint32ToInt(uint32(id))
+	if err != nil {
+		return 0, err
+	}
+	requiredLen := (idInt + 1) * dim
 	if requiredLen > cap(currentData) {
 		newCap := max(requiredLen*2, len(currentData)*2)
 		newData := mem.AllocAlignedFloat32(newCap)
 		newData = newData[:requiredLen]
 		copy(newData, currentData)
-		start := int(id) * dim
+		start := idInt * dim
 		copy(newData[start:start+dim], v)
 		s.data.Store(&newData)
 	} else {
 		grown := currentData[:requiredLen]
-		start := int(id) * dim
+		start := idInt * dim
 		copy(grown[start:start+dim], v)
 		published := grown
 		s.data.Store(&published)
@@ -361,7 +392,11 @@ func (s *Store) Compact() map[core.LocalID]core.LocalID {
 
 	var newID core.LocalID
 	for oldID := uint64(0); oldID < s.count; oldID++ {
-		localOldID := core.LocalID(oldID)
+		oldIDU32, err := conv.Uint64ToUint32(oldID)
+		if err != nil {
+			panic(fmt.Errorf("columnar: compact failed: %w", err))
+		}
+		localOldID := core.LocalID(oldIDU32)
 		if s.isDeletedLocked(localOldID) {
 			continue
 		}
@@ -396,7 +431,11 @@ func (s *Store) Iterate(fn func(id core.LocalID, vec []float32) bool) {
 	dim := int(s.dim)
 
 	for id := uint64(0); id < count; id++ {
-		localID := core.LocalID(id)
+		idU32, err := conv.Uint64ToUint32(id)
+		if err != nil {
+			break
+		}
+		localID := core.LocalID(idU32)
 		s.mu.RLock()
 		deleted := s.isDeletedLocked(localID)
 		s.mu.RUnlock()
@@ -455,7 +494,7 @@ func (s *Store) WriteTo(w io.Writer) (int64, error) {
 	// Write vector data as raw bytes
 	vecData := *data
 	if len(vecData) > 0 {
-		byteSlice := unsafe.Slice((*byte)(unsafe.Pointer(&vecData[0])), len(vecData)*4)
+		byteSlice := unsafe.Slice((*byte)(unsafe.Pointer(&vecData[0])), len(vecData)*4) //nolint:gosec // unsafe is required for performance
 		n, err := mw.Write(byteSlice)
 		written += int64(n)
 		if err != nil {
@@ -525,7 +564,7 @@ func (s *Store) ReadFrom(r io.Reader) (int64, error) {
 	vecData := mem.AllocAlignedFloat32(vecSize / 4)
 
 	// Create a byte slice view of the aligned memory
-	vecBytes := unsafe.Slice((*byte)(unsafe.Pointer(&vecData[0])), vecSize)
+	vecBytes := unsafe.Slice((*byte)(unsafe.Pointer(&vecData[0])), vecSize) //nolint:gosec // unsafe is required for performance
 
 	n2, err := io.ReadFull(tr, vecBytes)
 	read += int64(n2)

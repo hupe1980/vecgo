@@ -241,7 +241,7 @@ func (g *Generator) parseCFunctions() (map[string]*Function, error) {
 }
 
 func (g *Generator) parseAssembly(asmPath string) (map[string]*Function, error) {
-	file, err := os.Open(asmPath)
+	file, err := os.Open(asmPath) //nolint:gosec // generator tool
 	if err != nil {
 		return nil, err
 	}
@@ -457,7 +457,7 @@ func (g *Generator) generateGoAsm(functions map[string]*Function) error {
 		buf.WriteString("\n")
 	}
 
-	return os.WriteFile(out, buf.Bytes(), 0644)
+	return os.WriteFile(out, buf.Bytes(), 0600)
 }
 
 // ------------------------------------------------------------

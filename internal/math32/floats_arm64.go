@@ -36,7 +36,7 @@ func dotNEON(a, b []float32) float32 {
 	var ret float32
 
 	if len(a) > 0 {
-		_dot_product_neon(unsafe.Pointer(&a[0]), unsafe.Pointer(&b[0]), int64(len(a)), unsafe.Pointer(&ret))
+		_dot_product_neon(unsafe.Pointer(&a[0]), unsafe.Pointer(&b[0]), int64(len(a)), unsafe.Pointer(&ret)) //nolint:gosec // unsafe is required for SIMD
 	}
 
 	return ret
@@ -46,7 +46,7 @@ func squaredL2NEON(a, b []float32) float32 {
 	var ret float32
 
 	if len(a) > 0 {
-		_squared_l2_neon(unsafe.Pointer(&a[0]), unsafe.Pointer(&b[0]), int64(len(a)), unsafe.Pointer(&ret))
+		_squared_l2_neon(unsafe.Pointer(&a[0]), unsafe.Pointer(&b[0]), int64(len(a)), unsafe.Pointer(&ret)) //nolint:gosec // unsafe is required for SIMD
 	}
 
 	return ret
@@ -57,13 +57,13 @@ func scaleNEON(a []float32, scalar float32) {
 		return
 	}
 	s := scalar
-	_scale_neon(unsafe.Pointer(&a[0]), int64(len(a)), unsafe.Pointer(&s))
+	_scale_neon(unsafe.Pointer(&a[0]), int64(len(a)), unsafe.Pointer(&s)) //nolint:gosec // unsafe is required for SIMD
 }
 
 func pqAdcNEON(table []float32, codes []byte, m int) float32 {
 	var ret float32
 	if m > 0 {
-		_pq_adc_lookup_neon(unsafe.Pointer(&table[0]), unsafe.Pointer(&codes[0]), int64(m), unsafe.Pointer(&ret))
+		_pq_adc_lookup_neon(unsafe.Pointer(&table[0]), unsafe.Pointer(&codes[0]), int64(m), unsafe.Pointer(&ret)) //nolint:gosec // unsafe is required for SIMD
 	}
 	return ret
 }

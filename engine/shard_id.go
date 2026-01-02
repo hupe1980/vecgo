@@ -30,10 +30,10 @@ func NewGlobalID(shardIdx uint32, localID core.LocalID) GlobalID {
 
 // ShardID extracts the shard index (high 32 bits).
 func (g GlobalID) ShardID() uint32 {
-	return uint32(g >> LocalBits)
+	return uint32(g >> LocalBits) //nolint:gosec // bitwise shift ensures safety
 }
 
 // LocalID extracts the local ID within the shard (low 32 bits).
 func (g GlobalID) LocalID() core.LocalID {
-	return core.LocalID(g) // Implicit masking by casting to uint32
+	return core.LocalID(g) //nolint:gosec // implicit masking by casting to uint32
 }

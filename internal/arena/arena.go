@@ -31,6 +31,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"unsafe"
+
+	"github.com/hupe1980/vecgo/internal/conv"
 )
 
 var (
@@ -107,13 +109,16 @@ func New(chunkSize int) (*Arena, error) {
 	}
 
 	// Round up to next power of 2 for efficient bitwise operations
-	chunkBits := bits.Len(uint(chunkSize - 1))
+	chunkBits := bits.Len(uint(chunkSize - 1)) //nolint:gosec // chunkSize > 0
 	// If chunkSize is already a power of 2, bits.Len(chunkSize-1) is correct.
 	// Example: 1024 (10000000000) -> 1023 (1111111111) -> Len=10. 1<<10 = 1024. Correct.
 	// Example: 1025 -> 1024 -> Len=11. 1<<11 = 2048. Correct.
 
 	chunkSize = 1 << chunkBits
-	chunkMask := uint64(chunkSize - 1)
+	chunkMask, err := conv.IntToUint64(chunkSize - 1)
+	if err != nil {
+		return nil, err
+	}
 
 	a := &Arena{
 		chunkSize: chunkSize,
@@ -182,7 +187,8 @@ func (a *Arena) allocateChunk() error {
 
 	// Update stats
 	a.stats.ChunksAllocated.Add(1)
-	a.stats.BytesReserved.Add(uint64(a.chunkSize))
+	chunkSizeU64, _ := conv.IntToUint64(a.chunkSize)
+	a.stats.BytesReserved.Add(chunkSizeU64)
 	a.stats.ActiveChunks.Add(1)
 
 	// Make visible to Alloc
@@ -218,17 +224,23 @@ func (a *Arena) alloc(size int, align int) (uint64, []byte, error) {
 
 		if newOffset <= int64(len(curr.data)) {
 			if curr.offset.CompareAndSwap(oldOffset, newOffset) {
-				a.stats.BytesUsed.Add(uint64(size))
-				a.stats.BytesWasted.Add(uint64(alignedSize - size))
+				sizeU64, _ := conv.IntToUint64(size)
+				a.stats.BytesUsed.Add(sizeU64)
+				wastedU64, _ := conv.IntToUint64(alignedSize - size)
+				a.stats.BytesWasted.Add(wastedU64)
 				a.stats.TotalAllocs.Add(1)
 
 				// Calculate global offset
 				// GlobalOffset = (ChunkIndex << ChunkBits) | ChunkOffset
 				// Ensure ChunkOffset fits in ChunkMask
-				if uint64(oldOffset) > a.chunkMask {
+				oldOffsetU64, err := conv.Int64ToUint64(oldOffset)
+				if err != nil {
+					return 0, nil, err
+				}
+				if oldOffsetU64 > a.chunkMask {
 					return 0, nil, fmt.Errorf("arena: offset exceeds chunk mask")
 				}
-				globalOffset := (uint64(curr.index) << a.chunkBits) | uint64(oldOffset)
+				globalOffset := (uint64(curr.index) << a.chunkBits) | oldOffsetU64
 				return globalOffset, curr.data[oldOffset:newOffset:newOffset], nil
 			}
 			continue
@@ -290,7 +302,7 @@ func (a *Arena) Get(offset uint64) unsafe.Pointer {
 
 	// In a correct program, c should never be nil if offset is valid.
 	// However, if offset is garbage, this might panic or return garbage.
-	return unsafe.Add(unsafe.Pointer(&c.data[0]), chunkOffset)
+	return unsafe.Add(unsafe.Pointer(&c.data[0]), chunkOffset) //nolint:gosec // unsafe is required for arena implementation
 }
 
 // AllocPointer allocates memory for a struct of the given size and alignment.
@@ -302,7 +314,7 @@ func (a *Arena) AllocPointer(size, align int) (unsafe.Pointer, error) {
 	if err != nil {
 		return nil, err
 	}
-	return unsafe.Pointer(&bytes[0]), nil
+	return unsafe.Pointer(&bytes[0]), nil //nolint:gosec // unsafe is required for arena implementation
 }
 
 // AllocBytes allocates a byte slice of the given size.
@@ -323,7 +335,7 @@ func (a *Arena) AllocUint32Slice(capacity int) ([]uint32, error) {
 		return nil, err
 	}
 
-	return unsafe.Slice((*uint32)(unsafe.Pointer(&bytes[0])), capacity)[:0:capacity], nil
+	return unsafe.Slice((*uint32)(unsafe.Pointer(&bytes[0])), capacity)[:0:capacity], nil //nolint:gosec // unsafe is required for arena implementation
 }
 
 // AllocFloat32Slice allocates a float32 slice of the given capacity.
@@ -338,7 +350,7 @@ func (a *Arena) AllocFloat32Slice(capacity int) ([]float32, error) {
 		return nil, err
 	}
 
-	return unsafe.Slice((*float32)(unsafe.Pointer(&bytes[0])), capacity)[:0:capacity], nil
+	return unsafe.Slice((*float32)(unsafe.Pointer(&bytes[0])), capacity)[:0:capacity], nil //nolint:gosec // unsafe is required for arena implementation
 }
 
 // Stats returns the current arena statistics.
@@ -376,7 +388,8 @@ func (a *Arena) Free() {
 
 	// Clear chunk references to enable GC
 	count := a.chunkCount.Load()
-	for i := 0; i < int(count); i++ {
+	countInt, _ := conv.Uint32ToInt(count) // Safe: count <= MaxChunks (65536)
+	for i := 0; i < countInt; i++ {
 		a.chunks[i].Store(nil)
 	}
 	a.chunkCount.Store(0)
@@ -416,7 +429,8 @@ func (a *Arena) Reset() {
 		firstChunk.offset.Store(0)
 
 		// Free extra chunks (keep first for reuse)
-		for i := 1; i < int(count); i++ {
+		countInt, _ := conv.Uint32ToInt(count) // Safe: count <= MaxChunks (65536)
+		for i := 1; i < countInt; i++ {
 			a.chunks[i].Store(nil)
 		}
 		a.chunkCount.Store(1)
@@ -424,7 +438,8 @@ func (a *Arena) Reset() {
 
 		// Update stats - only first chunk remains
 		a.stats.ActiveChunks.Store(1)
-		a.stats.BytesReserved.Store(uint64(a.chunkSize))
+		chunkSizeU64, _ := conv.IntToUint64(a.chunkSize)
+		a.stats.BytesReserved.Store(chunkSizeU64)
 	}
 
 	// Clear usage stats (historical counts like ChunksAllocated/TotalAllocs unchanged)

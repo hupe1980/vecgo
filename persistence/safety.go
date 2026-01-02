@@ -45,7 +45,7 @@ func validatePlatform() error {
 // isLittleEndian checks if the system is little-endian
 func isLittleEndian() bool {
 	var test uint16 = 0x0001
-	firstByte := *(*byte)(unsafe.Pointer(&test))
+	firstByte := *(*byte)(unsafe.Pointer(&test)) //nolint:gosec // unsafe is required for system checks
 	return firstByte == 1
 }
 
@@ -55,7 +55,7 @@ func validateFloat32SliceAlignment(vec []float32) error {
 		return nil
 	}
 
-	ptr := uintptr(unsafe.Pointer(&vec[0]))
+	ptr := uintptr(unsafe.Pointer(&vec[0])) //nolint:gosec // unsafe is required for system checks
 	if ptr%4 != 0 {
 		return fmt.Errorf("%w: float32 slice at address 0x%x", ErrUnalignedAccess, ptr)
 	}
@@ -69,7 +69,7 @@ func validateUint32SliceAlignment(slice []uint32) error {
 		return nil
 	}
 
-	ptr := uintptr(unsafe.Pointer(&slice[0]))
+	ptr := uintptr(unsafe.Pointer(&slice[0])) //nolint:gosec // unsafe is required for system checks
 	if ptr%4 != 0 {
 		return fmt.Errorf("%w: uint32 slice at address 0x%x", ErrUnalignedAccess, ptr)
 	}
@@ -83,7 +83,7 @@ func validateUint64SliceAlignment(slice []uint64) error {
 		return nil
 	}
 
-	ptr := uintptr(unsafe.Pointer(&slice[0]))
+	ptr := uintptr(unsafe.Pointer(&slice[0])) //nolint:gosec // unsafe is required for system checks
 	if ptr%8 != 0 {
 		return fmt.Errorf("%w: uint64 slice at address 0x%x", ErrUnalignedAccess, ptr)
 	}

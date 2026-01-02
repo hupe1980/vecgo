@@ -7,6 +7,7 @@ import (
 	"github.com/hupe1980/vecgo/codec"
 	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/index"
+	"github.com/hupe1980/vecgo/internal/conv"
 	"github.com/hupe1980/vecgo/metadata"
 	"github.com/hupe1980/vecgo/persistence"
 )
@@ -227,12 +228,21 @@ func readSnapshotDirectoryFromBytes(data []byte) (codecName string, sections map
 	}
 	dirOffsetU := binary.LittleEndian.Uint64(data[footerOff+8 : footerOff+16])
 	dirLenU := binary.LittleEndian.Uint64(data[footerOff+16 : footerOff+24])
-	footerOffU := uint64(footerOff)
+	footerOffU, err := conv.IntToUint64(footerOff)
+	if err != nil {
+		return "", nil, err
+	}
 	if dirLenU < 12 || dirOffsetU > footerOffU || dirLenU > footerOffU-dirOffsetU {
 		return "", nil, fmt.Errorf("invalid directory range")
 	}
-	dirOffset := int(dirOffsetU)
-	dirLen := int(dirLenU)
+	dirOffset, err := conv.Uint64ToInt(dirOffsetU)
+	if err != nil {
+		return "", nil, err
+	}
+	dirLen, err := conv.Uint64ToInt(dirLenU)
+	if err != nil {
+		return "", nil, err
+	}
 
 	// Directory
 	if data[dirOffset] != snapshotDirMagic[0] || data[dirOffset+1] != snapshotDirMagic[1] || data[dirOffset+2] != snapshotDirMagic[2] || data[dirOffset+3] != snapshotDirMagic[3] {
@@ -264,7 +274,11 @@ func readSnapshotDirectoryFromBytes(data []byte) (codecName string, sections map
 			return "", nil, fmt.Errorf("invalid snapshot section range")
 		}
 		// Sections must not point into the header (including codec name).
-		if o < uint64(off) {
+		offU, err := conv.IntToUint64(off)
+		if err != nil {
+			return "", nil, err
+		}
+		if o < offU {
 			return "", nil, fmt.Errorf("invalid snapshot section offset")
 		}
 		sections[typ] = snapshotSectionEntry{Type: typ, Offset: o, Len: ln, Checksum: checksum}
