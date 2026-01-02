@@ -27,7 +27,8 @@ func MergeSearchResults(a, b []SearchResult, k int) []SearchResult {
 	i, j := 0, 0
 
 	for len(result) < k && (i < len(a) || j < len(b)) {
-		if i < len(a) && j < len(b) {
+		switch {
+		case i < len(a) && j < len(b):
 			if a[i].Distance < b[j].Distance {
 				result = append(result, a[i])
 				i++
@@ -35,10 +36,10 @@ func MergeSearchResults(a, b []SearchResult, k int) []SearchResult {
 				result = append(result, b[j])
 				j++
 			}
-		} else if i < len(a) {
+		case i < len(a):
 			result = append(result, a[i])
 			i++
-		} else {
+		default:
 			result = append(result, b[j])
 			j++
 		}
@@ -136,7 +137,8 @@ func MergeNSearchResultsInto(dst *[]SearchResult, k int, lists ...[]SearchResult
 func mergeSearchResultsInto(dst *[]SearchResult, a, b []SearchResult, k int) {
 	i, j := 0, 0
 	for len(*dst) < k && (i < len(a) || j < len(b)) {
-		if i < len(a) && j < len(b) {
+		switch {
+		case i < len(a) && j < len(b):
 			if a[i].Distance < b[j].Distance {
 				*dst = append(*dst, a[i])
 				i++
@@ -144,10 +146,10 @@ func mergeSearchResultsInto(dst *[]SearchResult, a, b []SearchResult, k int) {
 				*dst = append(*dst, b[j])
 				j++
 			}
-		} else if i < len(a) {
+		case i < len(a):
 			*dst = append(*dst, a[i])
 			i++
-		} else {
+		default:
 			*dst = append(*dst, b[j])
 			j++
 		}
@@ -178,7 +180,7 @@ func (h *mergeHeap) pop() {
 	(*h)[0] = (*h)[n]
 	*h = (*h)[:n]
 	if n > 0 {
-		(*h).down(0, n)
+		h.down(0, n)
 	}
 }
 

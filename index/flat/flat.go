@@ -590,31 +590,13 @@ func (f *Flat) SearchWithContext(ctx context.Context, s *searcher.Searcher, q []
 		return nil, err
 	}
 
-	maxID := f.maxID.Load()
-	currentDim := int(f.dimension.Load())
-
-	if k <= 0 {
-		return nil, index.ErrInvalidK
-	}
-	if maxID == 0 {
+	if f.maxID.Load() == 0 {
 		return nil, nil
 	}
-	if currentDim > 0 && len(q) != currentDim {
-		return nil, &index.ErrDimensionMismatch{Expected: currentDim, Actual: len(q)}
-	}
 
-	// Normalize query if needed
-	query := q
-	if f.opts.NormalizeVectors {
-		// Use Searcher scratch for normalization
-		if len(s.ScratchVec) < len(q) {
-			s.ScratchVec = make([]float32, len(q))
-		}
-		copy(s.ScratchVec, q)
-		if !distance.NormalizeL2InPlace(s.ScratchVec) {
-			return nil, fmt.Errorf("flat: cannot normalize zero query")
-		}
-		query = s.ScratchVec
+	query, err := f.prepareQuery(s, q, k)
+	if err != nil {
+		return nil, err
 	}
 
 	// Setup Heap
@@ -627,6 +609,7 @@ func (f *Flat) SearchWithContext(ctx context.Context, s *searcher.Searcher, q []
 	}
 
 	pq := f.pq.Load()
+	maxID := f.maxID.Load()
 
 	// Iterate
 	for id := range maxID {
@@ -637,42 +620,70 @@ func (f *Flat) SearchWithContext(ctx context.Context, s *searcher.Searcher, q []
 			continue
 		}
 
-		var nodeDist float32
-		var hasCode bool
-
-		if f.pqCodes != nil {
-			code, ok := f.pqCodes.Get(id)
-			if ok && code != nil {
-				nodeDist = pq.ComputeAsymmetricDistance(query, code)
-				hasCode = true
-			}
+		dist, ok := f.computeDistance(core.LocalID(id), query, pq)
+		if !ok {
+			continue
 		}
 
-		if !hasCode {
-			if f.vectors == nil {
-				continue
-			}
-			vec, ok := f.vectors.GetVector(core.LocalID(id))
-			if !ok {
-				continue
-			}
-			nodeDist = f.distanceFunc(query, vec)
-		}
-
-		s.ScratchCandidates.PushItemBounded(searcher.PriorityQueueItem{Node: core.LocalID(id), Distance: nodeDist}, k)
+		s.ScratchCandidates.PushItemBounded(searcher.PriorityQueueItem{Node: core.LocalID(id), Distance: dist}, k)
 	}
 
+	return f.extractResults(s.ScratchCandidates), nil
+}
+
+func (f *Flat) prepareQuery(s *searcher.Searcher, q []float32, k int) ([]float32, error) {
+	if k <= 0 {
+		return nil, index.ErrInvalidK
+	}
+	currentDim := int(f.dimension.Load())
+	if currentDim > 0 && len(q) != currentDim {
+		return nil, &index.ErrDimensionMismatch{Expected: currentDim, Actual: len(q)}
+	}
+
+	// Normalize query if needed
+	if f.opts.NormalizeVectors {
+		// Use Searcher scratch for normalization
+		if len(s.ScratchVec) < len(q) {
+			s.ScratchVec = make([]float32, len(q))
+		}
+		copy(s.ScratchVec, q)
+		if !distance.NormalizeL2InPlace(s.ScratchVec) {
+			return nil, fmt.Errorf("flat: cannot normalize zero query")
+		}
+		return s.ScratchVec, nil
+	}
+	return q, nil
+}
+
+func (f *Flat) computeDistance(id core.LocalID, query []float32, pq *quantization.ProductQuantizer) (float32, bool) {
+	if f.pqCodes != nil {
+		code, ok := f.pqCodes.Get(uint32(id))
+		if ok && code != nil {
+			return pq.ComputeAsymmetricDistance(query, code), true
+		}
+	}
+
+	if f.vectors == nil {
+		return 0, false
+	}
+	vec, ok := f.vectors.GetVector(id)
+	if !ok {
+		return 0, false
+	}
+	return f.distanceFunc(query, vec), true
+}
+
+func (f *Flat) extractResults(candidates *searcher.PriorityQueue) []index.SearchResult {
 	// Extract results
-	res := make([]index.SearchResult, 0, s.ScratchCandidates.Len())
-	for s.ScratchCandidates.Len() > 0 {
-		item, _ := s.ScratchCandidates.PopItem()
+	res := make([]index.SearchResult, 0, candidates.Len())
+	for candidates.Len() > 0 {
+		item, _ := candidates.PopItem()
 		res = append(res, index.SearchResult{ID: uint32(item.Node), Distance: item.Distance})
 	}
 
 	// Reverse (MaxHeap pops largest first)
 	slices.Reverse(res)
-
-	return res, nil
+	return res
 }
 
 // KNNSearch performs a K-nearest neighbor search in the flat index.
@@ -758,38 +769,13 @@ func (f *Flat) BruteSearchWithBuffer(ctx context.Context, query []float32, k int
 		return err
 	}
 
-	maxID := f.maxID.Load()
-	currentDim := int(f.dimension.Load())
-
-	if k <= 0 {
-		return index.ErrInvalidK
-	}
-	if maxID == 0 {
+	if f.maxID.Load() == 0 {
 		return nil
 	}
-	if currentDim > 0 && len(query) != currentDim {
-		return &index.ErrDimensionMismatch{Expected: currentDim, Actual: len(query)}
-	}
 
-	q := query
-	if f.opts.NormalizeVectors {
-		norm, ok := distance.NormalizeL2Copy(query)
-		if !ok {
-			return fmt.Errorf("flat: cannot normalize zero query")
-		}
-		q = norm
-	}
-
-	actualK := k
-	actualKU32, err := conv.IntToUint32(actualK)
+	q, actualK, err := f.prepareBruteSearch(query, k)
 	if err != nil {
 		return err
-	}
-	if actualKU32 > maxID {
-		actualK, err = conv.Uint32ToInt(maxID)
-		if err != nil {
-			return err
-		}
 	}
 
 	topCandidates := searcher.NewPriorityQueue(true)
@@ -801,92 +787,124 @@ func (f *Flat) BruteSearchWithBuffer(ctx context.Context, query []float32, k int
 	// For non-PQ mode, gather all vectors and compute distances in batch
 	// This improves cache locality and SIMD vectorization
 	if pq == nil {
-		// Gather all valid node IDs and vectors
-		batchIDs := make([]core.LocalID, 0, maxID)
-		batchVectors := make([][]float32, 0, maxID)
-
-		for id := range maxID {
-			if f.deleted.Test(id) {
-				continue
-			}
-			if filter != nil && !filter(core.LocalID(id)) {
-				continue
-			}
-
-			if f.vectors == nil {
-				continue
-			}
-
-			v, ok := f.vectors.GetVector(core.LocalID(id))
-			if !ok {
-				continue
-			}
-
-			batchIDs = append(batchIDs, core.LocalID(id))
-			batchVectors = append(batchVectors, v)
-		}
-
-		// Compute all distances using single-pair SIMD
-		if len(batchIDs) > 0 {
-			batchDistances := make([]float32, len(batchIDs))
-
-			// Use appropriate function based on distance type
-			if f.opts.DistanceType == index.DistanceTypeDotProduct {
-				for i, vec := range batchVectors {
-					batchDistances[i] = -distance.Dot(q, vec)
-				}
-			} else {
-				// SquaredL2 or Cosine (cosine uses normalized vectors)
-				for i, vec := range batchVectors {
-					batchDistances[i] = distance.SquaredL2(q, vec)
-				}
-			}
-
-			// Build heap from batch results
-			for i, nodeID := range batchIDs {
-				nodeDist := batchDistances[i]
-				topCandidates.PushItemBounded(searcher.PriorityQueueItem{Node: nodeID, Distance: nodeDist}, actualK)
-			}
-		}
+		f.bruteSearchBatch(q, actualK, filter, topCandidates)
 	} else {
-		// PQ mode: use asymmetric distance (can't batch due to custom codes)
-		// NOTE: PQ asymmetric distance approximates L2 distance on normalized vectors.
-		// For cosine, vectors are already normalized so L2 ordering is equivalent.
-		for i := range maxID {
-			id := core.LocalID(i)
-			if f.deleted.Test(uint32(id)) {
-				continue
-			}
-			if filter != nil && !filter(id) {
-				continue
-			}
-
-			var nodeDist float32
-			var hasCode bool
-
-			if f.pqCodes != nil {
-				code, ok := f.pqCodes.Get(uint32(id))
-				if ok && code != nil {
-					nodeDist = pq.ComputeAsymmetricDistance(q, code)
-					hasCode = true
-				}
-			}
-
-			if !hasCode {
-				if f.vectors == nil {
-					continue
-				}
-				vec, ok := f.vectors.GetVector(id)
-				if !ok {
-					continue
-				}
-				nodeDist = f.distanceFunc(q, vec)
-			}
-
-			topCandidates.PushItemBounded(searcher.PriorityQueueItem{Node: id, Distance: nodeDist}, actualK)
-		}
+		f.bruteSearchPQ(q, actualK, filter, topCandidates, pq)
 	}
 
+	f.extractBruteResults(topCandidates, buf)
+	return nil
+}
+
+func (f *Flat) prepareBruteSearch(query []float32, k int) ([]float32, int, error) {
+	maxID := f.maxID.Load()
+	currentDim := int(f.dimension.Load())
+
+	if k <= 0 {
+		return nil, 0, index.ErrInvalidK
+	}
+	if currentDim > 0 && len(query) != currentDim {
+		return nil, 0, &index.ErrDimensionMismatch{Expected: currentDim, Actual: len(query)}
+	}
+
+	q := query
+	if f.opts.NormalizeVectors {
+		norm, ok := distance.NormalizeL2Copy(query)
+		if !ok {
+			return nil, 0, fmt.Errorf("flat: cannot normalize zero query")
+		}
+		q = norm
+	}
+
+	actualK := k
+	actualKU32, err := conv.IntToUint32(actualK)
+	if err != nil {
+		return nil, 0, err
+	}
+	if actualKU32 > maxID {
+		actualK, err = conv.Uint32ToInt(maxID)
+		if err != nil {
+			return nil, 0, err
+		}
+	}
+	return q, actualK, nil
+}
+
+func (f *Flat) bruteSearchBatch(q []float32, k int, filter func(id core.LocalID) bool, topCandidates *searcher.PriorityQueue) {
+	maxID := f.maxID.Load()
+	// Gather all valid node IDs and vectors
+	batchIDs := make([]core.LocalID, 0, maxID)
+	batchVectors := make([][]float32, 0, maxID)
+
+	for id := range maxID {
+		if f.deleted.Test(id) {
+			continue
+		}
+		if filter != nil && !filter(core.LocalID(id)) {
+			continue
+		}
+
+		if f.vectors == nil {
+			continue
+		}
+
+		v, ok := f.vectors.GetVector(core.LocalID(id))
+		if !ok {
+			continue
+		}
+
+		batchIDs = append(batchIDs, core.LocalID(id))
+		batchVectors = append(batchVectors, v)
+	}
+
+	// Compute all distances using single-pair SIMD
+	if len(batchIDs) > 0 {
+		batchDistances := make([]float32, len(batchIDs))
+
+		// Use appropriate function based on distance type
+		if f.opts.DistanceType == index.DistanceTypeDotProduct {
+			for i, vec := range batchVectors {
+				batchDistances[i] = -distance.Dot(q, vec)
+			}
+		} else {
+			// SquaredL2 or Cosine (cosine uses normalized vectors)
+			for i, vec := range batchVectors {
+				batchDistances[i] = distance.SquaredL2(q, vec)
+			}
+		}
+
+		// Build heap from batch results
+		for i, nodeID := range batchIDs {
+			nodeDist := batchDistances[i]
+			topCandidates.PushItemBounded(searcher.PriorityQueueItem{Node: nodeID, Distance: nodeDist}, k)
+		}
+	}
+}
+
+func (f *Flat) bruteSearchPQ(q []float32, k int, filter func(id core.LocalID) bool, topCandidates *searcher.PriorityQueue, pq *quantization.ProductQuantizer) {
+	// PQ mode: use asymmetric distance (can't batch due to custom codes)
+	// NOTE: PQ asymmetric distance approximates L2 distance on normalized vectors.
+	// For cosine, vectors are already normalized so L2 ordering is equivalent.
+	maxID := f.maxID.Load()
+	for i := range maxID {
+		id := core.LocalID(i)
+		if f.deleted.Test(uint32(id)) {
+			continue
+		}
+		if filter != nil && !filter(id) {
+			continue
+		}
+
+		dist, ok := f.computeDistance(id, q, pq)
+		if !ok {
+			continue
+		}
+
+		topCandidates.PushItemBounded(searcher.PriorityQueueItem{Node: id, Distance: dist}, k)
+	}
+}
+
+func (f *Flat) extractBruteResults(topCandidates *searcher.PriorityQueue, buf *[]index.SearchResult) {
 	// Extract results from heap
 	// Note: MaxHeap pops largest distance first, so we get results in descending order (farthest to nearest)
 	// We need to reverse them to get nearest to farthest.
@@ -902,8 +920,6 @@ func (f *Flat) BruteSearchWithBuffer(ctx context.Context, query []float32, k int
 	for i, j := startLen, len(res)-1; i < j; i, j = i+1, j-1 {
 		res[i], res[j] = res[j], res[i]
 	}
-
-	return nil
 }
 
 // ShardID returns this shard's identifier (0-based).
@@ -958,34 +974,18 @@ func (f *Flat) BruteSearchWithContext(ctx context.Context, s *searcher.Searcher,
 		return err
 	}
 
-	maxID := f.maxID.Load()
-	currentDim := int(f.dimension.Load())
-
-	if k <= 0 {
-		return index.ErrInvalidK
-	}
-	if maxID == 0 {
+	if f.maxID.Load() == 0 {
 		return nil
 	}
-	if currentDim > 0 && len(query) != currentDim {
-		return &index.ErrDimensionMismatch{Expected: currentDim, Actual: len(query)}
+
+	q, err := f.prepareQuery(s, query, k)
+	if err != nil {
+		return err
 	}
 
-	q := query
-	if f.opts.NormalizeVectors {
-		if len(s.ScratchVec) < len(query) {
-			s.ScratchVec = make([]float32, len(query))
-		}
-		copy(s.ScratchVec, query)
-		if !distance.NormalizeL2InPlace(s.ScratchVec) {
-			return fmt.Errorf("flat: cannot normalize zero query")
-		}
-		q = s.ScratchVec
-	}
-
+	maxID := f.maxID.Load()
 	actualK := k
-	if uint64(actualK) > uint64(maxID) {
-		var err error
+	if int64(actualK) > int64(maxID) {
 		actualK, err = conv.Uint32ToInt(maxID)
 		if err != nil {
 			return err

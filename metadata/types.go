@@ -247,14 +247,21 @@ type Operator string
 
 const (
 	// OpEqual represents the equality operator.
-	OpEqual        Operator = "eq"       // Equal
-	OpNotEqual     Operator = "ne"       // Not equal
-	OpGreaterThan  Operator = "gt"       // Greater than
-	OpGreaterEqual Operator = "gte"      // Greater than or equal
-	OpLessThan     Operator = "lt"       // Less than
-	OpLessEqual    Operator = "lte"      // Less than or equal
-	OpIn           Operator = "in"       // In list
-	OpContains     Operator = "contains" // Contains substring (for strings)
+	OpEqual Operator = "eq" // Equal
+	// OpNotEqual represents the inequality operator.
+	OpNotEqual Operator = "ne"
+	// OpGreaterThan represents the greater than operator.
+	OpGreaterThan Operator = "gt"
+	// OpGreaterEqual represents the greater than or equal operator.
+	OpGreaterEqual Operator = "gte"
+	// OpLessThan represents the less than operator.
+	OpLessThan Operator = "lt"
+	// OpLessEqual represents the less than or equal operator.
+	OpLessEqual Operator = "lte"
+	// OpIn represents the in list operator.
+	OpIn Operator = "in"
+	// OpContains represents the contains substring operator.
+	OpContains Operator = "contains"
 )
 
 // Filter represents a single metadata filter condition.

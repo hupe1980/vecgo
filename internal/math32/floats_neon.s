@@ -2,7 +2,7 @@
 
 #include "textflag.h"
 
-TEXT ·_scale_neon(SB), NOSPLIT, $0-24
+TEXT ·scaleNeon(SB), NOSPLIT, $0-24
 	MOVD a+0(FP), R0
 	MOVD n+8(FP), R1
 	MOVD scalar+16(FP), R2
@@ -39,7 +39,7 @@ LBB3_6:
 	RET
 Lfunc_end3:
 
-TEXT ·_dot_product_neon(SB), NOSPLIT, $0-32
+TEXT ·dotProductNeon(SB), NOSPLIT, $0-32
 	MOVD a+0(FP), R0
 	MOVD b+8(FP), R1
 	MOVD n+16(FP), R2
@@ -101,7 +101,7 @@ LBB0_6:
 	WORD $0x17fffff1
 Lfunc_end0:
 
-TEXT ·_pq_adc_lookup_neon(SB), NOSPLIT, $0-32
+TEXT ·pqAdcLookupNeon(SB), NOSPLIT, $0-32
 	MOVD table+0(FP), R0
 	MOVD codes+8(FP), R1
 	MOVD m+16(FP), R2
@@ -187,7 +187,7 @@ LBB1_12:
 	RET
 Lfunc_end1:
 
-TEXT ·_squared_l2_neon(SB), NOSPLIT, $0-32
+TEXT ·squaredL2Neon(SB), NOSPLIT, $0-32
 	MOVD a+0(FP), R0
 	MOVD b+8(FP), R1
 	MOVD n+16(FP), R2

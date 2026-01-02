@@ -1,6 +1,5 @@
-// Code generator for vecgo SIMD functions
+// Package main is a code generator for vecgo SIMD functions.
 // Converts C source files to Go assembly using clang + objdump
-
 package main
 
 import (
@@ -14,6 +13,8 @@ import (
 	"regexp"
 	"strings"
 )
+
+const archARM64 = "arm64"
 
 var (
 	verbose  = flag.Bool("v", false, "verbose output")
@@ -94,13 +95,13 @@ func (g *Generator) Generate() error {
 	if err != nil {
 		return err
 	}
-	defer os.Remove(asmPath)
+	defer func() { _ = os.Remove(asmPath) }()
 
 	objPath, err := g.compileToObject(asmPath)
 	if err != nil {
 		return err
 	}
-	defer os.Remove(objPath)
+	defer func() { _ = os.Remove(objPath) }()
 
 	// Parse C source to extract function signatures
 	functionSigs, err := g.parseCFunctions()
@@ -133,8 +134,8 @@ func (g *Generator) Generate() error {
 
 func (g *Generator) getClangTarget() string {
 	archMap := map[string]string{
-		"amd64": "x86_64",
-		"arm64": "arm64",
+		"amd64":   "x86_64",
+		archARM64: archARM64,
 	}
 	osMap := map[string]string{
 		"linux":  "linux-gnu",
@@ -156,7 +157,7 @@ func (g *Generator) compileToAssembly() (string, error) {
 		"-fno-rtti",
 	}
 
-	if g.Arch == "arm64" {
+	if g.Arch == archARM64 {
 		args = append(args, "-ffixed-x18")
 	}
 	if g.Arch == "amd64" {
@@ -169,10 +170,6 @@ func (g *Generator) compileToAssembly() (string, error) {
 		} else if strings.Contains(baseName, "avx") {
 			args = append(args, "-mavx2", "-mfma")
 		}
-	}
-
-	if g.Arch == "arm64" {
-		// ARM NEON is enabled by default on ARM64
 	}
 
 	args = append(args, g.SourcePath, "-o", asmPath)
@@ -245,7 +242,7 @@ func (g *Generator) parseAssembly(asmPath string) (map[string]*Function, error) 
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	nameLine := regexp.MustCompile(`^(\w+):`)
 	labelLine := regexp.MustCompile(`^\.(\w+):`)
@@ -335,52 +332,61 @@ func (g *Generator) extractBinary(objPath string, functions map[string]*Function
 			continue
 		}
 
-		// Parse instruction lines: "   offset: bytes..."
-		// We look for lines starting with whitespace and containing a colon
-		if (strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t")) && strings.Contains(line, ":") {
-			parts := strings.SplitN(line, ":", 2)
-			if len(parts) == 2 {
-				content := parts[1]
-
-				// If there is a tab, the bytes are before the tab
-				if tabIdx := strings.Index(content, "\t"); tabIdx != -1 {
-					content = content[:tabIdx]
-				}
-
-				// Parse hex bytes or words
-				fields := strings.Fields(content)
-				var bytes []string
-				for _, p := range fields {
-					if (len(p) == 2 || len(p) == 8) && isHex(p) {
-						bytes = append(bytes, p)
-					}
-				}
-
-				if len(bytes) > 0 {
-					if g.Verbose {
-						fmt.Printf("Matched binary: %v for line idx %d\n", bytes, idx)
-					}
-					for idx < len(fn.Lines) && (len(fn.Lines[idx].Binary) > 0 || fn.Lines[idx].Assembly == "") {
-						idx++
-					}
-					if idx < len(fn.Lines) {
-						fn.Lines[idx].Binary = bytes
-						idx++
-					}
-				}
-			}
-		} else {
-			if g.Verbose {
-				fmt.Printf("No match for line: %s\n", line)
-			}
-		}
+		idx = g.processDumpLine(line, fn, idx)
 	}
 	return sc.Err()
 }
 
+func (g *Generator) processDumpLine(line string, fn *Function, idx int) int {
+	// Parse instruction lines: "   offset: bytes..."
+	// We look for lines starting with whitespace and containing a colon
+	if (strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t")) && strings.Contains(line, ":") {
+		return g.parseInstructionLine(line, fn, idx)
+	} else if g.Verbose {
+		fmt.Printf("No match for line: %s\n", line)
+	}
+	return idx
+}
+
+func (g *Generator) parseInstructionLine(line string, fn *Function, idx int) int {
+	parts := strings.SplitN(line, ":", 2)
+	if len(parts) != 2 {
+		return idx
+	}
+	content := parts[1]
+
+	// If there is a tab, the bytes are before the tab
+	if tabIdx := strings.Index(content, "\t"); tabIdx != -1 {
+		content = content[:tabIdx]
+	}
+
+	// Parse hex bytes or words
+	fields := strings.Fields(content)
+	var bytes []string
+	for _, p := range fields {
+		if (len(p) == 2 || len(p) == 8) && isHex(p) {
+			bytes = append(bytes, p)
+		}
+	}
+
+	if len(bytes) > 0 {
+		if g.Verbose {
+			fmt.Printf("Matched binary: %v for line idx %d\n", bytes, idx)
+		}
+		for idx < len(fn.Lines) && (len(fn.Lines[idx].Binary) > 0 || fn.Lines[idx].Assembly == "") {
+			idx++
+		}
+		if idx < len(fn.Lines) {
+			fn.Lines[idx].Binary = bytes
+			idx++
+		}
+	}
+	return idx
+}
+
 func isHex(s string) bool {
 	for _, c := range s {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
 			return false
 		}
 	}

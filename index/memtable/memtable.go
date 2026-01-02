@@ -1,3 +1,4 @@
+// Package memtable implements an in-memory vector index.
 package memtable
 
 import (
@@ -179,7 +180,7 @@ func (m *MemTable) Flush() []Item {
 // Search performs a brute-force search on the memtable.
 func (m *MemTable) Search(query []float32, k int, filter func(core.LocalID) bool) []index.SearchResult {
 	var results []index.SearchResult
-	m.SearchWithBuffer(query, k, filter, &results)
+	_ = m.SearchWithBuffer(query, k, filter, &results)
 	return results
 }
 

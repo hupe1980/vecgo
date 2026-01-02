@@ -1,3 +1,4 @@
+// Package searcher implements search queues and utilities.
 package searcher
 
 import (

@@ -197,60 +197,10 @@ func (ui *UnifiedIndex) CreateStreamingFilter(fs *FilterSet) func(core.LocalID) 
 	}
 
 	// Pre-resolve bitmaps for supported operators
-	var checks []func(core.LocalID) bool
+	checks := make([]func(core.LocalID) bool, 0, len(fs.Filters))
 
 	for _, filter := range fs.Filters {
-		switch filter.Operator {
-		case OpEqual:
-			// Fast path: check bitmap directly
-			bitmap := ui.getBitmapLocked(filter.Key, filter.Value)
-			if bitmap == nil {
-				// No matches for this filter -> AND implies no matches at all
-				return func(core.LocalID) bool { return false }
-			}
-			checks = append(checks, func(id core.LocalID) bool {
-				return bitmap.Contains(id)
-			})
-
-		case OpIn:
-			// Check if ID is in ANY of the bitmaps
-			arr, ok := filter.Value.AsArray()
-			if !ok {
-				return func(core.LocalID) bool { return false }
-			}
-
-			var bitmaps []*LocalBitmap
-			for _, v := range arr {
-				if b := ui.getBitmapLocked(filter.Key, v); b != nil {
-					bitmaps = append(bitmaps, b)
-				}
-			}
-
-			if len(bitmaps) == 0 {
-				return func(core.LocalID) bool { return false }
-			}
-
-			checks = append(checks, func(id core.LocalID) bool {
-				for _, b := range bitmaps {
-					if b.Contains(id) {
-						return true
-					}
-				}
-				return false
-			})
-
-		default:
-			// Fallback for unsupported operators: check document
-			// This is slow but necessary
-			f := filter // capture loop variable
-			checks = append(checks, func(id core.LocalID) bool {
-				doc, ok := ui.documents[id]
-				if !ok {
-					return false
-				}
-				return f.MatchesInterned(doc)
-			})
-		}
+		checks = append(checks, ui.createFilterCheck(filter))
 	}
 
 	return func(id core.LocalID) bool {
@@ -260,6 +210,68 @@ func (ui *UnifiedIndex) CreateStreamingFilter(fs *FilterSet) func(core.LocalID) 
 			}
 		}
 		return true
+	}
+}
+
+func (ui *UnifiedIndex) createFilterCheck(filter Filter) func(core.LocalID) bool {
+	switch filter.Operator {
+	case OpEqual:
+		return ui.createEqualCheck(filter)
+	case OpIn:
+		return ui.createInCheck(filter)
+	default:
+		return ui.createFallbackCheck(filter)
+	}
+}
+
+func (ui *UnifiedIndex) createEqualCheck(filter Filter) func(core.LocalID) bool {
+	// Fast path: check bitmap directly
+	bitmap := ui.getBitmapLocked(filter.Key, filter.Value)
+	if bitmap == nil {
+		return func(core.LocalID) bool { return false }
+	}
+	return func(id core.LocalID) bool {
+		return bitmap.Contains(id)
+	}
+}
+
+func (ui *UnifiedIndex) createInCheck(filter Filter) func(core.LocalID) bool {
+	// Check if ID is in ANY of the bitmaps
+	arr, ok := filter.Value.AsArray()
+	if !ok {
+		return func(core.LocalID) bool { return false }
+	}
+
+	var bitmaps []*LocalBitmap
+	for _, v := range arr {
+		if b := ui.getBitmapLocked(filter.Key, v); b != nil {
+			bitmaps = append(bitmaps, b)
+		}
+	}
+
+	if len(bitmaps) == 0 {
+		return func(core.LocalID) bool { return false }
+	}
+
+	return func(id core.LocalID) bool {
+		for _, b := range bitmaps {
+			if b.Contains(id) {
+				return true
+			}
+		}
+		return false
+	}
+}
+
+func (ui *UnifiedIndex) createFallbackCheck(filter Filter) func(core.LocalID) bool {
+	// Fallback for unsupported operators: check document
+	// This is slow but necessary
+	return func(id core.LocalID) bool {
+		doc, ok := ui.documents[id]
+		if !ok {
+			return false
+		}
+		return filter.MatchesInterned(doc)
 	}
 }
 
@@ -294,45 +306,7 @@ func (ui *UnifiedIndex) CompileFilterTo(fs *FilterSet, dst *LocalBitmap) bool {
 	first := true
 
 	for _, filter := range fs.Filters {
-		switch filter.Operator {
-		case OpEqual:
-			bitmap := ui.getBitmapLocked(filter.Key, filter.Value)
-			if bitmap == nil {
-				dst.Clear()
-				return true // No matches for this filter -> AND implies 0 matches
-			}
-
-			if first {
-				dst.Or(bitmap) // Copy first bitmap
-			} else {
-				dst.And(bitmap)
-			}
-
-		case OpIn:
-			arr, ok := filter.Value.AsArray()
-			if !ok {
-				return false
-			}
-
-			if first {
-				for _, v := range arr {
-					if b := ui.getBitmapLocked(filter.Key, v); b != nil {
-						dst.Or(b)
-					}
-				}
-			} else {
-				// We need to intersect dst with (Union of values)
-				// dst = dst AND (v1 OR v2 OR ...)
-				scratch := NewLocalBitmap()
-				for _, v := range arr {
-					if b := ui.getBitmapLocked(filter.Key, v); b != nil {
-						scratch.Or(b)
-					}
-				}
-				dst.And(scratch)
-			}
-
-		default:
+		if !ui.applyFilterToBitmap(filter, dst, first) {
 			return false
 		}
 
@@ -342,6 +316,58 @@ func (ui *UnifiedIndex) CompileFilterTo(fs *FilterSet, dst *LocalBitmap) bool {
 		first = false
 	}
 
+	return true
+}
+
+func (ui *UnifiedIndex) applyFilterToBitmap(filter Filter, dst *LocalBitmap, first bool) bool {
+	switch filter.Operator {
+	case OpEqual:
+		return ui.applyEqualFilter(filter, dst, first)
+	case OpIn:
+		return ui.applyInFilter(filter, dst, first)
+	default:
+		return false
+	}
+}
+
+func (ui *UnifiedIndex) applyEqualFilter(filter Filter, dst *LocalBitmap, first bool) bool {
+	bitmap := ui.getBitmapLocked(filter.Key, filter.Value)
+	if bitmap == nil {
+		dst.Clear()
+		return true // No matches for this filter -> AND implies 0 matches
+	}
+
+	if first {
+		dst.Or(bitmap) // Copy first bitmap
+	} else {
+		dst.And(bitmap)
+	}
+	return true
+}
+
+func (ui *UnifiedIndex) applyInFilter(filter Filter, dst *LocalBitmap, first bool) bool {
+	arr, ok := filter.Value.AsArray()
+	if !ok {
+		return false
+	}
+
+	if first {
+		for _, v := range arr {
+			if b := ui.getBitmapLocked(filter.Key, v); b != nil {
+				dst.Or(b)
+			}
+		}
+	} else {
+		// We need to intersect dst with (Union of values)
+		// dst = dst AND (v1 OR v2 OR ...)
+		scratch := NewLocalBitmap()
+		for _, v := range arr {
+			if b := ui.getBitmapLocked(filter.Key, v); b != nil {
+				scratch.Or(b)
+			}
+		}
+		dst.And(scratch)
+	}
 	return true
 }
 

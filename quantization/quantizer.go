@@ -134,19 +134,19 @@ func (sq *ScalarQuantizer) Encode(v []float32) []byte {
 	quantized := make([]byte, len(v))
 
 	for i, val := range v {
-		min := sq.mins[i]
-		max := sq.maxs[i]
+		minVal := sq.mins[i]
+		maxVal := sq.maxs[i]
 		scale := sq.scales[i]
 
 		// Clamp to [min, max]
-		if val < min {
-			val = min
-		} else if val > max {
-			val = max
+		if val < minVal {
+			val = minVal
+		} else if val > maxVal {
+			val = maxVal
 		}
 
 		// Map to [0, 255]
-		normalized := (val - min) * scale
+		normalized := (val - minVal) * scale
 		quantized[i] = uint8(normalized + 0.5) // Round to nearest
 	}
 

@@ -1,3 +1,4 @@
+// Package mmap provides memory-mapped file functionality.
 package mmap
 
 import (
@@ -59,7 +60,7 @@ func Open(path string) (*File, error) {
 
 	fi, err := f.Stat()
 	if err != nil {
-		f.Close()
+		_ = f.Close()
 		return nil, err
 	}
 
@@ -69,13 +70,13 @@ func Open(path string) (*File, error) {
 	}
 
 	if size < 0 {
-		f.Close()
+		_ = f.Close()
 		return nil, errors.New("mmap: file size is negative")
 	}
 
 	data, err := mmap(f, int(size))
 	if err != nil {
-		f.Close()
+		_ = f.Close()
 		return nil, err
 	}
 

@@ -2,7 +2,6 @@ package flat
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
 	"io"
 
@@ -78,6 +77,32 @@ func (f *Flat) WriteTo(w io.Writer) (int64, error) {
 	cw := &countingWriter{w: w}
 	writer := persistence.NewBinaryIndexWriter(cw)
 
+	if err := f.writeHeader(writer, maxID); err != nil {
+		return cw.n, err
+	}
+
+	// Write freeList length and data (Deprecated: Always 0)
+	if err := writer.WriteUint64Slice([]uint64{0}); err != nil {
+		return cw.n, err
+	}
+
+	// Write node count (maxID)
+	if err := writer.WriteUint64Slice([]uint64{uint64(maxID)}); err != nil {
+		return cw.n, err
+	}
+
+	if err := f.writeMarkers(cw, maxID); err != nil {
+		return cw.n, err
+	}
+
+	if err := f.writeVectors(writer, maxID); err != nil {
+		return cw.n, err
+	}
+
+	return cw.n, nil
+}
+
+func (f *Flat) writeHeader(writer *persistence.BinaryIndexWriter, maxID uint32) error {
 	// Write file header
 	// Count active nodes (total - deleted)
 	activeCount := 0
@@ -88,11 +113,11 @@ func (f *Flat) WriteTo(w io.Writer) (int64, error) {
 	}
 	activeCountU64, err := conv.IntToUint64(activeCount)
 	if err != nil {
-		return cw.n, err
+		return err
 	}
 	dimU32, err := conv.IntToUint32(int(f.dimension.Load()))
 	if err != nil {
-		return cw.n, err
+		return err
 	}
 	header := &persistence.FileHeader{
 		VectorCount: activeCountU64,
@@ -101,44 +126,31 @@ func (f *Flat) WriteTo(w io.Writer) (int64, error) {
 		DataOffset:  64, // After header
 	}
 	if err := writer.WriteHeader(header); err != nil {
-		return cw.n, err
+		return err
 	}
 
 	// Write Flat metadata: distance type + flags.
-	buf := make([]byte, 8)
 	distTypeU32, err := conv.IntToUint32(int(f.opts.DistanceType))
 	if err != nil {
-		return cw.n, err
+		return err
 	}
-	binary.LittleEndian.PutUint32(buf[0:4], distTypeU32)
 	var flags uint32
 	if f.opts.NormalizeVectors {
 		flags |= 1
 	}
-	binary.LittleEndian.PutUint32(buf[4:8], flags)
-	if _, err := cw.Write(buf); err != nil {
-		return cw.n, err
+	if err := writer.WriteUint32Slice([]uint32{distTypeU32, flags}); err != nil {
+		return err
 	}
+	return nil
+}
 
-	// Write freeList length and data (Deprecated: Always 0)
-	buf8 := make([]byte, 8)
-	binary.LittleEndian.PutUint64(buf8, 0)
-	if _, err := cw.Write(buf8); err != nil {
-		return cw.n, err
-	}
-
-	// Write node count (maxID)
-	binary.LittleEndian.PutUint64(buf8, uint64(maxID))
-	if _, err := cw.Write(buf8); err != nil {
-		return cw.n, err
-	}
-
+func (f *Flat) writeMarkers(w io.Writer, maxID uint32) error {
 	// Write Markers (Validity Bitmap)
 	// For simplicity and alignment, we use 1 byte per node for now.
 	// 0 = nil (deleted), 1 = valid.
 	maxIDInt, err := conv.Uint32ToInt(maxID)
 	if err != nil {
-		return cw.n, err
+		return err
 	}
 	markers := make([]byte, maxIDInt)
 	for i := uint32(0); i < maxID; i++ {
@@ -146,37 +158,39 @@ func (f *Flat) WriteTo(w io.Writer) (int64, error) {
 			markers[i] = 1
 		}
 	}
-	if _, err := cw.Write(markers); err != nil {
-		return cw.n, err
+	if _, err := w.Write(markers); err != nil {
+		return err
 	}
 
 	// Padding to 4-byte alignment
 	padding := (4 - (maxID % 4)) % 4
 	if padding > 0 {
-		if _, err := cw.Write(make([]byte, padding)); err != nil {
-			return cw.n, err
+		if _, err := w.Write(make([]byte, padding)); err != nil {
+			return err
 		}
 	}
+	return nil
+}
 
+func (f *Flat) writeVectors(writer *persistence.BinaryIndexWriter, maxID uint32) error {
 	// Write Vectors (Contiguous)
 	zeroVec := make([]float32, f.opts.Dimension)
 	for i := uint32(0); i < maxID; i++ {
 		if f.deleted.Test(i) {
 			if err := writer.WriteFloat32Slice(zeroVec); err != nil {
-				return cw.n, err
+				return err
 			}
 			continue
 		}
 		vec, err := f.VectorByID(context.Background(), core.LocalID(i))
 		if err != nil {
-			return cw.n, err
+			return err
 		}
 		if err := writer.WriteFloat32Slice(vec); err != nil {
-			return cw.n, err
+			return err
 		}
 	}
-
-	return cw.n, nil
+	return nil
 }
 
 // ReadFrom reads the Flat index from a reader in binary format using DefaultOptions.
@@ -192,37 +206,75 @@ func (f *Flat) ReadFrom(r io.Reader) (int64, error) {
 func (f *Flat) ReadFromWithOptions(r io.Reader, opts Options) error {
 	reader := persistence.NewBinaryIndexReader(r)
 
-	// Read and validate header
-	header, err := reader.ReadHeader()
+	header, err := f.readAndValidateHeader(reader, opts)
 	if err != nil {
 		return err
 	}
 
+	if err := f.readMetadata(reader); err != nil {
+		return err
+	}
+	f.vectors = columnar.New(int(header.Dimension))
+
+	// Read freeList (Deprecated: Ignore)
+	if err := f.skipFreeList(reader); err != nil {
+		return err
+	}
+
+	nodeCount, err := f.readNodeCount(reader)
+	if err != nil {
+		return err
+	}
+
+	markers, err := f.readMarkers(r, nodeCount)
+	if err != nil {
+		return err
+	}
+
+	// Initialize state
+	nodeCountU32, err := conv.Uint64ToUint32(nodeCount)
+	if err != nil {
+		return err
+	}
+	f.maxID.Store(nodeCountU32)
+
+	return f.readVectors(reader, nodeCount, markers, header.Dimension)
+}
+
+func (f *Flat) readAndValidateHeader(reader *persistence.BinaryIndexReader, opts Options) (*persistence.FileHeader, error) {
+	header, err := reader.ReadHeader()
+	if err != nil {
+		return nil, err
+	}
+
 	if header.IndexType != persistence.IndexTypeFlat {
-		return fmt.Errorf("invalid index type: expected Flat, got %d", header.IndexType)
+		return nil, fmt.Errorf("invalid index type: expected Flat, got %d", header.IndexType)
 	}
 
 	// Initialize opts (caller may supply non-persisted settings).
 	// Dimension and DistanceType are persisted and treated as authoritative.
 	if opts.Dimension != 0 && opts.Dimension != int(header.Dimension) {
-		return &index.ErrDimensionMismatch{Expected: opts.Dimension, Actual: int(header.Dimension)}
+		return nil, &index.ErrDimensionMismatch{Expected: opts.Dimension, Actual: int(header.Dimension)}
 	}
 	f.opts = opts
 	dimInt, err := conv.Uint32ToInt(header.Dimension)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	f.opts.Dimension = dimInt
 	dimI32, err := conv.Uint32ToInt32(header.Dimension)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	f.dimension.Store(dimI32)
 
 	if f.deleted == nil {
 		f.deleted = bitset.New(1024)
 	}
+	return header, nil
+}
 
+func (f *Flat) readMetadata(reader *persistence.BinaryIndexReader) error {
 	// Read metadata: distance type + flags
 	meta, err := reader.ReadUint32Slice(2)
 	if err != nil {
@@ -240,8 +292,10 @@ func (f *Flat) ReadFromWithOptions(r io.Reader, opts Options) error {
 		f.opts.NormalizeVectors = true
 	}
 	f.distanceFunc = index.NewDistanceFunc(f.opts.DistanceType)
-	f.vectors = columnar.New(int(header.Dimension))
+	return nil
+}
 
+func (f *Flat) skipFreeList(reader *persistence.BinaryIndexReader) error {
 	// Read freeList (Deprecated: Ignore)
 	freeListLenSlice, err := reader.ReadUint64Slice(1)
 	if err != nil {
@@ -262,25 +316,31 @@ func (f *Flat) ReadFromWithOptions(r io.Reader, opts Options) error {
 			return err
 		}
 	}
+	return nil
+}
 
+func (f *Flat) readNodeCount(reader *persistence.BinaryIndexReader) (uint64, error) {
 	// Read node count
 	nodeCountSlice, err := reader.ReadUint64Slice(1)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	nodeCount := nodeCountSlice[0]
 	if nodeCount > 100_000_000 {
-		return fmt.Errorf("node count %d exceeds limit", nodeCount)
+		return 0, fmt.Errorf("node count %d exceeds limit", nodeCount)
 	}
+	return nodeCount, nil
+}
 
+func (f *Flat) readMarkers(r io.Reader, nodeCount uint64) ([]byte, error) {
 	// Read Markers
 	nodeCountInt, err := conv.Uint64ToInt(nodeCount)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	markers := make([]byte, nodeCountInt)
 	if _, err := io.ReadFull(r, markers); err != nil {
-		return fmt.Errorf("failed to read markers: %w", err)
+		return nil, fmt.Errorf("failed to read markers: %w", err)
 	}
 
 	// Skip padding
@@ -288,28 +348,18 @@ func (f *Flat) ReadFromWithOptions(r io.Reader, opts Options) error {
 	if padding > 0 {
 		paddingInt, err := conv.Uint64ToInt(padding)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if _, err := io.ReadFull(r, make([]byte, paddingInt)); err != nil {
-			return fmt.Errorf("failed to read padding: %w", err)
+			return nil, fmt.Errorf("failed to read padding: %w", err)
 		}
 	}
+	return markers, nil
+}
 
-	// Initialize state
-	f.maxID.Store(uint32(nodeCount))
-	// Ensure deleted bitset is large enough
-	// We can't easily resize bitset if it's fixed size?
-	// bitset.New(size) creates a bitset.
-	// But f.deleted is already initialized in New().
-	// We should probably clear it and ensure capacity?
-	// Or just set bits.
-	// If nodeCount is large, we might need to re-allocate deleted?
-	// bitset usually grows automatically on Set?
-	// But here we want to pre-allocate?
-	// Let's assume it grows.
-
+func (f *Flat) readVectors(reader *persistence.BinaryIndexReader, nodeCount uint64, markers []byte, dimension uint32) error {
 	// Read Vectors
-	vecSize, err := conv.Uint32ToInt(header.Dimension)
+	vecSize, err := conv.Uint32ToInt(dimension)
 	if err != nil {
 		return err
 	}

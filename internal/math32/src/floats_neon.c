@@ -1,7 +1,7 @@
 #include <arm_neon.h>
 #include <stdint.h>
 
-void _dot_product_neon(float *__restrict a, float *__restrict b, int64_t n, float *__restrict result)
+void dotProductNeon(float *__restrict a, float *__restrict b, int64_t n, float *__restrict result)
 {
     int64_t epoch = n / 16; // Process 16 elements per iteration (4 accumulators)
     int64_t remain = n % 16;
@@ -60,7 +60,7 @@ void _dot_product_neon(float *__restrict a, float *__restrict b, int64_t n, floa
     *result = vget_lane_f32(sum_pair, 0) + remain_sum;
 }
 
-void _pq_adc_lookup_neon(float *__restrict table, uint8_t *__restrict codes, int64_t m, float *__restrict result)
+void pqAdcLookupNeon(float *__restrict table, uint8_t *__restrict codes, int64_t m, float *__restrict result)
 {
     float sum = 0.0f;
     int64_t i;
@@ -85,7 +85,7 @@ void _pq_adc_lookup_neon(float *__restrict table, uint8_t *__restrict codes, int
     *result = sum;
 }
 
-void _squared_l2_neon(float *__restrict a, float *__restrict b, int64_t n, float *__restrict result)
+void squaredL2Neon(float *__restrict a, float *__restrict b, int64_t n, float *__restrict result)
 {
     // Four accumulators for better throughput
     float32x4_t sum1 = vdupq_n_f32(0.0f);
@@ -141,11 +141,11 @@ void _squared_l2_neon(float *__restrict a, float *__restrict b, int64_t n, float
     *result = sum;
 }
 
-// _scale_neon scales a by (*scalar) in place.
+// scaleNeon scales a by (*scalar) in place.
 //
 // Note: scalar is passed by pointer to avoid ABI differences for float arguments
 // in the Go assembly generator pipeline.
-void _scale_neon(float *__restrict a, int64_t n, float *__restrict scalar)
+void scaleNeon(float *__restrict a, int64_t n, float *__restrict scalar)
 {
     if (n <= 0) {
         return;

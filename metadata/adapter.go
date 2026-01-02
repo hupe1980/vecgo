@@ -21,6 +21,17 @@ func FromAny(v any) (Value, error) {
 		return Float(x), nil
 	case float32:
 		return Float(float64(x)), nil
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		return fromInt(x)
+	case []Value, []any, []string, []int, []float64:
+		return fromSlice(x)
+	default:
+		return Value{}, fmt.Errorf("unsupported metadata value type %T", v)
+	}
+}
+
+func fromInt(v any) (Value, error) {
+	switch x := v.(type) {
 	case int:
 		return Int(int64(x)), nil
 	case int8:
@@ -45,6 +56,13 @@ func FromAny(v any) (Value, error) {
 			return Value{}, fmt.Errorf("metadata uint64 out of range: %d", x)
 		}
 		return Int(int64(x)), nil
+	default:
+		return Value{}, fmt.Errorf("unsupported integer type %T", v)
+	}
+}
+
+func fromSlice(v any) (Value, error) {
+	switch x := v.(type) {
 	case []Value:
 		return Array(x), nil
 	case []any:
@@ -76,7 +94,7 @@ func FromAny(v any) (Value, error) {
 		}
 		return Array(arr), nil
 	default:
-		return Value{}, fmt.Errorf("unsupported metadata value type %T", v)
+		return Value{}, fmt.Errorf("unsupported slice type %T", v)
 	}
 }
 

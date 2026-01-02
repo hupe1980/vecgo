@@ -71,7 +71,8 @@ func NewOptimizedProductQuantizer(dimension, numSubvectors, numCentroids, numIte
 		trained:       false,
 		vecPool: &sync.Pool{
 			New: func() interface{} {
-				return make([]float32, dimension)
+				s := make([]float32, dimension)
+				return &s
 			},
 		},
 	}, nil
@@ -209,8 +210,9 @@ func (opq *OptimizedProductQuantizer) Encode(vec []float32) []byte {
 	}
 
 	// Get temporary buffer
-	rotated := opq.vecPool.Get().([]float32)
-	defer opq.vecPool.Put(rotated)
+	rotatedPtr := opq.vecPool.Get().(*[]float32)
+	rotated := *rotatedPtr
+	defer opq.vecPool.Put(rotatedPtr)
 
 	opq.rotateVector(vec, rotated)
 	return opq.pq.Encode(rotated)
@@ -257,8 +259,9 @@ func (opq *OptimizedProductQuantizer) ComputeAsymmetricDistance(query []float32,
 	}
 
 	// Rotate query once
-	rotatedQuery := opq.vecPool.Get().([]float32)
-	defer opq.vecPool.Put(rotatedQuery)
+	rotatedQueryPtr := opq.vecPool.Get().(*[]float32)
+	rotatedQuery := *rotatedQueryPtr
+	defer opq.vecPool.Put(rotatedQueryPtr)
 
 	opq.rotateVector(query, rotatedQuery)
 

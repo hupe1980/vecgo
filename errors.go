@@ -63,15 +63,15 @@ func translateError(err error) error {
 
 	// Not found unification.
 	if errors.Is(err, engine.ErrNotFound) {
-		return fmt.Errorf("%w: %v", ErrNotFound, err)
+		return fmt.Errorf("%w: %w", ErrNotFound, err)
 	}
 	var enf *index.ErrNodeNotFound
 	if errors.As(err, &enf) {
-		return fmt.Errorf("%w: %v", ErrNotFound, err)
+		return fmt.Errorf("%w: %w", ErrNotFound, err)
 	}
 	var end *index.ErrNodeDeleted
 	if errors.As(err, &end) {
-		return fmt.Errorf("%w: %v", ErrNotFound, err)
+		return fmt.Errorf("%w: %w", ErrNotFound, err)
 	}
 
 	// Dimension and argument normalization.
@@ -88,7 +88,7 @@ func translateError(err error) error {
 		return &ErrInvalidDistanceType{DistanceType: dt.DistanceType, cause: err}
 	}
 	if errors.Is(err, index.ErrInvalidK) {
-		return fmt.Errorf("%w: %v", ErrInvalidK, err)
+		return fmt.Errorf("%w: %w", ErrInvalidK, err)
 	}
 
 	return err

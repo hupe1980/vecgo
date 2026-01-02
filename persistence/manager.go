@@ -256,14 +256,8 @@ func (pm *Manager) Recover(ctx context.Context, loader SnapshotLoader, replayer 
 	}
 
 	// Step 1: Load snapshot (if exists)
-	if pm.snapshotPath != "" {
-		if _, err := os.Stat(pm.snapshotPath); err == nil {
-			if err := loader.LoadSnapshot(ctx, pm.snapshotPath); err != nil {
-				return fmt.Errorf("persistence: snapshot load failed: %w", err)
-			}
-		} else if !os.IsNotExist(err) {
-			return fmt.Errorf("persistence: failed to check snapshot: %w", err)
-		}
+	if err := pm.loadSnapshotIfExists(ctx, loader); err != nil {
+		return err
 	}
 
 	// Check context between phases
@@ -436,5 +430,20 @@ func AtomicSaveToDir(dir string, files map[string]func(io.Writer) error) error {
 		_ = d.Close()
 	}
 
+	return nil
+}
+
+func (pm *Manager) loadSnapshotIfExists(ctx context.Context, loader SnapshotLoader) error {
+	if pm.snapshotPath == "" {
+		return nil
+	}
+	if _, err := os.Stat(pm.snapshotPath); err == nil {
+		if err := loader.LoadSnapshot(ctx, pm.snapshotPath); err != nil {
+			return fmt.Errorf("persistence: snapshot load failed: %w", err)
+		}
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("persistence: failed to check snapshot: %w", err)
+	}
 	return nil
 }

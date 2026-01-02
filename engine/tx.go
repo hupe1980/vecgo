@@ -87,26 +87,33 @@ func (tx *Tx[T]) vectorByID(ctx context.Context, id core.LocalID) ([]float32, er
 	// Zero-lock path for memtable check
 	state := tx.memState.Load()
 	if state != nil {
-		if state.active != nil {
-			if vec, found, isDeleted := state.active.Get(id); found {
-				if isDeleted {
-					return nil, &index.ErrNodeNotFound{ID: id}
-				}
-				return vec, nil
-			}
-		}
-		// Check queue (newest to oldest)
-		for i := len(state.queue) - 1; i >= 0; i-- {
-			if vec, found, isDeleted := state.queue[i].Get(id); found {
-				if isDeleted {
-					return nil, &index.ErrNodeNotFound{ID: id}
-				}
-				return vec, nil
-			}
+		if vec, found, err := tx.checkMemtable(state, id); found {
+			return vec, err
 		}
 	}
 
 	return tx.txIndex.VectorByID(ctx, id)
+}
+
+func (tx *Tx[T]) checkMemtable(state *memState, id core.LocalID) ([]float32, bool, error) {
+	if state.active != nil {
+		if vec, found, isDeleted := state.active.Get(id); found {
+			if isDeleted {
+				return nil, true, &index.ErrNodeNotFound{ID: id}
+			}
+			return vec, true, nil
+		}
+	}
+	// Check queue (newest to oldest)
+	for i := len(state.queue) - 1; i >= 0; i-- {
+		if vec, found, isDeleted := state.queue[i].Get(id); found {
+			if isDeleted {
+				return nil, true, &index.ErrNodeNotFound{ID: id}
+			}
+			return vec, true, nil
+		}
+	}
+	return nil, false, nil
 }
 
 func (tx *Tx[T]) encodePayload(data T) ([]byte, error) {
@@ -119,84 +126,109 @@ func (tx *Tx[T]) Insert(ctx context.Context, vector []float32, data T, meta meta
 		return 0, err
 	}
 
+	id, _, err := tx.prepareInsert(vector, data, meta)
+	if err != nil {
+		return 0, err
+	}
+
+	if err := tx.applyInsert(ctx, id, vector); err != nil {
+		return 0, err
+	}
+
+	if err := tx.storeDataAndMetadata(id, data, meta); err != nil {
+		tx.rollbackInsert(ctx, id, false)
+		return 0, err
+	}
+
+	if err := tx.durability.LogCommitInsert(id); err != nil {
+		tx.rollbackInsert(ctx, id, true)
+		return 0, err
+	}
+
+	return uint64(id), nil
+}
+
+func (tx *Tx[T]) prepareInsert(vector []float32, data T, meta metadata.Metadata) (core.LocalID, []byte, error) {
 	id := tx.allocateID()
 	payload, err := tx.encodePayload(data)
 	if err != nil {
 		tx.releaseID(id)
-		return 0, err
+		return 0, nil, err
 	}
 
 	if err := tx.durability.LogPrepareInsert(id, vector, payload, meta); err != nil {
 		tx.releaseID(id)
-		return 0, err
+		return 0, nil, err
+	}
+	return id, payload, nil
+}
+
+func (tx *Tx[T]) applyInsert(ctx context.Context, id core.LocalID, vector []float32) error {
+	if tx.syncWrite {
+		return tx.txIndex.ApplyInsert(ctx, id, vector)
 	}
 
-	if tx.syncWrite {
-		if err := tx.txIndex.ApplyInsert(ctx, id, vector); err != nil {
-			return 0, err
+	// Async Indexing: Write to MemTable instead of Index
+	tx.memMu.RLock()
+	state := tx.memState.Load()
+	state.active.Insert(id, vector)
+	size := state.active.Size()
+	tx.memMu.RUnlock()
+
+	tx.checkFlush(size)
+	tx.checkBackpressure()
+	return nil
+}
+
+func (tx *Tx[T]) checkFlush(size int) {
+	// Trigger flush if MemTable is getting large
+	if size >= 1000 {
+		tx.memMu.Lock()
+		// Reload state to ensure we are still the one to swap
+		state := tx.memState.Load()
+		if state.active.Size() >= 1000 {
+			// Swap: active -> queue, newActive -> active
+			newActive := memtable.New(tx.dimension, tx.distFunc)
+			// Create new queue slice to ensure immutability of the snapshot
+			newQueue := make([]*memtable.MemTable, len(state.queue)+1)
+			copy(newQueue, state.queue)
+			newQueue[len(state.queue)] = state.active
+
+			newState := &memState{
+				active: newActive,
+				queue:  newQueue,
+			}
+			tx.memState.Store(newState)
+
+			// Signal flush
+			select {
+			case tx.flushCh <- struct{}{}:
+			default:
+			}
 		}
-	} else {
-		// Async Indexing: Write to MemTable instead of Index
+		tx.memMu.Unlock()
+	}
+}
+
+func (tx *Tx[T]) checkBackpressure() {
+	// Backpressure: Wait if Queue is too large
+	// We do this OUTSIDE the lock to avoid deadlock
+	for {
 		tx.memMu.RLock()
 		state := tx.memState.Load()
-		state.active.Insert(id, vector)
-		size := state.active.Size()
+		qLen := len(state.queue)
 		tx.memMu.RUnlock()
 
-		// Trigger flush if MemTable is getting large
-		if size >= 1000 {
-			tx.memMu.Lock()
-			// Reload state to ensure we are still the one to swap
-			state = tx.memState.Load()
-			if state.active.Size() >= 1000 {
-				// Swap: active -> queue, newActive -> active
-				newActive := memtable.New(tx.dimension, tx.distFunc)
-				// Create new queue slice to ensure immutability of the snapshot
-				newQueue := make([]*memtable.MemTable, len(state.queue)+1)
-				copy(newQueue, state.queue)
-				newQueue[len(state.queue)] = state.active
-
-				newState := &memState{
-					active: newActive,
-					queue:  newQueue,
-				}
-				tx.memState.Store(newState)
-
-				// Signal flush
-				select {
-				case tx.flushCh <- struct{}{}:
-				default:
-				}
-			}
-			tx.memMu.Unlock()
+		if qLen < 10 { // Limit queue depth to 10 tables
+			break
 		}
-
-		// Backpressure: Wait if Queue is too large
-		// We do this OUTSIDE the lock to avoid deadlock
-		for {
-			tx.memMu.RLock()
-			state = tx.memState.Load()
-			qLen := len(state.queue)
-			tx.memMu.RUnlock()
-
-			if qLen < 10 { // Limit queue depth to 10 tables
-				break
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
+		time.Sleep(10 * time.Millisecond)
 	}
+}
 
+func (tx *Tx[T]) storeDataAndMetadata(id core.LocalID, data T, meta metadata.Metadata) error {
 	if err := tx.dataStore.Set(id, data); err != nil {
-		// Rollback
-		if tx.syncWrite {
-			tx.txIndex.ApplyDelete(ctx, id)
-		} else {
-			tx.memMu.RLock()
-			state := tx.memState.Load()
-			state.active.Delete(id)
-			tx.memMu.RUnlock()
-		}
-		return 0, err
+		return err
 	}
 
 	// Safe-by-default: clone metadata to prevent external mutation
@@ -206,27 +238,26 @@ func (tx *Tx[T]) Insert(ctx context.Context, vector []float32, data T, meta meta
 		tx.metaStore.Set(id, safeMeta)
 		tx.metaMu.Unlock()
 	}
+	return nil
+}
 
-	if err := tx.durability.LogCommitInsert(id); err != nil {
-		if meta != nil {
-			tx.metaMu.Lock()
-			tx.metaStore.Delete(id)
-			tx.metaMu.Unlock()
-		}
+func (tx *Tx[T]) rollbackInsert(ctx context.Context, id core.LocalID, cleanupMeta bool) {
+	if cleanupMeta {
+		tx.metaMu.Lock()
+		tx.metaStore.Delete(id)
+		tx.metaMu.Unlock()
 		_ = tx.dataStore.Delete(id)
-		// Rollback
-		if tx.syncWrite {
-			tx.txIndex.ApplyDelete(ctx, id)
-		} else {
-			tx.memMu.RLock()
-			state := tx.memState.Load()
-			state.active.Delete(id)
-			tx.memMu.RUnlock()
-		}
-		return 0, err
 	}
 
-	return uint64(id), nil
+	// Rollback
+	if tx.syncWrite {
+		_ = tx.txIndex.ApplyDelete(ctx, id)
+	} else {
+		tx.memMu.RLock()
+		state := tx.memState.Load()
+		state.active.Delete(id)
+		tx.memMu.RUnlock()
+	}
 }
 
 // BatchInsert inserts multiple vectors+payloads+(optional) metadata atomically.
@@ -241,6 +272,34 @@ func (tx *Tx[T]) BatchInsert(ctx context.Context, vectors [][]float32, dataSlice
 		return nil, nil
 	}
 
+	ids, _, err := tx.prepareBatchInsert(vectors, dataSlice, metadataSlice)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := tx.applyBatchInsert(ctx, ids, vectors); err != nil {
+		return nil, err
+	}
+
+	if err := tx.storeBatchDataAndMetadata(ids, dataSlice, metadataSlice); err != nil {
+		tx.rollbackBatchInsert(ctx, ids, false)
+		return nil, err
+	}
+
+	if err := tx.durability.LogCommitBatchInsert(ids); err != nil {
+		tx.rollbackBatchInsert(ctx, ids, true)
+		return nil, err
+	}
+
+	// Convert to uint64 for return
+	globalIDs := make([]uint64, len(ids))
+	for i, id := range ids {
+		globalIDs[i] = uint64(id)
+	}
+	return globalIDs, nil
+}
+
+func (tx *Tx[T]) prepareBatchInsert(vectors [][]float32, dataSlice []T, metadataSlice []metadata.Metadata) ([]core.LocalID, [][]byte, error) {
 	ids := make([]core.LocalID, len(vectors))
 	payloads := make([][]byte, len(vectors))
 	for i := range vectors {
@@ -250,7 +309,7 @@ func (tx *Tx[T]) BatchInsert(ctx context.Context, vectors [][]float32, dataSlice
 			for j := 0; j <= i; j++ {
 				tx.releaseID(ids[j])
 			}
-			return nil, err
+			return nil, nil, err
 		}
 		payloads[i] = b
 	}
@@ -259,65 +318,55 @@ func (tx *Tx[T]) BatchInsert(ctx context.Context, vectors [][]float32, dataSlice
 		for _, id := range ids {
 			tx.releaseID(id)
 		}
-		return nil, err
+		return nil, nil, err
 	}
+	return ids, payloads, nil
+}
 
+func (tx *Tx[T]) applyBatchInsert(ctx context.Context, ids []core.LocalID, vectors [][]float32) error {
 	if tx.syncWrite {
-		if err := tx.txIndex.ApplyBatchInsert(ctx, ids, vectors); err != nil {
-			return nil, err
-		}
-	} else {
-		// Async Indexing: Write to MemTable
-		tx.memMu.RLock()
-		state := tx.memState.Load()
-		for i := range vectors {
-			state.active.Insert(ids[i], vectors[i])
-		}
-		size := state.active.Size()
-		tx.memMu.RUnlock()
-
-		// Trigger flush if MemTable is getting large
-		if size >= 1000 {
-			select {
-			case tx.flushCh <- struct{}{}:
-			default:
-			}
-		}
-
-		// Backpressure: Wait if MemTable is too large and flush is in progress
-		if size >= 10000 {
-			tx.flushMu.Lock()
-			for {
-				tx.memMu.RLock()
-				state = tx.memState.Load()
-				currentSize := state.active.Size()
-				tx.memMu.RUnlock()
-				if currentSize < 10000 {
-					break
-				}
-				tx.flushCond.Wait()
-			}
-			tx.flushMu.Unlock()
-		}
+		return tx.txIndex.ApplyBatchInsert(ctx, ids, vectors)
 	}
 
+	// Async Indexing: Write to MemTable
+	tx.memMu.RLock()
+	state := tx.memState.Load()
+	for i := range vectors {
+		state.active.Insert(ids[i], vectors[i])
+	}
+	size := state.active.Size()
+	tx.memMu.RUnlock()
+
+	tx.checkFlush(size)
+	tx.checkBatchBackpressure(size)
+	return nil
+}
+
+func (tx *Tx[T]) checkBatchBackpressure(size int) {
+	// Backpressure: Wait if MemTable is too large and flush is in progress
+	if size >= 10000 {
+		tx.flushMu.Lock()
+		for {
+			tx.memMu.RLock()
+			state := tx.memState.Load()
+			currentSize := state.active.Size()
+			tx.memMu.RUnlock()
+			if currentSize < 10000 {
+				break
+			}
+			tx.flushCond.Wait()
+		}
+		tx.flushMu.Unlock()
+	}
+}
+
+func (tx *Tx[T]) storeBatchDataAndMetadata(ids []core.LocalID, dataSlice []T, metadataSlice []metadata.Metadata) error {
 	items := make(map[core.LocalID]T, len(ids))
 	for i := range ids {
 		items[ids[i]] = dataSlice[i]
 	}
 	if err := tx.dataStore.BatchSet(items); err != nil {
-		for _, id := range ids {
-			// Rollback
-			if tx.syncWrite {
-				tx.txIndex.ApplyDelete(ctx, id)
-			} else {
-				tx.memMu.RLock()
-				state := tx.memState.Load()
-				state.active.Delete(id)
-				tx.memMu.RUnlock()
-			}
-		}
-		return nil, err
+		return err
 	}
 
 	// Safe-by-default: clone metadata to prevent external mutation
@@ -335,32 +384,30 @@ func (tx *Tx[T]) BatchInsert(ctx context.Context, vectors [][]float32, dataSlice
 		}
 		tx.metaMu.Unlock()
 	}
+	return nil
+}
 
-	if err := tx.durability.LogCommitBatchInsert(ids); err != nil {
-		if len(metaItems) > 0 {
-			tx.metaMu.Lock()
-			for id := range metaItems {
-				tx.metaStore.Delete(id)
-			}
-			tx.metaMu.Unlock()
-		}
-		_ = tx.dataStore.BatchDelete(ids)
+func (tx *Tx[T]) rollbackBatchInsert(ctx context.Context, ids []core.LocalID, cleanupMeta bool) {
+	if cleanupMeta {
+		tx.metaMu.Lock()
 		for _, id := range ids {
-			// Rollback: Remove from MemTable
+			tx.metaStore.Delete(id)
+		}
+		tx.metaMu.Unlock()
+		_ = tx.dataStore.BatchDelete(ids)
+	}
+
+	for _, id := range ids {
+		// Rollback
+		if tx.syncWrite {
+			_ = tx.txIndex.ApplyDelete(ctx, id)
+		} else {
 			tx.memMu.RLock()
 			state := tx.memState.Load()
 			state.active.Delete(id)
 			tx.memMu.RUnlock()
 		}
-		return nil, err
 	}
-
-	// Convert to uint64 for return
-	globalIDs := make([]uint64, len(ids))
-	for i, id := range ids {
-		globalIDs[i] = uint64(id)
-	}
-	return globalIDs, nil
 }
 
 // Update updates vector+payload and optionally metadata.
@@ -435,23 +482,7 @@ func (tx *Tx[T]) Update(ctx context.Context, id uint64, vector []float32, data T
 	}
 
 	if err := tx.durability.LogCommitUpdate(localID); err != nil {
-		if meta != nil {
-			tx.metaMu.Lock()
-			if oldMetaOK {
-				tx.metaStore.Set(localID, oldMeta)
-			} else {
-				tx.metaStore.Delete(localID)
-			}
-			tx.metaMu.Unlock()
-		}
-		_ = tx.dataStore.Set(localID, oldData)
-		// Revert memtable change is hard, but since we haven't flushed,
-		// the index is still consistent with oldVector.
-		// We should ideally revert the memtable entry too.
-		tx.memMu.RLock()
-		state := tx.memState.Load()
-		state.active.Insert(localID, oldVector)
-		tx.memMu.RUnlock()
+		tx.rollbackUpdate(localID, meta, oldMeta, oldMetaOK, oldData, oldVector)
 		return err
 	}
 
@@ -574,25 +605,10 @@ func (tx *Tx[T]) KNNSearchWithBuffer(ctx context.Context, query []float32, k int
 	// Get scratch buffer
 	scratch := tx.scratchPool.Get().(*txScratch)
 	defer tx.scratchPool.Put(scratch)
-
-	// Reset scratch buffers
-	scratch.indexResults = scratch.indexResults[:0]
-	scratch.memResults = scratch.memResults[:0]
-	scratch.queueResults = scratch.queueResults[:0]
-	scratch.mergedResults = scratch.mergedResults[:0]
+	scratch.reset()
 
 	// Convert SearchOptions
-	var indexOpts *index.SearchOptions
-	if opts != nil {
-		indexOpts = &index.SearchOptions{
-			EFSearch: opts.EFSearch,
-		}
-		if opts.Filter != nil {
-			indexOpts.Filter = func(id core.LocalID) bool {
-				return opts.Filter(uint64(id))
-			}
-		}
-	}
+	indexOpts := tx.convertSearchOptions(opts)
 
 	// 1. Search Main Index
 	if err := tx.txIndex.KNNSearchWithBuffer(ctx, query, k, indexOpts, &scratch.indexResults); err != nil {
@@ -600,6 +616,50 @@ func (tx *Tx[T]) KNNSearchWithBuffer(ctx context.Context, query []float32, k int
 	}
 
 	// 2. Filter Index Results (remove items present in MemTables)
+	tx.filterIndexResults(scratch, memT, queue)
+
+	// 3. Search MemTables
+	if err := tx.searchMemTables(query, k, indexOpts, memT, queue, scratch); err != nil {
+		return err
+	}
+
+	// 4. Merge Results
+	index.MergeNSearchResultsInto(&scratch.mergedResults, k, scratch.indexResults, scratch.memResults, scratch.queueResults)
+
+	// Append to output buffer
+	for _, res := range scratch.mergedResults {
+		*buf = append(*buf, SearchResult{
+			ID:       uint64(res.ID),
+			Distance: res.Distance,
+		})
+	}
+
+	return nil
+}
+
+func (s *txScratch) reset() {
+	s.indexResults = s.indexResults[:0]
+	s.memResults = s.memResults[:0]
+	s.queueResults = s.queueResults[:0]
+	s.mergedResults = s.mergedResults[:0]
+}
+
+func (tx *Tx[T]) convertSearchOptions(opts *SearchOptions) *index.SearchOptions {
+	if opts == nil {
+		return nil
+	}
+	indexOpts := &index.SearchOptions{
+		EFSearch: opts.EFSearch,
+	}
+	if opts.Filter != nil {
+		indexOpts.Filter = func(id core.LocalID) bool {
+			return opts.Filter(uint64(id))
+		}
+	}
+	return indexOpts
+}
+
+func (tx *Tx[T]) filterIndexResults(scratch *txScratch, memT *memtable.MemTable, queue []*memtable.MemTable) {
 	// If an item is in MemTable (active or queue), it overrides the index version.
 	// This handles both deletions (tombstones) and updates.
 	n := 0
@@ -624,8 +684,9 @@ func (tx *Tx[T]) KNNSearchWithBuffer(ctx context.Context, query []float32, k int
 		n++
 	}
 	scratch.indexResults = scratch.indexResults[:n]
+}
 
-	// 3. Search MemTables
+func (tx *Tx[T]) searchMemTables(query []float32, k int, indexOpts *index.SearchOptions, memT *memtable.MemTable, queue []*memtable.MemTable, scratch *txScratch) error {
 	var filter func(core.LocalID) bool
 	if indexOpts != nil && indexOpts.Filter != nil {
 		filter = func(id core.LocalID) bool {
@@ -649,18 +710,6 @@ func (tx *Tx[T]) KNNSearchWithBuffer(ctx context.Context, query []float32, k int
 			return scratch.queueResults[i].Distance < scratch.queueResults[j].Distance
 		})
 	}
-
-	// 4. Merge Results
-	index.MergeNSearchResultsInto(&scratch.mergedResults, k, scratch.indexResults, scratch.memResults, scratch.queueResults)
-
-	// Append to output buffer
-	for _, res := range scratch.mergedResults {
-		*buf = append(*buf, SearchResult{
-			ID:       uint64(res.ID),
-			Distance: res.Distance,
-		})
-	}
-
 	return nil
 }
 
@@ -818,16 +867,16 @@ func (tx *Tx[T]) BruteSearch(ctx context.Context, query []float32, k int, filter
 
 // EnableProductQuantization enables Product Quantization (PQ) on the underlying index.
 func (tx *Tx[T]) EnableProductQuantization(cfg index.ProductQuantizationConfig) error {
-	if cap, ok := tx.txIndex.(index.ProductQuantizationEnabler); ok {
-		return cap.EnableProductQuantization(cfg)
+	if enabler, ok := tx.txIndex.(index.ProductQuantizationEnabler); ok {
+		return enabler.EnableProductQuantization(cfg)
 	}
 	return fmt.Errorf("index type %T does not support product quantization", tx.txIndex)
 }
 
 // DisableProductQuantization disables Product Quantization (PQ) on the underlying index.
 func (tx *Tx[T]) DisableProductQuantization() {
-	if cap, ok := tx.txIndex.(index.ProductQuantizationEnabler); ok {
-		cap.DisableProductQuantization()
+	if enabler, ok := tx.txIndex.(index.ProductQuantizationEnabler); ok {
+		enabler.DisableProductQuantization()
 	}
 }
 
@@ -851,23 +900,7 @@ func (tx *Tx[T]) runFlushWorker() {
 // Returns true if a flush was performed, false if skipped.
 func (tx *Tx[T]) flushMemTable() bool {
 	// 1. Rotate active to queue if not empty
-	tx.memMu.Lock()
-	state := tx.memState.Load()
-	rotated := false
-	if state.active.Size() > 0 {
-		newActive := memtable.New(tx.dimension, tx.distFunc)
-		newQueue := make([]*memtable.MemTable, len(state.queue)+1)
-		copy(newQueue, state.queue)
-		newQueue[len(state.queue)] = state.active
-
-		newState := &memState{
-			active: newActive,
-			queue:  newQueue,
-		}
-		tx.memState.Store(newState)
-		rotated = true
-	}
-	tx.memMu.Unlock()
+	rotated := tx.rotateActiveToQueue()
 
 	if rotated {
 		// Signal waiting writers that active memtable is empty
@@ -880,12 +913,37 @@ func (tx *Tx[T]) flushMemTable() bool {
 	tx.flushActionMu.Lock()
 	defer tx.flushActionMu.Unlock()
 
+	return tx.processFlushQueue()
+}
+
+func (tx *Tx[T]) rotateActiveToQueue() bool {
+	tx.memMu.Lock()
+	defer tx.memMu.Unlock()
+
+	state := tx.memState.Load()
+	if state.active.Size() > 0 {
+		newActive := memtable.New(tx.dimension, tx.distFunc)
+		newQueue := make([]*memtable.MemTable, len(state.queue)+1)
+		copy(newQueue, state.queue)
+		newQueue[len(state.queue)] = state.active
+
+		newState := &memState{
+			active: newActive,
+			queue:  newQueue,
+		}
+		tx.memState.Store(newState)
+		return true
+	}
+	return false
+}
+
+func (tx *Tx[T]) processFlushQueue() bool {
 	flushedAny := false
 	ctx := context.Background()
 
 	for {
 		tx.memMu.RLock()
-		state = tx.memState.Load()
+		state := tx.memState.Load()
 		if len(state.queue) == 0 {
 			tx.memMu.RUnlock()
 			break
@@ -893,42 +951,7 @@ func (tx *Tx[T]) flushMemTable() bool {
 		tableToFlush := state.queue[0]
 		tx.memMu.RUnlock()
 
-		// Get items to flush
-		items := tableToFlush.Items()
-
-		// Deduplicate items (latest wins)
-		unique := make(map[core.LocalID]memtable.Item)
-		for _, item := range items {
-			unique[item.ID] = item
-		}
-
-		var insertIDs []core.LocalID
-		var insertVecs [][]float32
-
-		for _, item := range unique {
-			if item.IsDeleted {
-				err := tx.txIndex.ApplyDelete(ctx, item.ID)
-				// Ignore if node already deleted or not found
-				if err != nil {
-					errMsg := err.Error()
-					if strings.Contains(errMsg, "not found") || strings.Contains(errMsg, "has been deleted") {
-						err = nil
-					}
-				}
-				if err != nil {
-					// In a production system, we should log this error properly.
-				}
-			} else {
-				insertIDs = append(insertIDs, item.ID)
-				insertVecs = append(insertVecs, item.Vector)
-			}
-		}
-
-		if len(insertIDs) > 0 {
-			if err := tx.txIndex.ApplyBatchInsert(ctx, insertIDs, insertVecs); err != nil {
-				// In a production system, we should log this error properly.
-			}
-		}
+		tx.flushOneTable(ctx, tableToFlush)
 
 		// Remove from queue
 		tx.memMu.Lock()
@@ -945,8 +968,37 @@ func (tx *Tx[T]) flushMemTable() bool {
 		}
 		tx.memMu.Unlock()
 	}
-
 	return flushedAny
+}
+
+func (tx *Tx[T]) flushOneTable(ctx context.Context, table *memtable.MemTable) {
+	// Get items to flush
+	items := table.Items()
+
+	// Deduplicate items (latest wins)
+	unique := make(map[core.LocalID]memtable.Item)
+	for _, item := range items {
+		unique[item.ID] = item
+	}
+
+	var insertIDs []core.LocalID
+	var insertVecs [][]float32
+
+	for _, item := range unique {
+		if item.IsDeleted {
+			tx.applyDelete(ctx, item.ID)
+		} else {
+			insertIDs = append(insertIDs, item.ID)
+			insertVecs = append(insertVecs, item.Vector)
+		}
+	}
+
+	if len(insertIDs) > 0 {
+		if err := tx.txIndex.ApplyBatchInsert(ctx, insertIDs, insertVecs); err != nil {
+			// In a production system, we should log this error properly.
+			_ = err // Suppress unused variable warning
+		}
+	}
 }
 
 // HybridSearch performs a hybrid search combining vector similarity and metadata filtering.
@@ -968,83 +1020,79 @@ func (tx *Tx[T]) HybridSearchWithContext(ctx context.Context, query []float32, k
 
 	// If no metadata filters, fall back to regular KNN search
 	if opts.MetadataFilters == nil || len(opts.MetadataFilters.Filters) == 0 {
-		err := tx.KNNSearchWithContext(ctx, query, k, &index.SearchOptions{EFSearch: opts.EF}, s)
-		if err != nil {
-			return nil, err
-		}
-
-		// Zero-alloc conversion
-		s.ScratchResults = s.ScratchResults[:0]
-		for s.Candidates.Len() > 0 {
-			item, _ := s.Candidates.PopItem()
-			s.ScratchResults = append(s.ScratchResults, item)
-		}
-		// Reverse
-		for i, j := 0, len(s.ScratchResults)-1; i < j; i, j = i+1, j-1 {
-			s.ScratchResults[i], s.ScratchResults[j] = s.ScratchResults[j], s.ScratchResults[i]
-		}
-
-		results := make([]SearchResult, len(s.ScratchResults))
-		for i, item := range s.ScratchResults {
-			results[i] = SearchResult{ID: uint64(item.Node), Distance: item.Distance}
-		}
-		return results, nil
+		return tx.hybridSearchNoFilter(ctx, query, k, opts, s)
 	}
 
 	// Create metadata filter function
-	var metadataFilter func(core.LocalID) bool
-
-	if tx.metaStore != nil {
-		// Try to compile to bitmap using Searcher's scratch bitmap
-		if tx.metaStore.CompileFilterTo(opts.MetadataFilters, s.FilterBitmap) {
-			// Fast path: use bitmap
-			bitmap := s.FilterBitmap
-			metadataFilter = func(id core.LocalID) bool {
-				return bitmap.Contains(id)
-			}
-		} else {
-			// Fallback to streaming filter (slow path)
-			tx.metaStore.RLock()
-			metadataFilter = tx.metaStore.CreateStreamingFilter(opts.MetadataFilters)
-			tx.metaStore.RUnlock()
-		}
-	} else {
+	metadataFilter := tx.createMetadataFilter(opts, s)
+	if metadataFilter == nil {
 		// Should not happen if initialized correctly, but safe fallback
 		return []SearchResult{}, nil
 	}
 
 	if opts.PreFilter {
-		// Pre-filtering
-		var filter func(core.LocalID) bool
-		if metadataFilter != nil {
-			filter = func(id core.LocalID) bool {
-				return metadataFilter(id)
-			}
-		}
-		searchOpts := &index.SearchOptions{EFSearch: opts.EF, Filter: filter}
-		err := tx.KNNSearchWithContext(ctx, query, k, searchOpts, s)
-		if err != nil {
-			return nil, err
-		}
-
-		// Zero-alloc conversion using ScratchResults
-		s.ScratchResults = s.ScratchResults[:0]
-		for s.Candidates.Len() > 0 {
-			item, _ := s.Candidates.PopItem()
-			s.ScratchResults = append(s.ScratchResults, item)
-		}
-		// Reverse
-		for i, j := 0, len(s.ScratchResults)-1; i < j; i, j = i+1, j-1 {
-			s.ScratchResults[i], s.ScratchResults[j] = s.ScratchResults[j], s.ScratchResults[i]
-		}
-
-		results := make([]SearchResult, len(s.ScratchResults))
-		for i, item := range s.ScratchResults {
-			results[i] = SearchResult{ID: uint64(item.Node), Distance: item.Distance}
-		}
-		return results, nil
+		return tx.hybridSearchPreFilter(ctx, query, k, opts, s, metadataFilter)
 	}
 
+	return tx.hybridSearchPostFilter(ctx, query, k, opts, s, metadataFilter)
+}
+
+func (tx *Tx[T]) hybridSearchNoFilter(ctx context.Context, query []float32, k int, opts *HybridSearchOptions, s *searcher.Searcher) ([]SearchResult, error) {
+	err := tx.KNNSearchWithContext(ctx, query, k, &index.SearchOptions{EFSearch: opts.EF}, s)
+	if err != nil {
+		return nil, err
+	}
+	return tx.extractResultsFromSearcher(s), nil
+}
+
+func (tx *Tx[T]) extractResultsFromSearcher(s *searcher.Searcher) []SearchResult {
+	// Zero-alloc conversion
+	s.ScratchResults = s.ScratchResults[:0]
+	for s.Candidates.Len() > 0 {
+		item, _ := s.Candidates.PopItem()
+		s.ScratchResults = append(s.ScratchResults, item)
+	}
+	// Reverse
+	for i, j := 0, len(s.ScratchResults)-1; i < j; i, j = i+1, j-1 {
+		s.ScratchResults[i], s.ScratchResults[j] = s.ScratchResults[j], s.ScratchResults[i]
+	}
+
+	results := make([]SearchResult, len(s.ScratchResults))
+	for i, item := range s.ScratchResults {
+		results[i] = SearchResult{ID: uint64(item.Node), Distance: item.Distance}
+	}
+	return results
+}
+
+func (tx *Tx[T]) createMetadataFilter(opts *HybridSearchOptions, s *searcher.Searcher) func(core.LocalID) bool {
+	if tx.metaStore == nil {
+		return nil
+	}
+	// Try to compile to bitmap using Searcher's scratch bitmap
+	if tx.metaStore.CompileFilterTo(opts.MetadataFilters, s.FilterBitmap) {
+		// Fast path: use bitmap
+		bitmap := s.FilterBitmap
+		return func(id core.LocalID) bool {
+			return bitmap.Contains(id)
+		}
+	}
+	// Fallback to streaming filter (slow path)
+	tx.metaStore.RLock()
+	defer tx.metaStore.RUnlock()
+	return tx.metaStore.CreateStreamingFilter(opts.MetadataFilters)
+}
+
+func (tx *Tx[T]) hybridSearchPreFilter(ctx context.Context, query []float32, k int, opts *HybridSearchOptions, s *searcher.Searcher, metadataFilter func(core.LocalID) bool) ([]SearchResult, error) {
+	// Pre-filtering
+	searchOpts := &index.SearchOptions{EFSearch: opts.EF, Filter: metadataFilter}
+	err := tx.KNNSearchWithContext(ctx, query, k, searchOpts, s)
+	if err != nil {
+		return nil, err
+	}
+	return tx.extractResultsFromSearcher(s), nil
+}
+
+func (tx *Tx[T]) hybridSearchPostFilter(ctx context.Context, query []float32, k int, opts *HybridSearchOptions, s *searcher.Searcher, metadataFilter func(core.LocalID) bool) ([]SearchResult, error) {
 	// Post-filtering
 	oversampleK := min(k*3, 1000)
 	searchOpts := &index.SearchOptions{EFSearch: opts.EF}
@@ -1089,22 +1137,22 @@ func (tx *Tx[T]) KNNSearchStream(ctx context.Context, query []float32, k int, op
 	queue := state.queue
 
 	// Convert SearchOptions
-	var indexOpts *index.SearchOptions
-	if opts != nil {
-		indexOpts = &index.SearchOptions{
-			EFSearch: opts.EFSearch,
-		}
-		if opts.Filter != nil {
-			indexOpts.Filter = func(id core.LocalID) bool {
-				return opts.Filter(uint64(id))
-			}
-		}
-	}
+	indexOpts := tx.convertSearchOptions(opts)
 
 	// 1. Stream from Main Index (filtered)
+	indexStream := tx.createFilteredIndexStream(ctx, query, k, indexOpts, memT, queue)
+
+	// 2. Search MemTables (returns slice)
+	memResults := tx.searchAllMemTables(query, k, indexOpts, memT, queue)
+
+	// 3. Merge Streams and Convert
+	return tx.mergeAndConvertStreams(indexStream, memResults, k)
+}
+
+func (tx *Tx[T]) createFilteredIndexStream(ctx context.Context, query []float32, k int, indexOpts *index.SearchOptions, memT *memtable.MemTable, queue []*memtable.MemTable) iter.Seq2[index.SearchResult, error] {
 	indexStream := tx.txIndex.KNNSearchStream(ctx, query, k, indexOpts)
 
-	filteredIndexStream := func(yield func(index.SearchResult, error) bool) {
+	return func(yield func(index.SearchResult, error) bool) {
 		for res, err := range indexStream {
 			if err != nil {
 				if !yield(res, err) {
@@ -1133,8 +1181,9 @@ func (tx *Tx[T]) KNNSearchStream(ctx context.Context, query []float32, k int, op
 			}
 		}
 	}
+}
 
-	// 2. Search MemTables (returns slice)
+func (tx *Tx[T]) searchAllMemTables(query []float32, k int, indexOpts *index.SearchOptions, memT *memtable.MemTable, queue []*memtable.MemTable) []index.SearchResult {
 	var filter func(core.LocalID) bool
 	if indexOpts != nil && indexOpts.Filter != nil {
 		filter = func(id core.LocalID) bool {
@@ -1156,18 +1205,19 @@ func (tx *Tx[T]) KNNSearchStream(ctx context.Context, query []float32, k int, op
 		})
 	}
 
-	// 3. Merge Streams
-	allMemResults := memResults
 	if len(queueResults) > 0 {
-		allMemResults = index.MergeSearchResults(memResults, queueResults, k)
+		return index.MergeSearchResults(memResults, queueResults, k)
 	}
+	return memResults
+}
 
+func (tx *Tx[T]) mergeAndConvertStreams(indexStream iter.Seq2[index.SearchResult, error], memResults []index.SearchResult, k int) iter.Seq2[SearchResult, error] {
 	var mergedStream iter.Seq2[index.SearchResult, error]
-	if len(allMemResults) == 0 {
-		mergedStream = filteredIndexStream
+	if len(memResults) == 0 {
+		mergedStream = indexStream
 	} else {
-		memStream := index.SliceToStream(allMemResults)
-		mergedStream = index.MergeSearchStreams(filteredIndexStream, memStream)
+		memStream := index.SliceToStream(memResults)
+		mergedStream = index.MergeSearchStreams(indexStream, memStream)
 	}
 
 	// Convert to engine.SearchResult
@@ -1288,4 +1338,39 @@ func (tx *Tx[T]) Close() error {
 		return fmt.Errorf("failed to close transaction coordinator: %v", errs)
 	}
 	return nil
+}
+
+func (tx *Tx[T]) rollbackUpdate(localID core.LocalID, meta metadata.Metadata, oldMeta metadata.Metadata, oldMetaOK bool, oldData T, oldVector []float32) {
+	if meta != nil {
+		tx.metaMu.Lock()
+		if oldMetaOK {
+			tx.metaStore.Set(localID, oldMeta)
+		} else {
+			tx.metaStore.Delete(localID)
+		}
+		tx.metaMu.Unlock()
+	}
+	_ = tx.dataStore.Set(localID, oldData)
+	// Revert memtable change is hard, but since we haven't flushed,
+	// the index is still consistent with oldVector.
+	// We should ideally revert the memtable entry too.
+	tx.memMu.RLock()
+	state := tx.memState.Load()
+	state.active.Insert(localID, oldVector)
+	tx.memMu.RUnlock()
+}
+
+func (tx *Tx[T]) applyDelete(ctx context.Context, id core.LocalID) {
+	err := tx.txIndex.ApplyDelete(ctx, id)
+	// Ignore if node already deleted or not found
+	if err != nil {
+		errMsg := err.Error()
+		if strings.Contains(errMsg, "not found") || strings.Contains(errMsg, "has been deleted") {
+			err = nil
+		}
+	}
+	if err != nil {
+		// In a production system, we should log this error properly.
+		_ = err // Suppress unused variable warning
+	}
 }

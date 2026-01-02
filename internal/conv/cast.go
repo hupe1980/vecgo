@@ -1,3 +1,4 @@
+// Package conv provides safe type conversion utilities.
 package conv
 
 import (

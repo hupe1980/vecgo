@@ -136,22 +136,25 @@ func (s *Store) GetVector(id core.LocalID) ([]float32, bool) {
 
 	// Check deletion bitmap
 	// Lock-free check
-	deletedPtr := s.deleted.Load()
-	if deletedPtr != nil {
-		bitmapIdx := id / 64
-		bitmapIdxInt, err := conv.Uint32ToInt(uint32(bitmapIdx))
-		if err != nil {
-			return nil, false
-		}
-		if bitmapIdxInt < len(*deletedPtr) {
-			bitIdx := id % 64
-			if atomic.LoadUint64(&(*deletedPtr)[bitmapIdxInt])&(1<<bitIdx) != 0 {
-				return nil, false
-			}
-		}
+	if s.isDeleted(id) {
+		return nil, false
 	}
 
 	return (*data)[start:end:end], true
+}
+
+func (s *Store) isDeleted(id core.LocalID) bool {
+	deletedPtr := s.deleted.Load()
+	if deletedPtr == nil {
+		return false
+	}
+	bitmapIdx := id / 64
+	bitmapIdxInt := int(bitmapIdx)
+	if bitmapIdxInt < len(*deletedPtr) {
+		bitIdx := id % 64
+		return atomic.LoadUint64(&(*deletedPtr)[bitmapIdxInt])&(1<<bitIdx) != 0
+	}
+	return false
 }
 
 // GetVectorUnsafe returns the vector without checking deletion status.
@@ -203,45 +206,13 @@ func (s *Store) SetVector(id core.LocalID, v []float32) error {
 
 	// Copy-on-write for growth beyond current length.
 	if requiredLen > len(currentData) {
-		if requiredLen <= cap(currentData) {
-			// Grow within capacity (same backing array). Safe as long as we only
-			// write beyond the previously-published length, then publish length.
-			grown := currentData[:requiredLen]
-			start := idInt * dim
-			copy(grown[start:start+dim], v)
-			// Publish new length after data write.
-			published := grown
-			s.data.Store(&published)
-		} else {
-			// Allocate new backing array, populate fully, then publish.
-			newCap := max(requiredLen*2, len(currentData)*2)
-			newData := mem.AllocAlignedFloat32(newCap)
-			newData = newData[:requiredLen]
-			copy(newData, currentData)
-			start := idInt * dim
-			copy(newData[start:start+dim], v)
-			s.data.Store(&newData)
-		}
-
-		// Extend deletion bitmap if needed
-		requiredBitmapLen := (idInt + 63) / 64
-		currentDeleted := *s.deleted.Load()
-		if len(currentDeleted) < requiredBitmapLen+1 {
-			newDeleted := make([]uint64, requiredBitmapLen+1)
-			copy(newDeleted, currentDeleted)
-			s.deleted.Store(&newDeleted)
-		}
-
-		// Update count if we're adding a new vector
-		if uint64(id) >= s.count {
-			s.count = uint64(id) + 1
-		}
+		s.growAndSet(id, requiredLen, currentData, v)
 	} else {
 		// In-place update of an already-published vector.
 		// Writers are externally synchronized, but concurrent readers may exist.
 		// This is safe for correctness if callers do not rely on atomic point updates;
 		// for strict snapshot semantics, updates must use copy-on-write at a higher level.
-		start := idInt * dim
+		start := int(id) * dim
 		copy(currentData[start:start+dim], v)
 	}
 
@@ -253,8 +224,45 @@ func (s *Store) SetVector(id core.LocalID, v []float32) error {
 		// New vector
 		s.live++
 	}
-
 	return nil
+}
+
+func (s *Store) growAndSet(id core.LocalID, requiredLen int, currentData, v []float32) {
+	dim := int(s.dim)
+	idInt := int(id)
+	if requiredLen <= cap(currentData) {
+		// Grow within capacity (same backing array). Safe as long as we only
+		// write beyond the previously-published length, then publish length.
+		grown := currentData[:requiredLen]
+		start := idInt * dim
+		copy(grown[start:start+dim], v)
+		// Publish new length after data write.
+		published := grown
+		s.data.Store(&published)
+	} else {
+		// Allocate new backing array, populate fully, then publish.
+		newCap := max(requiredLen*2, len(currentData)*2)
+		newData := mem.AllocAlignedFloat32(newCap)
+		newData = newData[:requiredLen]
+		copy(newData, currentData)
+		start := idInt * dim
+		copy(newData[start:start+dim], v)
+		s.data.Store(&newData)
+	}
+
+	// Extend deletion bitmap if needed
+	requiredBitmapLen := (idInt + 63) / 64
+	currentDeleted := *s.deleted.Load()
+	if len(currentDeleted) < requiredBitmapLen+1 {
+		newDeleted := make([]uint64, requiredBitmapLen+1)
+		copy(newDeleted, currentDeleted)
+		s.deleted.Store(&newDeleted)
+	}
+
+	// Update count if we're adding a new vector
+	if uint64(id) >= s.count {
+		s.count = uint64(id) + 1
+	}
 }
 
 // Append adds a new vector and returns its ID.

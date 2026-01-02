@@ -3,6 +3,7 @@ package hnsw
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"iter"
 	"math"
@@ -569,27 +570,68 @@ func (h *HNSW) BatchInsert(ctx context.Context, vectors [][]float32) index.Batch
 
 // insert is the unified insertion logic.
 func (h *HNSW) insert(g *graph, v []float32, id core.LocalID, layer int, useProvidedID bool) (core.LocalID, error) {
+	vec, err := h.prepareVector(v)
+	if err != nil {
+		return 0, err
+	}
+
+	id = h.allocateOrValidateID(g, id, useProvidedID)
+
+	layer = h.determineLayer(id, layer, useProvidedID)
+
+	node, err := h.newNode(g, layer)
+	if err != nil {
+		if !useProvidedID {
+			h.releaseID(g, id)
+		}
+		return 0, err
+	}
+
+	if err := h.vectors.SetVector(id, vec); err != nil {
+		if !useProvidedID {
+			h.releaseID(g, id)
+		}
+		return 0, err
+	}
+
+	// Publish node so it can be found
+	h.setNode(g, id, node)
+
+	wasFirst, err := h.performInsertion(g, id, vec, layer)
+	if err != nil {
+		return 0, err
+	}
+
+	if !wasFirst {
+		g.countAtomic.Add(1)
+		h.updateEntryPoint(g, id, layer)
+	}
+
+	return id, nil
+}
+
+func (h *HNSW) prepareVector(v []float32) ([]float32, error) {
 	if len(v) == 0 {
-		return 0, index.ErrEmptyVector
+		return nil, index.ErrEmptyVector
 	}
 	dim := int(h.dimensionAtomic.Load())
 	if len(v) != dim {
-		return 0, &index.ErrDimensionMismatch{Expected: dim, Actual: len(v)}
+		return nil, &index.ErrDimensionMismatch{Expected: dim, Actual: len(v)}
 	}
 
 	// Normalize if needed
-	var vec []float32
 	if h.opts.NormalizeVectors {
-		vec = make([]float32, len(v))
+		vec := make([]float32, len(v))
 		copy(vec, v)
 		if !distance.NormalizeL2InPlace(vec) {
-			return 0, fmt.Errorf("hnsw: cannot normalize zero vector")
+			return nil, fmt.Errorf("hnsw: cannot normalize zero vector")
 		}
-	} else {
-		vec = v // Zero-copy if not normalizing (vectors store will copy if needed)
+		return vec, nil
 	}
+	return v, nil // Zero-copy if not normalizing
+}
 
-	// ID Allocation
+func (h *HNSW) allocateOrValidateID(g *graph, id core.LocalID, useProvidedID bool) core.LocalID {
 	if useProvidedID {
 		// Ensure nextID > id
 		for {
@@ -601,58 +643,40 @@ func (h *HNSW) insert(g *graph, v []float32, id core.LocalID, layer int, useProv
 				break
 			}
 		}
-	} else {
-		id = h.allocateID(g)
+		return id
 	}
+	return h.allocateID(g)
+}
 
-	// Layer Selection
-	if layer < 0 {
-		if useProvidedID {
-			layer = h.layerForApplyInsert(uint64(id))
-		} else {
-			h.rngMu.Lock()
-			r := h.rng.Float64()
-			h.rngMu.Unlock()
-			layer = int(math.Floor(-math.Log(r) * h.layerMultiplier))
-		}
+func (h *HNSW) determineLayer(id core.LocalID, layer int, useProvidedID bool) int {
+	if layer >= 0 {
+		return layer
 	}
-
-	// Create Node (Heap)
-	node, err := h.newNode(g, layer)
-	if err != nil {
-		if !useProvidedID {
-			h.releaseID(g, id)
-		}
-		return 0, err
+	if useProvidedID {
+		return h.layerForApplyInsert(uint64(id))
 	}
+	h.rngMu.Lock()
+	r := h.rng.Float64()
+	h.rngMu.Unlock()
+	return int(math.Floor(-math.Log(r) * h.layerMultiplier))
+}
 
-	// Store Vector
-	if err := h.vectors.SetVector(id, vec); err != nil {
-		if !useProvidedID {
-			h.releaseID(g, id)
-		}
-		return 0, err
-	}
-
-	// Publish node so it can be found
-	h.setNode(g, id, node)
-
+func (h *HNSW) performInsertion(g *graph, id core.LocalID, vec []float32, layer int) (bool, error) {
 	retries := 0
 	for {
 		// Handle First Node
 		if g.countAtomic.Load() == 0 {
 			if g.countAtomic.CompareAndSwap(0, 1) {
-				h.setNode(g, id, node)
 				g.entryPointAtomic.Store(uint32(id))
 				g.maxLevelAtomic.Store(int32(layer)) //nolint:gosec // layer is small
-				return id, nil
+				return true, nil
 			}
 			// Lost race, continue
 		}
 
 		// Insert into Graph
 		err := h.insertNode(g, id, vec, layer)
-		if err == index.ErrEntryPointDeleted {
+		if errors.Is(err, index.ErrEntryPointDeleted) {
 			retries++
 			if retries > 10 {
 				h.recoverEntryPoint(g)
@@ -662,14 +686,13 @@ func (h *HNSW) insert(g *graph, v []float32, id core.LocalID, layer int, useProv
 			continue
 		}
 		if err != nil {
-			return 0, err
+			return false, err
 		}
-		break
+		return false, nil
 	}
+}
 
-	g.countAtomic.Add(1)
-
-	// Update Entry Point
+func (h *HNSW) updateEntryPoint(g *graph, id core.LocalID, layer int) {
 	maxLevel := int(g.maxLevelAtomic.Load())
 	if layer > maxLevel {
 		for {
@@ -683,8 +706,6 @@ func (h *HNSW) insert(g *graph, v []float32, id core.LocalID, layer int, useProv
 			}
 		}
 	}
-
-	return id, nil
 }
 
 // insertNode performs the graph traversal and linking.
@@ -794,6 +815,17 @@ func (h *HNSW) selectNeighborsHeuristic(candidates *searcher.PriorityQueue, m in
 		return h.selectNeighborsSimple(candidates, m, scratch) // Fallback to simple if few candidates
 	}
 
+	temp := h.extractSortedCandidates(candidates, scratch)
+	result := h.applyHeuristic(temp, m, scratch)
+
+	if len(result) < m {
+		result = h.fillUpNeighbors(result, temp, m)
+	}
+
+	return result
+}
+
+func (h *HNSW) extractSortedCandidates(candidates *searcher.PriorityQueue, scratch *scratch) []searcher.PriorityQueueItem {
 	// Extract all candidates to a slice sorted by distance (nearest first)
 	// candidates is a MaxHeap (stores worst at top), so popping gives worst-to-best.
 	// We want best-to-worst for the heuristic.
@@ -808,12 +840,15 @@ func (h *HNSW) selectNeighborsHeuristic(candidates *searcher.PriorityQueue, m in
 	for i, j := 0, len(temp)-1; i < j; i, j = i+1, j-1 {
 		temp[i], temp[j] = temp[j], temp[i]
 	}
+	return temp
+}
 
+func (h *HNSW) applyHeuristic(candidates []searcher.PriorityQueueItem, m int, scratch *scratch) []searcher.PriorityQueueItem {
 	// Use scratch buffers for results
 	result := scratch.heuristicResult[:0]
 	resultVecs := scratch.heuristicResultVecs[:0]
 
-	for _, cand := range temp {
+	for _, cand := range candidates {
 		if len(result) >= m {
 			break
 		}
@@ -839,28 +874,27 @@ func (h *HNSW) selectNeighborsHeuristic(candidates *searcher.PriorityQueue, m in
 			resultVecs = append(resultVecs, candVec)
 		}
 	}
+	return result
+}
 
+func (h *HNSW) fillUpNeighbors(result []searcher.PriorityQueueItem, candidates []searcher.PriorityQueueItem, m int) []searcher.PriorityQueueItem {
 	// Fill up if needed
-	if len(result) < m {
-		for _, cand := range temp {
-			if len(result) >= m {
+	for _, cand := range candidates {
+		if len(result) >= m {
+			break
+		}
+		// Check if already added
+		found := false
+		for _, r := range result {
+			if r.Node == cand.Node {
+				found = true
 				break
 			}
-			// Check if already added
-			found := false
-			for _, r := range result {
-				if r.Node == cand.Node {
-					found = true
-					break
-				}
-			}
-			if !found {
-				result = append(result, cand)
-				// We don't need to update resultVecs here as we don't use it anymore
-			}
+		}
+		if !found {
+			result = append(result, cand)
 		}
 	}
-
 	return result
 }
 
@@ -871,25 +905,12 @@ func (h *HNSW) selectNeighborsHeuristic(candidates *searcher.PriorityQueue, m in
 // 2. Less wasted computation (skips filtered regions)
 // 3. Matches exact search behavior
 func (h *HNSW) searchLayer(s *searcher.Searcher, g *graph, query []float32, epID core.LocalID, epDist float32, level int, ef int, filter func(core.LocalID) bool) {
+	h.initializeSearch(s, epID)
+	h.processEntryPoint(s, g, epID, epDist, filter)
+
+	candidates := s.ScratchCandidates
+	results := s.Candidates
 	visited := s.Visited
-	visited.Reset()
-
-	candidates := s.ScratchCandidates // MinHeap: stores best candidates to explore
-	candidates.Reset()
-
-	results := s.Candidates // MaxHeap: stores current top EF results
-	results.Reset()
-
-	visited.Visit(epID)
-
-	// CRITICAL: Always add entry point to candidates for navigation (even if filtered)
-	// This ensures we have a starting point for graph traversal
-	candidates.PushItem(searcher.PriorityQueueItem{Node: epID, Distance: epDist})
-
-	// Only add to results if it passes the filter AND is not deleted
-	if (filter == nil || filter(epID)) && !g.tombstones.Test(uint32(epID)) {
-		results.PushItem(searcher.PriorityQueueItem{Node: epID, Distance: epDist})
-	}
 
 	for candidates.Len() > 0 {
 		curr, _ := candidates.PopItem()
@@ -905,35 +926,56 @@ func (h *HNSW) searchLayer(s *searcher.Searcher, g *graph, query []float32, epID
 		h.visitConnections(g, curr.Node, level, func(next Neighbor) bool {
 			if !visited.Visited(next.ID) {
 				visited.Visit(next.ID)
-
-				nextDist := h.dist(query, next.ID)
-
-				// Classic HNSW pruning: avoid pushing obviously-bad candidates once we already
-				// have ef results. This substantially reduces heap churn.
-				//
-				// IMPORTANT: we only apply this optimization when there is no filter.
-				// With filtering enabled, we intentionally keep traversal more permissive to
-				// avoid getting trapped in filtered-out regions.
-				shouldExplore := true
-				if filter == nil && results.Len() > 0 && results.Len() >= ef {
-					worst, _ := results.TopItem()
-					if nextDist > worst.Distance {
-						shouldExplore = false
-					}
-				}
-
-				if shouldExplore {
-					candidates.PushItem(searcher.PriorityQueueItem{Node: next.ID, Distance: nextDist})
-
-					// Only add to results if it passes the filter AND is not deleted
-					if (filter == nil || filter(next.ID)) && !g.tombstones.Test(uint32(next.ID)) {
-						// Use bounded push for results to avoid heap churn
-						results.PushItemBounded(searcher.PriorityQueueItem{Node: next.ID, Distance: nextDist}, ef)
-					}
-				}
+				h.processNeighbor(s, g, query, next, ef, filter)
 			}
 			return true
 		})
+	}
+}
+
+func (h *HNSW) initializeSearch(s *searcher.Searcher, epID core.LocalID) {
+	s.Visited.Reset()
+	s.ScratchCandidates.Reset()
+	s.Candidates.Reset()
+	s.Visited.Visit(epID)
+}
+
+func (h *HNSW) processEntryPoint(s *searcher.Searcher, g *graph, epID core.LocalID, epDist float32, filter func(core.LocalID) bool) {
+	// CRITICAL: Always add entry point to candidates for navigation (even if filtered)
+	// This ensures we have a starting point for graph traversal
+	s.ScratchCandidates.PushItem(searcher.PriorityQueueItem{Node: epID, Distance: epDist})
+
+	// Only add to results if it passes the filter AND is not deleted
+	if (filter == nil || filter(epID)) && !g.tombstones.Test(uint32(epID)) {
+		s.Candidates.PushItem(searcher.PriorityQueueItem{Node: epID, Distance: epDist})
+	}
+}
+
+func (h *HNSW) processNeighbor(s *searcher.Searcher, g *graph, query []float32, next Neighbor, ef int, filter func(core.LocalID) bool) {
+	nextDist := h.dist(query, next.ID)
+
+	// Classic HNSW pruning: avoid pushing obviously-bad candidates once we already
+	// have ef results. This substantially reduces heap churn.
+	//
+	// IMPORTANT: we only apply this optimization when there is no filter.
+	// With filtering enabled, we intentionally keep traversal more permissive to
+	// avoid getting trapped in filtered-out regions.
+	shouldExplore := true
+	if filter == nil && s.Candidates.Len() >= ef {
+		worst, _ := s.Candidates.TopItem()
+		if nextDist > worst.Distance {
+			shouldExplore = false
+		}
+	}
+
+	if shouldExplore {
+		s.ScratchCandidates.PushItem(searcher.PriorityQueueItem{Node: next.ID, Distance: nextDist})
+
+		// Only add to results if it passes the filter AND is not deleted
+		if (filter == nil || filter(next.ID)) && !g.tombstones.Test(uint32(next.ID)) {
+			// Use bounded push for results to avoid heap churn
+			s.Candidates.PushItemBounded(searcher.PriorityQueueItem{Node: next.ID, Distance: nextDist}, ef)
+		}
 	}
 }
 
@@ -1046,16 +1088,43 @@ func (h *HNSW) searchExecute(ctx context.Context, s *searcher.Searcher, q []floa
 		return err
 	}
 
+	g := h.currentGraph.Load()
+	g.arena.IncRef()
+	defer g.arena.DecRef()
+
+	q, err := h.prepareQuery(s, q)
+	if err != nil {
+		return err
+	}
+
+	epID := g.entryPointAtomic.Load()
+	if h.getNode(g, core.LocalID(epID)) == nil {
+		return nil
+	}
+
+	ef := h.determineEF(k, opts)
+
+	currID, currDist := h.greedySearch(g, q, core.LocalID(epID))
+
+	// 2. Search layer 0 with pre-filtering
+	var filter func(core.LocalID) bool
+	if opts != nil && opts.Filter != nil {
+		filter = func(id core.LocalID) bool {
+			return opts.Filter(id)
+		}
+	}
+
+	h.searchLayer(s, g, q, currID, currDist, 0, ef, filter)
+	return nil
+}
+
+func (h *HNSW) prepareQuery(s *searcher.Searcher, q []float32) ([]float32, error) {
 	// Safety check: Dimension mismatch
 	// This is critical because internal distance functions (SIMD) do not check bounds.
 	dim := int(h.dimensionAtomic.Load())
 	if dim > 0 && len(q) != dim {
-		return &index.ErrDimensionMismatch{Expected: dim, Actual: len(q)}
+		return nil, &index.ErrDimensionMismatch{Expected: dim, Actual: len(q)}
 	}
-
-	g := h.currentGraph.Load()
-	g.arena.IncRef()
-	defer g.arena.DecRef()
 
 	// Normalize
 	if h.opts.NormalizeVectors {
@@ -1064,16 +1133,14 @@ func (h *HNSW) searchExecute(ctx context.Context, s *searcher.Searcher, q []floa
 		}
 		copy(s.ScratchVec, q)
 		if !distance.NormalizeL2InPlace(s.ScratchVec) {
-			return fmt.Errorf("hnsw: zero query vector")
+			return nil, fmt.Errorf("hnsw: zero query vector")
 		}
-		q = s.ScratchVec
+		return s.ScratchVec, nil
 	}
+	return q, nil
+}
 
-	epID := g.entryPointAtomic.Load()
-	if h.getNode(g, core.LocalID(epID)) == nil {
-		return nil
-	}
-
+func (h *HNSW) determineEF(k int, opts *index.SearchOptions) int {
 	ef := h.opts.EF
 	if opts != nil && opts.EFSearch > 0 {
 		ef = opts.EFSearch
@@ -1081,12 +1148,12 @@ func (h *HNSW) searchExecute(ctx context.Context, s *searcher.Searcher, q []floa
 	if ef < k {
 		ef = k
 	}
+	return ef
+}
 
-	// Ensure queues have sufficient capacity
-	// s.EnsureQueueCapacity(ef)
-
+func (h *HNSW) greedySearch(g *graph, q []float32, epID core.LocalID) (core.LocalID, float32) {
 	// 1. Greedy to layer 0
-	currID := core.LocalID(epID)
+	currID := epID
 	currDist := h.dist(q, currID)
 	maxLevel := int(g.maxLevelAtomic.Load())
 
@@ -1105,17 +1172,7 @@ func (h *HNSW) searchExecute(ctx context.Context, s *searcher.Searcher, q []floa
 			})
 		}
 	}
-
-	// 2. Search layer 0 with pre-filtering
-	var filter func(core.LocalID) bool
-	if opts != nil && opts.Filter != nil {
-		filter = func(id core.LocalID) bool {
-			return opts.Filter(id)
-		}
-	}
-
-	h.searchLayer(s, g, q, currID, currDist, 0, ef, filter)
-	return nil
+	return currID, currDist
 }
 
 // KNNSearchStream implements streaming searcher.
@@ -1133,17 +1190,10 @@ func (h *HNSW) KNNSearchStream(ctx context.Context, q []float32, k int, opts *in
 		s := searcher.Get()
 		defer searcher.Put(s)
 
-		// Normalize
-		if h.opts.NormalizeVectors {
-			if len(s.ScratchVec) < len(q) {
-				s.ScratchVec = make([]float32, len(q))
-			}
-			copy(s.ScratchVec, q)
-			if !distance.NormalizeL2InPlace(s.ScratchVec) {
-				yield(index.SearchResult{}, fmt.Errorf("hnsw: zero query vector"))
-				return
-			}
-			q = s.ScratchVec
+		q, err := h.prepareQuery(s, q)
+		if err != nil {
+			yield(index.SearchResult{}, err)
+			return
 		}
 
 		epID := g.entryPointAtomic.Load()
@@ -1151,34 +1201,9 @@ func (h *HNSW) KNNSearchStream(ctx context.Context, q []float32, k int, opts *in
 			return
 		}
 
-		ef := h.opts.EF
-		if opts != nil && opts.EFSearch > 0 {
-			ef = opts.EFSearch
-		}
-		if ef < k {
-			ef = k
-		}
+		ef := h.determineEF(k, opts)
 
-		// 1. Greedy to layer 0
-		currID := core.LocalID(epID)
-		currDist := h.dist(q, currID)
-		maxLevel := int(g.maxLevelAtomic.Load())
-
-		for level := maxLevel; level > 0; level-- {
-			changed := true
-			for changed {
-				changed = false
-				h.visitConnections(g, currID, level, func(next Neighbor) bool {
-					nextDist := h.dist(q, next.ID)
-					if nextDist < currDist {
-						currID = next.ID
-						currDist = nextDist
-						changed = true
-					}
-					return true
-				})
-			}
-		}
+		currID, currDist := h.greedySearch(g, q, core.LocalID(epID))
 
 		// 2. Search layer 0 with pre-filtering
 		var filter func(core.LocalID) bool
@@ -1189,26 +1214,28 @@ func (h *HNSW) KNNSearchStream(ctx context.Context, q []float32, k int, opts *in
 		}
 
 		h.searchLayer(s, g, q, currID, currDist, 0, ef, filter)
-		results := s.Candidates
+		h.yieldResults(s.Candidates, k, yield)
+	}
+}
 
-		// Extract K
-		// MaxHeap pops worst first, so we need to pop (Len-k) items first
-		for results.Len() > k {
-			_, _ = results.PopItem()
-		}
+func (h *HNSW) yieldResults(results *searcher.PriorityQueue, k int, yield func(index.SearchResult, error) bool) {
+	// Extract K
+	// MaxHeap pops worst first, so we need to pop (Len-k) items first
+	for results.Len() > k {
+		_, _ = results.PopItem()
+	}
 
-		// Collect results in reverse order (nearest first)
-		tempResults := make([]index.SearchResult, 0, k)
-		for results.Len() > 0 {
-			item, _ := results.PopItem()
-			tempResults = append(tempResults, index.SearchResult{ID: uint32(item.Node), Distance: item.Distance})
-		}
+	// Collect results in reverse order (nearest first)
+	tempResults := make([]index.SearchResult, 0, k)
+	for results.Len() > 0 {
+		item, _ := results.PopItem()
+		tempResults = append(tempResults, index.SearchResult{ID: uint32(item.Node), Distance: item.Distance})
+	}
 
-		// Yield in reverse (since we popped worst first, the last item in tempResults is the best)
-		for i := len(tempResults) - 1; i >= 0; i-- {
-			if !yield(tempResults[i], nil) {
-				return
-			}
+	// Yield in reverse (since we popped worst first, the last item in tempResults is the best)
+	for i := len(tempResults) - 1; i >= 0; i-- {
+		if !yield(tempResults[i], nil) {
+			return
 		}
 	}
 }
@@ -1225,38 +1252,8 @@ func (h *HNSW) BruteSearch(ctx context.Context, query []float32, k int, filter f
 			if seg == nil {
 				continue
 			}
-			for j := range seg {
-				node := seg[j].Load()
-				if node == nil {
-					continue
-				}
-				iU64, err := conv.IntToUint64(i)
-				if err != nil {
-					return nil, err
-				}
-				jU64, err := conv.IntToUint64(j)
-				if err != nil {
-					return nil, err
-				}
-				nodeID := iU64*nodeSegmentSize + jU64
-				nodeIDU32, err := conv.Uint64ToUint32(nodeID)
-				if err != nil {
-					return nil, err
-				}
-				if filter != nil && !filter(core.LocalID(nodeIDU32)) {
-					continue
-				}
-
-				d := h.dist(query, core.LocalID(nodeIDU32))
-				if pq.Len() < k {
-					pq.PushItem(searcher.PriorityQueueItem{Node: core.LocalID(nodeIDU32), Distance: d})
-				} else {
-					top, _ := pq.TopItem()
-					if d < top.Distance {
-						_, _ = pq.PopItem()
-						pq.PushItem(searcher.PriorityQueueItem{Node: core.LocalID(nodeIDU32), Distance: d})
-					}
-				}
+			if err := h.scanSegment(seg, i, query, k, filter, pq); err != nil {
+				return nil, err
 			}
 		}
 	}
@@ -1267,6 +1264,43 @@ func (h *HNSW) BruteSearch(ctx context.Context, query []float32, k int, filter f
 		res[i] = index.SearchResult{ID: uint32(item.Node), Distance: item.Distance}
 	}
 	return res, nil
+}
+
+func (h *HNSW) scanSegment(seg *NodeSegment, segIdx int, query []float32, k int, filter func(id core.LocalID) bool, pq *searcher.PriorityQueue) error {
+	for j := range seg {
+		node := seg[j].Load()
+		if node == nil {
+			continue
+		}
+		iU64, err := conv.IntToUint64(segIdx)
+		if err != nil {
+			return err
+		}
+		jU64, err := conv.IntToUint64(j)
+		if err != nil {
+			return err
+		}
+		nodeID := iU64*nodeSegmentSize + jU64
+		nodeIDU32, err := conv.Uint64ToUint32(nodeID)
+		if err != nil {
+			return err
+		}
+		if filter != nil && !filter(core.LocalID(nodeIDU32)) {
+			continue
+		}
+
+		d := h.dist(query, core.LocalID(nodeIDU32))
+		if pq.Len() < k {
+			pq.PushItem(searcher.PriorityQueueItem{Node: core.LocalID(nodeIDU32), Distance: d})
+		} else {
+			top, _ := pq.TopItem()
+			if d < top.Distance {
+				_, _ = pq.PopItem()
+				pq.PushItem(searcher.PriorityQueueItem{Node: core.LocalID(nodeIDU32), Distance: d})
+			}
+		}
+	}
+	return nil
 }
 
 // Helper for layer generation
@@ -1351,26 +1385,8 @@ func (h *HNSW) recoverEntryPoint(g *graph) {
 		}
 		for j := 0; j < nodeSegmentSize; j++ {
 			node := segment[j].Load()
-			if node != nil {
-				// Found one!
-				iU64, err := conv.IntToUint64(i)
-				if err != nil {
-					continue
-				}
-				jU64, err := conv.IntToUint64(j)
-				if err != nil {
-					continue
-				}
-				id := iU64*nodeSegmentSize + jU64
-				idU32, err := conv.Uint64ToUint32(id)
-				if err != nil {
-					continue
-				}
-				if !g.tombstones.Test(idU32) {
-					g.entryPointAtomic.Store(idU32)
-					g.maxLevelAtomic.Store(int32(node.Level(g.arena))) //nolint:gosec // level is small
-					return
-				}
+			if g.checkAndSetEntryPoint(node, i, j) {
+				return
 			}
 		}
 	}
@@ -1382,4 +1398,30 @@ func (h *HNSW) recoverEntryPoint(g *graph) {
 // Dimension returns the dimensionality of the vectors in the index.
 func (h *HNSW) Dimension() int {
 	return int(h.dimensionAtomic.Load())
+}
+
+func (g *graph) checkAndSetEntryPoint(node *Node, i, j int) bool {
+	if node == nil {
+		return false
+	}
+	iU64, err := conv.IntToUint64(i)
+	if err != nil {
+		return false
+	}
+	jU64, err := conv.IntToUint64(j)
+	if err != nil {
+		return false
+	}
+	id := iU64*nodeSegmentSize + jU64
+	idU32, err := conv.Uint64ToUint32(id)
+	if err != nil {
+		return false
+	}
+
+	if !g.tombstones.Test(idU32) {
+		g.entryPointAtomic.Store(idU32)
+		g.maxLevelAtomic.Store(int32(node.Level(g.arena))) //nolint:gosec // level is small
+		return true
+	}
+	return false
 }

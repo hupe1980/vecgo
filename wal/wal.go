@@ -13,6 +13,7 @@ package wal
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -106,41 +107,9 @@ func New(optFns ...func(o *Options)) (*WAL, error) {
 	}
 	w.syncCond = sync.NewCond(&w.mu)
 
-	// Determine header/dataOffset.
-	if st.Size() == 0 {
-		w.compressed = opts.Compress
-		w.compressionLevel = opts.CompressionLevel
-		hdrLen, err := writeWALHeader(w.file, walHeaderInfo{
-			Compressed:       w.compressed,
-			CompressionLevel: w.compressionLevel,
-		})
-		if err != nil {
-			_ = file.Close()
-			return nil, err
-		}
-		w.dataOffset = hdrLen
-	} else {
-		hdr, hasHeader, err := readWALHeader(w.file)
-		if err != nil {
-			_ = file.Close()
-			return nil, err
-		}
-		if !hasHeader {
-			_ = file.Close()
-			return nil, fmt.Errorf("unsupported WAL format: missing header")
-		}
-
-		if opts.Compress != hdr.Compressed {
-			_ = file.Close()
-			return nil, fmt.Errorf("WAL compression setting (Compress=%v) does not match existing WAL file (Compress=%v)", opts.Compress, hdr.Compressed)
-		}
-		if opts.Compress && opts.CompressionLevel != hdr.CompressionLevel {
-			_ = file.Close()
-			return nil, fmt.Errorf("WAL compression level (%d) does not match existing WAL file (%d)", opts.CompressionLevel, hdr.CompressionLevel)
-		}
-		w.compressed = hdr.Compressed
-		w.compressionLevel = hdr.CompressionLevel
-		w.dataOffset = hdr.HeaderLen
+	if err := w.initializeFile(st, opts); err != nil {
+		_ = file.Close()
+		return nil, err
 	}
 
 	// Position at the start of the entry stream before initializing codecs.
@@ -155,7 +124,7 @@ func New(optFns ...func(o *Options)) (*WAL, error) {
 		level := zstd.EncoderLevelFromZstd(w.compressionLevel)
 		compressor, err := zstd.NewWriter(w.file, zstd.WithEncoderLevel(level))
 		if err != nil {
-			file.Close()
+			_ = file.Close()
 			return nil, fmt.Errorf("failed to create compressor: %w", err)
 		}
 		w.compressor = compressor
@@ -165,8 +134,8 @@ func New(optFns ...func(o *Options)) (*WAL, error) {
 		// Create decompressor for replay
 		decompressor, err := zstd.NewReader(nil)
 		if err != nil {
-			compressor.Close()
-			file.Close()
+			_ = compressor.Close()
+			_ = file.Close()
 			return nil, fmt.Errorf("failed to create decompressor: %w", err)
 		}
 		w.decompressor = decompressor
@@ -178,7 +147,7 @@ func New(optFns ...func(o *Options)) (*WAL, error) {
 
 	// Read existing entries to determine next sequence number
 	if err := w.scanForSeqNum(); err != nil {
-		file.Close()
+		_ = file.Close()
 		return nil, fmt.Errorf("failed to scan WAL: %w", err)
 	}
 
@@ -191,6 +160,41 @@ func New(optFns ...func(o *Options)) (*WAL, error) {
 	}
 
 	return w, nil
+}
+
+// initializeFile handles the file opening and initialization logic for the WAL.
+func (w *WAL) initializeFile(info os.FileInfo, opts Options) error {
+	if info.Size() == 0 {
+		return w.writeNewHeader(opts)
+	}
+	return w.readExistingHeader()
+}
+
+func (w *WAL) writeNewHeader(opts Options) error {
+	hdrLen, err := writeWALHeader(w.file, walHeaderInfo{
+		Compressed:       opts.Compress,
+		CompressionLevel: opts.CompressionLevel,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to write WAL header: %w", err)
+	}
+	w.dataOffset = hdrLen
+	w.compressed = opts.Compress
+	return nil
+}
+
+func (w *WAL) readExistingHeader() error {
+	hdrInfo, valid, err := readWALHeader(w.file)
+	if err != nil {
+		return fmt.Errorf("failed to read WAL header: %w", err)
+	}
+	if !valid {
+		return fmt.Errorf("invalid WAL header")
+	}
+	w.dataOffset = hdrInfo.HeaderLen
+	w.compressed = hdrInfo.Compressed
+	w.compressionLevel = hdrInfo.CompressionLevel
+	return nil
 }
 
 // syncIfNeeded performs fsync based on the configured durability mode.
@@ -282,7 +286,9 @@ func (w *WAL) scanForSeqNum() error {
 	var reader io.Reader
 	if w.compressed {
 		// Reset decompressor for the file
-		w.decompressor.Reset(w.file)
+		if err := w.decompressor.Reset(w.file); err != nil {
+			return fmt.Errorf("failed to reset decompressor: %w", err)
+		}
 		reader = w.decompressor
 	} else {
 		reader = w.file
@@ -293,7 +299,7 @@ func (w *WAL) scanForSeqNum() error {
 	for {
 		var entry Entry
 		if err := w.decodeEntry(reader, &entry); err != nil {
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				break
 			}
 			// Corrupted entry - stop here
@@ -318,65 +324,35 @@ func (w *WAL) scanForSeqNum() error {
 //
 // This uses the prepare/commit protocol (two entries) so recovery is atomic.
 func (w *WAL) LogInsert(id core.LocalID, vector []float32, data []byte, meta metadata.Metadata) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	w.seqNum++
-	prepare := Entry{Type: OpPrepareInsert, ID: id, Vector: vector, Data: data, Metadata: meta, SeqNum: w.seqNum}
-	if err := w.encodeEntry(&prepare); err != nil {
-		return fmt.Errorf("failed to encode WAL prepare entry: %w", err)
-	}
-
-	w.seqNum++
-	commit := Entry{Type: OpCommitInsert, ID: id, SeqNum: w.seqNum}
-	if err := w.encodeEntry(&commit); err != nil {
-		return fmt.Errorf("failed to encode WAL commit entry: %w", err)
-	}
-	if err := w.flushLocked(); err != nil {
-		return err
-	}
-	return w.syncCommitLocked()
+	return w.logOperation(OpPrepareInsert, OpCommitInsert, id, vector, data, meta)
 }
 
 // LogUpdate logs an update operation.
 //
 // This uses the prepare/commit protocol (two entries) so recovery is atomic.
 func (w *WAL) LogUpdate(id core.LocalID, vector []float32, data []byte, meta metadata.Metadata) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	w.seqNum++
-	prepare := Entry{Type: OpPrepareUpdate, ID: id, Vector: vector, Data: data, Metadata: meta, SeqNum: w.seqNum}
-	if err := w.encodeEntry(&prepare); err != nil {
-		return fmt.Errorf("failed to encode WAL prepare entry: %w", err)
-	}
-
-	w.seqNum++
-	commit := Entry{Type: OpCommitUpdate, ID: id, SeqNum: w.seqNum}
-	if err := w.encodeEntry(&commit); err != nil {
-		return fmt.Errorf("failed to encode WAL commit entry: %w", err)
-	}
-	if err := w.flushLocked(); err != nil {
-		return err
-	}
-	return w.syncCommitLocked()
+	return w.logOperation(OpPrepareUpdate, OpCommitUpdate, id, vector, data, meta)
 }
 
 // LogDelete logs a delete operation.
 //
 // This uses the prepare/commit protocol (two entries) so recovery is atomic.
 func (w *WAL) LogDelete(id core.LocalID) error {
+	return w.logOperation(OpPrepareDelete, OpCommitDelete, id, nil, nil, nil)
+}
+
+func (w *WAL) logOperation(prepareType, commitType OperationType, id core.LocalID, vector []float32, data []byte, meta metadata.Metadata) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
 	w.seqNum++
-	prepare := Entry{Type: OpPrepareDelete, ID: id, SeqNum: w.seqNum}
+	prepare := Entry{Type: prepareType, ID: id, Vector: vector, Data: data, Metadata: meta, SeqNum: w.seqNum}
 	if err := w.encodeEntry(&prepare); err != nil {
 		return fmt.Errorf("failed to encode WAL prepare entry: %w", err)
 	}
 
 	w.seqNum++
-	commit := Entry{Type: OpCommitDelete, ID: id, SeqNum: w.seqNum}
+	commit := Entry{Type: commitType, ID: id, SeqNum: w.seqNum}
 	if err := w.encodeEntry(&commit); err != nil {
 		return fmt.Errorf("failed to encode WAL commit entry: %w", err)
 	}
@@ -402,22 +378,7 @@ func (w *WAL) LogPrepareInsert(id core.LocalID, vector []float32, data []byte, m
 
 // LogCommitInsert writes a commit entry for an insert and fsyncs the WAL.
 func (w *WAL) LogCommitInsert(id core.LocalID) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	w.seqNum++
-	entry := Entry{Type: OpCommitInsert, ID: id, SeqNum: w.seqNum}
-	if err := w.encodeEntry(&entry); err != nil {
-		return fmt.Errorf("failed to encode WAL entry: %w", err)
-	}
-	if err := w.flushLocked(); err != nil {
-		return err
-	}
-	w.committedOps++
-	if err := w.syncCommitLocked(); err != nil {
-		return err
-	}
-	return w.maybeCheckpointLocked()
+	return w.logCommit(OpCommitInsert, id)
 }
 
 // LogPrepareUpdate writes a prepare entry for an update.
@@ -435,22 +396,7 @@ func (w *WAL) LogPrepareUpdate(id core.LocalID, vector []float32, data []byte, m
 
 // LogCommitUpdate writes a commit entry for an update and fsyncs the WAL.
 func (w *WAL) LogCommitUpdate(id core.LocalID) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	w.seqNum++
-	entry := Entry{Type: OpCommitUpdate, ID: id, SeqNum: w.seqNum}
-	if err := w.encodeEntry(&entry); err != nil {
-		return fmt.Errorf("failed to encode WAL entry: %w", err)
-	}
-	if err := w.flushLocked(); err != nil {
-		return err
-	}
-	w.committedOps++
-	if err := w.syncCommitLocked(); err != nil {
-		return err
-	}
-	return w.maybeCheckpointLocked()
+	return w.logCommit(OpCommitUpdate, id)
 }
 
 // LogPrepareDelete writes a prepare entry for a delete.
@@ -468,11 +414,15 @@ func (w *WAL) LogPrepareDelete(id core.LocalID) error {
 
 // LogCommitDelete writes a commit entry for a delete and fsyncs the WAL.
 func (w *WAL) LogCommitDelete(id core.LocalID) error {
+	return w.logCommit(OpCommitDelete, id)
+}
+
+func (w *WAL) logCommit(commitType OperationType, id core.LocalID) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
 	w.seqNum++
-	entry := Entry{Type: OpCommitDelete, ID: id, SeqNum: w.seqNum}
+	entry := Entry{Type: commitType, ID: id, SeqNum: w.seqNum}
 	if err := w.encodeEntry(&entry); err != nil {
 		return fmt.Errorf("failed to encode WAL entry: %w", err)
 	}
@@ -632,7 +582,7 @@ func (w *WAL) truncate() error {
 		level := zstd.EncoderLevelFromZstd(w.compressionLevel)
 		compressor, err := zstd.NewWriter(file, zstd.WithEncoderLevel(level))
 		if err != nil {
-			file.Close()
+			_ = file.Close()
 			return fmt.Errorf("failed to recreate compressor: %w", err)
 		}
 		w.compressor = compressor
@@ -720,7 +670,9 @@ func (w *WAL) Len() (int, error) {
 
 	var reader io.Reader
 	if w.compressed {
-		w.decompressor.Reset(w.file)
+		if err := w.decompressor.Reset(w.file); err != nil {
+			return 0, fmt.Errorf("failed to reset decompressor: %w", err)
+		}
 		reader = w.decompressor
 	} else {
 		reader = bufio.NewReader(w.file)
@@ -731,7 +683,7 @@ func (w *WAL) Len() (int, error) {
 	for {
 		var entry Entry
 		if err := w.decodeEntry(reader, &entry); err != nil {
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				break
 			}
 			break

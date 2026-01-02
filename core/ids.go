@@ -1,3 +1,4 @@
+// Package core defines fundamental types and interfaces for vecgo.
 package core
 
 // LocalID is a dense, internal identifier for a vector within a single shard.

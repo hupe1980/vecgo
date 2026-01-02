@@ -11,71 +11,12 @@ import (
 // Stats returns statistics about the HNSW graph.
 func (h *HNSW) Stats() index.Stats {
 	g := h.currentGraph.Load()
-	// Count active vs deleted nodes
-	activeNodes := 0
-	deletedNodes := 0
-
 	nodes := g.nodes.Load()
-	numSegments := 0
-	if nodes != nil {
-		numSegments = len(*nodes)
-		// Iterate all segments
-		for _, seg := range *nodes {
-			if seg == nil {
-				continue
-			}
-			for j := range seg {
-				nodePtr := seg[j].Load()
-				if nodePtr == nil {
-					deletedNodes++
-				} else {
-					activeNodes++
-				}
-			}
-		}
-	}
+
+	activeNodes, deletedNodes := h.countNodes(nodes)
 
 	maxLevel := int(g.maxLevelAtomic.Load())
-	levelStats := make([]int, maxLevel+1)
-	connectionStats := make([]int, maxLevel+1)
-	connectionNodeStats := make([]int, maxLevel+1)
-
-	// Iterate all segments again for detailed stats
-	if nodes != nil {
-		for i, seg := range *nodes {
-			if seg == nil {
-				continue
-			}
-			for j := range seg {
-				nodePtr := seg[j].Load()
-				if nodePtr == nil {
-					continue
-				}
-
-				node := *nodePtr
-				level := node.Level(g.arena)
-				if level < len(levelStats) {
-					levelStats[level]++
-				}
-
-				iU64, _ := conv.IntToUint64(i)
-				jU64, _ := conv.IntToUint64(j)
-				id := iU64*nodeSegmentSize + jU64
-
-				// Loop through each connection
-				for i2 := level; i2 >= 0; i2-- {
-					idU32, _ := conv.Uint64ToUint32(id)
-					conns := h.getConnections(g, core.LocalID(idU32), i2)
-					count := len(conns)
-
-					if count > 0 {
-						connectionStats[i2] += count
-						connectionNodeStats[i2]++
-					}
-				}
-			}
-		}
-	}
+	levelStats, connectionStats, connectionNodeStats := h.collectLevelStats(g, nodes, maxLevel)
 
 	levelStatsStructs := make([]index.LevelStats, maxLevel+1)
 	for i := 0; i <= maxLevel; i++ {
@@ -89,6 +30,11 @@ func (h *HNSW) Stats() index.Stats {
 			Connections:    connectionStats[i],
 			AvgConnections: avg,
 		}
+	}
+
+	numSegments := 0
+	if nodes != nil {
+		numSegments = len(*nodes)
 	}
 
 	return index.Stats{
@@ -110,4 +56,68 @@ func (h *HNSW) Stats() index.Stats {
 		},
 		Levels: levelStatsStructs,
 	}
+}
+
+func (h *HNSW) countNodes(nodes *[]*NodeSegment) (active, deleted int) {
+	if nodes == nil {
+		return 0, 0
+	}
+	for _, seg := range *nodes {
+		if seg == nil {
+			continue
+		}
+		for j := range seg {
+			if seg[j].Load() == nil {
+				deleted++
+			} else {
+				active++
+			}
+		}
+	}
+	return
+}
+
+func (h *HNSW) collectLevelStats(g *graph, nodes *[]*NodeSegment, maxLevel int) ([]int, []int, []int) {
+	levelStats := make([]int, maxLevel+1)
+	connectionStats := make([]int, maxLevel+1)
+	connectionNodeStats := make([]int, maxLevel+1)
+
+	if nodes == nil {
+		return levelStats, connectionStats, connectionNodeStats
+	}
+
+	for i, seg := range *nodes {
+		if seg == nil {
+			continue
+		}
+		for j := range seg {
+			nodePtr := seg[j].Load()
+			if nodePtr == nil {
+				continue
+			}
+
+			node := *nodePtr
+			level := node.Level(g.arena)
+			if level < len(levelStats) {
+				levelStats[level]++
+			}
+
+			iU64, _ := conv.IntToUint64(i)
+			jU64, _ := conv.IntToUint64(j)
+			id := iU64*nodeSegmentSize + jU64
+
+			// Loop through each connection
+			for i2 := level; i2 >= 0; i2-- {
+				idU32, _ := conv.Uint64ToUint32(id)
+				conns := h.getConnections(g, core.LocalID(idU32), i2)
+				count := len(conns)
+
+				if count > 0 {
+					connectionStats[i2] += count
+					connectionNodeStats[i2]++
+				}
+			}
+		}
+	}
+	return levelStats, connectionStats, connectionNodeStats
 }

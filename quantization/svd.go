@@ -32,61 +32,7 @@ func svd(a [][]float32) ([][]float32, []float32, [][]float32) {
 	const maxIter = 100
 
 	for range maxIter {
-		changed := false
-		for i := 0; i < n-1; i++ {
-			for j := i + 1; j < n; j++ {
-				// Compute dot products
-				alpha := float32(0) // column i . column i
-				beta := float32(0)  // column j . column j
-				gamma := float32(0) // column i . column j
-
-				for k := range m {
-					alpha += u[k][i] * u[k][i]
-					beta += u[k][j] * u[k][j]
-					gamma += u[k][i] * u[k][j]
-				}
-
-				// Check for underflow
-				if alpha < 1e-12 || beta < 1e-12 {
-					continue
-				}
-
-				// Check for orthogonality
-				if math.Abs(float64(gamma)) < float64(tol)*math.Sqrt(float64(alpha*beta)) {
-					continue
-				}
-
-				changed = true
-
-				// Compute Jacobi rotation
-				zeta := (beta - alpha) / (2 * gamma)
-				var t float32
-				if zeta > 0 {
-					t = 1 / (zeta + float32(math.Sqrt(float64(1+zeta*zeta))))
-				} else {
-					t = -1 / (-zeta + float32(math.Sqrt(float64(1+zeta*zeta))))
-				}
-				c := 1 / float32(math.Sqrt(float64(1+t*t)))
-				s := c * t
-
-				// Apply rotation to U (columns i and j)
-				for k := range m {
-					t1 := u[k][i]
-					t2 := u[k][j]
-					u[k][i] = c*t1 - s*t2
-					u[k][j] = s*t1 + c*t2
-				}
-
-				// Apply rotation to V (columns i and j)
-				for k := range n {
-					t1 := v[k][i]
-					t2 := v[k][j]
-					v[k][i] = c*t1 - s*t2
-					v[k][j] = s*t1 + c*t2
-				}
-			}
-		}
-		if !changed {
+		if !performJacobiIterations(u, v, m, n, tol) {
 			break
 		}
 	}
@@ -110,6 +56,67 @@ func svd(a [][]float32) ([][]float32, []float32, [][]float32) {
 	}
 
 	return u, sigma, v
+}
+
+func performJacobiIterations(u, v [][]float32, m, n int, tol float64) bool {
+	changed := false
+	for i := 0; i < n-1; i++ {
+		for j := i + 1; j < n; j++ {
+			// Compute dot products
+			alpha := float32(0) // column i . column i
+			beta := float32(0)  // column j . column j
+			gamma := float32(0) // column i . column j
+
+			for k := range m {
+				alpha += u[k][i] * u[k][i]
+				beta += u[k][j] * u[k][j]
+				gamma += u[k][i] * u[k][j]
+			}
+
+			// Check for underflow
+			if alpha < 1e-12 || beta < 1e-12 {
+				continue
+			}
+
+			// Check for orthogonality
+			if math.Abs(float64(gamma)) < tol*math.Sqrt(float64(alpha*beta)) {
+				continue
+			}
+
+			changed = true
+			applyRotation(u, v, m, n, i, j, alpha, beta, gamma)
+		}
+	}
+	return changed
+}
+
+func applyRotation(u, v [][]float32, m, n, i, j int, alpha, beta, gamma float32) {
+	// Compute Jacobi rotation
+	zeta := (beta - alpha) / (2 * gamma)
+	var t float32
+	if zeta > 0 {
+		t = 1 / (zeta + float32(math.Sqrt(float64(1+zeta*zeta))))
+	} else {
+		t = -1 / (-zeta + float32(math.Sqrt(float64(1+zeta*zeta))))
+	}
+	c := 1 / float32(math.Sqrt(float64(1+t*t)))
+	s := c * t
+
+	// Apply rotation to U (columns i and j)
+	for k := range m {
+		t1 := u[k][i]
+		t2 := u[k][j]
+		u[k][i] = c*t1 - s*t2
+		u[k][j] = s*t1 + c*t2
+	}
+
+	// Apply rotation to V (columns i and j)
+	for k := range n {
+		t1 := v[k][i]
+		t2 := v[k][j]
+		v[k][i] = c*t1 - s*t2
+		v[k][j] = s*t1 + c*t2
+	}
 }
 
 // computeProcrustesRotation computes the optimal rotation matrix R such that || A*R - B ||_F is minimized.

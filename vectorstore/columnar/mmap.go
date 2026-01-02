@@ -49,21 +49,28 @@ func OpenMmap(filename string) (*MmapStore, io.Closer, error) {
 		return nil, nil, fmt.Errorf("columnar: open mmap: %w", err)
 	}
 
+	store, err := parseMmap(reader)
+	if err != nil {
+		_ = reader.Close()
+		return nil, nil, err
+	}
+
+	return store, reader, nil
+}
+
+func parseMmap(reader *mmap.File) (*MmapStore, error) {
 	size := len(reader.Data)
 	if size < HeaderSize {
-		reader.Close()
-		return nil, nil, fmt.Errorf("columnar: file too small")
+		return nil, fmt.Errorf("columnar: file too small")
 	}
 
 	// Read header
 	header := *(*FileHeader)(unsafe.Pointer(&reader.Data[0])) //nolint:gosec // unsafe is required for mmap access
 	if header.Magic != FormatMagic {
-		reader.Close()
-		return nil, nil, fmt.Errorf("columnar: invalid magic number")
+		return nil, fmt.Errorf("columnar: invalid magic number")
 	}
 	if header.Version != FormatVersion {
-		reader.Close()
-		return nil, nil, fmt.Errorf("columnar: unsupported version: %d", header.Version)
+		return nil, fmt.Errorf("columnar: unsupported version: %d", header.Version)
 	}
 
 	store := &MmapStore{
@@ -73,79 +80,88 @@ func OpenMmap(filename string) (*MmapStore, io.Closer, error) {
 		reader: reader,
 	}
 
-	// Read vector data
-	if header.Count > 0 {
-		offset, err := conv.Uint64ToInt(header.DataOffset)
-		if err != nil {
-			reader.Close()
-			return nil, nil, err
-		}
-		countInt, err := conv.Uint64ToInt(header.Count)
-		if err != nil {
-			reader.Close()
-			return nil, nil, err
-		}
-		dimInt, err := conv.Uint32ToInt(header.Dimension)
-		if err != nil {
-			reader.Close()
-			return nil, nil, err
-		}
-		size := countInt * dimInt * 4
-		if offset+size > len(reader.Data) {
-			reader.Close()
-			return nil, nil, fmt.Errorf("columnar: file too small for data")
-		}
-
-		// Ensure alignment for float32 (4 bytes)
-		if offset%4 != 0 {
-			// Fallback to copy if not aligned (rare)
-			vecBytes := make([]byte, size)
-			copy(vecBytes, reader.Data[offset:offset+size])
-			store.data = make([]float32, countInt*dimInt)
-			for i := range store.data {
-				store.data[i] = *(*float32)(unsafe.Pointer(&vecBytes[i*4])) //nolint:gosec // unsafe is required for mmap access
-			}
-		} else {
-			// Zero-copy access
-			store.data = unsafe.Slice((*float32)(unsafe.Pointer(&reader.Data[offset])), countInt*dimInt) //nolint:gosec // unsafe is required for mmap access
-		}
+	if err := loadVectorData(store, reader, header); err != nil {
+		return nil, err
 	}
 
-	// Read deletion bitmap
+	if err := loadBitmapData(store, reader, header); err != nil {
+		return nil, err
+	}
+
+	return store, nil
+}
+
+func loadVectorData(store *MmapStore, reader *mmap.File, header FileHeader) error {
+	if header.Count == 0 {
+		return nil
+	}
+
+	offset, err := conv.Uint64ToInt(header.DataOffset)
+	if err != nil {
+		return err
+	}
 	countInt, err := conv.Uint64ToInt(header.Count)
 	if err != nil {
-		reader.Close()
-		return nil, nil, err
+		return err
+	}
+	dimInt, err := conv.Uint32ToInt(header.Dimension)
+	if err != nil {
+		return err
+	}
+	size := countInt * dimInt * 4
+	if offset+size > len(reader.Data) {
+		return fmt.Errorf("columnar: file too small for data")
+	}
+
+	// Ensure alignment for float32 (4 bytes)
+	if offset%4 != 0 {
+		// Fallback to copy if not aligned (rare)
+		vecBytes := make([]byte, size)
+		copy(vecBytes, reader.Data[offset:offset+size])
+		store.data = make([]float32, countInt*dimInt)
+		for i := range store.data {
+			store.data[i] = *(*float32)(unsafe.Pointer(&vecBytes[i*4])) //nolint:gosec // unsafe is required for mmap access
+		}
+	} else {
+		// Zero-copy access
+		store.data = unsafe.Slice((*float32)(unsafe.Pointer(&reader.Data[offset])), countInt*dimInt) //nolint:gosec // unsafe is required for mmap access
+	}
+	return nil
+}
+
+func loadBitmapData(store *MmapStore, reader *mmap.File, header FileHeader) error {
+	countInt, err := conv.Uint64ToInt(header.Count)
+	if err != nil {
+		return err
 	}
 	bitmapLen := (countInt + 63) / 64
-	if bitmapLen > 0 {
-		offset, err := conv.Uint64ToInt(header.BitmapOff)
-		if err != nil {
-			reader.Close()
-			return nil, nil, err
-		}
-		size := bitmapLen * 8
-		if offset+size > len(reader.Data) {
-			reader.Close()
-			return nil, nil, fmt.Errorf("columnar: file too small for bitmap")
-		}
-
-		// Ensure alignment for uint64 (8 bytes)
-		if offset%8 != 0 {
-			// Fallback to copy
-			bitmapBytes := make([]byte, size)
-			copy(bitmapBytes, reader.Data[offset:offset+size])
-			store.deleted = make([]uint64, bitmapLen)
-			for i := range store.deleted {
-				store.deleted[i] = binary.LittleEndian.Uint64(bitmapBytes[i*8:])
-			}
-		} else {
-			// Zero-copy access
-			store.deleted = unsafe.Slice((*uint64)(unsafe.Pointer(&reader.Data[offset])), bitmapLen) //nolint:gosec // unsafe is required for mmap access
-		}
+	if bitmapLen == 0 {
+		return nil
 	}
 
-	return store, reader, nil
+	offset, err := conv.Uint64ToInt(header.BitmapOff)
+	if err != nil {
+		return err
+	}
+	size := bitmapLen * 8
+	if offset+size > len(reader.Data) {
+		return fmt.Errorf("columnar: file too small for bitmap")
+	}
+
+	// Ensure alignment for uint64 (8 bytes)
+	if offset%8 != 0 {
+		// Fallback to copy
+		bitmapBytes := make([]byte, size)
+		copy(bitmapBytes, reader.Data[offset:offset+size])
+		store.deleted = make([]uint64, bitmapLen)
+		for i := range store.deleted {
+			store.deleted[i] = binary.LittleEndian.Uint64(bitmapBytes[i*8:])
+		}
+	} else {
+		// Zero-copy access
+		store.deleted = unsafe.Slice((*uint64)(unsafe.Pointer(&reader.Data[offset])), bitmapLen) //nolint:gosec // unsafe is required for mmap access
+	}
+	return nil
 }
 
 // Dimension returns the vector dimensionality.

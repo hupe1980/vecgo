@@ -1,3 +1,4 @@
+// Package container implements container data structures.
 package container
 
 import (

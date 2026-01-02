@@ -355,7 +355,7 @@ func (b *Builder) selectEntryPoint() uint32 {
 }
 
 // greedySearch performs greedy search from entry point to target.
-func (b *Builder) greedySearch(target uint32, L int) []uint32 {
+func (b *Builder) greedySearch(target uint32, l int) []uint32 {
 	targetVec := b.vectors[target]
 
 	// Min-heap for candidates
@@ -371,7 +371,7 @@ func (b *Builder) greedySearch(target uint32, L int) []uint32 {
 	visited[b.entryPoint] = true
 
 	// Result list (top L closest)
-	result := make([]distNode, 0, L)
+	result := make([]distNode, 0, l)
 	result = append(result, distNode{id: b.entryPoint, dist: entryDist})
 
 	for candidates.Len() > 0 {
@@ -379,7 +379,7 @@ func (b *Builder) greedySearch(target uint32, L int) []uint32 {
 		curr := candidates.PopNode()
 
 		// Check if we've expanded enough
-		if len(result) >= L && curr.dist > result[L-1].dist {
+		if len(result) >= l && curr.dist > result[l-1].dist {
 			break
 		}
 
@@ -398,16 +398,16 @@ func (b *Builder) greedySearch(target uint32, L int) []uint32 {
 		}
 
 		// Keep result sorted and trimmed
-		if len(result) > L*2 {
+		if len(result) > l*2 {
 			sortDistNodes(result)
-			result = result[:L]
+			result = result[:l]
 		}
 	}
 
 	// Sort and return top L
 	sortDistNodes(result)
-	if len(result) > L {
-		result = result[:L]
+	if len(result) > l {
+		result = result[:l]
 	}
 
 	ids := make([]uint32, len(result))
@@ -418,7 +418,7 @@ func (b *Builder) greedySearch(target uint32, L int) []uint32 {
 }
 
 // robustPrune implements the Vamana robust pruning algorithm.
-func (b *Builder) robustPrune(node uint32, candidates []uint32, R int, alpha float32) []uint32 {
+func (b *Builder) robustPrune(node uint32, candidates []uint32, r int, alpha float32) []uint32 {
 	nodeVec := b.vectors[node]
 
 	// Compute distances to all candidates
@@ -445,9 +445,9 @@ func (b *Builder) robustPrune(node uint32, candidates []uint32, R int, alpha flo
 	}
 
 	// Greedy selection with diversity
-	selected := make([]uint32, 0, R)
+	selected := make([]uint32, 0, r)
 	for _, c := range cands {
-		if len(selected) >= R {
+		if len(selected) >= r {
 			break
 		}
 
@@ -470,7 +470,7 @@ func (b *Builder) robustPrune(node uint32, candidates []uint32, R int, alpha flo
 }
 
 // addEdge adds an edge from src to dst, pruning if necessary.
-func (b *Builder) addEdge(src, dst uint32, R int, alpha float32) {
+func (b *Builder) addEdge(src, dst uint32, r int, alpha float32) {
 	// Check if edge already exists
 	for _, neighbor := range b.graph[src] {
 		if neighbor == dst {
@@ -482,10 +482,10 @@ func (b *Builder) addEdge(src, dst uint32, R int, alpha float32) {
 	b.graph[src] = append(b.graph[src], dst)
 
 	// Prune if over capacity
-	if len(b.graph[src]) > R {
+	if len(b.graph[src]) > r {
 		candidates := make([]uint32, len(b.graph[src]))
 		copy(candidates, b.graph[src])
-		b.graph[src] = b.robustPrune(src, candidates, R, alpha)
+		b.graph[src] = b.robustPrune(src, candidates, r, alpha)
 	}
 }
 

@@ -35,53 +35,61 @@ func (w *WAL) encodeEntry(entry *Entry) error {
 
 	// Write vector/data/metadata for operations that carry payload.
 	if entry.Type == OpPrepareInsert || entry.Type == OpPrepareUpdate {
-		// Vector length (4 bytes)
-		vectorLen := uint32(len(entry.Vector)) //nolint:gosec
-		if err := binary.Write(w.writer, binary.LittleEndian, vectorLen); err != nil {
+		if err := w.encodePayload(entry); err != nil {
 			return err
-		}
-
-		// Vector data (N * 4 bytes) - zero-copy write
-		if vectorLen > 0 {
-			byteSlice := unsafe.Slice((*byte)(unsafe.Pointer(&entry.Vector[0])), vectorLen*4) //nolint:gosec // unsafe is required for performance
-			if _, err := w.writer.Write(byteSlice); err != nil {
-				return err
-			}
-		}
-
-		// Data length (4 bytes)
-		dataLen := uint32(len(entry.Data)) //nolint:gosec
-		if err := binary.Write(w.writer, binary.LittleEndian, dataLen); err != nil {
-			return err
-		}
-
-		// Data bytes
-		if dataLen > 0 {
-			if _, err := w.writer.Write(entry.Data); err != nil {
-				return err
-			}
-		}
-
-		// Metadata (default codec: VecgoBinary)
-		var metadataBytes []byte
-		if entry.Metadata != nil {
-			b, err := entry.Metadata.MarshalBinary()
-			if err != nil {
-				return err
-			}
-			metadataBytes = b
-		}
-		metadataLen := uint32(len(metadataBytes)) //nolint:gosec
-		if err := binary.Write(w.writer, binary.LittleEndian, metadataLen); err != nil {
-			return err
-		}
-		if metadataLen > 0 {
-			if _, err := w.writer.Write(metadataBytes); err != nil {
-				return err
-			}
 		}
 	}
 
+	return nil
+}
+
+// encodePayload writes the vector, data, and metadata for an entry.
+func (w *WAL) encodePayload(entry *Entry) error {
+	// Vector length (4 bytes)
+	vectorLen := uint32(len(entry.Vector)) //nolint:gosec
+	if err := binary.Write(w.writer, binary.LittleEndian, vectorLen); err != nil {
+		return err
+	}
+
+	// Vector data (N * 4 bytes) - zero-copy write
+	if vectorLen > 0 {
+		byteSlice := unsafe.Slice((*byte)(unsafe.Pointer(&entry.Vector[0])), vectorLen*4) //nolint:gosec // unsafe is required for performance
+		if _, err := w.writer.Write(byteSlice); err != nil {
+			return err
+		}
+	}
+
+	// Data length (4 bytes)
+	dataLen := uint32(len(entry.Data)) //nolint:gosec
+	if err := binary.Write(w.writer, binary.LittleEndian, dataLen); err != nil {
+		return err
+	}
+
+	// Data bytes
+	if dataLen > 0 {
+		if _, err := w.writer.Write(entry.Data); err != nil {
+			return err
+		}
+	}
+
+	// Metadata (default codec: VecgoBinary)
+	var metadataBytes []byte
+	if entry.Metadata != nil {
+		b, err := entry.Metadata.MarshalBinary()
+		if err != nil {
+			return err
+		}
+		metadataBytes = b
+	}
+	metadataLen := uint32(len(metadataBytes)) //nolint:gosec
+	if err := binary.Write(w.writer, binary.LittleEndian, metadataLen); err != nil {
+		return err
+	}
+	if metadataLen > 0 {
+		if _, err := w.writer.Write(metadataBytes); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -109,55 +117,63 @@ func (w *WAL) decodeEntry(reader io.Reader, entry *Entry) error {
 
 	// Read vector/data/metadata for operations that carry payload.
 	if entry.Type == OpPrepareInsert || entry.Type == OpPrepareUpdate {
-		// Vector length
-		var vectorLen uint32
-		if err := binary.Read(reader, binary.LittleEndian, &vectorLen); err != nil {
+		if err := w.decodePayload(reader, entry); err != nil {
 			return err
-		}
-
-		// Vector data
-		if vectorLen > 0 {
-			entry.Vector = make([]float32, vectorLen)
-			byteSlice := unsafe.Slice((*byte)(unsafe.Pointer(&entry.Vector[0])), vectorLen*4) //nolint:gosec // unsafe is required for performance
-			if _, err := io.ReadFull(reader, byteSlice); err != nil {
-				return err
-			}
-		}
-
-		// Data length
-		var dataLen uint32
-		if err := binary.Read(reader, binary.LittleEndian, &dataLen); err != nil {
-			return err
-		}
-
-		// Data bytes
-		if dataLen > 0 {
-			entry.Data = make([]byte, dataLen)
-			if _, err := io.ReadFull(reader, entry.Data); err != nil {
-				return err
-			}
-		}
-
-		// Metadata length
-		var metadataLen uint32
-		if err := binary.Read(reader, binary.LittleEndian, &metadataLen); err != nil {
-			return err
-		}
-
-		// Metadata bytes
-		if metadataLen > 0 {
-			metadataBytes := make([]byte, metadataLen)
-			if _, err := io.ReadFull(reader, metadataBytes); err != nil {
-				return err
-			}
-			var meta metadata.Metadata
-			if err := meta.UnmarshalBinary(metadataBytes); err != nil {
-				return err
-			}
-			entry.Metadata = meta
 		}
 	}
 
+	return nil
+}
+
+// decodePayload reads the vector, data, and metadata for an entry.
+func (w *WAL) decodePayload(reader io.Reader, entry *Entry) error {
+	// Vector length
+	var vectorLen uint32
+	if err := binary.Read(reader, binary.LittleEndian, &vectorLen); err != nil {
+		return err
+	}
+
+	// Vector data
+	if vectorLen > 0 {
+		entry.Vector = make([]float32, vectorLen)
+		byteSlice := unsafe.Slice((*byte)(unsafe.Pointer(&entry.Vector[0])), vectorLen*4) //nolint:gosec // unsafe is required for performance
+		if _, err := io.ReadFull(reader, byteSlice); err != nil {
+			return err
+		}
+	}
+
+	// Data length
+	var dataLen uint32
+	if err := binary.Read(reader, binary.LittleEndian, &dataLen); err != nil {
+		return err
+	}
+
+	// Data bytes
+	if dataLen > 0 {
+		entry.Data = make([]byte, dataLen)
+		if _, err := io.ReadFull(reader, entry.Data); err != nil {
+			return err
+		}
+	}
+
+	// Metadata length
+	var metadataLen uint32
+	if err := binary.Read(reader, binary.LittleEndian, &metadataLen); err != nil {
+		return err
+	}
+
+	// Metadata bytes
+	if metadataLen > 0 {
+		metadataBytes := make([]byte, metadataLen)
+		if _, err := io.ReadFull(reader, metadataBytes); err != nil {
+			return err
+		}
+		var meta metadata.Metadata
+		if err := meta.UnmarshalBinary(metadataBytes); err != nil {
+			return err
+		}
+		entry.Metadata = meta
+	}
 	return nil
 }
 

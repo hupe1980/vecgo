@@ -38,14 +38,18 @@ import (
 var (
 	// ErrMaxChunksExceeded is returned when the arena exceeds the maximum number of chunks.
 	ErrMaxChunksExceeded = errors.New("arena: max chunks exceeded")
-	ErrAllocationFailed  = errors.New("arena: allocation failed")
+	// ErrAllocationFailed is returned when an allocation fails.
+	ErrAllocationFailed = errors.New("arena: allocation failed")
 )
 
 const (
 	// DefaultChunkSize is the default size of a chunk (1MB).
 	DefaultChunkSize = 1024 * 1024
+	// DefaultAlignment is the default memory alignment (8 bytes).
 	DefaultAlignment = 8
-	MaxChunks        = 65536 // Limit to 64GB addressable space with 1MB chunks
+	// MaxChunks limits the number of chunks to prevent excessive memory usage.
+	// Limit to 64GB addressable space with 1MB chunks.
+	MaxChunks = 65536
 )
 
 // Stats tracks arena memory usage metrics.
@@ -168,7 +172,10 @@ func (a *Arena) GetSafe(ref Ref) unsafe.Pointer {
 func (a *Arena) allocateChunk() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	return a.allocateChunkLocked()
+}
 
+func (a *Arena) allocateChunkLocked() error {
 	idx := a.chunkCount.Load()
 
 	if idx >= MaxChunks {
@@ -191,11 +198,14 @@ func (a *Arena) allocateChunk() error {
 	a.stats.BytesReserved.Add(chunkSizeU64)
 	a.stats.ActiveChunks.Add(1)
 
+	// Update count for next allocation
+	// Must be done BEFORE updating current to ensure Get() sees valid count
+	// when Alloc() returns an offset from the new chunk.
+	a.chunkCount.Add(1)
+
 	// Make visible to Alloc
 	a.current.Store(newChunk)
 
-	// Update count for next allocation
-	a.chunkCount.Add(1)
 	return nil
 }
 
@@ -219,37 +229,17 @@ func (a *Arena) alloc(size int, align int) (uint64, []byte, error) {
 			continue
 		}
 
-		oldOffset := curr.offset.Load()
-		newOffset := oldOffset + int64(alignedSize)
-
-		if newOffset <= int64(len(curr.data)) {
-			if curr.offset.CompareAndSwap(oldOffset, newOffset) {
-				sizeU64, _ := conv.IntToUint64(size)
-				a.stats.BytesUsed.Add(sizeU64)
-				wastedU64, _ := conv.IntToUint64(alignedSize - size)
-				a.stats.BytesWasted.Add(wastedU64)
-				a.stats.TotalAllocs.Add(1)
-
-				// Calculate global offset
-				// GlobalOffset = (ChunkIndex << ChunkBits) | ChunkOffset
-				// Ensure ChunkOffset fits in ChunkMask
-				oldOffsetU64, err := conv.Int64ToUint64(oldOffset)
-				if err != nil {
-					return 0, nil, err
-				}
-				if oldOffsetU64 > a.chunkMask {
-					return 0, nil, fmt.Errorf("arena: offset exceeds chunk mask")
-				}
-				globalOffset := (uint64(curr.index) << a.chunkBits) | oldOffsetU64
-				return globalOffset, curr.data[oldOffset:newOffset:newOffset], nil
-			}
-			continue
+		offset, data, ok, err := a.tryAllocInChunk(curr, size, alignedSize)
+		if err != nil {
+			return 0, nil, err
+		}
+		if ok {
+			return offset, data, nil
 		}
 
 		// Current chunk is full. Try to allocate a new one.
 		// We use a lock to ensure only one goroutine allocates a new chunk.
 		// But we must be careful not to block readers.
-		// The `allocateChunk` method locks `a.mu`.
 
 		// Optimization: Check if someone else already allocated a new chunk
 		// by checking if a.current changed.
@@ -257,25 +247,51 @@ func (a *Arena) alloc(size int, align int) (uint64, []byte, error) {
 			continue
 		}
 
-		// Try to set current to nil to signal we are allocating
-		if !a.current.CompareAndSwap(curr, nil) {
+		a.mu.Lock()
+		// Double check under lock
+		if a.current.Load() != curr {
+			a.mu.Unlock()
 			continue
 		}
 
-		if err := a.allocateChunk(); err != nil {
-			// Restore current if allocation failed so others can try (though if max chunks exceeded, they will also fail)
-			// Actually if allocateChunk failed, we are in trouble.
-			// We should probably restore the old current so other threads don't spin on nil?
-			// But if max chunks exceeded, we can't allocate more.
-			// Let's just return error.
-			// But we need to restore a.current to something non-nil or handle the nil case in the loop?
-			// The loop checks `if curr == nil { continue }`.
-			// If we leave it nil, everyone spins.
-			// We should restore it.
-			a.current.Store(curr)
+		if err := a.allocateChunkLocked(); err != nil {
+			a.mu.Unlock()
 			return 0, nil, err
 		}
+		a.mu.Unlock()
 	}
+}
+
+func (a *Arena) tryAllocInChunk(curr *chunk, size, alignedSize int) (uint64, []byte, bool, error) {
+	oldOffset := curr.offset.Load()
+	newOffset := oldOffset + int64(alignedSize)
+
+	if newOffset > int64(len(curr.data)) {
+		return 0, nil, false, nil
+	}
+
+	if !curr.offset.CompareAndSwap(oldOffset, newOffset) {
+		return 0, nil, false, nil
+	}
+
+	sizeU64, _ := conv.IntToUint64(size)
+	a.stats.BytesUsed.Add(sizeU64)
+	wastedU64, _ := conv.IntToUint64(alignedSize - size)
+	a.stats.BytesWasted.Add(wastedU64)
+	a.stats.TotalAllocs.Add(1)
+
+	// Calculate global offset
+	// GlobalOffset = (ChunkIndex << ChunkBits) | ChunkOffset
+	// Ensure ChunkOffset fits in ChunkMask
+	oldOffsetU64, err := conv.Int64ToUint64(oldOffset)
+	if err != nil {
+		return 0, nil, false, err
+	}
+	if oldOffsetU64 > a.chunkMask {
+		return 0, nil, false, fmt.Errorf("arena: offset exceeds chunk mask")
+	}
+	globalOffset := (uint64(curr.index) << a.chunkBits) | oldOffsetU64
+	return globalOffset, curr.data[oldOffset:newOffset:newOffset], true, nil
 }
 
 // Get returns an unsafe.Pointer to the memory at the given global offset.

@@ -172,79 +172,104 @@ func (vg *Vecgo[T]) DisableProductQuantization() {
 
 // newFlat is an internal constructor used by the Flat builder.
 // External users should use vecgo.Flat[T](dimension).Build() instead.
+//
+//nolint:dupl
 func newFlat[T any](dimension int, distanceType index.DistanceType, indexOptFns []func(o *flat.Options), vecgoOptFns []Option) (*Vecgo[T], error) {
-	opts := flat.DefaultOptions
-	for _, fn := range indexOptFns {
-		fn(&opts)
-	}
-	// Arguments are authoritative.
-	opts.Dimension = dimension
-	opts.DistanceType = distanceType
-
-	// Add dimension to vecgo options for validation
-	vecgoOptFns = append(vecgoOptFns, withDimension(dimension))
-	vecOpts := applyOptions(vecgoOptFns)
-
-	// Non-sharded mode (numShards <= 1)
-	if vecOpts.numShards <= 1 {
-		i, err := flat.New(func(o *flat.Options) {
-			*o = opts
-		})
-		if err != nil {
-			return nil, translateError(err)
-		}
-
-		vg, err := new(i, engine.NewMapStore[T](), metadata.NewUnifiedIndex(), vecgoOptFns...)
-		return vg, translateError(err)
-	}
-
-	// Sharded mode (numShards > 1)
-	numShards := vecOpts.numShards
-	indexes := make([]index.Index, numShards)
-	dataStores := make([]engine.Store[T], numShards)
-	metaStores := make([]*metadata.UnifiedIndex, numShards)
-
-	for i := range numShards {
-		idx, err := flat.NewSharded(i, numShards, func(o *flat.Options) {
-			*o = opts
-		})
-		if err != nil {
-			return nil, translateError(err)
-		}
-		indexes[i] = idx
-		dataStores[i] = engine.NewMapStore[T]()
-		metaStores[i] = metadata.NewUnifiedIndex()
-	}
-
-	vg, err := newSharded(indexes, dataStores, metaStores, vecgoOptFns...)
-	return vg, translateError(err)
+	return createVecgoWithIndexFactory[T, flat.Options](
+		dimension,
+		distanceType,
+		indexOptFns,
+		vecgoOptFns,
+		flat.DefaultOptions,
+		func(o *flat.Options, dim int, dist index.DistanceType) {
+			o.Dimension = dim
+			o.DistanceType = dist
+		},
+		func(f func(*flat.Options)) (index.Index, error) { return flat.New(f) },
+		func(id, n int, f func(*flat.Options)) (index.Index, error) { return flat.NewSharded(id, n, f) },
+	)
 }
 
 // newHNSW is an internal constructor used by the HNSW builder.
 // External users should use vecgo.HNSW[T](dimension).Build() instead.
+//
+//nolint:dupl
 func newHNSW[T any](dimension int, distanceType index.DistanceType, indexOptFns []func(o *hnsw.Options), vecgoOptFns []Option) (*Vecgo[T], error) {
-	opts := hnsw.DefaultOptions
+	return createVecgoWithIndexFactory[T, hnsw.Options](
+		dimension,
+		distanceType,
+		indexOptFns,
+		vecgoOptFns,
+		hnsw.DefaultOptions,
+		func(o *hnsw.Options, dim int, dist index.DistanceType) {
+			o.Dimension = dim
+			o.DistanceType = dist
+		},
+		func(f func(*hnsw.Options)) (index.Index, error) { return hnsw.New(f) },
+		func(id, n int, f func(*hnsw.Options)) (index.Index, error) { return hnsw.NewSharded(id, n, f) },
+	)
+}
+
+func createVecgoWithIndexFactory[T any, O any](
+	dimension int,
+	distanceType index.DistanceType,
+	indexOptFns []func(*O),
+	vecgoOptFns []Option,
+	defaultOpts O,
+	setMeta func(*O, int, index.DistanceType),
+	singleCtor func(func(*O)) (index.Index, error),
+	shardedCtor func(int, int, func(*O)) (index.Index, error),
+) (*Vecgo[T], error) {
+	factory := configureAndCreateFactory(
+		defaultOpts,
+		indexOptFns,
+		dimension,
+		distanceType,
+		setMeta,
+		singleCtor,
+		shardedCtor,
+	)
+	return newVecgoWithFactory[T](dimension, vecgoOptFns, factory)
+}
+
+func configureAndCreateFactory[O any](
+	defaultOpts O,
+	indexOptFns []func(*O),
+	dimension int,
+	distanceType index.DistanceType,
+	setMeta func(*O, int, index.DistanceType),
+	singleCtor func(func(*O)) (index.Index, error),
+	shardedCtor func(int, int, func(*O)) (index.Index, error),
+) indexFactory {
+	opts := defaultOpts
 	for _, fn := range indexOptFns {
 		fn(&opts)
 	}
-	// Arguments are authoritative.
-	opts.Dimension = dimension
-	opts.DistanceType = distanceType
+	setMeta(&opts, dimension, distanceType)
 
+	return func(shardID, numShards int) (index.Index, error) {
+		if numShards <= 1 {
+			return singleCtor(func(o *O) { *o = opts })
+		}
+		return shardedCtor(shardID, numShards, func(o *O) { *o = opts })
+	}
+}
+
+type indexFactory func(shardID, numShards int) (index.Index, error)
+
+func newVecgoWithFactory[T any](dimension int, vecgoOptFns []Option, createIndex indexFactory) (*Vecgo[T], error) {
 	// Add dimension to vecgo options for validation
 	vecgoOptFns = append(vecgoOptFns, withDimension(dimension))
 	vecOpts := applyOptions(vecgoOptFns)
 
 	// Non-sharded mode (numShards <= 1)
 	if vecOpts.numShards <= 1 {
-		i, err := hnsw.New(func(o *hnsw.Options) {
-			*o = opts
-		})
+		i, err := createIndex(0, 1)
 		if err != nil {
 			return nil, translateError(err)
 		}
 
-		vg, err := new(i, engine.NewMapStore[T](), metadata.NewUnifiedIndex(), vecgoOptFns...)
+		vg, err := newVecgo(i, engine.NewMapStore[T](), metadata.NewUnifiedIndex(), vecgoOptFns...)
 		return vg, translateError(err)
 	}
 
@@ -255,9 +280,7 @@ func newHNSW[T any](dimension int, distanceType index.DistanceType, indexOptFns 
 	metaStores := make([]*metadata.UnifiedIndex, numShards)
 
 	for i := range numShards {
-		idx, err := hnsw.NewSharded(i, numShards, func(o *hnsw.Options) {
-			*o = opts
-		})
+		idx, err := createIndex(i, numShards)
 		if err != nil {
 			return nil, translateError(err)
 		}
@@ -286,13 +309,13 @@ func newDiskANN[T any](path string, dimension int, distanceType index.DistanceTy
 
 	// Add dimension to vecgo options for validation
 	vecgoOptFns = append(vecgoOptFns, withDimension(dimension))
-	vg, err := new(i, engine.NewMapStore[T](), metadata.NewUnifiedIndex(), vecgoOptFns...)
+	vg, err := newVecgo(i, engine.NewMapStore[T](), metadata.NewUnifiedIndex(), vecgoOptFns...)
 	return vg, translateError(err)
 }
 
-// new creates a new Vecgo instance with the given index, data store, and metadata store.
+// newVecgo creates a new Vecgo instance with the given index, data store, and metadata store.
 // This is an internal constructor - external users should use builders (HNSW[T](), Flat[T](), DiskANN[T]()).
-func new[T any](i index.Index, s engine.Store[T], ms *metadata.UnifiedIndex, optFns ...Option) (*Vecgo[T], error) {
+func newVecgo[T any](i index.Index, s engine.Store[T], ms *metadata.UnifiedIndex, optFns ...Option) (*Vecgo[T], error) {
 	opts := applyOptions(optFns)
 
 	// Set codec (default if not specified)
@@ -387,30 +410,9 @@ func newSharded[T any](indexes []index.Index, dataStores []engine.Store[T], meta
 		c = codec.Default
 	}
 
-	// Create WALs if path is specified (one per shard)
-	var wals []*wal.WAL
-	if opts.walPath != "" {
-		wals = make([]*wal.WAL, len(indexes))
-		for i := range indexes {
-			shardPath := filepath.Join(opts.walPath, fmt.Sprintf("shard-%d", i))
-
-			// Prepare WAL options with codec
-			walOptFns := append([]func(*wal.Options){
-				func(o *wal.Options) {
-					o.Path = shardPath
-				},
-			}, opts.walOptions...)
-
-			var err error
-			wals[i], err = wal.New(walOptFns...)
-			if err != nil {
-				// Close already created WALs
-				for j := range i {
-					_ = wals[j].Close()
-				}
-				return nil, fmt.Errorf("vecgo: failed to create WAL for shard %d: %w", i, err)
-			}
-		}
+	wals, err := createWALs(opts, len(indexes))
+	if err != nil {
+		return nil, err
 	}
 
 	// Create durability slice
@@ -438,37 +440,45 @@ func newSharded[T any](indexes []index.Index, dataStores []engine.Store[T], meta
 		for _, w := range wals {
 			_ = w.Close()
 		}
-		return nil, translateError(err)
+		return nil, fmt.Errorf("vecgo: failed to create sharded coordinator: %w", err)
 	}
 
-	// Wrap coordinator with validation unless explicitly disabled
-	var coord = shardedCoord
-	if !opts.disableValidation {
-		limits := opts.validationLimits
-		if limits == nil {
-			defaultLimits := engine.DefaultLimits()
-			limits = &defaultLimits
-		}
-		coord = engine.WithValidation(coord, opts.dimension, *limits)
-	}
-
-	vg := &Vecgo[T]{
-		mmapCloser:   nil,
-		coordinator:  coord,
+	return &Vecgo[T]{
+		coordinator:  shardedCoord,
 		codec:        c,
 		metrics:      opts.metricsCollector,
 		logger:       opts.logger,
 		snapshotPath: opts.snapshotPath,
+	}, nil
+}
+
+func createWALs(opts options, numShards int) ([]*wal.WAL, error) {
+	if opts.walPath == "" {
+		return nil, nil
 	}
 
-	// Set auto-checkpoint callback if WAL is enabled
-	if len(wals) > 0 {
-		for _, w := range wals {
-			w.SetCheckpointCallback(vg.autoCheckpoint)
+	wals := make([]*wal.WAL, numShards)
+	for i := 0; i < numShards; i++ {
+		shardPath := filepath.Join(opts.walPath, fmt.Sprintf("shard-%d", i))
+
+		// Prepare WAL options with codec
+		walOptFns := append([]func(*wal.Options){
+			func(o *wal.Options) {
+				o.Path = shardPath
+			},
+		}, opts.walOptions...)
+
+		var err error
+		wals[i], err = wal.New(walOptFns...)
+		if err != nil {
+			// Close already created WALs
+			for j := 0; j < i; j++ {
+				_ = wals[j].Close()
+			}
+			return nil, fmt.Errorf("vecgo: failed to create WAL for shard %d: %w", i, err)
 		}
 	}
-
-	return vg, nil
+	return wals, nil
 }
 
 // autoCheckpoint is called by WAL when auto-checkpoint thresholds are exceeded.

@@ -38,7 +38,8 @@ func NewBinaryQuantizer(dimension int) *BinaryQuantizer {
 		trained:   false,
 		uint64Pool: &sync.Pool{
 			New: func() interface{} {
-				return make([]uint64, numWords)
+				s := make([]uint64, numWords)
+				return &s
 			},
 		},
 	}
@@ -154,8 +155,9 @@ func (bq *BinaryQuantizer) EncodeUint64Into(dst []uint64, v []float32) {
 // It uses a pooled buffer for the quantized query to avoid allocations.
 func (bq *BinaryQuantizer) ComputeHammingDistance(query []float32, codes []uint64) int {
 	// Get buffer from pool
-	qCodes := bq.uint64Pool.Get().([]uint64)
-	defer bq.uint64Pool.Put(qCodes)
+	qCodesPtr := bq.uint64Pool.Get().(*[]uint64)
+	qCodes := *qCodesPtr
+	defer bq.uint64Pool.Put(qCodesPtr)
 
 	// Encode query
 	bq.EncodeUint64Into(qCodes, query)

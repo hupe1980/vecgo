@@ -623,35 +623,6 @@ func (sc *ShardedCoordinator[T]) HybridSearch(ctx context.Context, query []float
 	}
 
 	// Merge results
-	// We can reuse the merge logic from KNNSearch if we extract it.
-	// But for now, duplicate it or use a simple merge.
-	// Since k is usually small, a simple merge is fine.
-	merged := make([]SearchResult, 0, k*sc.numShards)
-	for _, res := range results {
-		merged = append(merged, res...)
-	}
-
-	// Sort and take top k
-	// Note: This is not as efficient as a heap merge, but correct.
-	// Optimization: Use heap merge.
-	// Let's use the existing merge logic if possible.
-	// But KNNSearch logic is embedded.
-	// I'll implement a simple sort here.
-	// index.SearchResult doesn't implement sort.Interface.
-	// I need to sort manually.
-	// Actually, index package has sort helpers? No.
-	// I'll use sort.Slice.
-	// Wait, I need to import "sort".
-	// Or I can use the heap logic from KNNSearch if I copy it.
-	// I'll use a simple insertion sort or selection sort if k is small, or sort.Slice.
-	// I'll assume sort package is available or add it.
-	// I'll add "sort" to imports.
-
-	// For now, let's just return the merged results sorted.
-	// I'll add "sort" to imports in a separate step if needed.
-	// Or I can use a simple bubble sort if k is very small? No.
-	// I'll use a heap.
-
 	return sc.mergeResults(results, k), nil
 }
 
@@ -773,21 +744,7 @@ func (sc *ShardedCoordinator[T]) Stats() index.Stats {
 
 	// Helper to sum map values
 	sumMap := func(target map[string]string, source map[string]string) {
-		for k, v := range source {
-			// Only sum known numeric keys or keys that look like numbers
-			if val, err := strconv.Atoi(v); err == nil {
-				// Check if target has this key and if it's a number
-				if currentStr, ok := target[k]; ok {
-					if current, err := strconv.Atoi(currentStr); err == nil {
-						target[k] = strconv.Itoa(current + val)
-					}
-					// If target value is not a number, we don't sum (keep baseline)
-				} else {
-					// Target doesn't have it, just set it (assuming 0 baseline)
-					target[k] = v
-				}
-			}
-		}
+		sumStatsMap(target, source)
 	}
 
 	// Iterate over remaining shards
@@ -826,4 +783,30 @@ func (sc *ShardedCoordinator[T]) Checkpoint() error {
 		return err
 	}
 	return nil
+}
+
+func sumStatsMap(target map[string]string, source map[string]string) {
+	for k, v := range source {
+		// Only sum known numeric keys or keys that look like numbers
+		val, err := strconv.Atoi(v)
+		if err != nil {
+			continue
+		}
+
+		// Check if target has this key and if it's a number
+		currentStr, ok := target[k]
+		if !ok {
+			// Target doesn't have it, just set it (assuming 0 baseline)
+			target[k] = v
+			continue
+		}
+
+		current, err := strconv.Atoi(currentStr)
+		if err != nil {
+			// If target value is not a number, we don't sum (keep baseline)
+			continue
+		}
+
+		target[k] = strconv.Itoa(current + val)
+	}
 }

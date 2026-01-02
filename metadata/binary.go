@@ -194,16 +194,7 @@ func parseValue(data []byte) (Value, []byte, error) {
 		v.F64 = math.Float64frombits(bits)
 		data = data[8:]
 	case KindString:
-		sLen, n := binary.Uvarint(data)
-		if n <= 0 {
-			return v, nil, errors.New("invalid string length")
-		}
-		data = data[n:]
-		if uint64(len(data)) < sLen {
-			return v, nil, errors.New("short buffer for string")
-		}
-		v.s = unique.Make(string(data[:sLen]))
-		data = data[sLen:]
+		return parseString(v, data)
 	case KindBool:
 		if len(data) == 0 {
 			return v, nil, errors.New("short buffer for bool")
@@ -211,22 +202,41 @@ func parseValue(data []byte) (Value, []byte, error) {
 		v.B = data[0] != 0
 		data = data[1:]
 	case KindArray:
-		aLen, n := binary.Uvarint(data)
-		if n <= 0 {
-			return v, nil, errors.New("invalid array length")
-		}
-		data = data[n:]
-		v.A = make([]Value, aLen)
-		for i := uint64(0); i < aLen; i++ {
-			item, remaining, err := parseValue(data)
-			if err != nil {
-				return v, nil, err
-			}
-			v.A[i] = item
-			data = remaining
-		}
+		return parseArray(v, data)
 	default:
 		return v, nil, errors.New("unknown metadata kind")
+	}
+	return v, data, nil
+}
+
+func parseString(v Value, data []byte) (Value, []byte, error) {
+	sLen, n := binary.Uvarint(data)
+	if n <= 0 {
+		return v, nil, errors.New("invalid string length")
+	}
+	data = data[n:]
+	if uint64(len(data)) < sLen {
+		return v, nil, errors.New("short buffer for string")
+	}
+	v.s = unique.Make(string(data[:sLen]))
+	data = data[sLen:]
+	return v, data, nil
+}
+
+func parseArray(v Value, data []byte) (Value, []byte, error) {
+	aLen, n := binary.Uvarint(data)
+	if n <= 0 {
+		return v, nil, errors.New("invalid array length")
+	}
+	data = data[n:]
+	v.A = make([]Value, aLen)
+	for i := uint64(0); i < aLen; i++ {
+		item, remaining, err := parseValue(data)
+		if err != nil {
+			return v, nil, err
+		}
+		v.A[i] = item
+		data = remaining
 	}
 	return v, data, nil
 }

@@ -166,70 +166,20 @@ func Open(indexPath string, opts *Options) (*Index, error) {
 
 	idx.initPools()
 
-	// Scan for segments
-	entries, err := os.ReadDir(indexPath)
+	segmentPaths, err := idx.scanSegmentPaths(indexPath)
 	if err != nil {
-		return nil, fmt.Errorf("diskann: read dir: %w", err)
+		return nil, err
 	}
 
-	var segmentPaths []string
-	for _, entry := range entries {
-		if entry.IsDir() && strings.HasPrefix(entry.Name(), "segment-") {
-			segmentPaths = append(segmentPaths, filepath.Join(indexPath, entry.Name()))
-		}
-	}
-	sort.Strings(segmentPaths) // Ensure deterministic order
-
-	// Load segments
-	maxID := core.LocalID(0)
-	for _, path := range segmentPaths {
-		var baseID uint64
-		var dummy string
-		n, err := fmt.Sscanf(filepath.Base(path), "segment-%d%s", &baseID, &dummy)
-		if n < 1 {
-			continue
-		}
-
-		bid, err := conv.Uint64ToUint32(baseID)
-		if err != nil {
-			return nil, fmt.Errorf("diskann: segment baseID overflow: %w", err)
-		}
-		seg, err := OpenSegment(path, core.LocalID(bid), opts)
-		if err != nil {
-			return nil, fmt.Errorf("diskann: open segment %s: %w", path, err)
-		}
-		idx.segments = append(idx.segments, seg)
-		idx.count.Add(seg.count)
-
-		segMax := core.LocalID(bid) + core.LocalID(seg.count)
-		if segMax > maxID {
-			maxID = segMax
-		}
-
-		if idx.dim == 0 {
-			idx.dim = seg.dim
-			idx.distType = seg.distType
-			idx.distFunc = seg.distFunc
-		}
+	maxID, err := idx.loadSegments(segmentPaths)
+	if err != nil {
+		return nil, err
 	}
 
 	// Check for legacy single-file index (migration)
-	legacyMeta := filepath.Join(indexPath, MetaFilename)
-	if _, err := os.Stat(legacyMeta); err == nil {
-		seg, err := OpenSegment(indexPath, 0, opts)
-		if err != nil {
-			return nil, fmt.Errorf("diskann: open legacy segment: %w", err)
-		}
-		idx.segments = append(idx.segments, seg)
-		idx.count.Add(seg.count)
-		if core.LocalID(seg.count) > maxID {
-			maxID = core.LocalID(seg.count)
-		}
-		if idx.dim == 0 {
-			idx.dim = seg.dim
-			idx.distType = seg.distType
-			idx.distFunc = seg.distFunc
-		}
+	maxID, err = idx.checkLegacyIndex(indexPath, maxID)
+	if err != nil {
+		return nil, err
 	}
 
 	idx.nextIDAtomic.Store(uint32(maxID))
@@ -247,6 +197,80 @@ func Open(indexPath string, opts *Options) (*Index, error) {
 	}
 
 	return idx, nil
+}
+
+func (idx *Index) scanSegmentPaths(indexPath string) ([]string, error) {
+	entries, err := os.ReadDir(indexPath)
+	if err != nil {
+		return nil, fmt.Errorf("diskann: read dir: %w", err)
+	}
+
+	var segmentPaths []string
+	for _, entry := range entries {
+		if entry.IsDir() && strings.HasPrefix(entry.Name(), "segment-") {
+			segmentPaths = append(segmentPaths, filepath.Join(indexPath, entry.Name()))
+		}
+	}
+	sort.Strings(segmentPaths) // Ensure deterministic order
+	return segmentPaths, nil
+}
+
+func (idx *Index) loadSegments(segmentPaths []string) (core.LocalID, error) {
+	maxID := core.LocalID(0)
+	for _, path := range segmentPaths {
+		var baseID uint64
+		var dummy string
+		n, err := fmt.Sscanf(filepath.Base(path), "segment-%d%s", &baseID, &dummy)
+		if err != nil || n < 1 {
+			continue
+		}
+
+		bid, err := conv.Uint64ToUint32(baseID)
+		if err != nil {
+			return 0, fmt.Errorf("diskann: segment baseID overflow: %w", err)
+		}
+		seg, err := OpenSegment(path, core.LocalID(bid), idx.opts)
+		if err != nil {
+			return 0, fmt.Errorf("diskann: open segment %s: %w", path, err)
+		}
+		idx.segments = append(idx.segments, seg)
+		idx.count.Add(seg.count)
+
+		segMax := core.LocalID(bid) + core.LocalID(seg.count)
+		if segMax > maxID {
+			maxID = segMax
+		}
+
+		if idx.dim == 0 {
+			idx.dim = seg.dim
+			idx.distType = seg.distType
+			idx.distFunc = seg.distFunc
+		}
+	}
+	return maxID, nil
+}
+
+func (idx *Index) checkLegacyIndex(indexPath string, currentMaxID core.LocalID) (core.LocalID, error) {
+	legacyMeta := filepath.Join(indexPath, MetaFilename)
+	if _, err := os.Stat(legacyMeta); err == nil {
+		seg, err := OpenSegment(indexPath, 0, idx.opts)
+		if err != nil {
+			return 0, fmt.Errorf("diskann: open legacy segment: %w", err)
+		}
+		idx.segments = append(idx.segments, seg)
+		idx.count.Add(seg.count)
+
+		if idx.dim == 0 {
+			idx.dim = seg.dim
+			idx.distType = seg.distType
+			idx.distFunc = seg.distFunc
+		}
+
+		if core.LocalID(seg.count) > currentMaxID {
+			return core.LocalID(seg.count), nil
+		}
+	}
+	return currentMaxID, nil
 }
 
 // initPools initializes the sync.Pools.
@@ -293,6 +317,17 @@ func (idx *Index) Close() error {
 }
 
 func (idx *Index) resetMemTable() error {
+	if idx.dim == 0 {
+		// If dimension is not set yet (empty index), we can't create HNSW.
+		// We'll create it lazily on first insert or when dimension is known.
+		// However, to satisfy the current logic, we might need a dummy or handle it.
+		// Better: Allow HNSW to be created with 0 dim if it supports it, or defer.
+		// HNSW New() validates dimension > 0.
+		// So we must defer creation if dim is 0.
+		idx.memTable = nil
+		return nil
+	}
+
 	memTable, err := hnsw.New(func(o *hnsw.Options) {
 		o.Dimension = idx.dim
 		o.M = 32 // Fixed for MemTable
@@ -340,10 +375,17 @@ func (idx *Index) Insert(ctx context.Context, v []float32) (core.LocalID, error)
 
 // ApplyInsert adds a vector with a specific ID to the MemTable.
 func (idx *Index) ApplyInsert(ctx context.Context, id core.LocalID, v []float32) error {
-	idx.mu.RLock()
-	defer idx.mu.RUnlock()
-
+	idx.mu.Lock()
+	if idx.dim == 0 {
+		idx.dim = len(v)
+		if err := idx.resetMemTable(); err != nil {
+			idx.mu.Unlock()
+			return err
+		}
+	}
 	memTable := idx.memTable
+	idx.mu.Unlock()
+
 	if memTable == nil {
 		return fmt.Errorf("diskann: memtable not initialized")
 	}
@@ -367,6 +409,18 @@ func (idx *Index) ApplyInsert(ctx context.Context, id core.LocalID, v []float32)
 func (idx *Index) ApplyBatchInsert(ctx context.Context, ids []core.LocalID, vectors [][]float32) error {
 	if len(ids) != len(vectors) {
 		return fmt.Errorf("ids and vectors length mismatch")
+	}
+
+	if len(vectors) > 0 {
+		idx.mu.Lock()
+		if idx.dim == 0 {
+			idx.dim = len(vectors[0])
+			if err := idx.resetMemTable(); err != nil {
+				idx.mu.Unlock()
+				return err
+			}
+		}
+		idx.mu.Unlock()
 	}
 
 	idx.mu.RLock()
@@ -481,6 +535,8 @@ func (idx *Index) KNNSearch(ctx context.Context, query []float32, k int, opts *i
 	return results, nil
 }
 
+// KNNSearchWithBuffer performs a K-nearest neighbor search and appends results to the provided buffer.
+// This avoids allocating a new slice for results if the buffer has enough capacity.
 func (idx *Index) KNNSearchWithBuffer(ctx context.Context, query []float32, k int, opts *index.SearchOptions, buf *[]index.SearchResult) error {
 	if len(query) != idx.dim {
 		return &index.ErrDimensionMismatch{Expected: idx.dim, Actual: len(query)}
@@ -563,75 +619,80 @@ func (idx *Index) KNNSearchWithBuffer(ctx context.Context, query []float32, k in
 	}
 
 	// Search DiskANN Segments
-	if len(segments) > 0 {
-		// Pre-allocate segment results slice in scratch
-		if cap(scratch.segmentResults) < len(segments) {
-			scratch.segmentResults = make([][]index.SearchResult, 0, len(segments))
-		}
-
-		// Calculate capacity per segment
-		capPerSeg := k * 2
-		if opts != nil && opts.EFSearch > capPerSeg {
-			capPerSeg = opts.EFSearch
-		}
-
-		// Ensure flat buffer has enough capacity
-		totalCap := capPerSeg * len(segments)
-		if cap(scratch.flatResults) < totalCap {
-			scratch.flatResults = make([]index.SearchResult, 0, totalCap)
-		}
-
-		// Search segments sequentially (Zero-Alloc)
-		for _, seg := range segments {
-			// Ensure capacity for this segment in flat buffer
-			if len(scratch.flatResults)+capPerSeg > cap(scratch.flatResults) {
-				// Grow flat buffer
-				newCap := cap(scratch.flatResults) * 2
-				if newCap < len(scratch.flatResults)+capPerSeg {
-					newCap = len(scratch.flatResults) + capPerSeg
-				}
-				newFlat := make([]index.SearchResult, 0, newCap)
-				newFlat = append(newFlat, scratch.flatResults...)
-				scratch.flatResults = newFlat
-			}
-
-			// Start of this segment's results in flat buffer
-			startIdx := len(scratch.flatResults)
-
-			// Search and append directly to flatResults
-			if err := seg.SearchWithBuffer(ctx, query, k, nil, segmentFilter, scratch, &scratch.flatResults); err != nil {
-				return fmt.Errorf("diskann: segment search: %w", err)
-			}
-
-			// End of this segment's results
-			endIdx := len(scratch.flatResults)
-
-			// Capture the slice for this segment (points into flatResults)
-			scratch.segmentResults = append(scratch.segmentResults, scratch.flatResults[startIdx:endIdx])
-		}
-
-		// Merge results
-		// We can use MergeNSearchResultsInto to merge all segment results + memtable results
-		// But here we are just collecting them into scratch.results
-		// The original code appended to scratch.results.
-
-		// Let's append all segment results to scratch.results
-		// Actually, scratch.results already contains MemTable results.
-		// We should merge MemTable results + Segment results.
-
-		// Current state:
-		// scratch.results: [MemTable Results...]
-		// scratch.segmentResults: [[Seg1 Results...], [Seg2 Results...]]
-
-		// We can just append everything to scratch.results and sort/dedup as before.
-		// This is what the original code did.
-		// But wait, scratch.flatResults ALREADY contains all segment results!
-		// So we just need to append scratch.flatResults to scratch.results.
-
-		scratch.results = append(scratch.results, scratch.flatResults...)
+	if err := idx.searchSegments(ctx, segments, query, k, opts, segmentFilter, scratch); err != nil {
+		return err
 	}
 
 	// Merge and Deduplicate
+	idx.mergeAndDeduplicate(scratch, k, buf)
+
+	return nil
+}
+
+func (idx *Index) searchSegments(
+	ctx context.Context,
+	segments []*Segment,
+	query []float32,
+	k int,
+	opts *index.SearchOptions,
+	segmentFilter func(core.LocalID) bool,
+	scratch *searchScratch,
+) error {
+	if len(segments) == 0 {
+		return nil
+	}
+
+	// Pre-allocate segment results slice in scratch
+	if cap(scratch.segmentResults) < len(segments) {
+		scratch.segmentResults = make([][]index.SearchResult, 0, len(segments))
+	}
+
+	// Calculate capacity per segment
+	capPerSeg := k * 2
+	if opts != nil && opts.EFSearch > capPerSeg {
+		capPerSeg = opts.EFSearch
+	}
+
+	// Ensure flat buffer has enough capacity
+	totalCap := capPerSeg * len(segments)
+	if cap(scratch.flatResults) < totalCap {
+		scratch.flatResults = make([]index.SearchResult, 0, totalCap)
+	}
+
+	// Search segments sequentially (Zero-Alloc)
+	for _, seg := range segments {
+		// Ensure capacity for this segment in flat buffer
+		if len(scratch.flatResults)+capPerSeg > cap(scratch.flatResults) {
+			// Grow flat buffer
+			newCap := cap(scratch.flatResults) * 2
+			if newCap < len(scratch.flatResults)+capPerSeg {
+				newCap = len(scratch.flatResults) + capPerSeg
+			}
+			newFlat := make([]index.SearchResult, 0, newCap)
+			newFlat = append(newFlat, scratch.flatResults...)
+			scratch.flatResults = newFlat
+		}
+
+		// Start of this segment's results in flat buffer
+		startIdx := len(scratch.flatResults)
+
+		// Search and append directly to flatResults
+		if err := seg.SearchWithBuffer(ctx, query, k, nil, segmentFilter, scratch, &scratch.flatResults); err != nil {
+			return fmt.Errorf("diskann: segment search: %w", err)
+		}
+
+		// End of this segment's results
+		endIdx := len(scratch.flatResults)
+
+		// Capture the slice for this segment (points into flatResults)
+		scratch.segmentResults = append(scratch.segmentResults, scratch.flatResults[startIdx:endIdx])
+	}
+
+	scratch.results = append(scratch.results, scratch.flatResults...)
+	return nil
+}
+
+func (idx *Index) mergeAndDeduplicate(scratch *searchScratch, k int, buf *[]index.SearchResult) {
 	// Sort by distance
 	slices.SortFunc(scratch.results, func(a, b index.SearchResult) int {
 		if a.Distance < b.Distance {
@@ -657,28 +718,27 @@ func (idx *Index) KNNSearchWithBuffer(ctx context.Context, query []float32, k in
 			break
 		}
 
-		seen := false
-		if useBits {
-			if scratch.seenBits.Test(res.ID) {
-				seen = true
-			} else {
-				scratch.seenBits.Set(res.ID)
-			}
-		} else {
-			if _, ok := scratch.seen[res.ID]; ok {
-				seen = true
-			} else {
-				scratch.seen[res.ID] = struct{}{}
-			}
-		}
-
-		if !seen {
+		if !checkAndMarkSeen(scratch, res.ID, useBits) {
 			*buf = append(*buf, res)
 			count++
 		}
 	}
+}
 
-	return nil
+func checkAndMarkSeen(scratch *searchScratch, id uint32, useBits bool) bool {
+	if useBits {
+		if scratch.seenBits.Test(id) {
+			return true
+		}
+		scratch.seenBits.Set(id)
+		return false
+	}
+
+	if _, ok := scratch.seen[id]; ok {
+		return true
+	}
+	scratch.seen[id] = struct{}{}
+	return false
 }
 
 // KNNSearchWithContext performs a K-nearest neighbor search using the provided Searcher context.

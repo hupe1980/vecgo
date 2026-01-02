@@ -271,47 +271,44 @@ func (s *Segment) beamSearch(query []float32, distTable []float32, queryBQ []uin
 		}
 
 		if curr.id < graphLen {
-			for _, neighbor := range s.graph[curr.id] {
-				if neighbor >= maxID || visited.Test(neighbor) {
-					continue
-				}
-				visited.Set(neighbor)
-
-				if filter != nil && !filter(neighbor) {
-					continue
-				}
-
-				// BQ Prefilter
-				if queryBQ != nil {
-					words := (s.dim + 63) / 64
-					neighborInt, err := conv.Uint32ToInt(neighbor)
-					if err != nil {
-						continue
-					}
-					offset := neighborInt * words
-					if offset+words <= len(s.bqCodes) {
-						norm := quantization.NormalizedHammingDistance(queryBQ, s.bqCodes[offset:offset+words], s.dim)
-						if norm > s.opts.BinaryPrefilterMaxNormalizedDistance {
-							continue
-						}
-					}
-				}
-
-				dist := s.computeDistance(query, neighbor, distTable)
-				candidates.push(distNode{id: neighbor, dist: dist})
-
-				results = append(results, distNode{id: neighbor, dist: dist})
-				sortDistNodes(results)
-				if len(results) > topK*2 {
-					results = results[:topK*2]
-				}
-			}
+			results = s.processNeighbors(curr.id, query, distTable, queryBQ, topK, filter, scratch, maxID, results)
 		}
 	}
 
 	sortDistNodes(results)
 	if len(results) > topK {
 		results = results[:topK]
+	}
+	return results
+}
+
+func (s *Segment) processNeighbors(currID uint32, query []float32, distTable []float32, queryBQ []uint64, topK int, filter func(uint32) bool, scratch *searchScratch, maxID uint32, results []distNode) []distNode {
+	candidates := &scratch.candidates
+	visited := scratch.visited
+
+	for _, neighbor := range s.graph[currID] {
+		if neighbor >= maxID || visited.Test(neighbor) {
+			continue
+		}
+		visited.Set(neighbor)
+
+		if filter != nil && !filter(neighbor) {
+			continue
+		}
+
+		// BQ Prefilter
+		if !s.checkBQPrefilter(queryBQ, neighbor) {
+			continue
+		}
+
+		dist := s.computeDistance(query, neighbor, distTable)
+		candidates.push(distNode{id: neighbor, dist: dist})
+
+		results = append(results, distNode{id: neighbor, dist: dist})
+		sortDistNodes(results)
+		if len(results) > topK*2 {
+			results = results[:topK*2]
+		}
 	}
 	return results
 }
@@ -374,7 +371,7 @@ func (s *Segment) loadMeta(path string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var header FileHeader
 	if _, err := header.ReadFrom(f); err != nil {
@@ -446,7 +443,7 @@ func (s *Segment) loadGraph(path string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	s.graph = make([][]uint32, s.count)
 	buf := make([]byte, 4)
@@ -473,7 +470,7 @@ func (s *Segment) loadPQCodes(path string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	M := s.opts.PQSubvectors
 	countInt, err := conv.Uint32ToInt(s.count)
@@ -492,7 +489,7 @@ func (s *Segment) loadBQCodes(path string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	words := (s.dim + 63) / 64
 	s.bqCodes = make([]uint64, int(s.count)*words)
@@ -662,19 +659,8 @@ func (s *Segment) beamSearchWithContext(query []float32, distTable []float32, qu
 			}
 
 			// BQ Prefilter
-			if queryBQ != nil {
-				words := (s.dim + 63) / 64
-				neighborIDInt, err := conv.Uint32ToInt(neighborID)
-				if err != nil {
-					continue
-				}
-				offset := neighborIDInt * words
-				if offset+words <= len(s.bqCodes) {
-					norm := quantization.NormalizedHammingDistance(queryBQ, s.bqCodes[offset:offset+words], s.dim)
-					if norm > s.opts.BinaryPrefilterMaxNormalizedDistance {
-						continue
-					}
-				}
+			if !s.checkBQPrefilter(queryBQ, neighborID) {
+				continue
 			}
 
 			dist := s.computeDistance(query, neighborID, distTable)
@@ -704,4 +690,19 @@ func (s *Segment) beamSearchWithContext(query []float32, distTable []float32, qu
 	sr.ScratchResults = results
 
 	return results
+}
+
+func (s *Segment) checkBQPrefilter(queryBQ []uint64, neighbor uint32) bool {
+	if queryBQ == nil {
+		return true
+	}
+	words := (s.dim + 63) / 64
+	neighborInt := int(neighbor)
+	offset := neighborInt * words
+	if offset+words > len(s.bqCodes) {
+		return true
+	}
+
+	norm := quantization.NormalizedHammingDistance(queryBQ, s.bqCodes[offset:offset+words], s.dim)
+	return norm <= s.opts.BinaryPrefilterMaxNormalizedDistance
 }

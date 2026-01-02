@@ -277,6 +277,12 @@ func (pq *ProductQuantizer) CompressionRatio() float64 {
 
 // kmeans performs k-means clustering on subvectors.
 func (pq *ProductQuantizer) kmeans(vectors [][]float32, startIdx, endIdx int, k, maxIters int) []float32 {
+	centroids := pq.initializeCentroids(vectors, startIdx, endIdx, k)
+	pq.runKMeansIterations(vectors, centroids, startIdx, endIdx, k, maxIters)
+	return centroids
+}
+
+func (pq *ProductQuantizer) initializeCentroids(vectors [][]float32, startIdx, endIdx, k int) []float32 {
 	dim := endIdx - startIdx
 	centroids := make([]float32, k*dim)
 
@@ -332,77 +338,82 @@ func (pq *ProductQuantizer) kmeans(vectors [][]float32, startIdx, endIdx int, k,
 			sum += minDistSq[i]
 		}
 	}
+	return centroids
+}
 
-	// Run k-means iterations
+func (pq *ProductQuantizer) runKMeansIterations(vectors [][]float32, centroids []float32, startIdx, endIdx, k, maxIters int) {
+	dim := endIdx - startIdx
 	assignments := make([]int, len(vectors))
 	numWorkers := runtime.GOMAXPROCS(0)
 
 	for range maxIters {
-		// Assignment step
-		var changedAtomic atomic.Bool
-		var wg sync.WaitGroup
-
-		chunkSize := (len(vectors) + numWorkers - 1) / numWorkers
-		for w := 0; w < numWorkers; w++ {
-			start := w * chunkSize
-			end := start + chunkSize
-			if end > len(vectors) {
-				end = len(vectors)
-			}
-			if start >= end {
-				continue
-			}
-
-			wg.Add(1)
-			go func(start, end int) {
-				defer wg.Done()
-				localChanged := false
-				for i := start; i < end; i++ {
-					nearestIdx := pq.findNearestCentroid(vectors[i][startIdx:endIdx], centroids)
-					if assignments[i] != nearestIdx {
-						localChanged = true
-						assignments[i] = nearestIdx
-					}
-				}
-				if localChanged {
-					changedAtomic.Store(true)
-				}
-			}(start, end)
-		}
-		wg.Wait()
-
-		if !changedAtomic.Load() {
+		if !pq.assignClusters(vectors, centroids, assignments, startIdx, endIdx, numWorkers) {
 			break
 		}
+		pq.updateCentroids(vectors, centroids, assignments, startIdx, endIdx, k, dim)
+	}
+}
 
-		// Update step
-		counts := make([]int, k)
-		newCentroids := make([]float32, k*dim)
+func (pq *ProductQuantizer) assignClusters(vectors [][]float32, centroids []float32, assignments []int, startIdx, endIdx, numWorkers int) bool {
+	var changedAtomic atomic.Bool
+	var wg sync.WaitGroup
 
-		for i, vec := range vectors {
-			cluster := assignments[i]
-			counts[cluster]++
-			start := cluster * dim
-			for j, val := range vec[startIdx:endIdx] {
-				newCentroids[start+j] += val
-			}
+	chunkSize := (len(vectors) + numWorkers - 1) / numWorkers
+	for w := 0; w < numWorkers; w++ {
+		start := w * chunkSize
+		end := start + chunkSize
+		if end > len(vectors) {
+			end = len(vectors)
+		}
+		if start >= end {
+			continue
 		}
 
-		for i := range k {
-			if counts[i] > 0 {
-				start := i * dim
-				for j := range dim {
-					centroids[start+j] = newCentroids[start+j] / float32(counts[i])
+		wg.Add(1)
+		go func(start, end int) {
+			defer wg.Done()
+			localChanged := false
+			for i := start; i < end; i++ {
+				nearestIdx := pq.findNearestCentroid(vectors[i][startIdx:endIdx], centroids)
+				if assignments[i] != nearestIdx {
+					localChanged = true
+					assignments[i] = nearestIdx
 				}
-			} else {
-				// Re-initialize empty cluster with random vector
-				idx := rand.Intn(len(vectors))
-				copy(centroids[i*dim:], vectors[idx][startIdx:endIdx])
 			}
+			if localChanged {
+				changedAtomic.Store(true)
+			}
+		}(start, end)
+	}
+	wg.Wait()
+	return changedAtomic.Load()
+}
+
+func (pq *ProductQuantizer) updateCentroids(vectors [][]float32, centroids []float32, assignments []int, startIdx, endIdx, k, dim int) {
+	counts := make([]int, k)
+	newCentroids := make([]float32, k*dim)
+
+	for i, vec := range vectors {
+		cluster := assignments[i]
+		counts[cluster]++
+		start := cluster * dim
+		for j, val := range vec[startIdx:endIdx] {
+			newCentroids[start+j] += val
 		}
 	}
 
-	return centroids
+	for i := range k {
+		if counts[i] > 0 {
+			start := i * dim
+			for j := range dim {
+				centroids[start+j] = newCentroids[start+j] / float32(counts[i])
+			}
+		} else {
+			// Re-initialize empty cluster with random vector
+			idx := rand.Intn(len(vectors))
+			copy(centroids[i*dim:], vectors[idx][startIdx:endIdx])
+		}
+	}
 }
 
 // findNearestCentroid finds the index of the nearest centroid to a vector.

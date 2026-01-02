@@ -80,157 +80,32 @@ func SaveToWriter[T any](w io.Writer, idx index.Index, dataStore Store[T], metad
 		return fmt.Errorf("snapshot codec name too long: %d", len(codecName))
 	}
 
-	// Header (16 bytes + codec name)
-	// [0:4]  magic
-	// [4:6]  version
-	// [6:8]  flags/reserved
-	// [8:10] codec name len
-	// [10:12] section count
-	// [12:16] reserved
-	var hdr [16]byte
-	copy(hdr[0:4], snapshotMagic[:])
-	binary.LittleEndian.PutUint16(hdr[4:6], snapshotFormatVersion)
-	nameLenU16, err := conv.IntToUint16(len(codecName))
+	headerLen, err := writeHeader(w, codecName)
 	if err != nil {
 		return err
-	}
-	binary.LittleEndian.PutUint16(hdr[8:10], nameLenU16)
-	binary.LittleEndian.PutUint16(hdr[10:12], 3)
-	if _, err := w.Write(hdr[:]); err != nil {
-		return err
-	}
-	if len(codecName) > 0 {
-		if _, err := w.Write([]byte(codecName)); err != nil {
-			return err
-		}
-	}
-
-	// Padding for 8-byte alignment of the following Index section.
-	// This is critical for mmap-based loading on architectures like ARM64
-	// where atomic 64-bit operations require 8-byte alignment.
-	currentLen := int64(len(hdr)) + int64(len(codecName))
-	padding := (8 - (currentLen % 8)) % 8
-	if padding > 0 {
-		pad := make([]byte, padding)
-		if _, err := w.Write(pad); err != nil {
-			return err
-		}
 	}
 
 	cw := &countingWriter{w: w}
-	cw.n = currentLen + padding
+	cw.n = headerLen
 
-	// Index: native binary persistence with checksum.
-	bw, ok := idx.(io.WriterTo)
-	if !ok {
-		return fmt.Errorf("snapshot: index type %T does not support binary persistence", idx)
-	}
-	idxOff, err := conv.Int64ToUint64(cw.n)
+	idxOff, idxLen, idxChecksum, err := writeIndexSection(cw, idx)
 	if err != nil {
 		return err
 	}
-	checksumWriter := persistence.NewChecksumWriter(cw)
-	if _, err := bw.WriteTo(checksumWriter); err != nil {
-		return fmt.Errorf("failed to write index: %w", err)
-	}
-	cwN, err := conv.Int64ToUint64(cw.n)
+
+	storeOff, storeLen, storeChecksum, err := writeStoreSection[T](cw, dataStore, func(data T) ([]byte, error) {
+		return c.Marshal(data)
+	})
 	if err != nil {
 		return err
 	}
-	idxLen := cwN - idxOff
-	idxChecksum := checksumWriter.Sum()
 
-	// Data store: Streamed entries with checksum.
-	storeOff, err := conv.Int64ToUint64(cw.n)
+	metaOff, metaLen, metaChecksum, err := writeStoreSection[metadata.Metadata](cw, metadataStore, func(meta metadata.Metadata) ([]byte, error) {
+		return meta.MarshalBinary()
+	})
 	if err != nil {
 		return err
 	}
-	storeChecksumWriter := persistence.NewChecksumWriter(cw)
-
-	// Write count
-	dsLen, err := conv.IntToUint64(dataStore.Len())
-	if err != nil {
-		return err
-	}
-	if err := binary.Write(storeChecksumWriter, binary.LittleEndian, dsLen); err != nil {
-		return err
-	}
-
-	for id, data := range dataStore.All() {
-		dataBytes, err := c.Marshal(data)
-		if err != nil {
-			return fmt.Errorf("failed to encode data for id %d: %w", id, err)
-		}
-
-		// Write ID
-		if err := binary.Write(storeChecksumWriter, binary.LittleEndian, id); err != nil {
-			return err
-		}
-		// Write Len
-		dbLen, err := conv.IntToUint32(len(dataBytes))
-		if err != nil {
-			return err
-		}
-		if err := binary.Write(storeChecksumWriter, binary.LittleEndian, dbLen); err != nil {
-			return err
-		}
-		// Write Bytes
-		if _, err := storeChecksumWriter.Write(dataBytes); err != nil {
-			return err
-		}
-	}
-	cwN, err = conv.Int64ToUint64(cw.n)
-	if err != nil {
-		return err
-	}
-	storeLen := cwN - storeOff
-	storeChecksum := storeChecksumWriter.Sum()
-
-	// Metadata store: Streamed entries with checksum.
-	metaOff, err := conv.Int64ToUint64(cw.n)
-	if err != nil {
-		return err
-	}
-	metaChecksumWriter := persistence.NewChecksumWriter(cw)
-
-	// Write count
-	msLen, err := conv.IntToUint64(metadataStore.Len())
-	if err != nil {
-		return err
-	}
-	if err := binary.Write(metaChecksumWriter, binary.LittleEndian, msLen); err != nil {
-		return err
-	}
-
-	for id, meta := range metadataStore.All() {
-		metaBytes, err := meta.MarshalBinary()
-		if err != nil {
-			return fmt.Errorf("failed to encode metadata for id %d: %w", id, err)
-		}
-
-		// Write ID
-		if err := binary.Write(metaChecksumWriter, binary.LittleEndian, id); err != nil {
-			return err
-		}
-		// Write Len
-		mbLen, err := conv.IntToUint32(len(metaBytes))
-		if err != nil {
-			return err
-		}
-		if err := binary.Write(metaChecksumWriter, binary.LittleEndian, mbLen); err != nil {
-			return err
-		}
-		// Write Bytes
-		if _, err := metaChecksumWriter.Write(metaBytes); err != nil {
-			return err
-		}
-	}
-	cwN, err = conv.Int64ToUint64(cw.n)
-	if err != nil {
-		return err
-	}
-	metaLen := cwN - metaOff
-	metaChecksum := metaChecksumWriter.Sum()
 
 	// Directory
 	dirOff, err := conv.Int64ToUint64(cw.n)
@@ -244,7 +119,7 @@ func SaveToWriter[T any](w io.Writer, idx index.Index, dataStore Store[T], metad
 	}); err != nil {
 		return err
 	}
-	cwN, err = conv.Int64ToUint64(cw.n)
+	cwN, err := conv.Int64ToUint64(cw.n)
 	if err != nil {
 		return err
 	}
@@ -252,6 +127,99 @@ func SaveToWriter[T any](w io.Writer, idx index.Index, dataStore Store[T], metad
 
 	// Footer
 	return writeSnapshotFooter(cw, dirOff, dirLen)
+}
+
+func writeHeader(w io.Writer, codecName string) (int64, error) {
+	var hdr [16]byte
+	copy(hdr[0:4], snapshotMagic[:])
+	binary.LittleEndian.PutUint16(hdr[4:6], snapshotFormatVersion)
+	nameLenU16, err := conv.IntToUint16(len(codecName))
+	if err != nil {
+		return 0, err
+	}
+	binary.LittleEndian.PutUint16(hdr[8:10], nameLenU16)
+	binary.LittleEndian.PutUint16(hdr[10:12], 3)
+	if _, err := w.Write(hdr[:]); err != nil {
+		return 0, err
+	}
+	if codecName != "" {
+		if _, err := w.Write([]byte(codecName)); err != nil {
+			return 0, err
+		}
+	}
+
+	currentLen := int64(len(hdr)) + int64(len(codecName))
+	padding := (8 - (currentLen % 8)) % 8
+	if padding > 0 {
+		pad := make([]byte, padding)
+		if _, err := w.Write(pad); err != nil {
+			return 0, err
+		}
+	}
+	return currentLen + padding, nil
+}
+
+func writeIndexSection(cw *countingWriter, idx index.Index) (uint64, uint64, uint32, error) {
+	bw, ok := idx.(io.WriterTo)
+	if !ok {
+		return 0, 0, 0, fmt.Errorf("snapshot: index type %T does not support binary persistence", idx)
+	}
+	startOff, err := conv.Int64ToUint64(cw.n)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	checksumWriter := persistence.NewChecksumWriter(cw)
+	if _, err := bw.WriteTo(checksumWriter); err != nil {
+		return 0, 0, 0, fmt.Errorf("failed to write index: %w", err)
+	}
+	endOff, err := conv.Int64ToUint64(cw.n)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	return startOff, endOff - startOff, checksumWriter.Sum(), nil
+}
+
+func writeStoreSection[T any](cw *countingWriter, store Store[T], encode func(T) ([]byte, error)) (uint64, uint64, uint32, error) {
+	startOff, err := conv.Int64ToUint64(cw.n)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	checksumWriter := persistence.NewChecksumWriter(cw)
+
+	count, err := conv.IntToUint64(store.Len())
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	if err := binary.Write(checksumWriter, binary.LittleEndian, count); err != nil {
+		return 0, 0, 0, err
+	}
+
+	for id, data := range store.All() {
+		dataBytes, err := encode(data)
+		if err != nil {
+			return 0, 0, 0, fmt.Errorf("failed to encode data for id %d: %w", id, err)
+		}
+
+		if err := binary.Write(checksumWriter, binary.LittleEndian, id); err != nil {
+			return 0, 0, 0, err
+		}
+		dbLen, err := conv.IntToUint32(len(dataBytes))
+		if err != nil {
+			return 0, 0, 0, err
+		}
+		if err := binary.Write(checksumWriter, binary.LittleEndian, dbLen); err != nil {
+			return 0, 0, 0, err
+		}
+		if _, err := checksumWriter.Write(dataBytes); err != nil {
+			return 0, 0, 0, err
+		}
+	}
+
+	endOff, err := conv.Int64ToUint64(cw.n)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	return startOff, endOff - startOff, checksumWriter.Sum(), nil
 }
 
 // SaveToFile saves a snapshot to filename.
@@ -284,17 +252,11 @@ func LoadFromReaderWithCodec[T any](r io.ReadSeeker, c codec.Codec) (*Snapshot[T
 		return nil, err
 	}
 
-	if c == nil {
-		if codecName != "" {
-			cc, ok := codec.ByName(codecName)
-			if !ok {
-				return nil, fmt.Errorf("unsupported snapshot codec %q", codecName)
-			}
-			c = cc
-		} else {
-			c = codec.Default
-		}
+	c, err = resolveCodec(c, codecName)
+	if err != nil {
+		return nil, err
 	}
+
 	if codecName != "" && c.Name() != codecName {
 		return nil, fmt.Errorf("snapshot codec %q does not match provided codec %q", codecName, c.Name())
 	}
@@ -303,178 +265,141 @@ func LoadFromReaderWithCodec[T any](r io.ReadSeeker, c codec.Codec) (*Snapshot[T
 	if !ok {
 		return nil, fmt.Errorf("snapshot missing index section")
 	}
-	idxOff, err := conv.Uint64ToInt64(idxEntry.Offset)
+	idx, err := loadIndexSection(r, idxEntry)
 	if err != nil {
 		return nil, err
-	}
-	if _, err := r.Seek(idxOff, io.SeekStart); err != nil {
-		return nil, err
-	}
-
-	// Read index data and verify checksum
-	// Streamed load to avoid O(N) memory spike
-	idxLen, err := conv.Uint64ToInt64(idxEntry.Len)
-	if err != nil {
-		return nil, err
-	}
-	idxReader := io.LimitReader(r, idxLen)
-	idxChecksumReader := persistence.NewChecksumReader(idxReader)
-
-	// Load index from verified data
-	idx, err := index.LoadBinaryIndex(idxChecksumReader)
-	if err != nil {
-		return nil, err
-	}
-
-	// Drain any remaining bytes (should be none if ReadFrom matches WriteTo)
-	if _, err := io.Copy(io.Discard, idxChecksumReader); err != nil {
-		return nil, fmt.Errorf("failed to drain index section: %w", err)
-	}
-
-	if actualChecksum := idxChecksumReader.Sum(); actualChecksum != idxEntry.Checksum {
-		return nil, &persistence.ChecksumMismatchError{
-			Expected: idxEntry.Checksum,
-			Actual:   actualChecksum,
-		}
 	}
 
 	storeEntry, ok := sections[snapshotSectionDataStore]
 	if !ok {
 		return nil, fmt.Errorf("snapshot missing store section")
 	}
-	storeOff, err := conv.Uint64ToInt64(storeEntry.Offset)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := r.Seek(storeOff, io.SeekStart); err != nil {
-		return nil, err
-	}
-
-	// Streamed load for Data Store
-	storeLen, err := conv.Uint64ToInt64(storeEntry.Len)
-	if err != nil {
-		return nil, err
-	}
-	storeReader := io.LimitReader(r, storeLen)
-	storeChecksumReader := persistence.NewChecksumReader(storeReader)
-
-	var storeCount uint64
-	if err := binary.Read(storeChecksumReader, binary.LittleEndian, &storeCount); err != nil {
-		return nil, fmt.Errorf("failed to read store count: %w", err)
-	}
-	if storeCount > (storeEntry.Len-8)/12 {
-		return nil, fmt.Errorf("store count %d exceeds max possible for section size %d", storeCount, storeEntry.Len)
-	}
-
-	dataStoreOut := NewMapStore[T]()
-	for i := uint64(0); i < storeCount; i++ {
-		var id uint32
-		if err := binary.Read(storeChecksumReader, binary.LittleEndian, &id); err != nil {
-			return nil, fmt.Errorf("failed to read store id: %w", err)
-		}
-		var length uint32
-		if err := binary.Read(storeChecksumReader, binary.LittleEndian, &length); err != nil {
-			return nil, fmt.Errorf("failed to read store data length: %w", err)
-		}
-
-		if uint64(length) > storeEntry.Len {
-			return nil, fmt.Errorf("store data length %d exceeds section length %d", length, storeEntry.Len)
-		}
-
-		dataBytes := make([]byte, length)
-		if _, err := io.ReadFull(storeChecksumReader, dataBytes); err != nil {
-			return nil, fmt.Errorf("failed to read store data: %w", err)
-		}
-
+	dataStore, err := loadStoreSection[T](r, storeEntry, func(b []byte) (T, error) {
 		var data T
-		if err := c.Unmarshal(dataBytes, &data); err != nil {
-			return nil, fmt.Errorf("failed to decode store data: %w", err)
-		}
-		dataStoreOut.Set(core.LocalID(id), data)
-	}
-
-	// Drain and verify
-	if _, err := io.Copy(io.Discard, storeChecksumReader); err != nil {
-		return nil, fmt.Errorf("failed to drain store section: %w", err)
-	}
-	if actualChecksum := storeChecksumReader.Sum(); actualChecksum != storeEntry.Checksum {
-		return nil, &persistence.ChecksumMismatchError{
-			Expected: storeEntry.Checksum,
-			Actual:   actualChecksum,
-		}
+		err := c.Unmarshal(b, &data)
+		return data, err
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	metaEntry, ok := sections[snapshotSectionMetadataStore]
 	if !ok {
 		return nil, fmt.Errorf("snapshot missing metadata section")
 	}
-	metaOff, err := conv.Uint64ToInt64(metaEntry.Offset)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := r.Seek(metaOff, io.SeekStart); err != nil {
-		return nil, err
-	}
-
-	// Streamed load for Metadata Store
-	metaLen, err := conv.Uint64ToInt64(metaEntry.Len)
-	if err != nil {
-		return nil, err
-	}
-	metaReader := io.LimitReader(r, metaLen)
-	metaChecksumReader := persistence.NewChecksumReader(metaReader)
-
-	var metaCount uint64
-	if err := binary.Read(metaChecksumReader, binary.LittleEndian, &metaCount); err != nil {
-		return nil, fmt.Errorf("failed to read metadata count: %w", err)
-	}
-	if metaCount > (metaEntry.Len-8)/12 {
-		return nil, fmt.Errorf("metadata count %d exceeds max possible for section size %d", metaCount, metaEntry.Len)
-	}
-
-	metadataStoreOut := NewMapStore[metadata.Metadata]()
-	for i := uint64(0); i < metaCount; i++ {
-		var id uint32
-		if err := binary.Read(metaChecksumReader, binary.LittleEndian, &id); err != nil {
-			return nil, fmt.Errorf("failed to read metadata id: %w", err)
-		}
-		var length uint32
-		if err := binary.Read(metaChecksumReader, binary.LittleEndian, &length); err != nil {
-			return nil, fmt.Errorf("failed to read metadata length: %w", err)
-		}
-
-		if uint64(length) > metaEntry.Len {
-			return nil, fmt.Errorf("metadata length %d exceeds section length %d", length, metaEntry.Len)
-		}
-
-		metaBytes := make([]byte, length)
-		if _, err := io.ReadFull(metaChecksumReader, metaBytes); err != nil {
-			return nil, fmt.Errorf("failed to read metadata bytes: %w", err)
-		}
-
+	metaStore, err := loadStoreSection[metadata.Metadata](r, metaEntry, func(b []byte) (metadata.Metadata, error) {
 		var meta metadata.Metadata
-		if err := meta.UnmarshalBinary(metaBytes); err != nil {
-			return nil, fmt.Errorf("failed to decode metadata: %w", err)
-		}
-		metadataStoreOut.Set(core.LocalID(id), meta)
-	}
-
-	// Drain and verify
-	if _, err := io.Copy(io.Discard, metaChecksumReader); err != nil {
-		return nil, fmt.Errorf("failed to drain metadata section: %w", err)
-	}
-	if actualChecksum := metaChecksumReader.Sum(); actualChecksum != metaEntry.Checksum {
-		return nil, &persistence.ChecksumMismatchError{
-			Expected: metaEntry.Checksum,
-			Actual:   actualChecksum,
-		}
+		err := meta.UnmarshalBinary(b)
+		return meta, err
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	return &Snapshot[T]{
 		Index:         idx,
-		DataStore:     dataStoreOut,
-		MetadataStore: metadataStoreOut,
+		DataStore:     dataStore,
+		MetadataStore: metaStore,
 	}, nil
+}
+
+func loadIndexSection(r io.ReadSeeker, entry snapshotSectionEntry) (index.Index, error) {
+	off, err := conv.Uint64ToInt64(entry.Offset)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := r.Seek(off, io.SeekStart); err != nil {
+		return nil, err
+	}
+
+	length, err := conv.Uint64ToInt64(entry.Len)
+	if err != nil {
+		return nil, err
+	}
+	reader := io.LimitReader(r, length)
+	checksumReader := persistence.NewChecksumReader(reader)
+
+	idx, err := index.LoadBinaryIndex(checksumReader)
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err := io.Copy(io.Discard, checksumReader); err != nil {
+		return nil, fmt.Errorf("failed to drain index section: %w", err)
+	}
+
+	if actualChecksum := checksumReader.Sum(); actualChecksum != entry.Checksum {
+		return nil, &persistence.ChecksumMismatchError{
+			Expected: entry.Checksum,
+			Actual:   actualChecksum,
+		}
+	}
+
+	return idx, nil
+}
+
+func loadStoreSection[T any](r io.ReadSeeker, entry snapshotSectionEntry, decode func([]byte) (T, error)) (Store[T], error) {
+	off, err := conv.Uint64ToInt64(entry.Offset)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := r.Seek(off, io.SeekStart); err != nil {
+		return nil, err
+	}
+
+	length, err := conv.Uint64ToInt64(entry.Len)
+	if err != nil {
+		return nil, err
+	}
+	reader := io.LimitReader(r, length)
+	checksumReader := persistence.NewChecksumReader(reader)
+
+	var count uint64
+	if err := binary.Read(checksumReader, binary.LittleEndian, &count); err != nil {
+		return nil, fmt.Errorf("failed to read count: %w", err)
+	}
+	if count > (entry.Len-8)/12 {
+		return nil, fmt.Errorf("count %d exceeds max possible for section size %d", count, entry.Len)
+	}
+
+	store := NewMapStore[T]()
+	for i := uint64(0); i < count; i++ {
+		var id uint32
+		if err := binary.Read(checksumReader, binary.LittleEndian, &id); err != nil {
+			return nil, fmt.Errorf("failed to read id: %w", err)
+		}
+		var dataLen uint32
+		if err := binary.Read(checksumReader, binary.LittleEndian, &dataLen); err != nil {
+			return nil, fmt.Errorf("failed to read data length: %w", err)
+		}
+
+		if uint64(dataLen) > entry.Len {
+			return nil, fmt.Errorf("data length %d exceeds section length %d", dataLen, entry.Len)
+		}
+
+		dataBytes := make([]byte, dataLen)
+		if _, err := io.ReadFull(checksumReader, dataBytes); err != nil {
+			return nil, fmt.Errorf("failed to read data: %w", err)
+		}
+
+		data, err := decode(dataBytes)
+		if err != nil {
+			return nil, err
+		}
+		_ = store.Set(core.LocalID(id), data)
+	}
+
+	if _, err := io.Copy(io.Discard, checksumReader); err != nil {
+		return nil, fmt.Errorf("failed to drain section: %w", err)
+	}
+	if actualChecksum := checksumReader.Sum(); actualChecksum != entry.Checksum {
+		return nil, &persistence.ChecksumMismatchError{
+			Expected: entry.Checksum,
+			Actual:   actualChecksum,
+		}
+	}
+
+	return store, nil
 }
 
 type countingWriter struct {
@@ -543,128 +468,169 @@ func writeSnapshotFooter(w io.Writer, dirOffset, dirLen uint64) error {
 }
 
 func readSnapshotDirectoryFromSeeker(r io.ReadSeeker) (codecName string, sections map[uint16]snapshotSectionEntry, err error) {
-	// Header
-	if _, err := r.Seek(0, io.SeekStart); err != nil {
+	codecName, sectionCount, err := readSnapshotHeader(r)
+	if err != nil {
 		return "", nil, err
+	}
+
+	dirOffset, err := readSnapshotFooter(r)
+	if err != nil {
+		return "", nil, err
+	}
+
+	sections, err = readSnapshotDirectory(r, dirOffset, sectionCount, len(codecName))
+	if err != nil {
+		return "", nil, err
+	}
+
+	return codecName, sections, nil
+}
+
+func readSnapshotHeader(r io.ReadSeeker) (string, int, error) {
+	if _, err := r.Seek(0, io.SeekStart); err != nil {
+		return "", 0, err
 	}
 	var hdr [16]byte
 	if _, err := io.ReadFull(r, hdr[:]); err != nil {
-		return "", nil, err
+		return "", 0, err
 	}
 	if [4]byte(hdr[0:4]) != snapshotMagic {
-		return "", nil, fmt.Errorf("unsupported snapshot format: bad magic")
+		return "", 0, fmt.Errorf("unsupported snapshot format: bad magic")
 	}
 	ver := binary.LittleEndian.Uint16(hdr[4:6])
 	if ver != snapshotFormatVersion {
-		return "", nil, fmt.Errorf("unsupported snapshot format version: %d", ver)
+		return "", 0, fmt.Errorf("unsupported snapshot format version: %d", ver)
 	}
 	nameLen := int(binary.LittleEndian.Uint16(hdr[8:10]))
 	if nameLen < 0 || nameLen > 0xFFFF {
-		return "", nil, fmt.Errorf("invalid codec name length: %d", nameLen)
+		return "", 0, fmt.Errorf("invalid codec name length: %d", nameLen)
 	}
 	sectionCount := int(binary.LittleEndian.Uint16(hdr[10:12]))
 	if sectionCount <= 0 {
-		return "", nil, fmt.Errorf("invalid section count: %d", sectionCount)
+		return "", 0, fmt.Errorf("invalid section count: %d", sectionCount)
 	}
 
 	nameBytes := make([]byte, nameLen)
 	if nameLen > 0 {
 		if _, err := io.ReadFull(r, nameBytes); err != nil {
-			return "", nil, err
+			return "", 0, err
 		}
 	}
-	codecName = string(nameBytes)
+	return string(nameBytes), sectionCount, nil
+}
 
-	// Footer (last 24 bytes)
+func readSnapshotFooter(r io.ReadSeeker) (int64, error) {
 	end, err := r.Seek(0, io.SeekEnd)
 	if err != nil {
-		return "", nil, err
+		return 0, err
 	}
 	if end < 24 {
-		return "", nil, fmt.Errorf("truncated snapshot")
+		return 0, fmt.Errorf("truncated snapshot")
 	}
 	if _, err := r.Seek(end-24, io.SeekStart); err != nil {
-		return "", nil, err
+		return 0, err
 	}
 	var foot [24]byte
 	if _, err := io.ReadFull(r, foot[:]); err != nil {
-		return "", nil, err
+		return 0, err
 	}
 	if [4]byte(foot[0:4]) != snapshotFooterMagic {
-		return "", nil, fmt.Errorf("unsupported snapshot format: missing footer")
+		return 0, fmt.Errorf("unsupported snapshot format: missing footer")
 	}
 	fver := binary.LittleEndian.Uint16(foot[4:6])
 	if fver != snapshotFormatVersion {
-		return "", nil, fmt.Errorf("unsupported snapshot footer version: %d", fver)
+		return 0, fmt.Errorf("unsupported snapshot footer version: %d", fver)
 	}
 
 	const maxInt64u = ^uint64(0) >> 1
 	dirOffsetU := binary.LittleEndian.Uint64(foot[8:16])
 	dirLenU := binary.LittleEndian.Uint64(foot[16:24])
 	if dirOffsetU > maxInt64u || dirLenU > maxInt64u {
-		return "", nil, fmt.Errorf("invalid directory offsets")
+		return 0, fmt.Errorf("invalid directory offsets")
 	}
 	dataEndU, err := conv.Int64ToUint64(end - 24)
 	if err != nil {
-		return "", nil, err
+		return 0, err
 	}
 	if dirLenU < 12 || dirOffsetU > dataEndU || dirLenU > dataEndU-dirOffsetU {
-		return "", nil, fmt.Errorf("invalid directory range")
+		return 0, fmt.Errorf("invalid directory range")
 	}
 
-	// Directory header
-	dirOffset, err := conv.Uint64ToInt64(dirOffsetU)
-	if err != nil {
-		return "", nil, err
-	}
+	return conv.Uint64ToInt64(dirOffsetU)
+}
+
+func readSnapshotDirectory(r io.ReadSeeker, dirOffset int64, sectionCount int, nameLen int) (map[uint16]snapshotSectionEntry, error) {
 	if _, err := r.Seek(dirOffset, io.SeekStart); err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	var dh [12]byte
 	if _, err := io.ReadFull(r, dh[:]); err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	if [4]byte(dh[0:4]) != snapshotDirMagic {
-		return "", nil, fmt.Errorf("invalid snapshot directory magic")
+		return nil, fmt.Errorf("invalid snapshot directory magic")
 	}
 	dver := binary.LittleEndian.Uint16(dh[4:6])
 	if dver != snapshotFormatVersion {
-		return "", nil, fmt.Errorf("unsupported snapshot directory version: %d", dver)
+		return nil, fmt.Errorf("unsupported snapshot directory version: %d", dver)
 	}
 	entryCount := int(binary.LittleEndian.Uint32(dh[8:12]))
 	if entryCount != sectionCount {
-		return "", nil, fmt.Errorf("directory entry count %d does not match header section count %d", entryCount, sectionCount)
+		return nil, fmt.Errorf("directory entry count %d does not match header section count %d", entryCount, sectionCount)
 	}
 
-	sections = make(map[uint16]snapshotSectionEntry, entryCount)
+	dirOffsetU, err := conv.Int64ToUint64(dirOffset)
+	if err != nil {
+		return nil, err
+	}
+
+	sections := make(map[uint16]snapshotSectionEntry, entryCount)
 	for i := 0; i < entryCount; i++ {
 		// v1 format: 32 bytes per entry with checksums
 		var eb [32]byte
 		if _, err := io.ReadFull(r, eb[:]); err != nil {
-			return "", nil, err
+			return nil, err
 		}
 		typ := binary.LittleEndian.Uint16(eb[0:2])
 		checksum := binary.LittleEndian.Uint32(eb[4:8])
 		off := binary.LittleEndian.Uint64(eb[8:16])
 		ln := binary.LittleEndian.Uint64(eb[16:24])
 		if _, exists := sections[typ]; exists {
-			return "", nil, fmt.Errorf("duplicate snapshot section type %d", typ)
+			return nil, fmt.Errorf("duplicate snapshot section type %d", typ)
 		}
 
 		// Sections must not point into the header (including codec name).
 		headerEndU, err := conv.IntToUint64(16 + nameLen)
 		if err != nil {
-			return "", nil, err
+			return nil, err
 		}
 		if off < headerEndU {
-			return "", nil, fmt.Errorf("invalid snapshot section offset")
+			return nil, fmt.Errorf("invalid snapshot section offset")
 		}
 		// Sections must be before the directory.
 		if off > dirOffsetU || ln > dirOffsetU-off {
-			return "", nil, fmt.Errorf("invalid snapshot section range")
+			return nil, fmt.Errorf("invalid snapshot section range")
 		}
 		sections[typ] = snapshotSectionEntry{Type: typ, Offset: off, Len: ln, Checksum: checksum}
 	}
+	return sections, nil
+}
 
-	return codecName, sections, nil
+func resolveCodec(c codec.Codec, codecName string) (codec.Codec, error) {
+	if c != nil {
+		if codecName != "" && c.Name() != codecName {
+			return nil, fmt.Errorf("snapshot codec %q does not match provided codec %q", codecName, c.Name())
+		}
+		return c, nil
+	}
+
+	if codecName == "" {
+		return codec.Default, nil
+	}
+
+	cc, ok := codec.ByName(codecName)
+	if !ok {
+		return nil, fmt.Errorf("unsupported snapshot codec %q", codecName)
+	}
+	return cc, nil
 }

@@ -94,17 +94,25 @@ func compareEqual(a, b Value) bool {
 	}
 
 	if isNumber(a) && isNumber(b) {
-		// Prefer exact int compare when possible.
-		if a.Kind == KindInt && b.Kind == KindInt {
-			return a.I64 == b.I64
-		}
-		return asFloat64(a) == asFloat64(b)
+		return compareNumbers(a, b)
 	}
 
 	if a.Kind != b.Kind {
 		return false
 	}
 
+	return compareSameKind(a, b)
+}
+
+func compareNumbers(a, b Value) bool {
+	// Prefer exact int compare when possible.
+	if a.Kind == KindInt && b.Kind == KindInt {
+		return a.I64 == b.I64
+	}
+	return asFloat64(a) == asFloat64(b)
+}
+
+func compareSameKind(a, b Value) bool {
 	switch a.Kind {
 	case KindString:
 		return a.s == b.s

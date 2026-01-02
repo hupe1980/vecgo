@@ -248,34 +248,7 @@ func (sb *SearchBuilder[T]) MustExecute(ctx context.Context) []SearchResult[T] {
 func (sb *SearchBuilder[T]) Stream(ctx context.Context) iter.Seq2[SearchResult[T], error] {
 	// For range queries, wrap the standard stream with distance filtering
 	if sb.withinDistance != nil {
-		threshold := *sb.withinDistance
-		return func(yield func(SearchResult[T], error) bool) {
-			count := 0
-			for result, err := range sb.vg.KNNSearchStream(ctx, sb.query, sb.maxResults, func(o *KNNSearchOptions) {
-				if sb.ef > 0 {
-					o.EF = sb.ef
-				}
-				if sb.filterFunc != nil {
-					o.FilterFunc = sb.filterFunc
-				}
-			}) {
-				if err != nil {
-					yield(SearchResult[T]{}, err)
-					return
-				}
-				// Stop if beyond distance threshold
-				if result.Distance > threshold {
-					return
-				}
-				count++
-				if count > sb.maxResults {
-					return
-				}
-				if !yield(result, nil) {
-					return
-				}
-			}
-		}
+		return sb.streamRangeQuery(ctx, *sb.withinDistance)
 	}
 
 	return sb.vg.KNNSearchStream(ctx, sb.query, sb.k, func(o *KNNSearchOptions) {
@@ -286,6 +259,36 @@ func (sb *SearchBuilder[T]) Stream(ctx context.Context) iter.Seq2[SearchResult[T
 			o.FilterFunc = sb.filterFunc
 		}
 	})
+}
+
+func (sb *SearchBuilder[T]) streamRangeQuery(ctx context.Context, threshold float32) iter.Seq2[SearchResult[T], error] {
+	return func(yield func(SearchResult[T], error) bool) {
+		count := 0
+		for result, err := range sb.vg.KNNSearchStream(ctx, sb.query, sb.maxResults, func(o *KNNSearchOptions) {
+			if sb.ef > 0 {
+				o.EF = sb.ef
+			}
+			if sb.filterFunc != nil {
+				o.FilterFunc = sb.filterFunc
+			}
+		}) {
+			if err != nil {
+				yield(SearchResult[T]{}, err)
+				return
+			}
+			// Stop if beyond distance threshold
+			if result.Distance > threshold {
+				return
+			}
+			count++
+			if count > sb.maxResults {
+				return
+			}
+			if !yield(result, nil) {
+				return
+			}
+		}
+	}
 }
 
 // First returns only the nearest result, or an error if none found.

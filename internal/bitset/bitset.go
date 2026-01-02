@@ -1,3 +1,4 @@
+// Package bitset implements a bitset data structure.
 package bitset
 
 import (

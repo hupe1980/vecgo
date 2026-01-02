@@ -1,6 +1,7 @@
 package persistence
 
 import (
+	"errors"
 	"fmt"
 	"hash"
 	"hash/crc32"
@@ -124,6 +125,6 @@ func (e *ChecksumMismatchError) Error() string {
 
 // IsChecksumMismatch returns true if err is a checksum mismatch error.
 func IsChecksumMismatch(err error) bool {
-	_, ok := err.(*ChecksumMismatchError)
-	return ok
+	var target *ChecksumMismatchError
+	return errors.As(err, &target)
 }

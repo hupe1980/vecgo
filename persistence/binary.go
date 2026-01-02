@@ -221,7 +221,7 @@ func LoadFromFile(filename string, readFunc func(io.Reader) error) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	// Use buffered reader to batch reads
 	buf := bufio.NewReaderSize(f, 256*1024) // 256KB buffer
