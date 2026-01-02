@@ -61,9 +61,8 @@ func (h *HNSW) Stats() index.Stats {
 
 				// Loop through each connection
 				for i2 := level; i2 >= 0; i2-- {
-					count := 0
 					conns := h.getConnections(g, core.LocalID(id), i2)
-					count = len(conns)
+					count := len(conns)
 
 					if count > 0 {
 						connectionStats[i2] += count

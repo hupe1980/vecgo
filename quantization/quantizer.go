@@ -47,12 +47,12 @@ func NewScalarQuantizer(dimension int) *ScalarQuantizer {
 		dimension: dimension,
 		trained:   false,
 		bytePool: &sync.Pool{
-			New: func() interface{} {
+			New: func() any {
 				return make([]byte, dimension)
 			},
 		},
 		floatPool: &sync.Pool{
-			New: func() interface{} {
+			New: func() any {
 				return make([]float32, dimension)
 			},
 		},
@@ -76,7 +76,7 @@ func (sq *ScalarQuantizer) Train(vectors [][]float32) error {
 	sq.invScales = make([]float32, dim)
 
 	// Initialize min/max
-	for i := 0; i < dim; i++ {
+	for i := range dim {
 		sq.mins[i] = math.MaxFloat32
 		sq.maxs[i] = -math.MaxFloat32
 	}
@@ -97,7 +97,7 @@ func (sq *ScalarQuantizer) Train(vectors [][]float32) error {
 	}
 
 	// Compute scales
-	for i := 0; i < dim; i++ {
+	for i := range dim {
 		// Handle edge case where min == max (constant dimension)
 		if sq.mins[i] == sq.maxs[i] {
 			sq.maxs[i] = sq.mins[i] + 1e-6 // Avoid division by zero
@@ -254,7 +254,7 @@ func (sq *ScalarQuantizer) UnmarshalBinary(data []byte) error {
 		},
 	}
 	sq.floatPool = &sync.Pool{
-		New: func() interface{} {
+		New: func() any {
 			return make([]float32, sq.dimension)
 		},
 	}

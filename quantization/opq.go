@@ -189,7 +189,6 @@ func (opq *OptimizedProductQuantizer) rotateVector(src, dst []float32) {
 		// dst[start:start+bs] = rotation * src[start:start+bs]
 
 		for i := 0; i < opq.blockSize; i++ {
-			sum := float32(0)
 			row := rotation[i]
 			// Unroll loop slightly for performance?
 			// Or rely on compiler.
@@ -197,7 +196,7 @@ func (opq *OptimizedProductQuantizer) rotateVector(src, dst []float32) {
 			srcBlock := src[start : start+opq.blockSize]
 
 			// Dot product
-			sum = math32.Dot(row, srcBlock)
+			sum := math32.Dot(row, srcBlock)
 			dst[start+i] = sum
 		}
 	}

@@ -347,8 +347,8 @@ func (s *Segment) getVector(id uint32) []float32 {
 	if s.mmapReader == nil {
 		return nil
 	}
-	offset := int(id) * int(s.dim) * 4
-	if offset < 0 || offset+int(s.dim)*4 > len(s.mmapReader.Data) {
+	offset := int(id) * s.dim * 4
+	if offset < 0 || offset+s.dim*4 > len(s.mmapReader.Data) {
 		return nil
 	}
 	return unsafe.Slice((*float32)(unsafe.Pointer(&s.mmapReader.Data[offset])), s.dim)

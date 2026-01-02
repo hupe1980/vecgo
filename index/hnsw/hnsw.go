@@ -677,7 +677,7 @@ func (h *HNSW) insert(g *graph, v []float32, id core.LocalID, layer int, useProv
 		}
 	}
 
-	return core.LocalID(id), nil
+	return id, nil
 }
 
 // insertNode performs the graph traversal and linking.

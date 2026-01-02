@@ -1054,7 +1054,7 @@ func (tx *Tx[T]) HybridSearchWithContext(ctx context.Context, query []float32, k
 		if len(results) >= k {
 			break
 		}
-		if metadataFilter(core.LocalID(item.Node)) {
+		if metadataFilter(item.Node) {
 			results = append(results, SearchResult{
 				ID:       uint64(item.Node),
 				Distance: item.Distance,

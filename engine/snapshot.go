@@ -113,7 +113,7 @@ func SaveToWriter[T any](w io.Writer, idx index.Index, dataStore Store[T], metad
 	}
 
 	cw := &countingWriter{w: w}
-	cw.n = currentLen + int64(padding)
+	cw.n = currentLen + padding
 
 	// Index: native binary persistence with checksum.
 	bw, ok := idx.(io.WriterTo)
@@ -521,7 +521,7 @@ func readSnapshotDirectoryFromSeeker(r io.ReadSeeker) (codecName string, section
 		return "", nil, fmt.Errorf("unsupported snapshot footer version: %d", fver)
 	}
 
-	const maxInt64u = uint64(^uint64(0) >> 1)
+	const maxInt64u = ^uint64(0) >> 1
 	dirOffsetU := binary.LittleEndian.Uint64(foot[8:16])
 	dirLenU := binary.LittleEndian.Uint64(foot[16:24])
 	if dirOffsetU > maxInt64u || dirLenU > maxInt64u {

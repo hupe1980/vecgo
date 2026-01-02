@@ -60,7 +60,7 @@ func svd(a [][]float32) ([][]float32, []float32, [][]float32) {
 
 				// Compute Jacobi rotation
 				zeta := (beta - alpha) / (2 * gamma)
-				t := float32(0)
+				var t float32
 				if zeta > 0 {
 					t = 1 / (zeta + float32(math.Sqrt(float64(1+zeta*zeta))))
 				} else {
@@ -70,7 +70,7 @@ func svd(a [][]float32) ([][]float32, []float32, [][]float32) {
 				s := c * t
 
 				// Apply rotation to U (columns i and j)
-				for k := 0; k < m; k++ {
+				for k := range m {
 					t1 := u[k][i]
 					t2 := u[k][j]
 					u[k][i] = c*t1 - s*t2

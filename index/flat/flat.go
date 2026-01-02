@@ -162,7 +162,7 @@ func (f *Flat) EnableProductQuantization(cfg index.ProductQuantizationConfig) er
 
 	// Collect vectors for training
 	for id := range maxID {
-		if f.deleted.Test(uint32(id)) {
+		if f.deleted.Test(id) {
 			continue
 		}
 		v, ok := f.vectors.GetVector(core.LocalID(id))
@@ -186,13 +186,13 @@ func (f *Flat) EnableProductQuantization(cfg index.ProductQuantizationConfig) er
 	// Encode all existing vectors
 	pqCodes := container.NewSegmentedArray[[]byte]()
 	for id := range maxID {
-		if f.deleted.Test(uint32(id)) {
+		if f.deleted.Test(id) {
 			continue
 		}
 		v, ok := f.vectors.GetVector(core.LocalID(id))
 		if ok {
 			code := pq.Encode(v)
-			pqCodes.Set(uint32(id), code)
+			pqCodes.Set(id, code)
 		}
 	}
 

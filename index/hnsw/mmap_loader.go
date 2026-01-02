@@ -20,7 +20,7 @@ func init() {
 		}
 
 		// Calculate consumed bytes
-		consumed := int(len(data) - r.Len())
+		consumed := len(data) - r.Len()
 		return h, consumed, nil
 	})
 }
