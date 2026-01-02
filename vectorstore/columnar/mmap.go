@@ -86,7 +86,7 @@ func OpenMmap(filename string) (*MmapStore, io.Closer, error) {
 			// Fallback to copy if not aligned (rare)
 			vecBytes := make([]byte, size)
 			copy(vecBytes, reader.Data[offset:offset+size])
-			store.data = make([]float32, int(header.Count)*int(header.Dimension)) //nolint:gosec
+			store.data = make([]float32, int(header.Count)*int(header.Dimension))
 			for i := range store.data {
 				store.data[i] = *(*float32)(unsafe.Pointer(&vecBytes[i*4]))
 			}
@@ -97,7 +97,7 @@ func OpenMmap(filename string) (*MmapStore, io.Closer, error) {
 	}
 
 	// Read deletion bitmap
-	bitmapLen := (int(header.Count) + 63) / 64 //nolint:gosec
+	bitmapLen := (int(header.Count) + 63) / 64
 	if bitmapLen > 0 {
 		offset := int(header.BitmapOff) //nolint:gosec
 		size := bitmapLen * 8
@@ -153,7 +153,7 @@ func (s *MmapStore) GetVector(id core.LocalID) ([]float32, bool) {
 	}
 
 	dim := int(s.dim)
-	start := int(id) * dim //nolint:gosec // vector index fits in int
+	start := int(id) * dim
 	end := start + dim
 
 	if end > len(s.data) {
@@ -170,7 +170,7 @@ func (s *MmapStore) GetVectorUnsafe(id core.LocalID) ([]float32, bool) {
 	}
 
 	dim := int(s.dim)
-	start := int(id) * dim //nolint:gosec // vector index fits in int
+	start := int(id) * dim
 	end := start + dim
 
 	if end > len(s.data) {
@@ -197,7 +197,7 @@ func (s *MmapStore) IsDeleted(id core.LocalID) bool {
 
 func (s *MmapStore) isDeleted(id core.LocalID) bool {
 	bitmapIdx := id / 64
-	if int(bitmapIdx) >= len(s.deleted) { //nolint:gosec
+	if int(bitmapIdx) >= len(s.deleted) {
 		return false
 	}
 	bitIdx := id % 64

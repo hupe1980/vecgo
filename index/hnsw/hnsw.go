@@ -284,7 +284,7 @@ func (h *HNSW) setNode(g *graph, id core.LocalID, node *Node) {
 
 // growNodes ensures capacity for the given ID.
 func (h *HNSW) growNodes(g *graph, id core.LocalID) {
-	segmentIdx := int(id >> nodeSegmentBits) //nolint:gosec // segment index fits in int
+	segmentIdx := int(id >> nodeSegmentBits)
 
 	// Fast path: check if segment exists
 	nodes := g.nodes.Load()

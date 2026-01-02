@@ -24,7 +24,7 @@ type RNG struct {
 // NewRNG creates a new RNG instance with the specified seed.
 func NewRNG(seed int64) *RNG {
 	return &RNG{
-		rand: rand.New(rand.NewSource(seed)), // nolint gosec
+		rand: rand.New(rand.NewSource(seed)),
 		seed: seed,
 	}
 }

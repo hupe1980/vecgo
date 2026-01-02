@@ -20,7 +20,7 @@ func NewVisitedSet(capacity int) *VisitedSet {
 
 // Visit marks a node as visited.
 func (v *VisitedSet) Visit(id core.LocalID) {
-	wordIdx := int(id >> 6) //nolint:gosec
+	wordIdx := int(id >> 6)
 	bitMask := uint64(1) << (id & 63)
 
 	if wordIdx >= len(v.bits) {
@@ -35,7 +35,7 @@ func (v *VisitedSet) Visit(id core.LocalID) {
 
 // Visited returns true if the node has been visited.
 func (v *VisitedSet) Visited(id core.LocalID) bool {
-	wordIdx := int(id >> 6) //nolint:gosec
+	wordIdx := int(id >> 6)
 	if wordIdx >= len(v.bits) {
 		return false
 	}
@@ -45,7 +45,7 @@ func (v *VisitedSet) Visited(id core.LocalID) bool {
 // Reset clears the visited status for all nodes visited in the current session.
 func (v *VisitedSet) Reset() {
 	for _, id := range v.dirty {
-		wordIdx := int(id >> 6) //nolint:gosec
+		wordIdx := int(id >> 6)
 		bitMask := uint64(1) << (id & 63)
 		v.bits[wordIdx] &^= bitMask
 	}
@@ -62,10 +62,7 @@ func (v *VisitedSet) EnsureCapacity(capacity int) {
 
 func (v *VisitedSet) grow(newLen int) {
 	currentLen := len(v.bits)
-	newCap := currentLen * 2
-	if newCap < newLen {
-		newCap = newLen
-	}
+	newCap := max(currentLen*2, newLen)
 
 	newBits := make([]uint64, newCap)
 	copy(newBits, v.bits)

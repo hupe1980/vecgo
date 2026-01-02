@@ -116,7 +116,7 @@ func (s *Store) GetVector(id core.LocalID) ([]float32, bool) {
 	}
 
 	dim := int(s.dim)
-	start := int(id) * dim //nolint:gosec // vector index fits in int
+	start := int(id) * dim
 	end := start + dim
 
 	if end > len(*data) {
@@ -128,7 +128,7 @@ func (s *Store) GetVector(id core.LocalID) ([]float32, bool) {
 	deletedPtr := s.deleted.Load()
 	if deletedPtr != nil {
 		bitmapIdx := id / 64
-		if int(bitmapIdx) < len(*deletedPtr) { //nolint:gosec // bitmap index fits in int
+		if int(bitmapIdx) < len(*deletedPtr) {
 			bitIdx := id % 64
 			if atomic.LoadUint64(&(*deletedPtr)[bitmapIdx])&(1<<bitIdx) != 0 {
 				return nil, false
@@ -148,7 +148,7 @@ func (s *Store) GetVectorUnsafe(id core.LocalID) ([]float32, bool) {
 	}
 
 	dim := int(s.dim)
-	start := int(id) * dim //nolint:gosec // vector index fits in int
+	start := int(id) * dim
 	end := start + dim
 
 	if end > len(*data) {
@@ -175,7 +175,7 @@ func (s *Store) SetVector(id core.LocalID, v []float32) error {
 	// IMPORTANT: do not publish the extended slice (via s.data.Store) until
 	// after the new vector data has been fully written. Otherwise, concurrent
 	// readers can observe partially-written vectors.
-	requiredLen := int(id+1) * dim //nolint:gosec
+	requiredLen := int(id+1) * dim
 	currentData := *data
 
 	// Copy-on-write for growth beyond current length.
@@ -184,7 +184,7 @@ func (s *Store) SetVector(id core.LocalID, v []float32) error {
 			// Grow within capacity (same backing array). Safe as long as we only
 			// write beyond the previously-published length, then publish length.
 			grown := currentData[:requiredLen]
-			start := int(id) * dim //nolint:gosec
+			start := int(id) * dim
 			copy(grown[start:start+dim], v)
 			// Publish new length after data write.
 			published := grown
@@ -195,13 +195,13 @@ func (s *Store) SetVector(id core.LocalID, v []float32) error {
 			newData := mem.AllocAlignedFloat32(newCap)
 			newData = newData[:requiredLen]
 			copy(newData, currentData)
-			start := int(id) * dim //nolint:gosec
+			start := int(id) * dim
 			copy(newData[start:start+dim], v)
 			s.data.Store(&newData)
 		}
 
 		// Extend deletion bitmap if needed
-		requiredBitmapLen := int(id+63) / 64 //nolint:gosec
+		requiredBitmapLen := int(id+63) / 64
 		currentDeleted := *s.deleted.Load()
 		if len(currentDeleted) < requiredBitmapLen+1 {
 			newDeleted := make([]uint64, requiredBitmapLen+1)
@@ -218,7 +218,7 @@ func (s *Store) SetVector(id core.LocalID, v []float32) error {
 		// Writers are externally synchronized, but concurrent readers may exist.
 		// This is safe for correctness if callers do not rely on atomic point updates;
 		// for strict snapshot semantics, updates must use copy-on-write at a higher level.
-		start := int(id) * dim //nolint:gosec
+		start := int(id) * dim
 		copy(currentData[start:start+dim], v)
 	}
 
@@ -251,18 +251,18 @@ func (s *Store) Append(v []float32) (core.LocalID, error) {
 
 	// Extend data slice.
 	// IMPORTANT: publish updated slice only after writing the new vector.
-	requiredLen := int(id+1) * dim //nolint:gosec
+	requiredLen := int(id+1) * dim
 	if requiredLen > cap(currentData) {
 		newCap := max(requiredLen*2, len(currentData)*2)
 		newData := mem.AllocAlignedFloat32(newCap)
 		newData = newData[:requiredLen]
 		copy(newData, currentData)
-		start := int(id) * dim //nolint:gosec
+		start := int(id) * dim
 		copy(newData[start:start+dim], v)
 		s.data.Store(&newData)
 	} else {
 		grown := currentData[:requiredLen]
-		start := int(id) * dim //nolint:gosec
+		start := int(id) * dim
 		copy(grown[start:start+dim], v)
 		published := grown
 		s.data.Store(&published)
@@ -271,7 +271,7 @@ func (s *Store) Append(v []float32) (core.LocalID, error) {
 	// Extend deletion bitmap if needed
 	bitmapIdx := id / 64
 	currentDeleted := *s.deleted.Load()
-	if int(bitmapIdx) >= len(currentDeleted) { //nolint:gosec
+	if int(bitmapIdx) >= len(currentDeleted) {
 		newDeleted := make([]uint64, bitmapIdx+1)
 		copy(newDeleted, currentDeleted)
 		s.deleted.Store(&newDeleted)
@@ -308,7 +308,7 @@ func (s *Store) IsDeleted(id core.LocalID) bool {
 		return false
 	}
 	bitmapIdx := id / 64
-	if int(bitmapIdx) >= len(*deletedPtr) { //nolint:gosec
+	if int(bitmapIdx) >= len(*deletedPtr) {
 		return false
 	}
 	bitIdx := id % 64
@@ -323,7 +323,7 @@ func (s *Store) setDeletedLocked(id core.LocalID, deleted bool) {
 	bitmapIdx := id / 64
 	currentDeleted := *s.deleted.Load()
 
-	if int(bitmapIdx) >= len(currentDeleted) { //nolint:gosec
+	if int(bitmapIdx) >= len(currentDeleted) {
 		newDeleted := make([]uint64, bitmapIdx+1)
 		copy(newDeleted, currentDeleted)
 		s.deleted.Store(&newDeleted)

@@ -52,7 +52,7 @@ func (s *Store) Dimension() int { return s.dim }
 
 func (s *Store) GetVector(id core.LocalID) ([]float32, bool) {
 	data := *s.data.Load()
-	idx := int(id) * s.dim //nolint:gosec
+	idx := int(id) * s.dim
 	if idx < 0 || idx+s.dim > len(data) {
 		return nil, false
 	}
@@ -64,7 +64,7 @@ func (s *Store) SetVector(id core.LocalID, v []float32) error {
 		return vectorstore.ErrWrongDimension
 	}
 	data := *s.data.Load()
-	idx := int(id) * s.dim //nolint:gosec
+	idx := int(id) * s.dim
 	if idx < 0 || idx+s.dim > len(data) {
 		return errors.New("zerocopy: id out of bounds")
 	}
