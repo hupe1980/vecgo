@@ -590,7 +590,7 @@ func (s *Segment) SearchWithContext(ctx context.Context, query []float32, k int,
 
 		// Push to result heap (bounded by k)
 		// Note: c.Node is local ID, we need global ID
-		sr.Candidates.PushItemBounded(searcher.PriorityQueueItem{Node: core.LocalID(s.baseID + core.LocalID(c.Node)), Distance: dist}, k)
+		sr.Candidates.PushItemBounded(searcher.PriorityQueueItem{Node: s.baseID + c.Node, Distance: dist}, k)
 	}
 
 	return nil

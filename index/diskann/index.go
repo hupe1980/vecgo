@@ -787,7 +787,7 @@ func (idx *Index) BruteSearch(ctx context.Context, query []float32, k int, filte
 	results := make([]index.SearchResult, h.Len())
 	for i := h.Len() - 1; i >= 0; i-- {
 		node := h.PopNode()
-		results[i] = index.SearchResult{ID: uint32(node.id), Distance: node.dist}
+		results[i] = index.SearchResult{ID: node.id, Distance: node.dist}
 	}
 
 	return results, nil
@@ -907,7 +907,7 @@ func (idx *Index) Flush(ctx context.Context) error {
 		var vec []float32
 		if !isDeleted {
 			var err error
-			vec, err = idx.memTable.VectorByID(ctx, core.LocalID(id))
+			vec, err = idx.memTable.VectorByID(ctx, id)
 			if err != nil {
 				// Should not happen for live vectors in MemTable
 				// But if it does, we treat it as deleted/zero

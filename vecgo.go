@@ -442,7 +442,7 @@ func newSharded[T any](indexes []index.Index, dataStores []engine.Store[T], meta
 	}
 
 	// Wrap coordinator with validation unless explicitly disabled
-	var coord engine.Coordinator[T] = shardedCoord
+	var coord = shardedCoord
 	if !opts.disableValidation {
 		limits := opts.validationLimits
 		if limits == nil {

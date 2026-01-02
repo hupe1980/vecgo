@@ -254,7 +254,7 @@ func (f *Flat) Insert(ctx context.Context, v []float32) (core.LocalID, error) {
 		if f.pqCodes == nil {
 			f.pqCodes = container.NewSegmentedArray[[]byte]()
 		}
-		f.pqCodes.Set(uint32(id), pq.Encode(vec))
+		f.pqCodes.Set(id, pq.Encode(vec))
 	}
 
 	return core.LocalID(id), nil
@@ -469,7 +469,7 @@ func (f *Flat) BatchInsert(ctx context.Context, vectors [][]float32) index.Batch
 		if err := f.vectors.SetVector(core.LocalID(id), vec); err != nil {
 			// If storage fails, we must mark this ID as deleted to avoid "holes"
 			// that look like valid zero-vectors or similar issues.
-			f.deleted.Set(uint32(id))
+			f.deleted.Set(id)
 			result.Errors[i] = err
 			continue
 		}
@@ -478,7 +478,7 @@ func (f *Flat) BatchInsert(ctx context.Context, vectors [][]float32) index.Batch
 			if f.pqCodes == nil {
 				f.pqCodes = container.NewSegmentedArray[[]byte]()
 			}
-			f.pqCodes.Set(uint32(id), pq.Encode(vec))
+			f.pqCodes.Set(id, pq.Encode(vec))
 		}
 		result.IDs[i] = core.LocalID(id)
 	}
@@ -636,7 +636,7 @@ func (f *Flat) SearchWithContext(ctx context.Context, s *searcher.Searcher, q []
 		var hasCode bool
 
 		if f.pqCodes != nil {
-			code, ok := f.pqCodes.Get(uint32(id))
+			code, ok := f.pqCodes.Get(id)
 			if ok && code != nil {
 				nodeDist = pq.ComputeAsymmetricDistance(query, code)
 				hasCode = true
@@ -833,7 +833,7 @@ func (f *Flat) BruteSearchWithBuffer(ctx context.Context, query []float32, k int
 			// Build heap from batch results
 			for i, nodeID := range batchIDs {
 				nodeDist := batchDistances[i]
-				topCandidates.PushItemBounded(searcher.PriorityQueueItem{Node: core.LocalID(nodeID), Distance: nodeDist}, actualK)
+				topCandidates.PushItemBounded(searcher.PriorityQueueItem{Node: nodeID, Distance: nodeDist}, actualK)
 			}
 		}
 	} else {

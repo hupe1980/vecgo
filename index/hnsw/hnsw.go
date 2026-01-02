@@ -630,14 +630,14 @@ func (h *HNSW) insert(g *graph, v []float32, id core.LocalID, layer int, useProv
 	}
 
 	// Publish node so it can be found
-	h.setNode(g, core.LocalID(id), node)
+	h.setNode(g, id, node)
 
 	retries := 0
 	for {
 		// Handle First Node
 		if g.countAtomic.Load() == 0 {
 			if g.countAtomic.CompareAndSwap(0, 1) {
-				h.setNode(g, core.LocalID(id), node)
+				h.setNode(g, id, node)
 				g.entryPointAtomic.Store(uint32(id))
 				g.maxLevelAtomic.Store(int32(layer)) //nolint:gosec // layer is small
 				return id, nil
@@ -742,7 +742,7 @@ func (h *HNSW) insertNode(g *graph, id core.LocalID, vec []float32, layer int) e
 		// Extract IDs for setConnections
 		neighborConns := make([]Neighbor, len(neighbors))
 		for i, n := range neighbors {
-			neighborConns[i] = Neighbor{ID: core.LocalID(n.Node), Dist: n.Distance}
+			neighborConns[i] = Neighbor{ID: n.Node, Dist: n.Distance}
 		}
 
 		// Add bidirectional connections
@@ -897,7 +897,7 @@ func (h *HNSW) searchLayer(s *searcher.Searcher, g *graph, query []float32, epID
 			}
 		}
 
-		h.visitConnections(g, core.LocalID(curr.Node), level, func(next Neighbor) bool {
+		h.visitConnections(g, curr.Node, level, func(next Neighbor) bool {
 			if !visited.Visited(next.ID) {
 				visited.Visit(next.ID)
 
@@ -1109,7 +1109,7 @@ func (h *HNSW) searchExecute(ctx context.Context, s *searcher.Searcher, q []floa
 		}
 	}
 
-	h.searchLayer(s, g, q, core.LocalID(currID), currDist, 0, ef, filter)
+	h.searchLayer(s, g, q, currID, currDist, 0, ef, filter)
 	return nil
 }
 
