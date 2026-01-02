@@ -89,7 +89,7 @@ func (h *HNSW) Compact(ctx context.Context) error {
 					continue
 				}
 				// Remove tombstones from connections
-				h.pruneNodeConnections(ctx, g, id)
+				h.pruneNodeConnections(g, id)
 			}
 		}
 
@@ -243,8 +243,8 @@ func (h *HNSW) reconcileNode(s *searcher.Searcher, scratch *scratch, ctx context
 			candidates.PushItemBounded(searcher.PriorityQueueItem{Node: id, Distance: dist}, h.opts.EF)
 		}
 
-		var bestNode core.LocalID = currID
-		var bestDist float32 = currDist
+		var bestNode = currID
+		var bestDist = currDist
 		foundBest := false
 
 		// If this layer needs repair, update connections
@@ -282,7 +282,7 @@ func (h *HNSW) reconcileNode(s *searcher.Searcher, scratch *scratch, ctx context
 			// Combine: New Active + Old Tombstones
 			finalConns := make([]Neighbor, 0, len(newNeighbors)+len(tombstonesToKeep))
 			for _, n := range newNeighbors {
-				finalConns = append(finalConns, Neighbor{ID: core.LocalID(n.Node), Dist: n.Distance})
+				finalConns = append(finalConns, Neighbor{ID: n.Node, Dist: n.Distance})
 			}
 			finalConns = append(finalConns, tombstonesToKeep...)
 
@@ -351,7 +351,7 @@ func (h *HNSW) checkRepairNeeded(g *graph, id core.LocalID) (bool, map[int]bool)
 }
 
 // pruneNodeConnections removes deleted neighbors from an active node.
-func (h *HNSW) pruneNodeConnections(ctx context.Context, g *graph, id core.LocalID) {
+func (h *HNSW) pruneNodeConnections(g *graph, id core.LocalID) {
 	g.shardedLocks[uint64(id)%uint64(len(g.shardedLocks))].Lock()
 	defer g.shardedLocks[uint64(id)%uint64(len(g.shardedLocks))].Unlock()
 

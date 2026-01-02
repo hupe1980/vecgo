@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"iter"
-	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -52,12 +51,11 @@ type Tx[T any] struct {
 	dataStore Store[T]
 	metaStore *metadata.UnifiedIndex
 
-	durability   Durability
-	codec        codec.Codec
-	snapshotPath string
-	distFunc     index.DistanceFunc
-	syncWrite    bool
-	dimension    int
+	durability Durability
+	codec      codec.Codec
+	distFunc   index.DistanceFunc
+	syncWrite  bool
+	dimension  int
 
 	scratchPool *sync.Pool
 }
@@ -81,21 +79,6 @@ func (tx *Tx[T]) releaseID(id core.LocalID) {
 	tx.idMu.Lock()
 	defer tx.idMu.Unlock()
 	tx.txIndex.ReleaseID(id)
-}
-
-// applyInsert applies an insert operation to the index
-func (tx *Tx[T]) applyInsert(ctx context.Context, id core.LocalID, vector []float32) error {
-	return tx.txIndex.ApplyInsert(ctx, id, vector)
-}
-
-// applyUpdate applies an update operation to the index
-func (tx *Tx[T]) applyUpdate(ctx context.Context, id core.LocalID, vector []float32) error {
-	return tx.txIndex.ApplyUpdate(ctx, id, vector)
-}
-
-// applyDelete applies a delete operation to the index
-func (tx *Tx[T]) applyDelete(ctx context.Context, id core.LocalID) error {
-	return tx.txIndex.ApplyDelete(ctx, id)
 }
 
 // vectorByID retrieves a vector from the index by ID
@@ -1254,23 +1237,6 @@ func (tx *Tx[T]) Stats() index.Stats {
 func (tx *Tx[T]) Checkpoint() error {
 	if w, ok := tx.durability.(*wal.WAL); ok {
 		return w.Checkpoint()
-	}
-	return nil
-}
-
-// autoCheckpoint is called by WAL when auto-checkpoint thresholds are exceeded.
-func (tx *Tx[T]) autoCheckpoint() error {
-	if tx.snapshotPath == "" {
-		return nil
-	}
-	// Create a temporary file for the snapshot
-	tmpPath := tx.snapshotPath + ".tmp"
-	if err := tx.SaveToFile(tmpPath); err != nil {
-		return fmt.Errorf("failed to save snapshot: %w", err)
-	}
-	// Rename to final path (atomic)
-	if err := os.Rename(tmpPath, tx.snapshotPath); err != nil {
-		return fmt.Errorf("failed to rename snapshot: %w", err)
 	}
 	return nil
 }

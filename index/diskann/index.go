@@ -1171,11 +1171,6 @@ func (h *maxDistHeap) down(i0, n int) bool {
 // Helper functions
 // ============================================================================
 
-// nowMillis returns current time in milliseconds since Unix epoch.
-func nowMillis() int64 {
-	return time.Now().UnixMilli()
-}
-
 // newTicker creates a ticker that ticks every interval seconds.
 func newTicker(intervalSeconds int) *time.Ticker {
 	return time.NewTicker(time.Duration(intervalSeconds) * time.Second)

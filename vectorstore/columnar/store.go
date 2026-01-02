@@ -38,9 +38,6 @@ type Store struct {
 	versions []uint64 // Version numbers for each vector (optional)
 	count    uint64   // Total vectors (including deleted)
 	live     uint64   // Live (non-deleted) vectors
-
-	// Mmap source (nil if in-memory)
-	mmapData []byte
 }
 
 // New creates a new in-memory columnar store with the given dimension.

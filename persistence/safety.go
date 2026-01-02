@@ -91,16 +91,6 @@ func validateUint64SliceAlignment(slice []uint64) error {
 	return nil
 }
 
-// validateUint64Alignment checks if a uint64 pointer is properly aligned
-func validateUint64Alignment(ptr unsafe.Pointer) error {
-	addr := uintptr(ptr)
-	if addr%8 != 0 {
-		return fmt.Errorf("%w: uint64 at address 0x%x", ErrUnalignedAccess, addr)
-	}
-
-	return nil
-}
-
 // PlatformInfo returns information about the current platform
 func PlatformInfo() string {
 	endian := "little-endian"

@@ -16,7 +16,6 @@ import (
 type BinaryIndexWriter struct {
 	w         io.Writer
 	byteOrder binary.ByteOrder
-	checksum  uint32
 }
 
 // NewBinaryIndexWriter creates a new binary writer.

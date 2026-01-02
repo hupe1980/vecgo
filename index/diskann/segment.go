@@ -23,7 +23,6 @@ import (
 // Segment represents an immutable, disk-resident DiskANN index segment.
 // It supports concurrent searches but no mutations.
 type Segment struct {
-	id        uint64       // Unique segment ID (usually from filename or sequence)
 	baseID    core.LocalID // The starting Global ID for this segment
 	dim       int
 	count     uint32
@@ -355,21 +354,6 @@ func (s *Segment) getVector(id uint32) []float32 {
 	return unsafe.Slice((*float32)(unsafe.Pointer(&s.mmapReader.Data[offset])), s.dim)
 }
 
-func (s *Segment) getVisitedBitset(size uint32) *bitset.BitSet {
-	bs := s.visitedPool.Get().(*bitset.BitSet)
-	bs.ClearAll()
-	if bs.Len() < size {
-		bs = bitset.New(size)
-	}
-	return bs
-}
-
-func (s *Segment) putVisitedBitset(bs *bitset.BitSet) {
-	if bs != nil {
-		s.visitedPool.Put(bs)
-	}
-}
-
 // Loading methods (copied/adapted from index.go)
 
 func (s *Segment) loadMeta(path string) error {
@@ -578,20 +562,14 @@ func (s *Segment) SearchWithContext(ctx context.Context, query []float32, k int,
 		rerankK = k * 2
 	}
 
-	var queryBQ []uint64
-	if s.opts.EnableBinaryPrefilter && s.bq != nil && len(s.bqCodes) > 0 {
-		// Use Searcher scratch buffer
-		numWords := (len(query) + 63) / 64
-		if cap(sr.BQBuffer) < numWords {
-			sr.BQBuffer = make([]uint64, numWords)
-		}
-		sr.BQBuffer = sr.BQBuffer[:numWords]
-		s.bq.EncodeUint64Into(sr.BQBuffer, query)
-		queryBQ = sr.BQBuffer
-	}
-
 	if distTable == nil && s.pq != nil {
 		distTable = s.pq.BuildDistanceTable(query)
+	}
+
+	// Optional BQ query encoding
+	var queryBQ []uint64
+	if s.opts.EnableBinaryPrefilter && s.bq != nil && len(s.bqCodes) > 0 {
+		queryBQ = s.bq.EncodeUint64(query)
 	}
 
 	// Use sr.ScratchCandidates for beam search exploration
@@ -656,6 +634,18 @@ func (s *Segment) beamSearchWithContext(query []float32, distTable []float32, qu
 
 			if filter != nil && !filter(neighborID) {
 				continue
+			}
+
+			// BQ Prefilter
+			if queryBQ != nil {
+				words := (s.dim + 63) / 64
+				offset := int(neighborID) * words
+				if offset+words <= len(s.bqCodes) {
+					norm := quantization.NormalizedHammingDistance(queryBQ, s.bqCodes[offset:offset+words], s.dim)
+					if norm > s.opts.BinaryPrefilterMaxNormalizedDistance {
+						continue
+					}
+				}
 			}
 
 			dist := s.computeDistance(query, neighborID, distTable)

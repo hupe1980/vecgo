@@ -2,7 +2,6 @@ package arena
 
 import (
 	"errors"
-	"sync"
 	"sync/atomic"
 )
 
@@ -16,7 +15,6 @@ var (
 type FlatArena struct {
 	buf []byte
 	ptr atomic.Uint64 // Current allocation offset
-	mu  sync.RWMutex  // Protects buf during growth (if we support growth)
 }
 
 // NewFlat creates a new FlatArena with the given initial size.
