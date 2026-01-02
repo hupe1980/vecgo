@@ -34,11 +34,13 @@ import (
 )
 
 var (
+	// ErrMaxChunksExceeded is returned when the arena exceeds the maximum number of chunks.
 	ErrMaxChunksExceeded = errors.New("arena: max chunks exceeded")
 	ErrAllocationFailed  = errors.New("arena: allocation failed")
 )
 
 const (
+	// DefaultChunkSize is the default size of a chunk (1MB).
 	DefaultChunkSize = 1024 * 1024
 	DefaultAlignment = 8
 	MaxChunks        = 65536 // Limit to 64GB addressable space with 1MB chunks
@@ -83,6 +85,7 @@ type chunk struct {
 	index  uint32       // Index of this chunk in the arena
 }
 
+// Arena is a memory arena allocator.
 type Arena struct {
 	chunkSize  int
 	chunkBits  int    // Power of 2 exponent for chunk size
@@ -97,6 +100,7 @@ type Arena struct {
 	generation atomic.Uint32 // Generation counter to detect stale offsets
 }
 
+// New creates a new Arena with the given chunk size.
 func New(chunkSize int) (*Arena, error) {
 	if chunkSize <= 0 {
 		chunkSize = DefaultChunkSize
@@ -301,11 +305,13 @@ func (a *Arena) AllocPointer(size, align int) (unsafe.Pointer, error) {
 	return unsafe.Pointer(&bytes[0]), nil
 }
 
+// AllocBytes allocates a byte slice of the given size.
 func (a *Arena) AllocBytes(size int) ([]byte, error) {
 	_, bytes, err := a.Alloc(size)
 	return bytes, err
 }
 
+// AllocUint32Slice allocates a uint32 slice of the given capacity.
 func (a *Arena) AllocUint32Slice(capacity int) ([]uint32, error) {
 	if capacity <= 0 {
 		return nil, nil
@@ -320,6 +326,7 @@ func (a *Arena) AllocUint32Slice(capacity int) ([]uint32, error) {
 	return unsafe.Slice((*uint32)(unsafe.Pointer(&bytes[0])), capacity)[:0:capacity], nil
 }
 
+// AllocFloat32Slice allocates a float32 slice of the given capacity.
 func (a *Arena) AllocFloat32Slice(capacity int) ([]float32, error) {
 	if capacity <= 0 {
 		return nil, nil
@@ -334,6 +341,7 @@ func (a *Arena) AllocFloat32Slice(capacity int) ([]float32, error) {
 	return unsafe.Slice((*float32)(unsafe.Pointer(&bytes[0])), capacity)[:0:capacity], nil
 }
 
+// Stats returns the current arena statistics.
 func (a *Arena) Stats() Stats {
 	return Stats{
 		ChunksAllocated: a.stats.ChunksAllocated.Load(),
@@ -424,6 +432,7 @@ func (a *Arena) Reset() {
 	a.stats.BytesWasted.Store(0)
 }
 
+// Usage returns the memory usage percentage.
 func (a *Arena) Usage() float64 {
 	stats := a.Stats()
 	if stats.BytesReserved == 0 {

@@ -433,8 +433,8 @@ func (s *Store) WriteTo(w io.Writer) (int64, error) {
 		Version:    FormatVersion,
 		Flags:      0,
 		Dimension:  s.dim,
-		Count:      uint64(s.count),
-		LiveCount:  uint64(s.live),
+		Count:      s.count,
+		LiveCount:  s.live,
 		DataOffset: HeaderSize,
 	}
 	header.BitmapOff = header.DataOffset + uint64(header.VectorDataSize()) //nolint:gosec

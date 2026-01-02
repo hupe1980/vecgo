@@ -45,11 +45,20 @@ type MetricsCollector interface {
 // Use this when metrics collection is not needed.
 type NoopMetricsCollector struct{}
 
-func (NoopMetricsCollector) RecordInsert(time.Duration, error)         {}
+// RecordInsert implements MetricsCollector.
+func (NoopMetricsCollector) RecordInsert(time.Duration, error) {}
+
+// RecordBatchInsert implements MetricsCollector.
 func (NoopMetricsCollector) RecordBatchInsert(int, int, time.Duration) {}
-func (NoopMetricsCollector) RecordSearch(int, time.Duration, error)    {}
-func (NoopMetricsCollector) RecordDelete(time.Duration, error)         {}
-func (NoopMetricsCollector) RecordUpdate(time.Duration, error)         {}
+
+// RecordSearch implements MetricsCollector.
+func (NoopMetricsCollector) RecordSearch(int, time.Duration, error) {}
+
+// RecordDelete implements MetricsCollector.
+func (NoopMetricsCollector) RecordDelete(time.Duration, error) {}
+
+// RecordUpdate implements MetricsCollector.
+func (NoopMetricsCollector) RecordUpdate(time.Duration, error) {}
 
 // BasicMetricsCollector provides simple in-memory metrics collection.
 // Useful for debugging and basic monitoring without external dependencies.

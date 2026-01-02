@@ -12,12 +12,19 @@ import (
 type Kind uint8
 
 const (
+	// KindInvalid represents an invalid kind.
 	KindInvalid Kind = iota
+	// KindNull represents a null value.
 	KindNull
+	// KindInt represents an integer value.
 	KindInt
+	// KindFloat represents a float value.
 	KindFloat
+	// KindString represents a string value.
 	KindString
+	// KindBool represents a boolean value.
 	KindBool
+	// KindArray represents an array value.
 	KindArray
 )
 
@@ -110,6 +117,7 @@ func (v Value) Key() string {
 	}
 }
 
+// AsInt64 returns the int64 value if Kind is KindInt.
 func (v Value) AsInt64() (int64, bool) {
 	if v.Kind != KindInt {
 		return 0, false
@@ -117,6 +125,7 @@ func (v Value) AsInt64() (int64, bool) {
 	return v.I64, true
 }
 
+// AsFloat64 returns the float64 value if Kind is KindFloat.
 func (v Value) AsFloat64() (float64, bool) {
 	if v.Kind != KindFloat {
 		return 0, false
@@ -124,6 +133,7 @@ func (v Value) AsFloat64() (float64, bool) {
 	return v.F64, true
 }
 
+// AsString returns the string value if Kind is KindString.
 func (v Value) AsString() (string, bool) {
 	if v.Kind != KindString {
 		return "", false
@@ -131,6 +141,7 @@ func (v Value) AsString() (string, bool) {
 	return v.s.Value(), true
 }
 
+// AsBool returns the boolean value if Kind is KindBool.
 func (v Value) AsBool() (bool, bool) {
 	if v.Kind != KindBool {
 		return false, false
@@ -138,6 +149,7 @@ func (v Value) AsBool() (bool, bool) {
 	return v.B, true
 }
 
+// AsArray returns the array value if Kind is KindArray.
 func (v Value) AsArray() ([]Value, bool) {
 	if v.Kind != KindArray {
 		return nil, false
@@ -145,11 +157,22 @@ func (v Value) AsArray() ([]Value, bool) {
 	return v.A, true
 }
 
-func Null() Value           { return Value{Kind: KindNull} }
-func Int(v int64) Value     { return Value{Kind: KindInt, I64: v} }
+// Null returns a null Value.
+func Null() Value { return Value{Kind: KindNull} }
+
+// Int returns an int64 Value.
+func Int(v int64) Value { return Value{Kind: KindInt, I64: v} }
+
+// Float returns a float64 Value.
 func Float(v float64) Value { return Value{Kind: KindFloat, F64: v} }
+
+// String returns a string Value.
 func String(v string) Value { return Value{Kind: KindString, s: unique.Make(v)} }
-func Bool(v bool) Value     { return Value{Kind: KindBool, B: v} }
+
+// Bool returns a boolean Value.
+func Bool(v bool) Value { return Value{Kind: KindBool, B: v} }
+
+// Array returns an array Value.
 func Array(v []Value) Value { return Value{Kind: KindArray, A: v} }
 
 // Document is a typed metadata document.
@@ -223,6 +246,7 @@ type Metadata = Document
 type Operator string
 
 const (
+	// OpEqual represents the equality operator.
 	OpEqual        Operator = "eq"       // Equal
 	OpNotEqual     Operator = "ne"       // Not equal
 	OpGreaterThan  Operator = "gt"       // Greater than

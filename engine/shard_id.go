@@ -15,8 +15,11 @@ import "github.com/hupe1980/vecgo/core"
 type GlobalID uint64
 
 const (
+	// ShardBits is the number of bits used for the shard ID.
 	ShardBits = 32
+	// LocalBits is the number of bits used for the local ID.
 	LocalBits = 32
+	// MaxShards is the maximum number of shards.
 	MaxShards = 1 << ShardBits
 )
 

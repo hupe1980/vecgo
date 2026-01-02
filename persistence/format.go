@@ -8,15 +8,19 @@ const (
 	// Version is the current file format version (v1.0.1)
 	Version = 0x00010001
 
-	// Index types
+	// IndexTypeFlat represents a flat index.
 	IndexTypeFlat = 1
+	// IndexTypeHNSW represents an HNSW index.
 	IndexTypeHNSW = 2
 )
 
 var (
-	ErrInvalidMagic   = errors.New("invalid magic number")
+	// ErrInvalidMagic is returned when the magic number is invalid.
+	ErrInvalidMagic = errors.New("invalid magic number")
+	// ErrInvalidVersion is returned when the version is unsupported.
 	ErrInvalidVersion = errors.New("unsupported version")
-	ErrInvalidIndex   = errors.New("invalid index type")
+	// ErrInvalidIndex is returned when the index type is invalid.
+	ErrInvalidIndex = errors.New("invalid index type")
 )
 
 // FileHeader is the 64-byte header at the start of every index file.

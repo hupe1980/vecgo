@@ -6,6 +6,7 @@ import (
 )
 
 var (
+	// ErrArenaFull is returned when the arena is full.
 	ErrArenaFull = errors.New("arena is full")
 )
 

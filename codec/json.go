@@ -20,9 +20,14 @@ import (
 //     the codec name so it can be validated on load.
 type JSON struct{}
 
-func (JSON) Marshal(v any) ([]byte, error)      { return json.Marshal(v) }
+// Marshal encodes the value to JSON.
+func (JSON) Marshal(v any) ([]byte, error) { return json.Marshal(v) }
+
+// Unmarshal decodes the JSON data into v.
 func (JSON) Unmarshal(data []byte, v any) error { return json.Unmarshal(data, v) }
-func (JSON) Name() string                       { return "json" }
+
+// Name returns the unique name of the codec ("json").
+func (JSON) Name() string { return "json" }
 
 // Default is the default codec used by the library.
 //

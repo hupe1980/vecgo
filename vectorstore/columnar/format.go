@@ -17,9 +17,10 @@ const (
 	// HeaderSize is the size of the file header in bytes
 	HeaderSize = 64
 
-	// Flag bits for FileHeader.Flags
+	// FlagHasVersions indicates that the file contains version data.
 	FlagHasVersions uint32 = 1 << 0 // File contains version data
-	FlagCompressed  uint32 = 1 << 1 // Vector data is compressed (future)
+	// FlagCompressed indicates that the vector data is compressed.
+	FlagCompressed uint32 = 1 << 1 // Vector data is compressed (future)
 )
 
 var (

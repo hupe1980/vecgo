@@ -11,16 +11,19 @@ import (
 type DurabilityMode int
 
 const (
-	// DurabilityAsync: No fsync, fastest writes but risk of data loss on crash.
+	// DurabilityAsync represents asynchronous durability.
+	// No fsync, fastest writes but risk of data loss on crash.
 	// Use for non-critical workloads or when external replication provides durability.
 	DurabilityAsync DurabilityMode = iota
 
-	// DurabilityGroupCommit: Batched fsync at regular intervals.
+	// DurabilityGroupCommit represents group commit durability.
+	// Batched fsync at regular intervals.
 	// Balances throughput and durability by amortizing fsync cost across multiple operations.
 	// Recommended for most production workloads.
 	DurabilityGroupCommit
 
-	// DurabilitySync: fsync after every operation.
+	// DurabilitySync represents synchronous durability.
+	// fsync after every operation.
 	// Slowest but strongest durability guarantee. Use for critical data.
 	DurabilitySync
 )
@@ -41,11 +44,18 @@ const (
 	// Prepare/Commit protocol (atomic recovery):
 	// A Prepare entry records the intended mutation; a Commit entry marks it as durable.
 	// Recovery must apply only committed operations.
+
+	// OpPrepareInsert represents a prepare insert operation.
 	OpPrepareInsert
+	// OpPrepareUpdate represents a prepare update operation.
 	OpPrepareUpdate
+	// OpPrepareDelete represents a prepare delete operation.
 	OpPrepareDelete
+	// OpCommitInsert represents a commit insert operation.
 	OpCommitInsert
+	// OpCommitUpdate represents a commit update operation.
 	OpCommitUpdate
+	// OpCommitDelete represents a commit delete operation.
 	OpCommitDelete
 )
 

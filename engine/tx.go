@@ -521,7 +521,6 @@ func (tx *Tx[T]) Delete(ctx context.Context, id uint64) error {
 	return nil
 }
 
-// flushMemTableLocked flushes the MemTable to the main index (caller must hold lock).
 // Get retrieves the data associated with an ID from the data store.
 func (tx *Tx[T]) Get(id uint64) (T, bool) {
 	return tx.dataStore.Get(core.LocalID(id))

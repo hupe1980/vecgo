@@ -44,7 +44,6 @@ func WithCodec(c codec.Codec) Option {
 }
 
 // WithNumShards configures the number of shards for parallel write throughput.
-// , numShards: 1
 // Sharding eliminates the global lock bottleneck by partitioning writes across
 // independent coordinators. Each shard has its own lock, enabling true parallel
 // write operations on multi-core systems.

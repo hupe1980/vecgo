@@ -24,6 +24,7 @@ type MappedFile struct {
 	data []byte
 }
 
+// Bytes returns the mapped data as a byte slice.
 func (m *MappedFile) Bytes() []byte {
 	if m == nil {
 		return nil
@@ -31,6 +32,7 @@ func (m *MappedFile) Bytes() []byte {
 	return m.data
 }
 
+// Close unmaps the memory and closes the underlying file.
 func (m *MappedFile) Close() error {
 	if m == nil {
 		return nil

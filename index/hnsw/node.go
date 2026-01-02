@@ -46,6 +46,7 @@ type Node struct {
 // [0:4] Count (uint32)
 // [4:...] Neighbors (uint64 array)
 
+// Level returns the level of the node.
 func (n Node) Level(a *arena.Arena) int {
 	ptr := a.GetSafe(arena.Ref{Gen: n.Gen, Offset: n.Offset})
 	if ptr == nil {
@@ -105,6 +106,7 @@ func (n Node) GetConnectionsRaw(a *arena.Arena, layer int, m, m0 int) []uint64 {
 	return unsafe.Slice((*uint64)(neighborsPtr), count)
 }
 
+// GetConnection returns the neighbor at the given index for the given layer.
 func (n Node) GetConnection(a *arena.Arena, layer int, index int, m, m0 int) Neighbor {
 	blockOffset := n.connectionBlockOffset(layer, m, m0)
 	neighborOffset := blockOffset + 4 + uint64(index)*8
@@ -116,6 +118,7 @@ func (n Node) GetConnection(a *arena.Arena, layer int, index int, m, m0 int) Nei
 	return NeighborFromUint64(atomic.LoadUint64((*uint64)(ptr)))
 }
 
+// SetConnection sets the neighbor at the given index for the given layer.
 func (n Node) SetConnection(a *arena.Arena, layer int, index int, neighbor Neighbor, m, m0 int) {
 	blockOffset := n.connectionBlockOffset(layer, m, m0)
 	// Neighbors start at offset + 4
@@ -129,6 +132,7 @@ func (n Node) SetConnection(a *arena.Arena, layer int, index int, neighbor Neigh
 	atomic.StoreUint64((*uint64)(ptr), neighbor.AsUint64())
 }
 
+// SetCount sets the number of connections for the given layer.
 func (n Node) SetCount(a *arena.Arena, layer int, count int, m, m0 int) {
 	blockOffset := n.connectionBlockOffset(layer, m, m0)
 	ptr := a.GetSafe(arena.Ref{Gen: n.Gen, Offset: blockOffset})
@@ -138,6 +142,7 @@ func (n Node) SetCount(a *arena.Arena, layer int, count int, m, m0 int) {
 	atomic.StoreUint32((*uint32)(ptr), uint32(count))
 }
 
+// GetCount returns the number of connections for the given layer.
 func (n Node) GetCount(a *arena.Arena, layer int, m, m0 int) int {
 	blockOffset := n.connectionBlockOffset(layer, m, m0)
 	ptr := a.GetSafe(arena.Ref{Gen: n.Gen, Offset: blockOffset})

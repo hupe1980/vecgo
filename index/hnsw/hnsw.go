@@ -68,6 +68,7 @@ type Options struct {
 	RandomSeed       *int64
 }
 
+// DefaultOptions contains the default options for HNSW.
 var DefaultOptions = Options{
 	Dimension:        0,
 	M:                DefaultM,
@@ -135,6 +136,7 @@ type scratch struct {
 	heuristicResultVecs [][]float32
 }
 
+// Name returns the name of the index.
 func (*HNSW) Name() string { return "HNSW" }
 
 // Reset clears the HNSW index for reuse.
@@ -1265,8 +1267,10 @@ func (h *HNSW) layerForApplyInsert(id uint64) int {
 	return int(math.Floor(-math.Log(r) * h.layerMultiplier))
 }
 
-// Sharding stubs
+// VectorCount returns the number of vectors in the index.
 func (h *HNSW) VectorCount() int { return int(h.currentGraph.Load().countAtomic.Load()) }
+
+// ContainsID checks if an ID exists in the index.
 func (h *HNSW) ContainsID(id uint64) bool {
 	g := h.currentGraph.Load()
 	if g.tombstones.Test(uint32(id)) {
@@ -1274,8 +1278,14 @@ func (h *HNSW) ContainsID(id uint64) bool {
 	}
 	return h.getNode(g, core.LocalID(id)) != nil
 }
-func (h *HNSW) ShardID() int   { return 0 }
+
+// ShardID returns the shard ID.
+func (h *HNSW) ShardID() int { return 0 }
+
+// NumShards returns the number of shards.
 func (h *HNSW) NumShards() int { return 1 }
+
+// NewSharded creates a new sharded HNSW index (stub).
 func NewSharded(shardID, numShards int, optFns ...func(o *Options)) (*HNSW, error) {
 	return New(optFns...)
 }

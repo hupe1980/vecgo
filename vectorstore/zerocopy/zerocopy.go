@@ -48,8 +48,10 @@ func (s *Store) SetData(data []float32) {
 	}
 }
 
+// Dimension returns the dimension of the vectors.
 func (s *Store) Dimension() int { return s.dim }
 
+// GetVector retrieves a vector by ID.
 func (s *Store) GetVector(id core.LocalID) ([]float32, bool) {
 	data := *s.data.Load()
 	idx := int(id) * s.dim
@@ -59,6 +61,7 @@ func (s *Store) GetVector(id core.LocalID) ([]float32, bool) {
 	return data[idx : idx+s.dim], true
 }
 
+// SetVector sets a vector by ID.
 func (s *Store) SetVector(id core.LocalID, v []float32) error {
 	if len(v) != s.dim {
 		return vectorstore.ErrWrongDimension
@@ -73,6 +76,7 @@ func (s *Store) SetVector(id core.LocalID, v []float32) error {
 	return nil
 }
 
+// DeleteVector deletes a vector by ID.
 func (s *Store) DeleteVector(id core.LocalID) error {
 	// Zero out the vector? Or just ignore?
 	// For mmap read-only, we can't really delete.

@@ -47,6 +47,7 @@ var DefaultOptions = Options{
 }
 
 // Flat represents a flat index for vector storage and searcher.
+// Flat is a brute-force index that stores vectors in a linear array.
 // It uses a zero-overhead architecture (maxID + BitSet) for O(1) inserts.
 type Flat struct {
 	// State
@@ -66,6 +67,7 @@ type Flat struct {
 	numShards int // Total number of shards (1 = no sharding)
 }
 
+// Name returns the name of the index.
 func (*Flat) Name() string { return "Flat" }
 
 // Dimension returns the dimensionality of the vectors in the index.
@@ -124,10 +126,12 @@ func New(optFns ...func(o *Options)) (*Flat, error) {
 	return f, nil
 }
 
+// ProductQuantizationEnabled returns true if PQ is enabled.
 func (f *Flat) ProductQuantizationEnabled() bool {
 	return f.pq.Load() != nil
 }
 
+// DisableProductQuantization disables PQ.
 func (f *Flat) DisableProductQuantization() {
 	f.writeMu.Lock()
 	defer f.writeMu.Unlock()
@@ -136,6 +140,7 @@ func (f *Flat) DisableProductQuantization() {
 	f.pqCodes = nil
 }
 
+// EnableProductQuantization enables PQ with the given config.
 func (f *Flat) EnableProductQuantization(cfg index.ProductQuantizationConfig) error {
 	if cfg.NumSubvectors <= 0 {
 		return fmt.Errorf("flat: invalid NumSubvectors: %d", cfg.NumSubvectors)

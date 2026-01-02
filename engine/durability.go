@@ -39,18 +39,35 @@ type Durability interface {
 // correctness bifurcation.
 type NoopDurability struct{}
 
+// LogPrepareInsert is a no-op.
 func (NoopDurability) LogPrepareInsert(core.LocalID, []float32, []byte, metadata.Metadata) error {
 	return nil
 }
+
+// LogCommitInsert is a no-op.
 func (NoopDurability) LogCommitInsert(core.LocalID) error { return nil }
+
+// LogPrepareBatchInsert is a no-op.
 func (NoopDurability) LogPrepareBatchInsert([]core.LocalID, [][]float32, [][]byte, []metadata.Metadata) error {
 	return nil
 }
+
+// LogCommitBatchInsert is a no-op.
 func (NoopDurability) LogCommitBatchInsert([]core.LocalID) error { return nil }
+
+// LogPrepareUpdate is a no-op.
 func (NoopDurability) LogPrepareUpdate(core.LocalID, []float32, []byte, metadata.Metadata) error {
 	return nil
 }
-func (NoopDurability) LogCommitUpdate(core.LocalID) error  { return nil }
+
+// LogCommitUpdate is a no-op.
+func (NoopDurability) LogCommitUpdate(core.LocalID) error { return nil }
+
+// LogPrepareDelete is a no-op.
 func (NoopDurability) LogPrepareDelete(core.LocalID) error { return nil }
-func (NoopDurability) LogCommitDelete(core.LocalID) error  { return nil }
-func (NoopDurability) Close() error                        { return nil }
+
+// LogCommitDelete is a no-op.
+func (NoopDurability) LogCommitDelete(core.LocalID) error { return nil }
+
+// Close is a no-op.
+func (NoopDurability) Close() error { return nil }

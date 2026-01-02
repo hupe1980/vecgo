@@ -8,6 +8,11 @@ import gojson "github.com/goccy/go-json"
 // When opening an existing file, Vecgo selects the codec by name.
 type GoJSON struct{}
 
-func (GoJSON) Marshal(v any) ([]byte, error)      { return gojson.Marshal(v) }
+// Marshal encodes the value to JSON.
+func (GoJSON) Marshal(v any) ([]byte, error) { return gojson.Marshal(v) }
+
+// Unmarshal decodes the JSON data into v.
 func (GoJSON) Unmarshal(data []byte, v any) error { return gojson.Unmarshal(data, v) }
-func (GoJSON) Name() string                       { return "go-json" }
+
+// Name returns the unique name of the codec ("go-json").
+func (GoJSON) Name() string { return "go-json" }

@@ -82,7 +82,7 @@ func Open(path string) (*File, error) {
 	return &File{Data: data, f: f}, nil
 }
 
-// ReaderAt implements io.ReaderAt on a memory-mapped file.
+// ReadAt reads data from the memory-mapped file at the given offset.
 func (m *File) ReadAt(p []byte, off int64) (n int, err error) {
 	if m.Data == nil {
 		return 0, io.EOF

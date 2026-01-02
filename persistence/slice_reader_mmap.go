@@ -14,10 +14,12 @@ type SliceReader struct {
 	off int
 }
 
+// NewSliceReader creates a new SliceReader.
 func NewSliceReader(b []byte) *SliceReader {
 	return &SliceReader{b: b, off: 0}
 }
 
+// Offset returns the current read offset.
 func (r *SliceReader) Offset() int {
 	if r == nil {
 		return 0
@@ -25,6 +27,7 @@ func (r *SliceReader) Offset() int {
 	return r.off
 }
 
+// ReadBytes reads n bytes from the slice.
 func (r *SliceReader) ReadBytes(n int) ([]byte, error) {
 	if n < 0 || r.off+n > len(r.b) {
 		return nil, fmt.Errorf("sliceReader: out of bounds read (%d bytes at %d, len=%d)", n, r.off, len(r.b))
@@ -34,6 +37,7 @@ func (r *SliceReader) ReadBytes(n int) ([]byte, error) {
 	return out, nil
 }
 
+// ReadUint32 reads a uint32 from the slice.
 func (r *SliceReader) ReadUint32() (uint32, error) {
 	b, err := r.ReadBytes(4)
 	if err != nil {
@@ -42,6 +46,7 @@ func (r *SliceReader) ReadUint32() (uint32, error) {
 	return binary.LittleEndian.Uint32(b), nil
 }
 
+// ReadUint16 reads a uint16 from the slice.
 func (r *SliceReader) ReadUint16() (uint16, error) {
 	b, err := r.ReadBytes(2)
 	if err != nil {
@@ -50,6 +55,7 @@ func (r *SliceReader) ReadUint16() (uint16, error) {
 	return binary.LittleEndian.Uint16(b), nil
 }
 
+// Remaining returns the remaining bytes in the slice.
 func (r *SliceReader) Remaining() []byte {
 	if r.off >= len(r.b) {
 		return nil
@@ -57,10 +63,12 @@ func (r *SliceReader) Remaining() []byte {
 	return r.b[r.off:]
 }
 
+// Advance advances the read offset by n bytes.
 func (r *SliceReader) Advance(n int) {
 	r.off += n
 }
 
+// ReadFileHeader reads the file header.
 func (r *SliceReader) ReadFileHeader() (*FileHeader, error) {
 	sz := binary.Size(FileHeader{})
 	if sz <= 0 {
@@ -83,6 +91,7 @@ func (r *SliceReader) ReadFileHeader() (*FileHeader, error) {
 	return &h, nil
 }
 
+// ReadUint32SliceCopy reads a uint32 slice by copying.
 func (r *SliceReader) ReadUint32SliceCopy(n int) ([]uint32, error) {
 	if n == 0 {
 		return nil, nil
@@ -96,6 +105,7 @@ func (r *SliceReader) ReadUint32SliceCopy(n int) ([]uint32, error) {
 	return out, nil
 }
 
+// ReadFloat32SliceView reads a float32 slice as a view (zero-copy).
 func (r *SliceReader) ReadFloat32SliceView(n int) ([]float32, error) {
 	if n == 0 {
 		return nil, nil
@@ -108,6 +118,7 @@ func (r *SliceReader) ReadFloat32SliceView(n int) ([]float32, error) {
 	return unsafe.Slice((*float32)(unsafe.Pointer(&bb[0])), n), nil
 }
 
+// ReadUint64 reads a uint64 from the slice.
 func (r *SliceReader) ReadUint64() (uint64, error) {
 	b, err := r.ReadBytes(8)
 	if err != nil {
@@ -116,6 +127,7 @@ func (r *SliceReader) ReadUint64() (uint64, error) {
 	return binary.LittleEndian.Uint64(b), nil
 }
 
+// ReadUint64SliceCopy reads a uint64 slice by copying.
 func (r *SliceReader) ReadUint64SliceCopy(n int) ([]uint64, error) {
 	if n == 0 {
 		return nil, nil
