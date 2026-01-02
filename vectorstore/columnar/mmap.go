@@ -24,7 +24,7 @@ type MmapStore struct {
 	live    uint64
 	data    []float32 // vector data (copied from mmap)
 	deleted []uint64  // deletion bitmap (copied from mmap)
-	reader  *mmap.File
+	reader  *mmap.Mapping
 }
 
 // OpenMmap opens a columnar file and returns a read-only mmap'd store.
@@ -49,6 +49,9 @@ func OpenMmap(filename string) (*MmapStore, io.Closer, error) {
 		return nil, nil, fmt.Errorf("columnar: open mmap: %w", err)
 	}
 
+	// Read header
+	// ... (rest of the function needs to be checked)
+
 	store, err := parseMmap(reader)
 	if err != nil {
 		_ = reader.Close()
@@ -58,14 +61,14 @@ func OpenMmap(filename string) (*MmapStore, io.Closer, error) {
 	return store, reader, nil
 }
 
-func parseMmap(reader *mmap.File) (*MmapStore, error) {
-	size := len(reader.Data)
+func parseMmap(reader *mmap.Mapping) (*MmapStore, error) {
+	size := reader.Size()
 	if size < HeaderSize {
 		return nil, fmt.Errorf("columnar: file too small")
 	}
 
 	// Read header
-	header := *(*FileHeader)(unsafe.Pointer(&reader.Data[0])) //nolint:gosec // unsafe is required for mmap access
+	header := *(*FileHeader)(unsafe.Pointer(&reader.Bytes()[0])) //nolint:gosec // unsafe is required for mmap access
 	if header.Magic != FormatMagic {
 		return nil, fmt.Errorf("columnar: invalid magic number")
 	}
@@ -91,7 +94,7 @@ func parseMmap(reader *mmap.File) (*MmapStore, error) {
 	return store, nil
 }
 
-func loadVectorData(store *MmapStore, reader *mmap.File, header FileHeader) error {
+func loadVectorData(store *MmapStore, reader *mmap.Mapping, header FileHeader) error {
 	if header.Count == 0 {
 		return nil
 	}
@@ -109,7 +112,7 @@ func loadVectorData(store *MmapStore, reader *mmap.File, header FileHeader) erro
 		return err
 	}
 	size := countInt * dimInt * 4
-	if offset+size > len(reader.Data) {
+	if offset+size > reader.Size() {
 		return fmt.Errorf("columnar: file too small for data")
 	}
 
@@ -117,19 +120,19 @@ func loadVectorData(store *MmapStore, reader *mmap.File, header FileHeader) erro
 	if offset%4 != 0 {
 		// Fallback to copy if not aligned (rare)
 		vecBytes := make([]byte, size)
-		copy(vecBytes, reader.Data[offset:offset+size])
+		copy(vecBytes, reader.Bytes()[offset:offset+size])
 		store.data = make([]float32, countInt*dimInt)
 		for i := range store.data {
 			store.data[i] = *(*float32)(unsafe.Pointer(&vecBytes[i*4])) //nolint:gosec // unsafe is required for mmap access
 		}
 	} else {
 		// Zero-copy access
-		store.data = unsafe.Slice((*float32)(unsafe.Pointer(&reader.Data[offset])), countInt*dimInt) //nolint:gosec // unsafe is required for mmap access
+		store.data = unsafe.Slice((*float32)(unsafe.Pointer(&reader.Bytes()[offset])), countInt*dimInt) //nolint:gosec // unsafe is required for mmap access
 	}
 	return nil
 }
 
-func loadBitmapData(store *MmapStore, reader *mmap.File, header FileHeader) error {
+func loadBitmapData(store *MmapStore, reader *mmap.Mapping, header FileHeader) error {
 	countInt, err := conv.Uint64ToInt(header.Count)
 	if err != nil {
 		return err
@@ -144,7 +147,7 @@ func loadBitmapData(store *MmapStore, reader *mmap.File, header FileHeader) erro
 		return err
 	}
 	size := bitmapLen * 8
-	if offset+size > len(reader.Data) {
+	if offset+size > reader.Size() {
 		return fmt.Errorf("columnar: file too small for bitmap")
 	}
 
@@ -152,14 +155,14 @@ func loadBitmapData(store *MmapStore, reader *mmap.File, header FileHeader) erro
 	if offset%8 != 0 {
 		// Fallback to copy
 		bitmapBytes := make([]byte, size)
-		copy(bitmapBytes, reader.Data[offset:offset+size])
+		copy(bitmapBytes, reader.Bytes()[offset:offset+size])
 		store.deleted = make([]uint64, bitmapLen)
 		for i := range store.deleted {
 			store.deleted[i] = binary.LittleEndian.Uint64(bitmapBytes[i*8:])
 		}
 	} else {
 		// Zero-copy access
-		store.deleted = unsafe.Slice((*uint64)(unsafe.Pointer(&reader.Data[offset])), bitmapLen) //nolint:gosec // unsafe is required for mmap access
+		store.deleted = unsafe.Slice((*uint64)(unsafe.Pointer(&reader.Bytes()[offset])), bitmapLen) //nolint:gosec // unsafe is required for mmap access
 	}
 	return nil
 }

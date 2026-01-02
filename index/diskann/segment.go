@@ -45,7 +45,7 @@ type Segment struct {
 	bqCodes []uint64 // BQ codes per vector
 
 	// Vectors - mmap (immutable)
-	mmapReader *mmap.File
+	mmapReader *mmap.Mapping
 
 	// Performance optimization: pool visited bitsets
 	visitedPool sync.Pool
@@ -358,10 +358,10 @@ func (s *Segment) getVector(id uint32) []float32 {
 		return nil
 	}
 	offset := int(id) * s.dim * 4
-	if offset < 0 || offset+s.dim*4 > len(s.mmapReader.Data) {
+	if offset < 0 || offset+s.dim*4 > s.mmapReader.Size() {
 		return nil
 	}
-	return unsafe.Slice((*float32)(unsafe.Pointer(&s.mmapReader.Data[offset])), s.dim) //nolint:gosec // unsafe is required for performance
+	return unsafe.Slice((*float32)(unsafe.Pointer(&s.mmapReader.Bytes()[offset])), s.dim) //nolint:gosec // unsafe is required for performance
 }
 
 // Loading methods (copied/adapted from index.go)

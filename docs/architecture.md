@@ -284,7 +284,10 @@ Vecgo supports two-stage search to balance speed and recall.
 
 For large datasets, Vecgo avoids loading everything into the Go heap (which causes GC pressure).
 
-*   **Mmap**: Index files and vector stores are memory-mapped (`mmap`). The OS manages page caching.
+*   **Mmap (`internal/mmap`)**: Uses a custom, platform-agnostic `mmap` abstraction.
+    *   **Mapping**: Represents a memory-mapped file.
+    *   **Region**: Safe views into subsections of the mapping.
+    *   **Access Patterns**: Uses `Advise` (e.g., `AccessSequential`) to optimize OS page caching.
 *   **Unsafe Casting**: Data is accessed directly from the memory map using `unsafe.Pointer` casting to structs (e.g., `OffsetSegment`), avoiding deserialization overhead.
 *   **Flat Layouts**: On-disk formats are designed to be "flat" (C-struct like) to support direct mapping.
 
