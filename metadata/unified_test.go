@@ -3,7 +3,7 @@ package metadata
 import (
 	"testing"
 
-	"github.com/hupe1980/vecgo/core"
+	"github.com/hupe1980/vecgo/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -182,8 +182,8 @@ func TestUnifiedIndex_ScanFilter(t *testing.T) {
 	// ScanFilter should work
 	ids := ui.ScanFilter(fs)
 	assert.Len(t, ids, 2)
-	assert.Contains(t, ids, core.LocalID(1))
-	assert.Contains(t, ids, core.LocalID(3))
+	assert.Contains(t, ids, model.RowID(1))
+	assert.Contains(t, ids, model.RowID(3))
 }
 
 func TestUnifiedIndex_CreateFilterFunc(t *testing.T) {
@@ -321,7 +321,7 @@ func BenchmarkUnifiedIndex_CompileFilter(b *testing.B) {
 	ui := NewUnifiedIndex()
 
 	// Add 10k documents
-	for i := core.LocalID(0); i < 10000; i++ {
+	for i := model.RowID(0); i < 10000; i++ {
 		category := "tech"
 		if i%3 == 0 {
 			category = "science"
@@ -346,7 +346,7 @@ func BenchmarkUnifiedIndex_ScanFilter(b *testing.B) {
 	ui := NewUnifiedIndex()
 
 	// Add 10k documents
-	for i := core.LocalID(0); i < 10000; i++ {
+	for i := model.RowID(0); i < 10000; i++ {
 		score := int64(i % 100)
 		ui.Set(i, Document{"score": Int(score)})
 	}

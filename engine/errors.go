@@ -2,13 +2,19 @@ package engine
 
 import "errors"
 
-// ErrNotFound is returned when a Store cannot find an ID.
-//
-// This is an engine-layer sentinel used internally; the vecgo package may
-// translate it into its public error contract.
-var ErrNotFound = errors.New("not found")
+var (
+	// ErrClosed is returned when an operation is attempted on a closed engine or segment.
+	ErrClosed = errors.New("engine closed")
 
-// ErrCoordinatorClosed is returned when an operation is attempted on a closed coordinator.
-// This typically happens when trying to submit work to a shutdown worker pool or
-// access a shard after Close() has been called.
-var ErrCoordinatorClosed = errors.New("coordinator closed")
+	// ErrInvalidArgument is returned when an argument is invalid (e.g. wrong dimension, k <= 0).
+	ErrInvalidArgument = errors.New("invalid argument")
+
+	// ErrCorrupt is returned when data corruption is detected (checksum mismatch, etc.).
+	ErrCorrupt = errors.New("data corruption detected")
+
+	// ErrIncompatibleFormat is returned when the on-disk format is not supported.
+	ErrIncompatibleFormat = errors.New("incompatible format")
+
+	// ErrBackpressure is returned when the system is under heavy load and rejects the operation.
+	ErrBackpressure = errors.New("backpressure: resource limit exceeded")
+)

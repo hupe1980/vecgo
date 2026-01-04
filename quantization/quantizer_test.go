@@ -208,3 +208,43 @@ func BenchmarkScalarQuantizer_Decode(b *testing.B) {
 		_ = sq.Decode(quantized)
 	}
 }
+
+func TestScalarQuantizer_L2DistanceBatch(t *testing.T) {
+	dim := 4
+	sq := NewScalarQuantizer(dim)
+	sq.trained = true
+	sq.mins = []float32{0, 0, 0, 0}
+	sq.maxs = []float32{10, 10, 10, 10}
+	sq.scales = make([]float32, dim)
+	sq.invScales = make([]float32, dim)
+	for i := 0; i < dim; i++ {
+		sq.scales[i] = 255.0 / 10.0
+		sq.invScales[i] = 10.0 / 255.0
+	}
+
+	query := []float32{1, 2, 3, 4}
+
+	// Create 2 vectors
+	v1 := []float32{1, 2, 3, 4} // Distance 0
+	v2 := []float32{2, 3, 4, 5} // Distance 1+1+1+1 = 4
+
+	code1 := sq.Encode(v1)
+	code2 := sq.Encode(v2)
+
+	codes := make([]byte, 0, dim*2)
+	codes = append(codes, code1...)
+	codes = append(codes, code2...)
+
+	out := make([]float32, 2)
+	sq.L2DistanceBatch(query, codes, 2, out)
+
+	// Check v1 distance (should be close to 0)
+	if out[0] > 0.1 {
+		t.Errorf("Expected distance ~0, got %f", out[0])
+	}
+
+	// Check v2 distance (should be close to 4)
+	if math.Abs(float64(out[1]-4.0)) > 0.2 {
+		t.Errorf("Expected distance ~4, got %f", out[1])
+	}
+}

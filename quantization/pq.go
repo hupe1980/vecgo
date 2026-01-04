@@ -9,8 +9,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/hupe1980/vecgo/internal/math32"
 	"github.com/hupe1980/vecgo/internal/mem"
+	"github.com/hupe1980/vecgo/internal/simd"
 )
 
 // ProductQuantizer implements Product Quantization (PQ) for 8-32x compression.
@@ -183,7 +183,7 @@ func (pq *ProductQuantizer) findNearestQuantizedCentroid(vec []float32, codebook
 			scratch[j] = float32(codebook[start+j])*scale + offset
 		}
 
-		dist := math32.SquaredL2(vec, scratch)
+		dist := simd.SquaredL2(vec, scratch)
 		if dist < minDist {
 			minDist = dist
 			nearestIdx = i
@@ -271,7 +271,7 @@ func (pq *ProductQuantizer) ComputeAsymmetricDistance(query []float32, codes []b
 		}
 
 		// Squared L2 distance between query subvector and centroid
-		distance += math32.SquaredL2(querySubvec, scratch)
+		distance += simd.SquaredL2(querySubvec, scratch)
 	}
 
 	return distance
@@ -316,7 +316,7 @@ func (pq *ProductQuantizer) initializeCentroids(vectors [][]float32, startIdx, e
 	minDistSq := make([]float32, len(vectors))
 	var sum float32
 	for i, vec := range vectors {
-		d := math32.SquaredL2(vec[startIdx:endIdx], centroids[0:dim])
+		d := simd.SquaredL2(vec[startIdx:endIdx], centroids[0:dim])
 		minDistSq[i] = d
 		sum += d
 	}
@@ -345,7 +345,7 @@ func (pq *ProductQuantizer) initializeCentroids(vectors [][]float32, startIdx, e
 		sum = 0
 		cStart := c * dim
 		for i, vec := range vectors {
-			d := math32.SquaredL2(vec[startIdx:endIdx], centroids[cStart:cStart+dim])
+			d := simd.SquaredL2(vec[startIdx:endIdx], centroids[cStart:cStart+dim])
 			if d < minDistSq[i] {
 				minDistSq[i] = d
 			}
@@ -440,7 +440,7 @@ func (pq *ProductQuantizer) findNearestCentroid(vec []float32, centroids []float
 		end := start + pq.subvectorDim
 		centroid := centroids[start:end]
 
-		dist := math32.SquaredL2(vec, centroid)
+		dist := simd.SquaredL2(vec, centroid)
 		if dist < minDist {
 			minDist = dist
 			nearestIdx = i
@@ -510,7 +510,7 @@ func (pq *ProductQuantizer) BuildDistanceTable(query []float32) []float32 {
 				scratch[i] = float32(qVal)*scale + offset
 			}
 
-			dist := math32.SquaredL2(querySubvec, scratch)
+			dist := simd.SquaredL2(querySubvec, scratch)
 			table[m*pq.numCentroids+k] = dist
 		}
 	}
@@ -524,5 +524,5 @@ func (pq *ProductQuantizer) AdcDistance(table []float32, codes []byte) float32 {
 	if len(codes) != pq.numSubvectors {
 		panic("codes length mismatch")
 	}
-	return math32.PqAdcLookup(table, codes, pq.numSubvectors)
+	return simd.PqAdcLookup(table, codes, pq.numSubvectors)
 }

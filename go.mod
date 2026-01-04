@@ -4,10 +4,10 @@ go 1.24.11
 
 require (
 	github.com/RoaringBitmap/roaring/v2 v2.14.4
-	github.com/goccy/go-json v0.10.5
-	github.com/klauspost/compress v1.18.2
 	github.com/stretchr/testify v1.11.1
+	golang.org/x/sync v0.19.0
 	golang.org/x/sys v0.39.0
+	golang.org/x/time v0.14.0
 )
 
 require (

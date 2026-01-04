@@ -4,6 +4,7 @@ import (
 	"sync"
 
 	"github.com/hupe1980/vecgo/metadata"
+	"github.com/hupe1980/vecgo/model"
 )
 
 // Searcher is a reusable execution context for vector search operations.
@@ -36,8 +37,26 @@ type Searcher struct {
 	// ScratchResults is a reusable buffer for collecting intermediate results (e.g. DiskANN beam search).
 	ScratchResults []PriorityQueueItem
 
+	// ScratchScores is a reusable buffer for batch distance calculations.
+	ScratchScores []float32
+
 	// BQBuffer is a reusable buffer for Binary Quantization codes.
 	BQBuffer []uint64
+
+	// CandidateHeap is a reusable heap for model.Candidate (used by flat search).
+	Heap *CandidateHeap
+
+	// Scores is a reusable buffer for batch distance calculations.
+	Scores []float32
+
+	// Results is a reusable buffer for collecting final results before returning.
+	Results []model.Candidate
+
+	// CandidateBuffer is a reusable buffer for intermediate results (e.g. reranking).
+	CandidateBuffer []model.Candidate
+
+	// ScratchIDs is a reusable buffer for RowIDs.
+	ScratchIDs []uint32
 
 	// OpsPerformed tracks the number of distance calculations or node visits.
 	OpsPerformed int
@@ -57,6 +76,8 @@ func NewSearcher(visitedCap, queueCap int) *Searcher {
 		ScratchCandidates: NewPriorityQueue(false), // MinHeap for exploration (explore closest)
 		FilterBitmap:      metadata.NewLocalBitmap(),
 		ScratchResults:    make([]PriorityQueueItem, 0, queueCap),
+		Heap:              NewCandidateHeap(queueCap, false),
+		Scores:            make([]float32, 256),
 	}
 }
 
@@ -79,5 +100,6 @@ func (s *Searcher) Reset() {
 	s.ScratchCandidates.Reset()
 	s.FilterBitmap.Clear()
 	s.ScratchResults = s.ScratchResults[:0]
+	s.Heap.Reset(false)
 	s.OpsPerformed = 0
 }

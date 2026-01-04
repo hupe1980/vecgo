@@ -1,205 +1,96 @@
-package vecgo_bench_test
+package benchmark_test
 
 import (
-	"context"
-	"fmt"
-	"testing"
+	"container/heap"
+	"sort"
 
-	"github.com/hupe1980/vecgo"
-	"github.com/hupe1980/vecgo/index"
-	"github.com/hupe1980/vecgo/testutil"
+	"github.com/hupe1980/vecgo/distance"
+	"github.com/hupe1980/vecgo/model"
 )
 
-var (
-	// rng is a seeded random number generator for reproducible benchmarks
-	rng = testutil.NewRNG(42)
-
-	// categories for metadata testing
-	categories = []string{
-		"technology",
-		"science",
-		"business",
-		"sports",
-		"entertainment",
-	}
-)
-
-// randomVector generates a random float32 vector of given dimension using seeded RNG.
-// Values are L2-normalized (unit vectors).
-func randomVector(dim int) []float32 {
-	return rng.UnitVector(dim)
+type topKItem struct {
+	pk   model.PrimaryKey
+	dist float32
 }
 
-// computeRecall computes recall@k by comparing approximate results against ground truth.
-// Ground truth is obtained from exact (Flat) search.
-// Returns recall as a float64 between 0.0 and 1.0.
-// Note: For post-filtered searches, fewer results may be returned than requested.
-// Recall is computed as: (hits in approximate) / min(k, len(approximate), len(groundTruth))
-func computeRecall[T any](groundTruth, approximate []vecgo.SearchResult[T]) float64 {
-	if len(groundTruth) == 0 || len(approximate) == 0 {
-		if len(groundTruth) == 0 && len(approximate) == 0 {
-			return 1.0 // Both empty = perfect match
+// topKHeap is a max-heap by dist so the largest (worst) distance is popped first.
+type topKHeap []topKItem
+
+func (h topKHeap) Len() int           { return len(h) }
+func (h topKHeap) Less(i, j int) bool { return h[i].dist > h[j].dist }
+func (h topKHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *topKHeap) Push(x any)        { *h = append(*h, x.(topKItem)) }
+func (h *topKHeap) Pop() any          { old := *h; n := len(old); x := old[n-1]; *h = old[:n-1]; return x }
+
+func exactTopK_L2(data [][]float32, q []float32, k int) []model.PrimaryKey {
+	h := make(topKHeap, 0, k)
+	for pk, v := range data {
+		d := distance.SquaredL2(q, v)
+		if len(h) < k {
+			heap.Push(&h, topKItem{pk: model.PrimaryKey(pk), dist: d})
+			continue
 		}
-		return 0.0
-	}
-
-	// Build set of ground truth IDs (only consider as many as we got back)
-	k := len(approximate) // Use actual returned count as the target
-	if k > len(groundTruth) {
-		k = len(groundTruth)
-	}
-
-	truthSet := make(map[uint64]struct{}, k)
-	for i := 0; i < k; i++ {
-		truthSet[groundTruth[i].ID] = struct{}{}
-	}
-
-	// Count hits
-	hits := 0
-	for _, r := range approximate {
-		if _, ok := truthSet[r.ID]; ok {
-			hits++
+		if d < h[0].dist {
+			h[0] = topKItem{pk: model.PrimaryKey(pk), dist: d}
+			heap.Fix(&h, 0)
 		}
 	}
 
-	return float64(hits) / float64(k)
+	out := make([]topKItem, len(h))
+	copy(out, h)
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].dist < out[j].dist
+	})
+
+	pks := make([]model.PrimaryKey, len(out))
+	for i := range out {
+		pks[i] = out[i].pk
+	}
+	return pks
 }
 
-// groundTruthSearch performs exact search using Flat index for recall computation.
-func groundTruthSearch(ctx context.Context, vectors [][]float32, query []float32, k int) []vecgo.SearchResult[int] {
-	return groundTruthSearchWithDistance(ctx, vectors, query, k, index.DistanceTypeSquaredL2)
-}
-
-// groundTruthSearchWithDistance performs exact search using Flat index with specified distance type.
-func groundTruthSearchWithDistance(ctx context.Context, vectors [][]float32, query []float32, k int, distType index.DistanceType) []vecgo.SearchResult[int] {
-	dim := len(query)
-	var builder vecgo.FlatBuilder[int]
-	switch distType {
-	case index.DistanceTypeSquaredL2:
-		builder = vecgo.Flat[int](dim).SquaredL2()
-	case index.DistanceTypeCosine:
-		builder = vecgo.Flat[int](dim).Cosine()
-	case index.DistanceTypeDotProduct:
-		builder = vecgo.Flat[int](dim).DotProduct()
-	default:
-		builder = vecgo.Flat[int](dim).SquaredL2()
-	}
-
-	db, err := builder.Build()
-	if err != nil {
-		return nil
-	}
-	defer db.Close()
-
-	batch := make([]vecgo.VectorWithData[int], len(vectors))
-	for i, v := range vectors {
-		batch[i] = vecgo.VectorWithData[int]{Vector: v, Data: i}
-	}
-	db.BatchInsert(ctx, batch)
-
-	results, _ := db.Search(query).KNN(k).Execute(ctx)
-	return results
-}
-
-// groundTruthSearchFiltered performs exact search with filtering using original IDs.
-// vectorsWithIDs maps original ID -> vector for filtered vectors only.
-func groundTruthSearchFiltered(ctx context.Context, vectorsWithIDs map[uint32][]float32, query []float32, k int) []vecgo.SearchResult[int] {
-	if len(vectorsWithIDs) == 0 {
-		return nil
-	}
-
-	// Compute distances directly and sort to get ground truth
-	type idDist struct {
-		id   uint64
-		dist float32
-	}
-	distances := make([]idDist, 0, len(vectorsWithIDs))
-	for id, vec := range vectorsWithIDs {
-		dist := squaredL2Distance(query, vec)
-		distances = append(distances, idDist{id: uint64(id), dist: dist})
-	}
-
-	// Sort by distance (ascending)
-	for i := 0; i < len(distances)-1; i++ {
-		for j := i + 1; j < len(distances); j++ {
-			if distances[j].dist < distances[i].dist {
-				distances[i], distances[j] = distances[j], distances[i]
-			}
+func exactTopK_L2_WithPKs(data [][]float32, pks []model.PrimaryKey, q []float32, k int) []model.PrimaryKey {
+	h := make(topKHeap, 0, k)
+	for i, v := range data {
+		d := distance.SquaredL2(q, v)
+		pk := pks[i]
+		if len(h) < k {
+			heap.Push(&h, topKItem{pk: pk, dist: d})
+			continue
+		}
+		if d < h[0].dist {
+			h[0] = topKItem{pk: pk, dist: d}
+			heap.Fix(&h, 0)
 		}
 	}
 
-	// Take top k
-	if k > len(distances) {
-		k = len(distances)
+	out := make([]topKItem, len(h))
+	copy(out, h)
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].dist < out[j].dist
+	})
+
+	outPKs := make([]model.PrimaryKey, len(out))
+	for i := range out {
+		outPKs[i] = out[i].pk
 	}
-	results := make([]vecgo.SearchResult[int], k)
-	for i := 0; i < k; i++ {
-		results[i] = vecgo.SearchResult[int]{
-			ID:       distances[i].id,
-			Distance: distances[i].dist,
-			Data:     int(distances[i].id),
+	return outPKs
+}
+
+func recallAtK(results []model.Candidate, truth []model.PrimaryKey) float64 {
+	if len(truth) == 0 {
+		return 0
+	}
+
+	set := make(map[model.PrimaryKey]struct{}, len(truth))
+	for _, pk := range truth {
+		set[pk] = struct{}{}
+	}
+	var hit int
+	for _, c := range results {
+		if _, ok := set[c.PK]; ok {
+			hit++
 		}
 	}
-	return results
-}
-
-// squaredL2Distance computes squared L2 distance between two vectors
-func squaredL2Distance(a, b []float32) float32 {
-	var sum float32
-	for i := range a {
-		diff := a[i] - b[i]
-		sum += diff * diff
-	}
-	return sum
-}
-
-// formatDim formats dimension for benchmark names
-func formatDim(dim int) string {
-	return fmt.Sprintf("dim%d", dim)
-}
-
-// formatCount formats count for benchmark names
-func formatCount(count int) string {
-	if count >= 1000000 {
-		return fmt.Sprintf("%dM", count/1000000)
-	}
-	if count >= 1000 {
-		return fmt.Sprintf("%dK", count/1000)
-	}
-	return fmt.Sprintf("%d", count)
-}
-
-// formatPercent formats selectivity percentage
-func formatPercent(selectivity float64) string {
-	return fmt.Sprintf("%.0f%%", selectivity*100)
-}
-
-// setupFlatIndex creates and populates a Flat index for benchmarking.
-func setupFlatIndex(b *testing.B, dim, size int) *vecgo.Vecgo[int] {
-	db, err := vecgo.Flat[int](dim).SquaredL2().Build()
-	if err != nil {
-		b.Fatal(err)
-	}
-
-	ctx := context.Background()
-	for i := 0; i < size; i++ {
-		vec := randomVector(dim)
-		_, err := db.Insert(ctx, vecgo.VectorWithData[int]{
-			Vector: vec,
-			Data:   i,
-		})
-		if err != nil {
-			b.Fatal(err)
-		}
-	}
-	return db
-}
-
-// toTestUtilResults converts index.SearchResult to testutil.SearchResult
-func toTestUtilResults(results []index.SearchResult) []testutil.SearchResult {
-	out := make([]testutil.SearchResult, len(results))
-	for i, r := range results {
-		out[i] = testutil.SearchResult{ID: uint64(r.ID), Distance: r.Distance}
-	}
-	return out
+	return float64(hit) / float64(len(truth))
 }

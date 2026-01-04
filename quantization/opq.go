@@ -5,7 +5,7 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/hupe1980/vecgo/internal/math32"
+	"github.com/hupe1980/vecgo/internal/simd"
 )
 
 // OptimizedProductQuantizer implements Block Optimized Product Quantization (OPQ).
@@ -197,7 +197,7 @@ func (opq *OptimizedProductQuantizer) rotateVector(src, dst []float32) {
 			srcBlock := src[start : start+opq.blockSize]
 
 			// Dot product
-			sum := math32.Dot(row, srcBlock)
+			sum := simd.Dot(row, srcBlock)
 			dst[start+i] = sum
 		}
 	}

@@ -24,6 +24,7 @@
 package arena
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math/bits"
@@ -34,6 +35,12 @@ import (
 
 	"github.com/hupe1980/vecgo/internal/conv"
 )
+
+// MemoryAcquirer is an interface for acquiring memory.
+type MemoryAcquirer interface {
+	AcquireMemory(ctx context.Context, amount int64) error
+	ReleaseMemory(amount int64)
+}
 
 var (
 	// ErrMaxChunksExceeded is returned when the arena exceeds the maximum number of chunks.
@@ -104,10 +111,21 @@ type Arena struct {
 	stats      atomicStats
 	refs       atomic.Int64  // Reference count for safety
 	generation atomic.Uint32 // Generation counter to detect stale offsets
+	acquirer   MemoryAcquirer
+}
+
+// Option is a configuration option for Arena.
+type Option func(*Arena)
+
+// WithMemoryAcquirer sets the memory acquirer for the arena.
+func WithMemoryAcquirer(acquirer MemoryAcquirer) Option {
+	return func(a *Arena) {
+		a.acquirer = acquirer
+	}
 }
 
 // New creates a new Arena with the given chunk size.
-func New(chunkSize int) (*Arena, error) {
+func New(chunkSize int, opts ...Option) (*Arena, error) {
 	if chunkSize <= 0 {
 		chunkSize = DefaultChunkSize
 	}
@@ -130,10 +148,15 @@ func New(chunkSize int) (*Arena, error) {
 		chunkMask: chunkMask,
 		alignment: DefaultAlignment,
 	}
+
+	for _, opt := range opts {
+		opt(a)
+	}
+
 	// Initialize generation to 1 so 0 is invalid
 	a.generation.Store(1)
 
-	if err := a.allocateChunk(); err != nil {
+	if err := a.allocateChunk(context.Background()); err != nil {
 		return nil, err
 	}
 	// Reserve offset 0 as null
@@ -169,18 +192,26 @@ func (a *Arena) GetSafe(ref Ref) unsafe.Pointer {
 	return a.Get(ref.Offset)
 }
 
-func (a *Arena) allocateChunk() error {
+func (a *Arena) allocateChunk(ctx context.Context) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.allocateChunkLocked()
+	return a.allocateChunkLocked(ctx)
 }
 
-func (a *Arena) allocateChunkLocked() error {
+func (a *Arena) allocateChunkLocked(ctx context.Context) error {
 	idx := a.chunkCount.Load()
 
 	if idx >= MaxChunks {
 		// This is a critical failure for the arena.
 		return ErrMaxChunksExceeded
+	}
+
+	// Acquire memory if acquirer is set
+	if a.acquirer != nil {
+		chunkSize64 := int64(a.chunkSize)
+		if err := a.acquirer.AcquireMemory(ctx, chunkSize64); err != nil {
+			return err
+		}
 	}
 
 	newChunk := &chunk{
@@ -212,10 +243,15 @@ func (a *Arena) allocateChunkLocked() error {
 // Alloc allocates memory and returns the global offset and the byte slice.
 // The global offset can be used with Get() to retrieve the pointer later.
 func (a *Arena) Alloc(size int) (uint64, []byte, error) {
-	return a.alloc(size, a.alignment)
+	return a.AllocContext(context.Background(), size)
 }
 
-func (a *Arena) alloc(size int, align int) (uint64, []byte, error) {
+// AllocContext allocates memory with a context.
+func (a *Arena) AllocContext(ctx context.Context, size int) (uint64, []byte, error) {
+	return a.alloc(ctx, size, a.alignment)
+}
+
+func (a *Arena) alloc(ctx context.Context, size int, align int) (uint64, []byte, error) {
 	if size <= 0 {
 		return 0, nil, nil
 	}
@@ -254,7 +290,7 @@ func (a *Arena) alloc(size int, align int) (uint64, []byte, error) {
 			continue
 		}
 
-		if err := a.allocateChunkLocked(); err != nil {
+		if err := a.allocateChunkLocked(ctx); err != nil {
 			a.mu.Unlock()
 			return 0, nil, err
 		}
@@ -326,7 +362,7 @@ func (a *Arena) AllocPointer(size, align int) (unsafe.Pointer, error) {
 	if align <= 0 {
 		align = a.alignment
 	}
-	_, bytes, err := a.alloc(size, align)
+	_, bytes, err := a.alloc(context.Background(), size, align)
 	if err != nil {
 		return nil, err
 	}
@@ -399,6 +435,15 @@ func (a *Arena) Free() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
+	// Release memory if acquirer is set
+	if a.acquirer != nil {
+		bytesReserved := a.stats.BytesReserved.Load()
+		if bytesReserved > 0 {
+			bytesReserved64 := int64(bytesReserved)
+			a.acquirer.ReleaseMemory(bytesReserved64)
+		}
+	}
+
 	// Increment generation to invalidate old references
 	a.generation.Add(1)
 
@@ -440,6 +485,17 @@ func (a *Arena) Reset() {
 
 	count := a.chunkCount.Load()
 	if count > 0 {
+		// Release memory for freed chunks
+		if a.acquirer != nil {
+			// We keep 1 chunk, so release (count - 1) * chunkSize
+			chunksToFree := count - 1
+			if chunksToFree > 0 {
+				chunksToFree64 := int64(chunksToFree)
+				chunkSize64 := int64(a.chunkSize)
+				a.acquirer.ReleaseMemory(chunksToFree64 * chunkSize64)
+			}
+		}
+
 		firstChunk := a.chunks[0].Load()
 		// Reset offset of first chunk
 		firstChunk.offset.Store(0)

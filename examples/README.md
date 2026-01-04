@@ -1,39 +1,25 @@
 # Vecgo Examples
 
-This directory contains runnable examples demonstrating various features of Vecgo.
+This directory contains examples demonstrating how to use Vecgo.
 
-## Basic Usage
+## [Basic](./basic)
 
-- **[hnsw/](hnsw/main.go)**: Basic HNSW index usage (In-Memory). Shows fluent builder, inserting vectors, and searching.
-- **[flat/](flat/main.go)**: Flat index usage (Brute Force). Best for small datasets or 100% recall requirements.
-- **[diskann/](diskann/main.go)**: DiskANN index usage (SSD-Resident). Best for datasets larger than RAM.
+A simple example showing how to:
+1. Open the engine.
+2. Insert vectors.
+3. Perform a search.
 
-## Performance
+## [Advanced](./advanced)
 
-- **[comparison/](comparison/main.go)**: Benchmarks Flat vs HNSW index performance (build time and search latency).
+Demonstrates advanced configuration options:
+1. **Resource Governance**: Limiting memory usage.
+2. **Flush Control**: Configuring automatic flush thresholds.
+3. **Compaction**: Tuning compaction triggers and DiskANN promotion.
+4. **Durability**: Using Async WAL for higher throughput.
 
-## Advanced Features
+## [RAG](./rag)
 
-- **[sharding/](sharding/main.go)**: Demonstrates multi-core write scaling using sharding.
-- **[persistence/](persistence/main.go)**: Saving and loading indexes to/from disk.
-- **[wal/](wal/main.go)**: Configuring Write-Ahead Logging (WAL) for durability.
-- **[streaming/](streaming/main.go)**: Using the Streaming Search API for processing results as they arrive.
-- **[metrics/](metrics/main.go)**: Exposing internal metrics (latency, throughput, memory usage).
-
-## Quantization (Compression)
-
-- **[quantization/](quantization/main.go)**: Scalar Quantization (8-bit) for 4x memory reduction.
-- **[opq/](opq/main.go)**: Optimized Product Quantization (OPQ) for higher compression ratios (8x-32x).
-
-## Internals
-
-- **[columnar/](columnar/main.go)**: Direct usage of the columnar vector store.
-
-## Running Examples
-
-You can run any example using `go run`:
-
-```bash
-go run ./examples/hnsw/main.go
-go run ./examples/sharding/main.go
-```
+A complete Retrieval-Augmented Generation workflow:
+1. **Ingest**: Store text chunks as payload alongside vectors.
+2. **Retrieve**: Use `WithPayload()` to fetch context in a single hop.
+3. **Generate**: Construct a prompt for an LLM (simulated).

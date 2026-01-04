@@ -6,6 +6,8 @@ import (
 	"math/rand"
 	"sort"
 	"sync"
+
+	"github.com/hupe1980/vecgo/internal/simd"
 )
 
 // SearchResult represents a search result.
@@ -49,11 +51,38 @@ func (r *RNG) Intn(n int) int {
 	return r.rand.Intn(n)
 }
 
+// Uint64 returns a pseudo-random uint64.
+func (r *RNG) Uint64() uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.rand.Uint64()
+}
+
 // Float32 returns, as a float32, a pseudo-random number in [0.0,1.0).
 func (r *RNG) Float32() float32 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.rand.Float32()
+}
+
+// FillUniform fills dst with random values in range [0, 1).
+// Locks only once per call (preferred over calling Float32 in a loop).
+func (r *RNG) FillUniform(dst []float32) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := range dst {
+		dst[i] = r.rand.Float32()
+	}
+}
+
+// FillUniformRange fills dst with random values in range [min, max).
+func (r *RNG) FillUniformRange(dst []float32, min, max float32) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	span := max - min
+	for i := range dst {
+		dst[i] = min + r.rand.Float32()*span
+	}
 }
 
 // UniformVectors generates random vectors with values in range [0, 1).
@@ -139,9 +168,7 @@ func (r *RNG) UnitVectors(num int, dimensions int) [][]float32 {
 		}
 
 		invNorm := float32(1.0 / math.Sqrt(norm))
-		for j := range vec {
-			vec[j] *= invNorm
-		}
+		simd.ScaleInPlace(vec, invNorm)
 		vectors[i] = vec
 	}
 
@@ -166,9 +193,7 @@ func (r *RNG) UnitVector(dimensions int) []float32 {
 	}
 
 	invNorm := float32(1.0 / math.Sqrt(norm))
-	for j := range vec {
-		vec[j] *= invNorm
-	}
+	simd.ScaleInPlace(vec, invNorm)
 	return vec
 }
 
@@ -235,7 +260,7 @@ func BruteForceSearch(vectors [][]float32, query []float32, k int) []SearchResul
 	results := make([]result, len(vectors))
 
 	for i, v := range vectors {
-		d := squaredL2(query, v)
+		d := simd.SquaredL2(query, v)
 		results[i] = result{id: uint64(i), dist: d} //nolint:gosec
 	}
 
@@ -252,13 +277,4 @@ func BruteForceSearch(vectors [][]float32, query []float32, k int) []SearchResul
 		out[i] = SearchResult{ID: r.id, Distance: r.dist}
 	}
 	return out
-}
-
-func squaredL2(a, b []float32) float32 {
-	var sum float32
-	for i := range a {
-		diff := a[i] - b[i]
-		sum += diff * diff
-	}
-	return sum
 }

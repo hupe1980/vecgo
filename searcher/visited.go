@@ -1,11 +1,11 @@
 package searcher
 
-import "github.com/hupe1980/vecgo/core"
+import "github.com/hupe1980/vecgo/model"
 
 // VisitedSet tracks visited nodes using a bitset and a dirty list for fast reset.
 type VisitedSet struct {
 	bits  []uint64
-	dirty []core.LocalID
+	dirty []model.RowID
 }
 
 // NewVisitedSet creates a new visited set.
@@ -14,12 +14,12 @@ func NewVisitedSet(capacity int) *VisitedSet {
 	// bits needed = (capacity + 63) / 64
 	return &VisitedSet{
 		bits:  make([]uint64, (capacity+63)/64),
-		dirty: make([]core.LocalID, 0, 128), // Initial capacity for dirty list
+		dirty: make([]model.RowID, 0, 128), // Initial capacity for dirty list
 	}
 }
 
 // Visit marks a node as visited.
-func (v *VisitedSet) Visit(id core.LocalID) {
+func (v *VisitedSet) Visit(id model.RowID) {
 	wordIdx := int(id >> 6)
 	bitMask := uint64(1) << (id & 63)
 
@@ -34,7 +34,7 @@ func (v *VisitedSet) Visit(id core.LocalID) {
 }
 
 // Visited returns true if the node has been visited.
-func (v *VisitedSet) Visited(id core.LocalID) bool {
+func (v *VisitedSet) Visited(id model.RowID) bool {
 	wordIdx := int(id >> 6)
 	if wordIdx >= len(v.bits) {
 		return false

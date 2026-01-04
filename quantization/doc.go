@@ -72,27 +72,26 @@
 //	| PQ      | 8-64x       | 90-95%  | Fast     | Memory-constrained    |
 //	| OPQ     | 8-64x       | 93-97%  | Medium   | High recall + low mem |
 //
-// # Usage with Indexes
+// # Usage in Vecgo (current)
 //
-// Quantization is integrated with index builders:
+// The current engine-first public facade (`vecgo.Open(...)`) does not expose end-user
+// quantization knobs yet. Quantization is used internally by on-disk segment writers/readers
+// (notably `segment/flat`) when producing or reading quantized Flat files.
 //
-//	// Binary quantization
-//	db := vecgo.Flat[string](128).
-//	    SquaredL2().
-//	    BinaryQuantization().
-//	    Build()
+// Low-level usage (library-style) looks like:
 //
-//	// Product quantization
-//	db := vecgo.Flat[string](128).
-//	    SquaredL2().
-//	    PQ(8, 256).  // 8 subvectors, 256 centroids
-//	    Build()
+//	// SQ8 (scalar) quantization
+//	sq := quantization.NewScalarQuantizer(128)
+//	_ = sq.Train(trainingVectors)
+//	code := sq.Encode(vec)
+//	_ = code
 //
-//	// Optimized PQ
-//	db := vecgo.Flat[string](128).
-//	    SquaredL2().
-//	    OPQ(8, 256).
-//	    Build()
+//	// PQ / OPQ
+//	pq, _ := quantization.NewProductQuantizer(128, 8, 256)
+//	_ = pq.Train(trainingVectors)
 //
-// See docs/tuning.md for detailed configuration guidance.
+//	opq, _ := quantization.NewOptimizedProductQuantizer(128, 8, 256, 10)
+//	_ = opq.Train(trainingVectors)
+//
+// See docs/tuning.md and REFACTORING.md for the current integration status.
 package quantization

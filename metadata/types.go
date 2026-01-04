@@ -2,6 +2,7 @@ package metadata
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"strconv"
 	"strings"
@@ -149,6 +150,85 @@ func (v Value) AsBool() (bool, bool) {
 	return v.B, true
 }
 
+// Interface returns the native Go value.
+func (v Value) Interface() interface{} {
+	switch v.Kind {
+	case KindNull:
+		return nil
+	case KindInt:
+		return v.I64
+	case KindFloat:
+		return v.F64
+	case KindString:
+		return v.s.Value()
+	case KindBool:
+		return v.B
+	case KindArray:
+		arr := make([]interface{}, len(v.A))
+		for i, val := range v.A {
+			arr[i] = val.Interface()
+		}
+		return arr
+	default:
+		return nil
+	}
+}
+
+// ToMap converts the Document to a map[string]interface{}.
+func (d Document) ToMap() map[string]interface{} {
+	m := make(map[string]interface{}, len(d))
+	for k, v := range d {
+		m[k] = v.Interface()
+	}
+	return m
+}
+
+// NewValue creates a Value from a Go interface{}.
+func NewValue(v interface{}) (Value, error) {
+	switch val := v.(type) {
+	case nil:
+		return Value{Kind: KindNull}, nil
+	case int:
+		return Value{Kind: KindInt, I64: int64(val)}, nil
+	case int64:
+		return Value{Kind: KindInt, I64: val}, nil
+	case float64:
+		return Value{Kind: KindFloat, F64: val}, nil
+	case string:
+		return Value{Kind: KindString, s: unique.Make(val)}, nil
+	case bool:
+		return Value{Kind: KindBool, B: val}, nil
+	case []interface{}:
+		arr := make([]Value, len(val))
+		for i, item := range val {
+			v, err := NewValue(item)
+			if err != nil {
+				return Value{}, err
+			}
+			arr[i] = v
+		}
+		return Value{Kind: KindArray, A: arr}, nil
+	default:
+		return Value{}, fmt.Errorf("unsupported type: %T", v)
+	}
+}
+
+// FromMap converts a map[string]interface{} to a Document.
+func FromMap(m map[string]interface{}) (Document, error) {
+	if m == nil {
+		return nil, nil
+	}
+	doc := make(Document, len(m))
+	for k, v := range m {
+		val, err := NewValue(v)
+		if err != nil {
+			return nil, err
+		}
+		doc[k] = val
+	}
+	return doc, nil
+}
+
 // AsArray returns the array value if Kind is KindArray.
 func (v Value) AsArray() ([]Value, bool) {
 	if v.Kind != KindArray {
@@ -181,6 +261,30 @@ type Document map[string]Value
 // InternedDocument is the internal representation of a document using interned keys.
 // It is used by the engine for memory efficiency.
 type InternedDocument map[unique.Handle[string]]Value
+
+// Intern converts a Document to an InternedDocument.
+func Intern(doc Document) InternedDocument {
+	if doc == nil {
+		return nil
+	}
+	interned := make(InternedDocument, len(doc))
+	for k, v := range doc {
+		interned[unique.Make(k)] = v
+	}
+	return interned
+}
+
+// Unintern converts an InternedDocument back to a Document.
+func Unintern(doc InternedDocument) Document {
+	if doc == nil {
+		return nil
+	}
+	d := make(Document, len(doc))
+	for k, v := range doc {
+		d[k.Value()] = v
+	}
+	return d
+}
 
 // Clone creates a deep copy of the metadata document.
 //

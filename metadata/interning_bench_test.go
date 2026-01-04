@@ -5,8 +5,8 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/hupe1980/vecgo/core"
 	"github.com/hupe1980/vecgo/metadata"
+	"github.com/hupe1980/vecgo/model"
 )
 
 // NaiveValue mimics the old metadata.Value without interning
@@ -106,7 +106,7 @@ func TestMemoryUsageComparison(t *testing.T) {
 				v := string([]byte(values[(i+j)%uniqueValues])) // Force allocation
 				doc[k] = metadata.String(v)
 			}
-			idx.Set(core.LocalID(i), doc)
+			idx.Set(model.RowID(i), doc)
 		}
 
 		endMem := getHeapUsage()

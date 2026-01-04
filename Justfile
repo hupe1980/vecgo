@@ -17,9 +17,29 @@ test-race:
 # Runs benchmarks and saves output to benchmark_test/current.txt
 bench-current:
     @echo "Running benchmarks..."
-    go test -bench=. -benchmem ./benchmark_test ./benchmark_test/isolated | tee benchmark_test/current.txt
+    go test -bench=. -benchmem ./benchmark_test | tee benchmark_test/current.txt
     @echo "Done. Results saved to benchmark_test/current.txt"
 
-# Runs isolated benchmarks
-bench-isolated:
-    go test -bench=. -benchmem ./benchmark_test/isolated
+
+# Records a new baseline benchmark run.
+# Intended for use on your own machine when you explicitly want to update
+# the reference point for `benchstat` comparisons.
+bench-baseline:
+    @echo "Recording baseline benchmarks..."
+    go test -bench=. -benchmem ./benchmark_test | tee benchmark_test/baseline.txt
+    @echo "Done. Results saved to benchmark_test/baseline.txt"
+
+# Compare benchmark_test/baseline.txt vs benchmark_test/current.txt using benchstat.
+# Requires: go install golang.org/x/perf/cmd/benchstat@latest
+bench-compare:
+    benchstat benchmark_test/baseline.txt benchmark_test/current.txt
+
+# CPU profile a specific benchmark (edit BENCH to target).
+profile-cpu BENCH='BenchmarkSearch_Mixed':
+    go test -run '^$' -bench '{{BENCH}}' -benchmem -cpuprofile benchmark_test/cpu.out ./benchmark_test
+    go tool pprof -http=:0 benchmark_test/cpu.out
+
+# Heap profile a specific benchmark (edit BENCH to target).
+profile-heap BENCH='BenchmarkSearch_Mixed':
+    go test -run '^$' -bench '{{BENCH}}' -benchmem -memprofile benchmark_test/heap.out ./benchmark_test
+    go tool pprof -http=:0 benchmark_test/heap.out

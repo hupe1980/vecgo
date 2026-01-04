@@ -6,6 +6,8 @@ import (
 	"errors"
 	"math"
 	"sync"
+
+	"github.com/hupe1980/vecgo/internal/simd"
 )
 
 // Quantizer defines the interface for vector quantization methods.
@@ -39,6 +41,71 @@ type ScalarQuantizer struct {
 	// Pools for temporary buffers
 	bytePool  *sync.Pool
 	floatPool *sync.Pool
+}
+
+// Mins returns the per-dimension minimum values.
+func (sq *ScalarQuantizer) Mins() []float32 {
+	return sq.mins
+}
+
+// Maxs returns the per-dimension maximum values.
+func (sq *ScalarQuantizer) Maxs() []float32 {
+	return sq.maxs
+}
+
+// SetBounds initializes the quantizer with pre-computed bounds.
+func (sq *ScalarQuantizer) SetBounds(mins, maxs []float32) error {
+	if len(mins) != sq.dimension || len(maxs) != sq.dimension {
+		return errors.New("dimension mismatch")
+	}
+	sq.mins = make([]float32, sq.dimension)
+	sq.maxs = make([]float32, sq.dimension)
+	sq.scales = make([]float32, sq.dimension)
+	sq.invScales = make([]float32, sq.dimension)
+
+	copy(sq.mins, mins)
+	copy(sq.maxs, maxs)
+
+	for i := range sq.dimension {
+		diff := sq.maxs[i] - sq.mins[i]
+		if diff < 1e-9 {
+			sq.scales[i] = 0
+			sq.invScales[i] = 0
+		} else {
+			sq.scales[i] = 255.0 / diff
+			sq.invScales[i] = diff / 255.0
+		}
+	}
+	sq.trained = true
+	return nil
+}
+
+// L2Distance computes the squared L2 distance between a float32 query and a quantized vector.
+func (sq *ScalarQuantizer) L2Distance(q []float32, code []byte) float32 {
+	var dist float32
+	for i := 0; i < sq.dimension; i++ {
+		// Reconstruct value: min + code * scale
+		// Note: scale = 255 / (max - min), so we multiply by invScale = (max - min) / 255
+		val := sq.mins[i] + float32(code[i])*sq.invScales[i]
+		diff := q[i] - val
+		dist += diff * diff
+	}
+	return dist
+}
+
+// L2DistanceBatch computes the squared L2 distance between a float32 query and a batch of quantized vectors.
+func (sq *ScalarQuantizer) L2DistanceBatch(q []float32, codes []byte, n int, out []float32) {
+	simd.Sq8uL2BatchPerDimension(q, codes, sq.mins, sq.invScales, sq.dimension, out)
+}
+
+// DotProduct computes the dot product between a float32 query and a quantized vector.
+func (sq *ScalarQuantizer) DotProduct(q []float32, code []byte) float32 {
+	var dot float32
+	for i := 0; i < sq.dimension; i++ {
+		val := sq.mins[i] + float32(code[i])*sq.invScales[i]
+		dot += q[i] * val
+	}
+	return dot
 }
 
 // NewScalarQuantizer creates a new 8-bit scalar quantizer for the given dimension.

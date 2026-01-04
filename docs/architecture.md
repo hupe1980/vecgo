@@ -19,26 +19,44 @@ This document provides an in-depth look at Vecgo's internal architecture, helpin
 
 Vecgo is designed around a **Shared-Nothing, LSM-Tree Architecture** to maximize performance, concurrency, and durability.
 
+**Current technical concept (see `REFACTORING.md`):** Vecgo is a single **tiered engine** (`engine`) with an in-memory L0 hot tier and immutable on-disk segments. External identity uses a persistent `PK -> Location(SegmentID, RowID)` index. Payload/content is stored separately from vectors and can be read via a BlobStore abstraction. Payload interchange is an *edge concern* and must not introduce a core hot-path dependency.
+
+**Cutover plan:** the tiered engine is the default implementation behind the public `vecgo` facade.
+
+**Caching (vNext):** caching is a first-class subsystem, not an afterthought. For local mmap segments, the OS page cache does most of the work; for non-mmap readers (e.g., BlobStore/cloud), vNext needs an explicit bounded segment block cache and snapshot-aware cache keys.
+
+**Code layout (current):**
+- `model`: Shared types (`PrimaryKey`, `SegmentID`, `RowID`, `Location`, `SearchOptions`).
+- `cache`: Cache primitives/implementations (used where applicable).
+- `engine`: Tiered engine orchestrator (snapshots, WAL replay, flush/compaction scheduling).
+- `internal/segment`: Segment interfaces and implementations (internal-only).
+    - Engine-integrated segment types: `memtable` (L0), `flat` (L1), `diskann` (larger compactions).
+- `blobstore`: Blob IO abstraction used by segments/payload readers (local mmap implementation provided).
+- `vectorstore`: Internal vector storage interface + columnar implementation (including mmap-backed load).
+- `manifest`: Manifest schema and atomic publication.
+- `pk`: Persistent Primary Key index.
+- `internal/wal`: Write-Ahead Log (internal-only).
+- `resource`: ResourceController.
+
+Note: legacy execution paths have been removed; the tree reflects the current engine-first design.
+
+For the current roadmap and planned work (e.g. FlatBuffers headers), see the phase plan in `REFACTORING.md`.
+
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    Vecgo API Layer                          │
-│   Builders: HNSW[T](), Flat[T](), DiskANN[T]()             │
-│   Operations: Insert, Update, Delete, Search                │
+│   Entry Point: vecgo.Open(...)                              │
+│   Operations: Insert, BatchInsert, Delete, Search,          │
+│               BatchSearch, SearchThreshold, HybridSearch    │
 └─────────────────────────────────────────────────────────────┘
                             │
 ┌─────────────────────────────────────────────────────────────┐
-│                   Coordinator Layer                         │
-│   - Sharding (Shared-Nothing)                               │
-│   - Request Routing (GlobalID)                              │
-│   - Result Aggregation                                      │
-└─────────────────────────────────────────────────────────────┘
-                            │
-┌─────────────────────────────────────────────────────────────┐
-│                   Shard Engine (Per Shard)                  │
+│                   Engine Layer                              │
 │   - Write-Ahead Log (WAL)                                   │
-│   - MemTable (Mutable, SIMD-Aligned SoA)                    │
-│   - Immutable Segments (DiskANN/Flat)                       │
+│   - MemTable (Mutable, L0)                                  │
+│   - Immutable Segments (L1..Ln)                             │
 │   - Compaction & Merging                                    │
+│   - Snapshot Isolation                                      │
 └─────────────────────────────────────────────────────────────┘
                             │
 ┌─────────────────────────────────────────────────────────────┐
@@ -59,113 +77,73 @@ Vecgo is designed around a **Shared-Nothing, LSM-Tree Architecture** to maximize
 
 ## Core Components
 
-### 1. Identity & Addressing
+### 1. Identity & Addressing (vNext Model)
 
 Vecgo separates **External Identity** from **Internal Execution** to optimize for cache density and performance.
 
-1.  **GlobalID (`uint64`)**:
-    -   Stable, durable, user-facing ID.
-    -   Used for routing, API results, and WAL entries.
-    -   *Invariant*: Never reused. Tombstones are permanent until compaction.
-    -   **Encoding**: `[ShardID:32 bits][LocalID:32 bits]`
+1.  **User Primary Key (PK)**:
+    -   Stable, user-provided identifier (e.g., `uint64` or `string`).
+    -   Never changes for the lifetime of a record.
+    -   Used in all public APIs (Insert, Delete, Search results).
 
-2.  **LocalID (`uint32`)**:
-    -   Dense, transient, internal index.
-    -   Used for **all** hot-path structures: graph adjacency, visited bitsets, heap items.
-    -   *Benefit*: Reduces graph edge size by 50% (4 bytes vs 8 bytes), doubles cache density.
-    -   *Scope*: Local to a single Shard.
+2.  **Internal RowID (`uint32`)**:
+    -   Dense, transient, internal index used for **all** hot-path structures (graph adjacency, bitmaps).
+    -   **Scope**: Local to a segment.
+    -   **Lifecycle**: RowIDs may change during compaction (e.g., when merging segments).
+    -   **Benefit**: Reduces graph edge size by 50% (4 bytes vs 8 bytes) and doubles cache density compared to 64-bit IDs.
 
-3.  **Translation**:
-    -   `GlobalOf(localID)`: `(ShardID << 32) | LocalID` (Bitwise: zero overhead).
-    -   `LocalOf(globalID)`: `globalID & 0xFFFFFFFF` (Bitwise: zero overhead).
+3.  **Translation Layer**:
+    -   **PK Index**: A persistent, crash-safe index (LSM or B-Tree) maps `PK -> Location(SegmentID, RowID)`.
+    -   **Reverse Mapping**: Within a segment, store a `RowID -> PK` column for result reconstruction (the `SegmentID` selects the segment; the `RowID` is segment-local).
+
+### 1.1 Segment Publication (Manifest)
+
+Segmented persistence relies on an atomic publish protocol:
+
+*   **Manifest**: a small file describing live segments + schema/codec/quantizer metadata.
+*   **Atomic publish**: write new segment(s) + updated manifest to temporary paths, then `rename()` into place.
+*   **Recovery**: load last valid manifest; replay committed WAL entries; ignore orphan temp files.
 
 ### 2. Vecgo API (`vecgo.go`)
 
 The main entry point provides:
-- **Index-specific builders**: `HNSW[T]()`, `Flat[T]()`, `DiskANN[T]()`
-- **CRUD operations**: `Insert()`, `Update()`, `Delete()`, `BatchInsert()`
-- **Search methods**: `KNNSearch()`, `KNNSearchWithFilter()`, fluent `Search()`
-- **Lifecycle**: `Checkpoint()`, `Close()`
+- **Entry Point**: `vecgo.Open(dir, dim, metric, ...opts)`
+- **CRUD operations**: `Insert()`, `Delete()`
+- **Search methods**: `Search()`
+- `Get(pk)` point lookup by primary key (**Implemented**; returns vector, metadata, and payload.)
+- **Lifecycle**: `Close()`
 
-### 2. Coordinator (`engine/coordinator.go`)
+### 3. Engine (`engine/engine.go`)
 
-The coordinator is the central nervous system of Vecgo. It enforces **Shared-Nothing Sharding** and **Monotonic Visibility**.
+The Engine is the central nervous system of vNext. It manages the lifecycle of data across memory and disk.
 
-**Coordinator Interface**:
-```go
-type Coordinator[T any] interface {
-    // Mutations
-    Insert(ctx context.Context, vector []float32, data T, meta metadata.Metadata) (uint64, error)
-    BatchInsert(ctx context.Context, vectors [][]float32, data []T, meta []metadata.Metadata) ([]uint64, error)
-    Update(ctx context.Context, id uint64, vector []float32, data T, meta metadata.Metadata) error
-    Delete(ctx context.Context, id uint64) error
+**Responsibilities**:
+- **Write Buffer (L0)**: Manages the in-memory `MemTable` for fast writes.
+- **Segment Management**: Manages immutable segments (L1..Ln) on disk.
+- **Compaction**: Background merging of segments to reclaim space and optimize search.
+- **Snapshot Isolation**: Provides consistent views for readers.
+- **WAL**: Ensures durability of writes.
 
-    // Retrieval
-    Get(id uint64) (T, bool)
-    GetMetadata(id uint64) (metadata.Metadata, bool)
+**Key Components**:
+- `Engine`: The main struct that coordinates everything.
+- `Snapshot`: A point-in-time view of the database (Manifest + Segments).
+- `Compactor`: Background worker that merges segments.
 
-    // Search
-    KNNSearch(ctx context.Context, query []float32, k int, opts *index.SearchOptions) ([]index.SearchResult, error)
-    BruteSearch(ctx context.Context, query []float32, k int, filter func(id uint64) bool) ([]index.SearchResult, error)
-    HybridSearch(ctx context.Context, query []float32, k int, opts *HybridSearchOptions) ([]index.SearchResult, error)
-    KNNSearchStream(ctx context.Context, query []float32, k int, opts *index.SearchOptions) iter.Seq2[index.SearchResult, error]
+### 3. SIMD Compute Layer (`internal/simd`)
 
-    // Management
-    EnableProductQuantization(cfg index.ProductQuantizationConfig) error
-    DisableProductQuantization()
-    SaveToFile(path string) error
-    RecoverFromWAL(ctx context.Context) error
-    Stats() index.Stats
-    Checkpoint() error
-    Close() error
-}
-```
+Vecgo centralizes all performance-critical math in a dedicated layer to ensure "best-in-class" speed on modern hardware.
 
-**Implementations**:
+*   **Single Choke Point**: All vector operations (Dot Product, L2 Distance, Quantized Lookup) route through `internal/simd`.
+*   **Runtime Dispatch**: Detects CPU features (AVX-512, AVX2, NEON) at startup and hot-swaps function pointers.
+*   **Batch Kernels**:
+    *   `SquaredL2Batch`: Computes distance from one query to N vectors in a single call, amortizing function overhead.
+    *   `PqAdcLookup`: Optimized lookup table generation for Product Quantization.
+*   **Safety**:
+    *   **Bounds Checks**: Eliminated inside the kernel (unsafe) for speed.
+    *   **Validation**: Callers (Segments) must validate lengths before calling kernels.
+    *   **Fallback**: Pure Go implementations provided for `noasm` builds or unsupported architectures.
 
-1. **Tx[T]** (Single-Shard Coordinator):
-   - Direct pass-through to index
-   - Single lock for all writes (per shard)
-   - Metadata updates inline with index operations
-   - O(1) Get/GetMetadata by ID
-   - Safe-by-default metadata: Deep copy on insert/update prevents external mutation
-
-2. **ShardedCoordinator[T]** (Multi-Shard Coordinator):
-   - Round-robin vector distribution across N shards
-   - **Shared-Nothing Architecture**: Each shard is an independent `Tx[T]` with its own lock, index, and store.
-   - Parallel search fan-out with result merging
-   - Zero-allocation worker pool for search execution
-   - Linear write scaling with number of shards
-   - Independent locks per shard (parallel writes)
-   - Context-aware error propagation: All shard errors surfaced with indices
-   - Graceful shutdown: Close() waits for all shard workers to terminate
-   - Timeout handling: Respects ctx.Done() during parallel search operations
-   - **Worker Pool**: Fixed goroutine pool for parallel searches (zero goroutine creation per search)
-   - Fan-out search to all shards via worker pool, merge results
-    - **GlobalID encoding**: `[ShardID:32 bits][LocalID:32 bits]` (stable, immutable, sharding-friendly)
-   - O(1) routing for Update/Delete/Get operations
-   - **Performance**: Linear write scaling with number of shards
-
-3. **ValidatedCoordinator[T]** (Validation Middleware):
-   - Wraps any Coordinator with input validation
-   - Checks for nil vectors, NaN/Inf values, dimension mismatches
-   - Enforces limits: max dimension, batch size, metadata size
-   - Delegates Close() to wrapped coordinator (implements io.Closer)
-   - Enabled by default, disable with `.WithoutValidation()`
-
-4. **WorkerPool[T]** (Parallel Search Executor):
-   - Fixed-size goroutine pool for sharded searches
-   - Closure-based context handling (no context in structs - idiomatic Go)
-   - Backpressure via buffered channel (2x numWorkers)
-   - Graceful shutdown with in-flight work completion
-   - Benefits: 0 goroutines/search, 80-90% less GC pressure, 50-60% lower P99
-
-**Key Methods**:
-- `Insert(ctx, vector, data)`: Route to shard via GlobalID, deep copy metadata, update metadata index, append WAL
-- `Update(ctx, id, vector, data)`: Decode GlobalID for O(1) shard routing, deep copy metadata
-- `Delete(ctx, id)`: Soft delete (tombstone), trigger compaction if threshold exceeded
-- `Get(ctx, id)`: Decode GlobalID, retrieve vector + metadata from correct shard
-- `KNNSearch(ctx, query, k, filter)`: Fan-out via worker pool, merge top-k results, translate GlobalIDs in filters
+Float16 note: vNext treats float16 as a *storage* dtype. A spec-based binary16 codec exists in `internal/f16` to decode to float32 for indexing/reranking; any SIMD/batch acceleration should layer on top of that.
 
 ## Searcher Context (Internal Optimization)
 
@@ -184,54 +162,37 @@ To achieve maximum performance and zero allocations in the steady state, Vecgo u
 
 ```go
 type Searcher struct {
-    Visited           *VisitedSet
-    Candidates        *PriorityQueue
+    Visited        *VisitedSet
+    Candidates     *PriorityQueue
     ScratchCandidates *PriorityQueue
-    ScratchVec        []float32
-    IOBuffer          []byte
+    ScratchVec     []float32
+    IOBuffer       []byte
+    Heap           *CandidateHeap
+    Results        []model.Candidate
 }
 ```
 
-The `ShardedCoordinator` automatically acquires and releases `Searcher` contexts from a pool during parallel execution, ensuring zero-allocation behavior for the search path without exposing complexity to the user.
+The vNext `engine` acquires and releases `Searcher` contexts from a pool during execution, ensuring near-zero-allocation behavior for the search path without exposing complexity to the user.
+
+### SIMD Compute Layer
+
+Vecgo’s hot-path vector math (dot products, squared L2, normalization, and PQ ADC lookup) is centralized in `internal/simd` and used by the `distance` package.
+
+Key properties:
+
+- **Runtime dispatch**: selects AVX/AVX-512 (amd64) or NEON (arm64) when available via `golang.org/x/sys/cpu`, otherwise falls back to a generic implementation.
+- **Build control**: compile with `-tags noasm` to disable assembly and force the generic path.
+- **Safety model**: SIMD kernels assume inputs are well-formed (e.g., matching lengths); callers validate dimensions at API boundaries.
 
 ### 3. Inner Workings & Optimizations
 
 Vecgo employs several advanced techniques to achieve high performance and scalability.
 
-#### A. Sharding (Shared-Nothing Architecture)
+#### A. Legacy: Sharding (Coordinator-era)
 
-To scale beyond a single core's capacity, Vecgo implements a **Shared-Nothing Sharding** strategy.
+This section described the pre-vNext coordinator-based sharding architecture.
 
-*   **Partitioning**: The dataset is partitioned into $N$ independent shards (default: 4). Each shard possesses its own:
-    *   **Index** (HNSW/Flat/DiskANN)
-    *   **Vector Store**
-    *   **Metadata Store**
-    *   **Write-Ahead Log (WAL)**
-    *   **RWMutex** (Lock contention is isolated to the shard)
-
-*   **Global ID Encoding (Stable External IDs)**:
-    Vecgo uses a 64-bit `GlobalID` that encodes routing information directly into the ID:
-    ```
-    | Shard Index (32 bits) | LocalID (32 bits) |
-    |-----------------------|-------------------|
-    ```
-    *   **Max Shards**: ~4 Billion
-    *   **Max Vectors per Shard**: ~4 Billion
-    *   **Total Capacity**: Infinite for all practical purposes
-    *   **Why 64-bit?**: Prevents ID exhaustion in long-running systems and aligns with DiskANN's native storage format.
-
-*   **Identity Model**:
-    Vecgo separates *application identity* from *engine execution identity*:
-    *   **Business Key** (optional): a user-provided key stored as a normal column (UUID/string/int), indexed for lookups/upserts.
-    *   **GlobalID (`uint64`)**: Vecgo-generated stable ID used for sharding, WAL/snapshots, and public API references.
-    *   **RowID / LocalID (`uint32`)**: dense internal ID used inside a shard/segment for hot paths (graphs, queues, bitsets).
-        - May be returned as `_rowid` for debugging / correlation.
-        - Not a stable external contract unless an explicit “stable row ids” mode is enabled.
-
-*   **Routing**:
-    *   **Insert**: Round-robin distribution ensures balanced load.
-    *   **Update/Delete**: $O(1)$ routing. The shard index is extracted from the ID `(id >> 32)`, allowing direct access to the correct shard without a lookup table.
-    *   **Search**: Scatter-Gather. The request is fanned out to all shards in parallel using a worker pool. Results are merged (Top-K) at the coordinator level.
+**Current reality (vNext)**: the default stack (`vecgo` → `engine` → `segment/*`) does not implement internal sharding. If you want multi-process or multi-shard behavior, run multiple engine instances and shard/rout at the application level.
 
 #### B. Update Semantics
 
@@ -258,7 +219,7 @@ Concurrency contract (must be upheld everywhere atomic publication is used):
 Metadata filtering is often a bottleneck in vector databases. Vecgo solves this with a **Unified Index** (`metadata/unified.go`).
 
 *   **Structure**: Combines document storage with an inverted index in a single structure.
-*   **String Interning**: Uses Go 1.23 `unique.Handle` to deduplicate field names and string values. If 1 million documents have `category: "news"`, the string "news" is stored only once in memory.
+*   **String Interning**: Uses Go 1.24 `unique.Handle` to deduplicate field names and string values. If 1 million documents have `category: "news"`, the string "news" is stored only once in memory.
 *   **Roaring Bitmaps**: The inverted index uses compressed bitmaps (Roaring Bitmaps) for posting lists. Set operations (AND, OR, NOT) for filtering are extremely fast and cache-friendly.
 
 #### C. Quantization & Reranking
@@ -301,7 +262,7 @@ To minimize Garbage Collection (GC) pauses, Vecgo uses custom memory management 
     *   **Benefit**: Eliminates millions of small allocations during bulk inserts, significantly reducing GC overhead.
     *   **Lifecycle**: Memory is freed all at once when the index is closed.
 
-*   **Object Pooling (`internal/pool`)**:
+*   **Object Pooling (`sync.Pool` + engine pools)**:
     *   **SearchContext**: Reuses buffers for visited sets (`bitset`), priority queues, and temporary vectors.
     *   **Benefit**: Drives search toward near-zero allocations in steady state (verify via benchmarks; treat allocs/op as a regression metric).
     *   **Sync.Pool**: Uses Go's `sync.Pool` to automatically scale with load and release memory when idle.
@@ -310,7 +271,16 @@ To minimize Garbage Collection (GC) pauses, Vecgo uses custom memory management 
     *   **SIMD Alignment**: Vectors in `MemTable` and other critical paths are allocated with 64-byte alignment (AVX-512 friendly).
     *   **Custom Allocator**: Uses `mem.AllocAlignedFloat32` to ensure backing arrays start at aligned addresses, enabling efficient SIMD loads.
 
-#### F. Memory Lifetime & Safety Rules
+#### F. Resource Controller (Governance)
+
+To ensure stability under load, Vecgo uses a **ResourceController** to manage global limits:
+
+*   **Memory Budget**: Tracks estimated usage of L0 arenas, caches, and mmap overhead.
+    *   Current implementation (Jan 2026): a hard limit only (`MemoryLimitBytes`) enforced via a weighted semaphore; there is no distinct `SoftLimit` signal and no automatic flush/backpressure policy wired into the engine.
+*   **Concurrency Budget**: Limits the number of active goroutines for background tasks (compaction, build) using a weighted semaphore.
+*   **IO Budget**: (Optional) Token bucket for disk IOPS to prevent compaction from starving search.
+
+#### G. Memory Lifetime & Safety Rules
 
 Since Vecgo uses manual memory management (Arenas, mmap, unsafe pointers), strict rules are enforced to prevent segfaults and corruption:
 
@@ -319,10 +289,11 @@ Since Vecgo uses manual memory management (Arenas, mmap, unsafe pointers), stric
     -   Any stored reference must carry `(GenerationID, Offset)`.
     -   On access: `if ref.Gen != arena.Gen { panic("stale arena reference") }`
 
-2.  **Compaction Barrier**:
-    -   Compaction MUST run under an epoch barrier.
-    -   No concurrent searches using the old arena.
-    -   No graph reads during arena reset/free.
+2.  **Compaction Barrier / Reclamation**:
+    -   Compaction MUST NOT reclaim/close memory that can still be observed by readers.
+    -   Enforce via either:
+        -   **Ref-counted snapshots/segments** (simple, correct; current vNext approach), or
+        -   **Epoch barrier (RCU-style)** (lower per-read overhead).
 
 3.  **GC Visibility Rule**:
     -   Clearing the last Go reference to arena-backed memory does not imply safety.
@@ -330,21 +301,22 @@ Since Vecgo uses manual memory management (Arenas, mmap, unsafe pointers), stric
 
 4.  **Arena Boundary Rule**:
     -   No arena-backed pointer, slice, or offset may cross a public API boundary.
-    -   All arena-backed data must be translated to stable representations (GlobalID, copied vectors, metadata) before returning to the caller.
+    -   All arena-backed data must be translated to stable representations (PK + Location, copied vectors, metadata) before returning to the caller.
 
 ---
 
-## Index Types
+## Segment Types (vNext)
 
-### 1. Flat Index (`index/flat`)
+Note: The refactoring plan trends toward a **disk-first segmented engine**, but this does **not** mean “disk-only”. In-memory indexes (Flat/HNSW) remain critical as the L0 write buffer/hot tier and for small datasets where RAM fits.
+
+### 1. Flat Segment (`internal/segment/flat`)
 *   **Algorithm**: Brute-force exact search.
 *   **Complexity**: $O(N)$
 *   **Optimizations**:
-    *   **Hardware Acceleration**: Uses AVX/NEON intrinsics (via `internal/math32`) for distance calculations.
-    *   **Copy-On-Write (COW)**: Uses `atomic.Value` to swap the index state, allowing lock-free reads during updates.
+    *   **Hardware Acceleration**: Uses AVX/NEON intrinsics (via `internal/simd`) for distance calculations.
 *   **Use Case**: Small datasets (<100k) or when 100% recall is mandatory.
 
-### 2. HNSW Index (`index/hnsw`)
+### 2. MemTable (L0) + HNSW (`internal/segment/memtable` + `internal/hnsw`)
 *   **Algorithm**: Hierarchical Navigable Small World graph.
 *   **Complexity**: $O(\log N)$
 *   **Optimizations**:
@@ -353,7 +325,7 @@ Since Vecgo uses manual memory management (Arenas, mmap, unsafe pointers), stric
     *   **Logical Deletes**: Deletions mark a bit in a `BitSet` (Tombstones) rather than modifying the graph immediately.
 *   **Use Case**: General purpose, high performance, fits in RAM.
 
-### 3. DiskANN Index (`index/diskann`)
+### 3. DiskANN Segment (`internal/segment/diskann`)
 *   **Algorithm**: Vamana graph (Disk-resident).
 *   **Architecture**:
     *   **Immutable Segments**: The on-disk index is strictly immutable.
@@ -364,11 +336,35 @@ Since Vecgo uses manual memory management (Arenas, mmap, unsafe pointers), stric
     *   **Implicit Reranking**: Automatically fetches full vectors from disk for the final candidates.
 *   **Use Case**: Massive datasets (> RAM size), cost-efficiency.
 
+### 4. Partitioned Flat (IVF)
+*   **Algorithm**: Inverted File Index with K-Means clustering.
+*   **Architecture**:
+    *   **Centroids**: Stored in segment header.
+    *   **Partitioning**: Vectors are physically reordered by partition on disk.
+    *   **Probing**: Search finds top `nprobes` centroids and scans only those partitions.
+    *   **Quantization**: Optional SQ8 (Scalar Quantization) for compressed candidate generation (4x smaller).
+*   **Use Case**: Large disk-resident segments where full scan is too slow. Produced by compaction.
+
 ---
 
 ## Storage Layer
 
-### Columnar Storage (`vectorstore/columnar/`)
+### Many Files vs Single-File Bundles (Packfile)
+
+Vecgo’s storage model is **immutable segments + manifest publication**. Whether segments are stored as separate files or bundled is an implementation detail, as long as atomic publication and recovery semantics remain intact.
+
+Decision: do **not** use generic archive formats as the segment storage format.
+
+If we add a single-file option, the production-grade version is a **purpose-built packfile**:
+
+- footer/superblock index mapping entry name/type -> (offset, length)
+- per-entry checksums + strict bounds validation
+- alignment for efficient mmap/range reads
+- optional per-entry compression only for cold payload blobs
+
+Planned direction: keep multi-file mode as default, and optionally support bundle mode for operational simplicity and object-store backends.
+
+### Columnar Storage (`vectorstore/`)
 
 Used by Flat and HNSW for in-memory vectors:
 
@@ -378,7 +374,7 @@ type ColumnarStore struct {
     vectors    []float32  // Flat array, 64-byte aligned for AVX-512
     dimension  int
     count      int
-    tombstones map[uint64]struct{}  // Soft deletes
+    tombstones map[model.RowID]struct{}  // Soft deletes
 }
 ```
 
@@ -392,26 +388,28 @@ type ColumnarStore struct {
 **Operations**:
 ```go
 // Add vector (O(1) amortized)
-func (c *ColumnarStore) Add(vec []float32) core.LocalID {
-    id := core.LocalID(c.count)
+func (c *ColumnarStore) Add(vec []float32) model.RowID {
+    id := model.RowID(c.count)
     c.vectors = append(c.vectors, vec...)
     c.count++
     return id
 }
 
 // Get vector (O(1))
-func (c *ColumnarStore) Get(id core.LocalID) []float32 {
+func (c *ColumnarStore) Get(id model.RowID) []float32 {
     offset := int(id) * c.dimension
     return c.vectors[offset : offset+c.dimension]
 }
 
 // Delete (soft, O(1))
-func (c *ColumnarStore) Delete(id core.LocalID) {
+func (c *ColumnarStore) Delete(id model.RowID) {
     c.tombstones[id] = struct{}{}
 }
 ```
 
-### Disk-Resident Storage (`index/diskann/`)
+### Disk-Resident Storage (legacy path reference)
+
+Note: historical sections below may mention legacy `index/*` paths. The engine-first implementation uses `internal/segment/diskann` for DiskANN segments.
 
 Used by DiskANN for large-scale datasets:
 
@@ -445,23 +443,12 @@ func (m *MmapVectors) Get(id uint64) []float32 {
 
 ## Persistence Layer
 
-### Unified Persistence Manager (`persistence/manager.go`)
+Vecgo persists state via a small set of purpose-built components:
 
-The persistence manager provides a unified interface for all persistence operations:
-
-```go
-// Manager coordinates snapshots, WAL, and recovery
-type Manager struct {
-    snapshotPath string
-    wal          *wal.WAL
-    codec        codec.Codec
-}
-
-// Key methods
-func (pm *Manager) Snapshot(writeFunc func(w io.Writer) error) error
-func (pm *Manager) Recover(loader SnapshotLoader, replayer WALReplayer) error
-func (pm *Manager) Checkpoint() error
-```
+- `manifest/`: atomic publication of the durable checkpoint (including `MaxLSN`) and the set of immutable segments.
+- `pk/`: persistent PK index (`PK -> Location(SegmentID, RowID)`).
+- `internal/wal/`: WAL append + replay for crash recovery.
+- `internal/segment/*`: immutable segment files produced by flush/compaction.
 
 ### Atomic File Operations
 
@@ -514,14 +501,14 @@ func (b *Builder) writeIndexFiles() error {
 
 The WAL ensures durability and crash recovery.
 
-### Architecture
+### Architecture (vNext)
 
 ```
 ┌────────────────────────────────────────────────────┐
-│  Coordinator                                       │
-│   - Batches operations into log entries           │
-│   - Appends to active segment                     │
-│   - Group commit (fsync batching)                 │
+│  Engine                                            │
+│   - Appends operations to WAL                      │
+│   - Applies to active MemTable                     │
+│   - GroupCommit (fsync batching)                   │
 └────────────────────────────────────────────────────┘
            │
            ▼
@@ -529,7 +516,7 @@ The WAL ensures durability and crash recovery.
 │  WAL Segment Writer                                │
 │   - Binary format: [Header|Entry|Entry|...]       │
 │   - Checksums for corruption detection            │
-│   - Durability modes: Async / GroupCommit / Sync  │
+│   - Durability modes: Async / Sync                │
 └────────────────────────────────────────────────────┘
            │
            ▼
@@ -548,12 +535,24 @@ To guarantee consistency, Vecgo enforces strict ordering between the WAL and the
 2.  **Index Second**: `Index.Apply()` is called only after the WAL entry is successfully written (and fsync'd, depending on durability mode).
 3.  **Failure Handling**: If the WAL write fails, the operation returns an error, and the index remains untouched. If the process crashes after the WAL write but before the index update, the Replay mechanism restores the state.
 
-### Replay Mechanism
+### Replay Mechanism (vNext)
 
 On startup, the system performs a crash recovery:
 1.  **Load Snapshot**: The latest valid snapshot is loaded into memory.
 2.  **Replay WAL**: The WAL is replayed from the point of the last snapshot.
-3.  **Idempotency**: Operations are applied to the MemTable/Index to restore the state to the moment of the crash.
+3.  **Idempotency**: Operations are applied to the MemTable/segments to restore the state to the moment of the crash.
+
+### Storage Abstraction (BlobStore)
+
+To support future cloud-native deployments (S3/GCS) without rewriting the engine, vNext may access segment files via a `BlobStore` abstraction.
+
+Current implementation (Jan 2026): there is no `BlobStore` abstraction in code yet; segments open local files directly (mmap + `os.File`). Treat `BlobStore` as a design target / TODO.
+
+*   **Reader**: Returns a reader for a specific blob/file. For local disk, this supports mmap. For cloud, it might buffer.
+*   **Writer**: Returns a writer for a specific blob/file.
+*   **Delete**: Deletes a blob/file.
+
+While vNext is "disk-first" (local SSD), defining this interface early prevents "local file path" assumptions from leaking into the Segment logic.
 
 ---
 
@@ -587,52 +586,21 @@ For high-throughput writes (especially in DiskANN), Vecgo uses an LSM-tree inspi
 | Mode | fsync Frequency | Performance | Durability |
 |------|-----------------|-------------|------------|
 | **Async** | Never (OS decides) | Fastest | Weak (may lose seconds of data) |
-| **GroupCommit** | Batched (every 10ms or 100 ops) | 83x faster than Sync | Strong (≤10ms loss) |
 | **Sync** | Every operation | Slowest | Strongest (no loss) |
 
-**Usage**:
-```go
-db, _ := vecgo.HNSW[string](128).
-    SquaredL2().
-    WAL("./wal", func(o *wal.Options) {
-        o.DurabilityMode = wal.GroupCommit  // Recommended
-        o.GroupCommitInterval = 10 * time.Millisecond
-        o.GroupCommitSize = 100
-    }).
-    Build()
-```
+Configuration note (Jan 2026): `engine.WALOptions` supports Async/Sync. `engine.Open` uses Sync by default, but can be configured via `WithWALOptions` (or `vecgo.WithWALOptions`).
 
-### Recovery Process
+GroupCommit (batch fsync) is implemented to improve throughput in Sync mode.
 
-On startup, Vecgo replays the WAL:
+### Recovery Process (vNext)
 
-```go
-func (c *Coordinator) Recover(walPath string) error {
-    // 1. Read all segment files
-    segments := loadSegments(walPath)
-    
-    // 2. Replay operations in order
-    for _, segment := range segments {
-        entries := segment.ReadAll()
-        for _, entry := range entries {
-            switch entry.Type {
-            case Insert:
-                c.Insert(ctx, entry.Vector)
-            case Update:
-                c.Update(ctx, entry.ID, entry.Vector)
-            case Delete:
-                c.Delete(ctx, entry.ID)
-            }
-        }
-    }
-    
-    // 3. Checkpoint to snapshot
-    c.Checkpoint()
-    
-    // 4. Delete old WAL files
-    clearWAL(walPath)
-}
-```
+On startup, the engine performs recovery roughly as:
+
+1. Load the manifest (published segments).
+2. Open segment files.
+3. Replay WAL records after the last durable point into the active MemTable.
+
+See `engine/engine.go` and the recovery notes in `REFACTORING.md` for the up-to-date behavior.
 
 ---
 
@@ -693,58 +661,31 @@ func CloneIfNeeded(m Metadata) Metadata {
 }
 ```
 
-### Unified Metadata Store (`metadata/index/`)
+### Unified Metadata Store (metadata filtering)
 
-Vecgo uses a **Roaring Bitmap-based inverted index** for efficient metadata filtering:
+Vecgo contains a `metadata` package with a **bitmap-based inverted index** intended for fast predicate evaluation during search.
 
-**Architecture**:
+**Current implementation (Reality snapshot)**:
+
+- `metadata.UnifiedIndex` maintains interned documents and per-field/per-value bitmaps.
+- Bitmap compilation is optimized for:
+  - `OpEqual` (equality)
+  - `OpIn` (membership)
+- Other operators (range compares, not-equals, contains, etc.) currently fall back to per-document checks.
+
+Example: build a conjunction (AND) filter with typed values:
+
 ```go
-type MetadataIndex struct {
-    // String fields: value -> roaring bitmap of IDs
-    stringIndex map[unique.Handle[string]]map[unique.Handle[string]]*roaring.Bitmap
-    
-    // Numeric fields: sorted list of (value, ID) pairs
-    numericIndex map[unique.Handle[string]]*BTreeIndex
-    
-    // ID -> full metadata
-    documents map[uint64]metadata.Metadata
-}
+fs := metadata.NewFilterSet(
+    metadata.Filter{Key: "category", Operator: metadata.OpEqual, Value: metadata.String("tech")},
+    metadata.Filter{Key: "year", Operator: metadata.OpGreaterEqual, Value: metadata.Int(2023)},
+)
 ```
 
-**Example**:
-```go
-// Insert with metadata
-db.Insert(ctx, VectorWithData[string]{
-    Vector: vec,
-    Data: "doc1",
-    Metadata: metadata.Metadata{
-        "category": "tech",
-        "year": 2024,
-    },
-})
+**Planned**:
 
-// Search with filter
-results := db.Search(query).
-    KNN(10).
-    Filter(metadata.And(
-        metadata.Eq("category", "tech"),
-        metadata.Gte("year", 2023),
-    )).
-    Execute(ctx)
-```
-
-**Query Compilation**:
-```go
-// metadata.And(Eq("category", "tech"), Gte("year", 2023))
-// compiles to:
-candidateBitmap := stringIndex["category"]["tech"].
-    And(numericIndex["year"].Range(2023, math.MaxInt))
-```
-
-**Benefits**:
-- **10,000x faster** than linear scan filtering
-- **50% memory reduction** vs duplicated metadata per index
-- Supports complex queries: `And()`, `Or()`, `Eq()`, `Gte()`, etc.
+- End-to-end filter pushdown through the engine/segment search APIs.
+- Better support for numeric range filters (e.g., binned bitmaps or ordered indexes) so predicates like `price < 100` avoid scans.
 
 ---
 
@@ -780,17 +721,7 @@ The HNSW implementation uses fine-grained locking and atomic operations to suppo
 - Readers can proceed concurrently
 - Simple but bottlenecks on multi-core inserts
 
-**Multi-Shard Mode** (`.Shards(n)`):
-- Each shard has independent lock
-- Hash-based routing: `shard = hash(vector) % N`
-- **Linear write speedup** on multi-core systems
-
-```go
-// Shard 0        Shard 1        Shard 2        Shard 3
-//   Lock 0         Lock 1         Lock 2         Lock 3
-//     │              │              │              │
-//  Insert 1      Insert 2      Insert 3      Insert 4  (parallel)
-```
+Legacy note: previous versions discussed multi-shard coordinator routing (`.Shards(n)`). The current vNext engine does not implement internal sharding; scale reads via segment-level parallelism and scale writes via the LSM pipeline (fast L0 + async flush/compaction).
 
 ### Search Coordination (Worker Pool)
 
@@ -810,7 +741,7 @@ type WorkerPool[T any] struct {
 func (wp *WorkerPool[T]) Submit(ctx context.Context, req WorkRequest[T]) error {
     // Context captured in closure (NOT stored in struct - idiomatic Go)
     workFunc := func() {
-        results, err := req.shard.KNNSearch(ctx, req.query, req.k, req.opts)
+        results, err := req.exec(ctx)
         // Send result with cancellation checks...
     }
     
@@ -834,53 +765,39 @@ func (wp *WorkerPool[T]) Submit(ctx context.Context, req WorkRequest[T]) error {
 
 ## Data Flow
 
-### Insert Operation
+### Insert Operation (vNext)
 
 ```
 User API
    │
-   ├─> Coordinator.Insert(ctx, vector)
-   │     │
-   │     ├─> 1. Route to shard (hash-based)
-   │     ├─> 2. Acquire shard lock
-   │     ├─> 3. Index.Add(vector) → returns ID
-   │     ├─> 4. MetadataStore.Add(ID, metadata)
-   │     ├─> 5. WAL.Append(InsertEntry)
-   │     └─> 6. Release lock
-   │
-   └─> Return ID to user
+    ├─> Engine.Insert(ctx, pk, vector)
+    │     │
+    │     ├─> 1. WAL.Append(Upsert)
+    │     ├─> 2. Apply to active MemTable (L0)
+    │     └─> 3. Update PK -> Location
+    │
+    └─> Return PK (and/or Location) to user
 ```
 
-### Search Operation
+### Search Operation (vNext)
 
 ```
 User API
    │
-   ├─> Coordinator.Search(ctx, query, k, filter)
+    ├─> Engine.Search(ctx, query, k, filter)
    │     │
-   │     ├─> 1. Compile metadata filter to bitmap (if present)
-   │     ├─> 2. Fan-out to all shards (parallel)
-   │     │     │
-   │     │     ├─> Shard 0: Index.Search(query, k, filter)
-   │     │     │               │
-   │     │     │               ├─> Pre-filter during traversal
-   │     │     │               │   (HNSW: filter in searchLayer)
-   │     │     │               │   (DiskANN: filter in beamSearch)
-   │     │     │               └─> Return local top-k results
-   │     │     │
-   │     │     ├─> Shard 1: Index.Search(query, k, filter)
-   │     │     ├─> Shard 2: Index.Search(query, k, filter)
-   │     │     └─> Shard 3: Index.Search(query, k, filter)
-   │     │
-   │     ├─> 3. Collect results (context-aware, respects timeout)
-   │     ├─> 4. Merge top-k from all shards
-   │     └─> 5. Hydrate with metadata & data payloads
+    │     ├─> 1. Acquire snapshot (atomic)
+    │     ├─> 2. Compile filter (bitmap if available, else predicate)
+    │     ├─> 3. Search across (L0 + immutable segments)
+    │     ├─> 4. Exact rerank and merge to global top-k
+    │     └─> 5. Fetch PKs and requested columns
    │
    └─> Return results to user
 ```
 
 **Key Improvements (Dec 2024)**:
 - ✅ **Pre-filtering**: Filter applied during graph traversal (100% recall vs ~50% post-filtering)
+- ✅ **Vectorized predicate evaluation (vNext)**: Prefer batch checks (e.g., `MatchesBatch`) to reduce branchy per-row overhead
 - ✅ **Error propagation**: All shard errors surfaced with indices
 - ✅ **Context cancellation**: Gracefully handles timeouts during result collection
 
@@ -889,21 +806,12 @@ User API
 ```
 User API
    │
-   ├─> Coordinator.Delete(ctx, id)
+    ├─> Engine.Delete(ctx, pk)
    │     │
-   │     ├─> 1. Route to shard (lookup by ID)
-   │     ├─> 2. Index.Delete(id) → soft delete (tombstone)
-   │     ├─> 3. MetadataStore.Remove(id)
-   │     ├─> 4. WAL.Append(DeleteEntry)
-   │     │
-   │     └─> 5. Check compaction threshold
-   │           │
-   │           ├─> If deleted% > threshold (e.g., 20%):
-   │           │     ├─> Trigger background compaction
-   │           │     ├─> Rebuild index without tombstones
-   │           │     └─> Atomic swap (old → new)
-   │           │
-   │           └─> Else: No-op
+    │     ├─> 1. WAL.Append(Delete)
+    │     ├─> 2. Update PK index (remove mapping)
+    │     ├─> 3. Mark tombstone (memtable or immutable segment bitmap)
+    │     └─> 4. Background flush/compaction materializes deletes
    │
    └─> Return to user
 ```
@@ -912,30 +820,9 @@ User API
 
 ## Extension Points
 
-Want to add a new index type? Implement these interfaces:
+Want to add a new segment type? Implement the vNext segment contract (`segment.Segment`).
 
-```go
-// Core index interface
-type Index interface {
-    Add(vector []float32) (uint32, error)
-    Search(query []float32, k int) ([]SearchResult, error)
-    Update(id uint32, vector []float32) error
-    Delete(id uint32) error
-    Close() error  // Idempotent, waits for background workers
-}
-
-// Snapshotting (mmap-only)
-type Snapshotable interface {
-    SaveToFile(filename string) error  // Save binary snapshot
-}
-
-// Loading uses mmap via NewFromFile[T](filename string, opts ...Option[T])
-
-// Statistics (optional)
-type StatProvider interface {
-    Stats() IndexStats
-}
-```
+High-level rule: segments are immutable once published; the engine owns lifecycle and concurrency.
 
 **Production Requirements (Dec 2024)**:
 - ✅ **Idempotent Close()**: Safe to call multiple times
@@ -999,7 +886,7 @@ To maintain high performance, Vecgo adheres to strict design principles.
 Vecgo's architecture is designed for:
 - **Performance**: SIMD, zero-allocation, sharded writes
 - **Flexibility**: Multiple index types, pluggable storage
-- **Durability**: WAL with group commit, snapshots
+- **Durability**: WAL (Async/Sync) + snapshots; GroupCommit is a TODO
 - **Scalability**: Sharding for multi-core, DiskANN for billions of vectors
 
 For performance tuning, see [docs/tuning.md](tuning.md).

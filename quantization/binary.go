@@ -3,8 +3,10 @@ package quantization
 
 import (
 	"errors"
-	"math/bits"
 	"sync"
+	"unsafe"
+
+	"github.com/hupe1980/vecgo/internal/simd"
 )
 
 // BinaryQuantizer implements binary quantization (1-bit per dimension).
@@ -224,36 +226,24 @@ func HammingDistance(a, b []uint64) int {
 		}
 	}
 
-	var dist int
-	for i := range a {
-		dist += bits.OnesCount64(a[i] ^ b[i])
+	if len(a) == 0 {
+		return 0
 	}
-	return dist
+
+	// Use SIMD-optimized implementation via unsafe cast to bytes
+	aBytes := unsafe.Slice((*byte)(unsafe.Pointer(&a[0])), len(a)*8)
+	bBytes := unsafe.Slice((*byte)(unsafe.Pointer(&b[0])), len(b)*8)
+	return int(simd.Hamming(aBytes, bBytes))
 }
 
 // HammingDistanceBytes computes the Hamming distance between two byte slices.
 // This is a convenience wrapper that converts bytes to uint64 for POPCNT.
 func HammingDistanceBytes(a, b []byte) int {
-	// Use byte-level POPCNT for smaller vectors or misaligned data
 	minLen := min(len(b), len(a))
-
-	var dist int
-	// Process 8 bytes at a time using uint64 POPCNT
-	i := 0
-	for ; i+8 <= minLen; i += 8 {
-		aWord := uint64(a[i]) | uint64(a[i+1])<<8 | uint64(a[i+2])<<16 | uint64(a[i+3])<<24 |
-			uint64(a[i+4])<<32 | uint64(a[i+5])<<40 | uint64(a[i+6])<<48 | uint64(a[i+7])<<56
-		bWord := uint64(b[i]) | uint64(b[i+1])<<8 | uint64(b[i+2])<<16 | uint64(b[i+3])<<24 |
-			uint64(b[i+4])<<32 | uint64(b[i+5])<<40 | uint64(b[i+6])<<48 | uint64(b[i+7])<<56
-		dist += bits.OnesCount64(aWord ^ bWord)
+	if minLen == 0 {
+		return 0
 	}
-
-	// Process remaining bytes
-	for ; i < minLen; i++ {
-		dist += bits.OnesCount8(a[i] ^ b[i])
-	}
-
-	return dist
+	return int(simd.Hamming(a[:minLen], b[:minLen]))
 }
 
 // NormalizedHammingDistance returns Hamming distance normalized to [0, 1].

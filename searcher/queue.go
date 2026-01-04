@@ -2,14 +2,14 @@
 package searcher
 
 import (
-	"github.com/hupe1980/vecgo/core"
+	"github.com/hupe1980/vecgo/model"
 )
 
 // PriorityQueueItem represents an item in the priority queue.
 // Optimized: value-based (no pointers), removed Index field (not needed)
 type PriorityQueueItem struct {
-	Node     core.LocalID // Node is the value of the item, which can be arbitrary.
-	Distance float32      // Distance is the priority of the item in the queue.
+	Node     model.RowID // Node is the value of the item, which can be arbitrary.
+	Distance float32     // Distance is the priority of the item in the queue.
 }
 
 // PriorityQueue implements a binary heap holding PriorityQueueItems.

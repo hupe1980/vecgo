@@ -7,7 +7,7 @@ package vectorstore
 import (
 	"errors"
 
-	"github.com/hupe1980/vecgo/core"
+	"github.com/hupe1980/vecgo/model"
 )
 
 var (
@@ -15,14 +15,14 @@ var (
 	ErrWrongDimension = errors.New("wrong vector dimension")
 )
 
-// Store is the canonical storage for vectors.
+// VectorStore is the canonical storage interface for vectors.
 //
 // Implementations must treat the configured dimension as authoritative.
 // Callers should assume returned slices may alias internal memory unless the
 // implementation documents otherwise.
-type Store interface {
+type VectorStore interface {
 	Dimension() int
-	GetVector(id core.LocalID) ([]float32, bool)
-	SetVector(id core.LocalID, v []float32) error
-	DeleteVector(id core.LocalID) error
+	GetVector(id model.RowID) ([]float32, bool)
+	SetVector(id model.RowID, v []float32) error
+	DeleteVector(id model.RowID) error
 }

@@ -1,15 +1,16 @@
 package metadata
 
 import (
+	"io"
 	"iter"
 
 	"github.com/RoaringBitmap/roaring/v2"
-	"github.com/hupe1980/vecgo/core"
+	"github.com/hupe1980/vecgo/model"
 )
 
 // LocalBitmap implements a 32-bit Roaring Bitmap.
 // It wraps the official roaring implementation.
-// Used for internal shard filtering (LocalID).
+// Used for internal row filtering (RowID).
 type LocalBitmap struct {
 	rb *roaring.Bitmap
 }
@@ -21,19 +22,29 @@ func NewLocalBitmap() *LocalBitmap {
 	}
 }
 
-// Add adds a LocalID to the bitmap.
-func (b *LocalBitmap) Add(id core.LocalID) {
-	b.rb.Add(uint32(id))
+// Add adds a RowID to the bitmap.
+func (b *LocalBitmap) Add(id uint32) {
+	b.rb.Add(id)
 }
 
-// Remove removes a LocalID from the bitmap.
-func (b *LocalBitmap) Remove(id core.LocalID) {
-	b.rb.Remove(uint32(id))
+// Remove removes a RowID from the bitmap.
+func (b *LocalBitmap) Remove(id uint32) {
+	b.rb.Remove(id)
 }
 
-// Contains checks if a LocalID is in the bitmap.
-func (b *LocalBitmap) Contains(id core.LocalID) bool {
-	return b.rb.Contains(uint32(id))
+// Contains checks if a RowID is in the bitmap.
+func (b *LocalBitmap) Contains(id uint32) bool {
+	return b.rb.Contains(id)
+}
+
+// ForEach iterates over the bitmap.
+func (b *LocalBitmap) ForEach(fn func(id uint32) bool) {
+	it := b.rb.Iterator()
+	for it.HasNext() {
+		if !fn(it.Next()) {
+			break
+		}
+	}
 }
 
 // IsEmpty returns true if the bitmap is empty.
@@ -54,11 +65,11 @@ func (b *LocalBitmap) Clone() *LocalBitmap {
 }
 
 // Iterator returns an iterator over the bitmap.
-func (b *LocalBitmap) Iterator() iter.Seq[core.LocalID] {
-	return func(yield func(core.LocalID) bool) {
+func (b *LocalBitmap) Iterator() iter.Seq[model.RowID] {
+	return func(yield func(model.RowID) bool) {
 		it := b.rb.Iterator()
 		for it.HasNext() {
-			if !yield(core.LocalID(it.Next())) {
+			if !yield(model.RowID(it.Next())) {
 				return
 			}
 		}
@@ -83,4 +94,14 @@ func (b *LocalBitmap) Clear() {
 // GetSizeInBytes returns the size of the bitmap in bytes.
 func (b *LocalBitmap) GetSizeInBytes() uint64 {
 	return b.rb.GetSizeInBytes()
+}
+
+// WriteTo writes the bitmap to an io.Writer.
+func (b *LocalBitmap) WriteTo(w io.Writer) (int64, error) {
+	return b.rb.WriteTo(w)
+}
+
+// ReadFrom reads the bitmap from an io.Reader.
+func (b *LocalBitmap) ReadFrom(r io.Reader) (int64, error) {
+	return b.rb.ReadFrom(r)
 }
