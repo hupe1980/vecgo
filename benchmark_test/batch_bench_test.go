@@ -22,7 +22,7 @@ func BenchmarkBatchInsert(b *testing.B) {
 		vec := make([]float32, dim)
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			e.Insert(model.PrimaryKey(i), vec, nil, nil)
+			e.Insert(model.PKUint64(uint64(i)), vec, nil, nil)
 		}
 	})
 
@@ -41,7 +41,7 @@ func BenchmarkBatchInsert(b *testing.B) {
 		for i := 0; i < b.N; i += batchSize {
 			// Update PKs
 			for j := 0; j < batchSize; j++ {
-				records[j].PK = model.PrimaryKey(i + j)
+				records[j].PK = model.PKUint64(uint64(i + j))
 			}
 			// Handle last partial batch if b.N is not multiple of batchSize
 			count := batchSize
@@ -68,7 +68,7 @@ func BenchmarkBatchSearch(b *testing.B) {
 		vec := make([]float32, dim)
 		rng.FillUniform(vec)
 		data[i] = vec
-		e.Insert(model.PrimaryKey(i), vec, nil, nil)
+		e.Insert(model.PKUint64(uint64(i)), vec, nil, nil)
 	}
 
 	ctx := context.Background()

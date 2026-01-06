@@ -2,6 +2,8 @@
 package vecgo
 
 import (
+	"log/slog"
+
 	"github.com/hupe1980/vecgo/blobstore"
 	"github.com/hupe1980/vecgo/distance"
 	"github.com/hupe1980/vecgo/engine"
@@ -17,6 +19,16 @@ type Option = engine.Option
 
 // PrimaryKey is the unique identifier for a vector.
 type PrimaryKey = model.PrimaryKey
+
+// PKUint64 creates a new uint64-based Primary Key.
+func PKUint64(v uint64) PrimaryKey {
+	return model.PKUint64(v)
+}
+
+// PKString creates a new string-based Primary Key.
+func PKString(v string) PrimaryKey {
+	return model.PKString(v)
+}
 
 // Candidate represents a search result.
 type Candidate = model.Candidate
@@ -74,6 +86,16 @@ func WithWALOptions(opts WALOptions) Option {
 	return engine.WithWALOptions(opts)
 }
 
+// WithLogger sets the logger for the engine.
+func WithLogger(l *slog.Logger) Option {
+	return engine.WithLogger(l)
+}
+
+// WithSchema sets the metadata schema for the engine.
+func WithSchema(schema metadata.Schema) Option {
+	return engine.WithSchema(schema)
+}
+
 // SearchOption configures a search query.
 type SearchOption = func(*model.SearchOptions)
 
@@ -92,4 +114,9 @@ func WithFilter(filter *metadata.FilterSet) SearchOption {
 // WithPreFilter forces pre-filtering (or post-filtering if false).
 func WithPreFilter(preFilter bool) SearchOption {
 	return engine.WithPreFilter(preFilter)
+}
+
+// WithMetadata requests the metadata to be returned in the search results.
+func WithMetadata() SearchOption {
+	return engine.WithMetadata()
 }

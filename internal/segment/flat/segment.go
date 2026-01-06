@@ -3,7 +3,6 @@ package flat
 import (
 	"context"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/crc32"
@@ -13,11 +12,11 @@ import (
 	"github.com/hupe1980/vecgo/cache"
 	"github.com/hupe1980/vecgo/distance"
 	"github.com/hupe1980/vecgo/internal/kmeans"
+	"github.com/hupe1980/vecgo/internal/searcher"
 	"github.com/hupe1980/vecgo/internal/segment"
 	"github.com/hupe1980/vecgo/metadata"
 	"github.com/hupe1980/vecgo/model"
 	"github.com/hupe1980/vecgo/quantization"
-	"github.com/hupe1980/vecgo/searcher"
 )
 
 // Segment implements an immutable flat segment.
@@ -28,7 +27,7 @@ type Segment struct {
 
 	// Pointers to data sections
 	vectors []float32
-	pks     []uint64
+	pks     []model.PK
 
 	// Partitioning
 	centroids        []float32
@@ -277,15 +276,61 @@ func Open(blob blobstore.Blob, opts ...Option) (*Segment, error) {
 
 	// PKs
 	pkStart := header.PKOffset
-	pkBytes := uint64(header.RowCount) * 8
-	if uint64(len(data)) < pkStart+pkBytes {
+	pkSize := header.MetadataOffset - header.PKOffset
+	if uint64(len(data)) < pkStart+pkSize {
 		blob.Close()
 		return nil, errors.New("file too short for PKs")
 	}
 
-	pkData := data[pkStart : pkStart+pkBytes]
-	if len(pkData) > 0 {
-		s.pks = unsafe.Slice((*uint64)(unsafe.Pointer(&pkData[0])), len(pkData)/8)
+	if header.RowCount > 0 {
+		// Read Offsets
+		offsetBytes := uint64(header.RowCount+1) * 4
+		if pkSize < offsetBytes {
+			blob.Close()
+			return nil, errors.New("pk section too small for offsets")
+		}
+		offsetData := data[pkStart : pkStart+offsetBytes]
+		pkOffsets := unsafe.Slice((*uint32)(unsafe.Pointer(&offsetData[0])), len(offsetData)/4)
+
+		// Read Blob
+		blobData := data[pkStart+offsetBytes : pkStart+pkSize]
+
+		s.pks = make([]model.PK, header.RowCount)
+		for i := 0; i < int(header.RowCount); i++ {
+			start := pkOffsets[i]
+			end := pkOffsets[i+1]
+			if start > end || int(end) > len(blobData) {
+				blob.Close()
+				return nil, fmt.Errorf("invalid pk offset for row %d", i)
+			}
+
+			chunk := blobData[start:end]
+			if len(chunk) < 1 {
+				blob.Close()
+				return nil, fmt.Errorf("empty pk chunk for row %d", i)
+			}
+			kind := model.PKKind(chunk[0])
+			if kind == model.PKKindUint64 {
+				if len(chunk) < 9 {
+					blob.Close()
+					return nil, fmt.Errorf("invalid uint64 pk for row %d", i)
+				}
+				val := binary.LittleEndian.Uint64(chunk[1:])
+				s.pks[i] = model.PKUint64(val)
+			} else {
+				if len(chunk) < 5 {
+					blob.Close()
+					return nil, fmt.Errorf("invalid string pk header for row %d", i)
+				}
+				strLen := binary.LittleEndian.Uint32(chunk[1:])
+				if len(chunk) < 5+int(strLen) {
+					blob.Close()
+					return nil, fmt.Errorf("invalid string pk body for row %d", i)
+				}
+				str := string(chunk[5 : 5+int(strLen)])
+				s.pks[i] = model.PKString(str)
+			}
+		}
 	}
 
 	// Metadata
@@ -321,9 +366,29 @@ func Open(blob blobstore.Blob, opts ...Option) (*Segment, error) {
 		}
 		bsData := data[bsStart:]
 		if len(bsData) > 0 {
-			if err := json.Unmarshal(bsData, &s.blockStats); err != nil {
+			count, n := binary.Uvarint(bsData)
+			if n <= 0 {
 				blob.Close()
-				return nil, fmt.Errorf("failed to unmarshal block stats: %w", err)
+				return nil, errors.New("invalid block stats count")
+			}
+			bsData = bsData[n:]
+			s.blockStats = make([]BlockStats, count)
+			for i := 0; i < int(count); i++ {
+				l, n := binary.Uvarint(bsData)
+				if n <= 0 {
+					blob.Close()
+					return nil, errors.New("invalid block stats length")
+				}
+				bsData = bsData[n:]
+				if uint64(len(bsData)) < l {
+					blob.Close()
+					return nil, errors.New("block stats too short")
+				}
+				if err := s.blockStats[i].UnmarshalBinary(bsData[:l]); err != nil {
+					blob.Close()
+					return nil, err
+				}
+				bsData = bsData[l:]
 			}
 		}
 	}
@@ -398,7 +463,7 @@ func (s *Segment) Search(ctx context.Context, q []float32, k int, filter segment
 		}
 	}
 
-	scan := func(start, end int) {
+	scan := func(start, end int) error {
 		// Optimization for SQ8 L2
 		if s.sq != nil && s.Metric() == distance.MetricL2 {
 			for i := start; i < end; {
@@ -412,11 +477,10 @@ func (s *Segment) Search(ctx context.Context, q []float32, k int, filter segment
 							continue
 						}
 						if opts.Filter != nil {
-							if fs, ok := opts.Filter.(*metadata.FilterSet); ok {
-								if !matchesBlock(fs, stats) {
-									i += BlockSize
-									continue
-								}
+							var fs *metadata.FilterSet = opts.Filter
+							if !matchesFilterSet(fs, stats) {
+								i += BlockSize
+								continue
 							}
 						}
 					}
@@ -444,13 +508,11 @@ func (s *Segment) Search(ctx context.Context, q []float32, k int, filter segment
 							if startOffset < endOffset {
 								mdBytes := s.metadataBlob[startOffset:endOffset]
 								var md metadata.Document
-								if err := json.Unmarshal(mdBytes, &md); err != nil {
+								if err := md.UnmarshalBinary(mdBytes); err != nil {
 									continue
 								}
-								if fs, ok := opts.Filter.(*metadata.FilterSet); ok {
-									if !fs.Matches(md) {
-										continue
-									}
+								if !opts.Filter.Matches(md) {
+									continue
 								}
 							} else {
 								continue
@@ -478,7 +540,7 @@ func (s *Segment) Search(ctx context.Context, q []float32, k int, filter segment
 				}
 				i += count
 			}
-			return
+			return nil
 		}
 
 		for i := start; i < end; {
@@ -492,11 +554,10 @@ func (s *Segment) Search(ctx context.Context, q []float32, k int, filter segment
 						continue
 					}
 					if opts.Filter != nil {
-						if fs, ok := opts.Filter.(*metadata.FilterSet); ok {
-							if !matchesBlock(fs, stats) {
-								i += BlockSize
-								continue
-							}
+						var fs *metadata.FilterSet = opts.Filter
+						if !matchesFilterSet(fs, stats) {
+							i += BlockSize
+							continue
 						}
 					}
 				}
@@ -515,15 +576,13 @@ func (s *Segment) Search(ctx context.Context, q []float32, k int, filter segment
 					if startOffset < endOffset {
 						mdBytes := s.metadataBlob[startOffset:endOffset]
 						var md metadata.Document
-						if err := json.Unmarshal(mdBytes, &md); err != nil {
+						if err := md.UnmarshalBinary(mdBytes); err != nil {
 							i++
 							continue
 						}
-						if fs, ok := opts.Filter.(*metadata.FilterSet); ok {
-							if !fs.Matches(md) {
-								i++
-								continue
-							}
+						if !opts.Filter.Matches(md) {
+							i++
+							continue
 						}
 					} else {
 						i++
@@ -538,16 +597,24 @@ func (s *Segment) Search(ctx context.Context, q []float32, k int, filter segment
 			if s.sq != nil {
 				// Use codes
 				code := s.codes[i*dim : (i+1)*dim]
+				var err error
 				if s.Metric() == distance.MetricL2 {
-					dist = s.sq.L2Distance(q, code)
+					dist, err = s.sq.L2Distance(q, code)
 				} else {
-					dist = s.sq.DotProduct(q, code)
+					dist, err = s.sq.DotProduct(q, code)
+				}
+				if err != nil {
+					return err
 				}
 				approx = true
 			} else if s.pq != nil {
 				m := s.pq.NumSubvectors()
 				code := s.codes[i*m : (i+1)*m]
-				dist = s.pq.AdcDistance(pqTable, code)
+				var err error
+				dist, err = s.pq.AdcDistance(pqTable, code)
+				if err != nil {
+					return err
+				}
 				approx = true
 			} else {
 				// Use vectors
@@ -579,6 +646,7 @@ func (s *Segment) Search(ctx context.Context, q []float32, k int, filter segment
 			}
 			i++
 		}
+		return nil
 	}
 
 	if s.numPartitions > 1 {
@@ -595,10 +663,14 @@ func (s *Segment) Search(ctx context.Context, q []float32, k int, filter segment
 		for _, p := range partitions {
 			start := int(s.partitionOffsets[p])
 			end := int(s.partitionOffsets[p+1])
-			scan(start, end)
+			if err := scan(start, end); err != nil {
+				return err
+			}
 		}
 	} else {
-		scan(0, int(s.header.RowCount))
+		if err := scan(0, int(s.header.RowCount)); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -650,7 +722,7 @@ func (s *Segment) Fetch(ctx context.Context, rows []uint32, cols []string) (segm
 	}
 
 	batch := &segment.SimpleRecordBatch{
-		PKs: make([]model.PrimaryKey, len(rows)),
+		PKs: make([]model.PK, len(rows)),
 	}
 	if fetchVectors {
 		batch.Vectors = make([][]float32, len(rows))
@@ -669,7 +741,7 @@ func (s *Segment) Fetch(ctx context.Context, rows []uint32, cols []string) (segm
 		}
 
 		// Fetch PK
-		batch.PKs[i] = model.PrimaryKey(s.pks[rowID])
+		batch.PKs[i] = s.pks[rowID]
 
 		// Fetch Vector
 		if fetchVectors {
@@ -687,7 +759,7 @@ func (s *Segment) Fetch(ctx context.Context, rows []uint32, cols []string) (segm
 			if size > 0 {
 				mdBytes := s.metadataBlob[start:end]
 				var md metadata.Document
-				if err := json.Unmarshal(mdBytes, &md); err != nil {
+				if err := md.UnmarshalBinary(mdBytes); err != nil {
 					return nil, fmt.Errorf("failed to unmarshal metadata for row %d: %w", rowID, err)
 				}
 				batch.Metadatas[i] = md
@@ -713,13 +785,37 @@ func (s *Segment) Fetch(ctx context.Context, rows []uint32, cols []string) (segm
 	return batch, nil
 }
 
+func (s *Segment) FetchPKs(ctx context.Context, rows []uint32, dst []model.PK) error {
+	if len(dst) != len(rows) {
+		return fmt.Errorf("dst length mismatch")
+	}
+	for i, rowID := range rows {
+		if rowID >= s.header.RowCount {
+			return fmt.Errorf("rowID %d out of bounds", rowID)
+		}
+		dst[i] = s.pks[rowID]
+	}
+	return nil
+}
+
 // Iterate iterates over all vectors in the segment.
-func (s *Segment) Iterate(fn func(rowID uint32, pk model.PrimaryKey, vec []float32, md metadata.Document, payload []byte) error) error {
+func (s *Segment) Iterate(fn func(rowID uint32, pk model.PK, vec []float32, md metadata.Document, payload []byte) error) error {
 	dim := int(s.header.Dim)
 	for i := 0; i < int(s.header.RowCount); i++ {
 		vec := s.vectors[i*dim : (i+1)*dim]
-		pk := model.PrimaryKey(s.pks[i])
-		// TODO: Read metadata
+		pk := s.pks[i]
+
+		var md metadata.Document
+		if len(s.metadataOffsets) > 0 {
+			start := s.metadataOffsets[i]
+			end := s.metadataOffsets[i+1]
+			if start < end {
+				mdBytes := s.metadataBlob[start:end]
+				if err := md.UnmarshalBinary(mdBytes); err != nil {
+					return err
+				}
+			}
+		}
 
 		var payload []byte
 		if s.payloadBlob != nil && uint32(i) < s.payloadCount {
@@ -734,7 +830,7 @@ func (s *Segment) Iterate(fn func(rowID uint32, pk model.PrimaryKey, vec []float
 			}
 		}
 
-		if err := fn(uint32(i), pk, vec, nil, payload); err != nil {
+		if err := fn(uint32(i), pk, vec, md, payload); err != nil {
 			return err
 		}
 	}
@@ -746,7 +842,7 @@ func (s *Segment) Advise(pattern segment.AccessPattern) error {
 	return nil
 }
 
-func matchesBlock(fs *metadata.FilterSet, stats map[string]segment.FieldStats) bool {
+func matchesFilterSet(fs *metadata.FilterSet, stats map[string]segment.FieldStats) bool {
 	if fs == nil {
 		return true
 	}

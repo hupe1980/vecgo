@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"os"
 	"sync"
+
+	"github.com/hupe1980/vecgo/internal/fs"
 )
 
 // Durability controls the durability guarantees of the WAL.
@@ -27,7 +29,7 @@ func DefaultOptions() Options {
 // WAL manages the write-ahead log file.
 type WAL struct {
 	mu   sync.Mutex
-	file *os.File
+	file fs.File
 	cw   *countingWriter
 	path string
 	opts Options
@@ -56,8 +58,11 @@ func (cw *countingWriter) Flush() error {
 }
 
 // Open opens or creates a WAL at the given path.
-func Open(path string, opts Options) (*WAL, error) {
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0644)
+func Open(fsys fs.FileSystem, path string, opts Options) (*WAL, error) {
+	if fsys == nil {
+		fsys = fs.Default
+	}
+	f, err := fsys.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
 		return nil, err
 	}
@@ -254,13 +259,23 @@ func (w *WAL) Reader() (*Reader, error) {
 
 // Reader iterates over WAL records.
 type Reader struct {
-	f *os.File
-	r *bufio.Reader
+	f      *os.File
+	r      *bufio.Reader
+	offset int64
 }
 
 // Next reads the next record. Returns io.EOF when done.
 func (r *Reader) Next() (*Record, error) {
-	return Decode(r.r)
+	rec, n, err := Decode(r.r)
+	if err == nil {
+		r.offset += n
+	}
+	return rec, err
+}
+
+// Offset returns the current valid offset in the WAL.
+func (r *Reader) Offset() int64 {
+	return r.offset
 }
 
 // Close closes the reader.

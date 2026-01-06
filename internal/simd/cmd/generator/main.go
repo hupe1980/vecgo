@@ -11,20 +11,28 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"strconv"
+	"sort"
 	"strings"
 )
 
 const archARM64 = "arm64"
 
 var (
-	verbose  = flag.Bool("v", false, "verbose output")
-	optimize = flag.String("O", "3", "optimization level")
-	output   = flag.String("o", "", "output directory (default: same as source)")
-	pkg      = flag.String("pkg", "math32", "package name")
-	arch     = flag.String("arch", "", "target architecture (arm64, amd64)")
-	goos     = flag.String("goos", "", "target OS (linux, darwin)")
+	verbose     = flag.Bool("v", false, "verbose output")
+	optimize    = flag.String("O", "3", "optimization level")
+	output      = flag.String("o", "", "output directory (default: internal/simd)")
+	arch        = flag.String("arch", "", "target architecture (arm64, amd64)")
+	goos        = flag.String("goos", "", "target OS (linux, darwin)")
+	noTail      = flag.Bool("no-tail", false, "define SIMD_NO_TAIL when compiling C (omit scalar tails in kernels that support it)")
+	emitGoStubs = flag.Bool("go-stubs", true, "emit a Go file containing //go:noescape declarations matching parsed C signatures")
+	allowRelocs = flag.Bool("allow-relocs", false, "allow relocations in the compiled object (unsafe with raw WORD emission)")
+	keepTemp    = flag.Bool("keep-temp", false, "keep temporary assembly/object files for debugging")
+	defines     multiFlag
 )
+
+func init() {
+	flag.Var(&defines, "D", "additional preprocessor define to pass to clang (repeatable)")
+}
 
 func main() {
 	flag.Parse()
@@ -49,11 +57,15 @@ func main() {
 	gen := &Generator{
 		SourcePath: sourcePath,
 		OutputDir:  outputDir,
-		Package:    *pkg,
 		Verbose:    *verbose,
 		OptLevel:   *optimize,
 		Arch:       *arch,
 		OS:         *goos,
+		NoTail:     *noTail,
+		EmitGoStubs: *emitGoStubs,
+		AllowReloc: *allowRelocs,
+		KeepTemp:   *keepTemp,
+		Defines:    append([]string(nil), defines...),
 	}
 
 	if err := gen.Generate(); err != nil {
@@ -67,11 +79,25 @@ func main() {
 type Generator struct {
 	SourcePath string
 	OutputDir  string
-	Package    string
 	Verbose    bool
 	OptLevel   string
 	Arch       string
 	OS         string
+
+	NoTail     bool
+	EmitGoStubs bool
+	AllowReloc bool
+	KeepTemp   bool
+	Defines    []string
+}
+
+type multiFlag []string
+
+func (m *multiFlag) String() string { return strings.Join(*m, ",") }
+
+func (m *multiFlag) Set(value string) error {
+	*m = append(*m, value)
+	return nil
 }
 
 type Function struct {
@@ -98,13 +124,23 @@ func (g *Generator) Generate() error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = os.Remove(asmPath) }()
+	if !g.KeepTemp {
+		defer func() { _ = os.Remove(asmPath) }()
+	}
 
 	objPath, err := g.compileToObject(asmPath)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = os.Remove(objPath) }()
+	if !g.KeepTemp {
+		defer func() { _ = os.Remove(objPath) }()
+	}
+
+	if !g.AllowReloc {
+		if err := g.validateNoRelocations(objPath); err != nil {
+			return err
+		}
+	}
 
 	// Parse C source to extract function signatures
 	functionSigs, err := g.parseCFunctions()
@@ -130,7 +166,15 @@ func (g *Generator) Generate() error {
 		return err
 	}
 
-	return g.generateGoAsm(functions)
+	if err := g.generateGoAsm(functions); err != nil {
+		return err
+	}
+	if g.EmitGoStubs {
+		if err := g.generateGoStubs(functions); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ------------------------------------------------------------
@@ -151,7 +195,12 @@ func (g *Generator) getClangTarget() string {
 
 func (g *Generator) compileToAssembly() (string, error) {
 	base := strings.TrimSuffix(filepath.Base(g.SourcePath), filepath.Ext(g.SourcePath))
-	asmPath := filepath.Join(os.TempDir(), base+"_tmp.s")
+	tmp, err := os.CreateTemp("", base+"_*.s")
+	if err != nil {
+		return "", err
+	}
+	asmPath := tmp.Name()
+	_ = tmp.Close()
 
 	args := []string{
 		"-S",
@@ -160,6 +209,18 @@ func (g *Generator) compileToAssembly() (string, error) {
 		"-fno-asynchronous-unwind-tables",
 		"-fno-exceptions",
 		"-fno-rtti",
+		// The generator emits raw WORD/BYTE for the text section only.
+		// Disable clang vectorization passes that may introduce literal pools
+		// (and thus relocations) for shuffle masks and other constants.
+		"-fno-vectorize",
+		"-fno-slp-vectorize",
+	}
+
+	if g.NoTail {
+		args = append(args, "-DSIMD_NO_TAIL")
+	}
+	for _, d := range g.Defines {
+		args = append(args, "-D"+d)
 	}
 
 	if g.Arch == archARM64 {
@@ -191,99 +252,33 @@ func (g *Generator) compileToObject(asmPath string) (string, error) {
 	)
 }
 
+func (g *Generator) validateNoRelocations(objPath string) error {
+	// Raw WORD/BYTE emission cannot carry relocations, so any relocation in the
+	// compiled object means the generated Go assembly may be incorrect.
+	//
+	// Note: llvm-objdump prints relocations only when present.
+	cmd := exec.Command("llvm-objdump", "-r", objPath)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("llvm-objdump -r failed: %w\n%s", err, strings.TrimSpace(out.String()))
+	}
+	text := strings.TrimSpace(out.String())
+	if text == "" {
+		return nil
+	}
+
+	// Heuristic: relocation dumps contain 'RELOCATION RECORDS' headers.
+	if strings.Contains(text, "RELOCATION") || strings.Contains(text, "Relocations") {
+		return fmt.Errorf("object contains relocations; raw WORD emission is unsafe. Rework the C to avoid literal pools/calls, or rerun with -allow-relocs.\nllvm-objdump -r output:\n%s", text)
+	}
+	return nil
+}
+
 // ------------------------------------------------------------
 // Assembly parsing
 // ------------------------------------------------------------
-
-// parseCFunctions extracts function signatures from C source
-func (g *Generator) parseCFunctions() (map[string]*Function, error) {
-	data, err := os.ReadFile(g.SourcePath)
-	if err != nil {
-		return nil, err
-	}
-	content := string(data)
-
-	// Match function signatures like: void func_name(type1 *param1, type2 param2, ...)
-	// Updated to handle return type and no leading underscore
-	funcRe := regexp.MustCompile(`(?m)^([\w\s*]+)\s+(\w+)\s*\(([^)]*)\)`)
-	functions := make(map[string]*Function)
-
-	matches := funcRe.FindAllStringSubmatchIndex(content, -1)
-	for _, loc := range matches {
-		// loc[0]: start of match, loc[1]: end of match
-		// loc[2], loc[3]: return type
-		// loc[4], loc[5]: function name
-		// loc[6], loc[7]: params
-
-		start := loc[0]
-		name := content[loc[4]:loc[5]]
-		paramsStr := content[loc[6]:loc[7]]
-		returnType := strings.TrimSpace(content[loc[2]:loc[3]])
-
-		if g.Verbose {
-			fmt.Printf("Parsed function: %s, ReturnType: %q\n", name, returnType)
-		}
-
-		fn := &Function{
-			Name:       name,
-			Parameters: []Parameter{},
-			ArgOffsets: make(map[string]int),
-			ReturnType: returnType,
-		}
-
-		// Parse parameters
-		if strings.TrimSpace(paramsStr) != "" {
-			paramParts := strings.Split(paramsStr, ",")
-			for _, part := range paramParts {
-				part = strings.TrimSpace(part)
-				// Parse "type *name" or "type name"
-				tokens := strings.Fields(part)
-				if len(tokens) >= 2 {
-					paramType := tokens[0]
-					paramName := tokens[len(tokens)-1]
-					// Remove * from pointer names
-					paramName = strings.TrimPrefix(paramName, "*")
-					// Remove [] from array names
-					paramName = strings.TrimSuffix(paramName, "[]")
-					fn.Parameters = append(fn.Parameters, Parameter{
-						Name: paramName,
-						Type: paramType,
-					})
-				}
-			}
-		}
-
-		// Look for //go:arg comments before the function
-		// Scan backwards from start
-		preamble := content[:start]
-		lines := strings.Split(preamble, "\n")
-		for i := len(lines) - 1; i >= 0; i-- {
-			line := strings.TrimSpace(lines[i])
-			if line == "" {
-				continue
-			}
-			if strings.HasPrefix(line, "//go:arg") {
-				parts := strings.Fields(line)
-				if len(parts) >= 3 {
-					argName := parts[1]
-					offset, err := strconv.Atoi(parts[2])
-					if err == nil {
-						fn.ArgOffsets[argName] = offset
-					}
-				}
-			} else if strings.HasPrefix(line, "//") {
-				continue
-			} else {
-				// Stop at non-comment line
-				break
-			}
-		}
-
-		functions[name] = fn
-	}
-
-	return functions, nil
-}
 
 func (g *Generator) parseAssembly(asmPath string) (map[string]*Function, error) {
 	file, err := os.Open(asmPath) //nolint:gosec // generator tool
@@ -453,14 +448,28 @@ func (g *Generator) generateGoAsm(functions map[string]*Function) error {
 	fmt.Fprintf(&buf, "//go:build !noasm && %s\n\n", g.Arch)
 	buf.WriteString("#include \"textflag.h\"\n\n")
 
-	for _, fn := range functions {
+	names := make([]string, 0, len(functions))
+	for name := range functions {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		fn := functions[name]
 		// Calculate frame size: each parameter is 8 bytes on 64-bit platforms
 		numParams := len(fn.Parameters)
 		if numParams == 0 {
 			// Default to 4 parameters if not parsed
 			numParams = 4
 		}
-		frameSize := numParams * 8
+		argSize := numParams * 8
+		retSize := 0
+		if fn.ReturnType != "void" && fn.ReturnType != "" {
+			// Go ABI uses a caller-allocated return slot in the args area.
+			// Most of our non-void kernels return int64/long long.
+			retSize = 8
+		}
+		frameSize := argSize + retSize
 
 		fmt.Fprintf(&buf, "TEXT ·%s(SB), NOSPLIT, $0-%d\n", fn.Name, frameSize)
 
@@ -501,7 +510,7 @@ func (g *Generator) generateGoAsm(functions map[string]*Function) error {
 
 			if l.Assembly == "ret" || l.Assembly == "retq" {
 				if fn.ReturnType != "void" && fn.ReturnType != "" {
-					retOffset := frameSize
+					retOffset := argSize
 					if g.Arch == "arm64" {
 						if strings.Contains(fn.ReturnType, "float") {
 							fmt.Fprintf(&buf, "\tFMOVS S0, ret+%d(FP)\n", retOffset)

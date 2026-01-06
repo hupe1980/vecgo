@@ -3,7 +3,7 @@ package searcher
 import (
 	"sync"
 
-	"github.com/hupe1980/vecgo/metadata"
+	imetadata "github.com/hupe1980/vecgo/internal/metadata"
 	"github.com/hupe1980/vecgo/model"
 )
 
@@ -32,7 +32,7 @@ type Searcher struct {
 	IOBuffer []byte
 
 	// FilterBitmap is a reusable bitmap for metadata filtering.
-	FilterBitmap *metadata.LocalBitmap
+	FilterBitmap *imetadata.LocalBitmap
 
 	// ScratchResults is a reusable buffer for collecting intermediate results (e.g. DiskANN beam search).
 	ScratchResults []PriorityQueueItem
@@ -49,6 +49,9 @@ type Searcher struct {
 	// Scores is a reusable buffer for batch distance calculations.
 	Scores []float32
 
+	// ScratchMap is a reusable map for hybrid search scoring.
+	ScratchMap map[model.PK]float32
+
 	// Results is a reusable buffer for collecting final results before returning.
 	Results []model.Candidate
 
@@ -57,6 +60,9 @@ type Searcher struct {
 
 	// ScratchIDs is a reusable buffer for RowIDs.
 	ScratchIDs []uint32
+
+	// ScratchPKs is a reusable buffer for PrimaryKeys.
+	ScratchPKs []model.PK
 
 	// OpsPerformed tracks the number of distance calculations or node visits.
 	OpsPerformed int
@@ -74,10 +80,11 @@ func NewSearcher(visitedCap, queueCap int) *Searcher {
 		Visited:           NewVisitedSet(visitedCap),
 		Candidates:        NewPriorityQueue(true),  // MaxHeap for results (keep smallest)
 		ScratchCandidates: NewPriorityQueue(false), // MinHeap for exploration (explore closest)
-		FilterBitmap:      metadata.NewLocalBitmap(),
+		FilterBitmap:      imetadata.NewLocalBitmap(),
 		ScratchResults:    make([]PriorityQueueItem, 0, queueCap),
 		Heap:              NewCandidateHeap(queueCap, false),
 		Scores:            make([]float32, 256),
+		ScratchMap:        make(map[model.PK]float32),
 	}
 }
 
@@ -101,5 +108,6 @@ func (s *Searcher) Reset() {
 	s.FilterBitmap.Clear()
 	s.ScratchResults = s.ScratchResults[:0]
 	s.Heap.Reset(false)
+	clear(s.ScratchMap)
 	s.OpsPerformed = 0
 }

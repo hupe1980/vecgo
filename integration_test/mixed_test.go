@@ -34,7 +34,7 @@ func TestMixedSegments(t *testing.T) {
 	// 200 vectors -> multiple flushes -> compaction -> DiskANN
 	n := 200
 	for i := 0; i < n; i++ {
-		pk := model.PrimaryKey(i)
+		pk := model.PKUint64(uint64(i))
 		vec := []float32{float32(i), float32(i), float32(i), float32(i)}
 		err := e.Insert(pk, vec, nil, nil)
 		assert.NoError(t, err)

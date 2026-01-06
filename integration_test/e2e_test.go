@@ -16,7 +16,7 @@ func TestE2E_Restart(t *testing.T) {
 	e, err := vecgo.Open(dir, 2, vecgo.MetricL2)
 	require.NoError(t, err)
 
-	err = e.Insert(model.PrimaryKey(uint64(1)), []float32{1.0, 0.0}, nil, nil)
+	err = e.Insert(model.PKUint64(1), []float32{1.0, 0.0}, nil, nil)
 	require.NoError(t, err)
 
 	err = e.Close()
@@ -30,5 +30,5 @@ func TestE2E_Restart(t *testing.T) {
 	res, err := e.Search(context.Background(), []float32{1.0, 0.0}, 1)
 	require.NoError(t, err)
 	require.Len(t, res, 1)
-	require.Equal(t, model.PrimaryKey(uint64(1)), res[0].PK)
+	require.Equal(t, model.PKUint64(1), res[0].PK)
 }

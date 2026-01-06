@@ -14,6 +14,16 @@ It occupies a unique niche:
 
 ⚠️ This is experimental and subject to breaking changes.
 
+## 📚 Documentation
+
+- **[Architecture Guide](docs/architecture.md)**: Deep dive into the tiered engine, LSM tree, and component design.
+- **[Performance Tuning](docs/tuning.md)**: How to configure Vecgo for optimal throughput and latency.
+- **[Development Guide](docs/development.md)**: For contributors - build, test, and benchmark workflows.
+- **[Operations Guide](docs/operations.md)**: Runbooks for production monitoring and troubleshooting.
+- **[Deployment Guide](docs/deployment.md)**: Patterns for local vs. cloud deployment and resource sizing.
+- **[Recovery & Durability](docs/recovery.md)**: Understanding crash safety, WAL replay, and data guarantees.
+- **[Security Guide](docs/security.md)**: Responsibility matrix and safety features.
+
 ## ⚡ Key Features
 
 ### 🎯 Index Types

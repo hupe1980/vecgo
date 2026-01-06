@@ -29,14 +29,14 @@ func TestCompactionConfig_Quantization(t *testing.T) {
 	// Insert enough data to create 2 segments
 	// Segment 1
 	for i := 0; i < 100; i++ {
-		err := e.Insert(model.PrimaryKey(uint64(i)), []float32{0.1, 0.2, 0.3, 0.4}, nil, nil)
+		err := e.Insert(model.PKUint64(uint64(i)), []float32{0.1, 0.2, 0.3, 0.4}, nil, nil)
 		require.NoError(t, err)
 	}
 	require.NoError(t, e.Flush())
 
 	// Segment 2
 	for i := 100; i < 200; i++ {
-		err := e.Insert(model.PrimaryKey(uint64(i)), []float32{0.5, 0.6, 0.7, 0.8}, nil, nil)
+		err := e.Insert(model.PKUint64(uint64(i)), []float32{0.5, 0.6, 0.7, 0.8}, nil, nil)
 		require.NoError(t, err)
 	}
 	require.NoError(t, e.Flush())

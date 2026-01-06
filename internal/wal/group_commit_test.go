@@ -15,7 +15,7 @@ func TestWAL_GroupCommit_Concurrency(t *testing.T) {
 	path := filepath.Join(dir, "wal.log")
 
 	opts := Options{Durability: DurabilitySync}
-	w, err := Open(path, opts)
+	w, err := Open(nil, path, opts)
 	require.NoError(t, err)
 	defer w.Close()
 
@@ -31,7 +31,7 @@ func TestWAL_GroupCommit_Concurrency(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 			for j := 0; j < recordsPerGoroutine; j++ {
-				pk := model.PrimaryKey(id*recordsPerGoroutine + j)
+				pk := model.PKUint64(uint64(id*recordsPerGoroutine + j))
 				rec := &Record{
 					LSN:    uint64(id*recordsPerGoroutine + j),
 					Type:   RecordTypeUpsert,
@@ -50,7 +50,7 @@ func TestWAL_GroupCommit_Concurrency(t *testing.T) {
 	// Close and reopen to verify data
 	require.NoError(t, w.Close())
 
-	w2, err := Open(path, opts)
+	w2, err := Open(nil, path, opts)
 	require.NoError(t, err)
 	defer w2.Close()
 
@@ -66,7 +66,8 @@ func TestWAL_GroupCommit_Concurrency(t *testing.T) {
 			break
 		}
 		count++
-		seen[uint64(rec.PK)] = true
+		u64, _ := rec.PK.Uint64()
+		seen[u64] = true
 	}
 
 	assert.Equal(t, totalRecords, count)
@@ -79,7 +80,7 @@ func TestWAL_GroupCommit_Sync(t *testing.T) {
 	path := filepath.Join(dir, "wal_sync.log")
 
 	opts := Options{Durability: DurabilitySync}
-	w, err := Open(path, opts)
+	w, err := Open(nil, path, opts)
 	require.NoError(t, err)
 	defer w.Close()
 
@@ -96,7 +97,7 @@ func TestWAL_GroupCommit_Sync(t *testing.T) {
 	rec := &Record{
 		LSN:    1,
 		Type:   RecordTypeUpsert,
-		PK:     model.PrimaryKey(1),
+		PK:     model.PKUint64(1),
 		Vector: []float32{1.0},
 	}
 	err = w.Append(rec)

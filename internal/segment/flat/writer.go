@@ -3,7 +3,6 @@ package flat
 import (
 	"bufio"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"hash/crc32"
 	"io"
@@ -25,7 +24,7 @@ type Writer struct {
 	dim       int
 	metric    distance.Metric
 	vectors   []float32
-	pks       []model.PrimaryKey
+	pks       []model.PK
 	metadata  [][]byte // Serialized metadata
 	payloads  [][]byte // Raw payload
 	k         int      // Number of partitions
@@ -56,7 +55,7 @@ func (w *Writer) SetPQConfig(m int) {
 }
 
 // Add adds a vector and its PK to the segment.
-func (w *Writer) Add(pk model.PrimaryKey, vec []float32, md metadata.Document, payload []byte) error {
+func (w *Writer) Add(pk model.PK, vec []float32, md metadata.Document, payload []byte) error {
 	if len(vec) != w.dim {
 		return errors.New("dimension mismatch")
 	}
@@ -66,7 +65,7 @@ func (w *Writer) Add(pk model.PrimaryKey, vec []float32, md metadata.Document, p
 
 	// Serialize metadata
 	if md != nil {
-		b, err := json.Marshal(md)
+		b, err := md.MarshalBinary()
 		if err != nil {
 			return err
 		}
@@ -176,7 +175,10 @@ func (w *Writer) Flush() error {
 			// Encode
 			codes = make([]byte, int(rowCount)*w.dim)
 			for i := 0; i < int(rowCount); i++ {
-				encoded := sq.Encode(vecs[i])
+				encoded, err := sq.Encode(vecs[i])
+				if err != nil {
+					return err
+				}
 				copy(codes[i*w.dim:], encoded)
 			}
 		} else if w.quantType == QuantizationPQ {
@@ -192,7 +194,10 @@ func (w *Writer) Flush() error {
 			// Encode
 			codes = make([]byte, int(rowCount)*w.pqM)
 			for i := 0; i < int(rowCount); i++ {
-				encoded := pq.Encode(vecs[i])
+				encoded, err := pq.Encode(vecs[i])
+				if err != nil {
+					return err
+				}
 				copy(codes[i*w.pqM:], encoded)
 			}
 		}
@@ -228,7 +233,7 @@ func (w *Writer) Flush() error {
 
 				if len(mdBytes) > 0 {
 					var md metadata.Document
-					if err := json.Unmarshal(mdBytes, &md); err != nil {
+					if err := md.UnmarshalBinary(mdBytes); err != nil {
 						return err
 					}
 
@@ -267,7 +272,20 @@ func (w *Writer) Flush() error {
 		metadataOffsets[rowCount] = currentOffset
 	}
 
-	blockStatsBytes, err := json.Marshal(blockStats)
+	blockStatsBytes, err := func() ([]byte, error) {
+		var buf []byte
+		// Count
+		buf = binary.AppendUvarint(buf, uint64(len(blockStats)))
+		for _, bs := range blockStats {
+			b, err := bs.MarshalBinary()
+			if err != nil {
+				return nil, err
+			}
+			buf = binary.AppendUvarint(buf, uint64(len(b)))
+			buf = append(buf, b...)
+		}
+		return buf, nil
+	}()
 	if err != nil {
 		return err
 	}
@@ -286,6 +304,35 @@ func (w *Writer) Flush() error {
 
 	codesSize := uint64(len(codes))
 
+	// Calculate PK Blob
+	var pkOffsets []uint32
+	var pkBlob []byte
+	if rowCount > 0 {
+		pkOffsets = make([]uint32, rowCount+1)
+		currentPKOffset := uint32(0)
+		for i, pk := range w.pks {
+			pkOffsets[i] = currentPKOffset
+
+			// Serialize PK to blob
+			// Kind
+			pkBlob = append(pkBlob, byte(pk.Kind()))
+			currentPKOffset++
+
+			if pk.Kind() == model.PKKindUint64 {
+				u64, _ := pk.Uint64()
+				pkBlob = binary.LittleEndian.AppendUint64(pkBlob, u64)
+				currentPKOffset += 8
+			} else {
+				s, _ := pk.StringValue()
+				strBytes := []byte(s)
+				pkBlob = binary.LittleEndian.AppendUint32(pkBlob, uint32(len(strBytes)))
+				pkBlob = append(pkBlob, strBytes...)
+				currentPKOffset += 4 + uint32(len(strBytes))
+			}
+		}
+		pkOffsets[rowCount] = currentPKOffset
+	}
+
 	centroidOffset := uint64(HeaderSize)
 	partitionOffsetOffset := centroidOffset + centroidSize
 	quantOffset := partitionOffsetOffset + partitionOffsetSize
@@ -293,7 +340,7 @@ func (w *Writer) Flush() error {
 	vectorOffset := codesOffset + codesSize
 	vectorSize := uint64(len(w.vectors)) * 4
 	pkOffset := vectorOffset + vectorSize
-	pkSize := uint64(len(w.pks)) * 8
+	pkSize := uint64(len(pkOffsets)*4 + len(pkBlob))
 	metadataOffset := pkOffset + pkSize
 	metadataSize := uint64(len(metadataOffsets)*4 + len(metadataBlob))
 	blockStatsOffset := metadataOffset + metadataSize
@@ -397,8 +444,13 @@ func (w *Writer) Flush() error {
 	}
 
 	// 7. Write PKs
-	for _, pk := range w.pks {
-		if err := binary.Write(mw, binary.LittleEndian, uint64(pk)); err != nil {
+	for _, o := range pkOffsets {
+		if err := binary.Write(mw, binary.LittleEndian, o); err != nil {
+			return err
+		}
+	}
+	if len(pkBlob) > 0 {
+		if _, err := mw.Write(pkBlob); err != nil {
 			return err
 		}
 	}

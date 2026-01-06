@@ -52,13 +52,19 @@ func TestScalarQuantizer_EncodeDecode(t *testing.T) {
 	original := []float32{-1.0, -0.5, 0.0, 0.5, 1.0}
 
 	// Encode
-	quantized := sq.Encode(original)
+	quantized, err := sq.Encode(original)
+	if err != nil {
+		t.Fatalf("Encode failed: %v", err)
+	}
 	if len(quantized) != len(original) {
 		t.Fatalf("Expected %d bytes, got %d", len(original), len(quantized))
 	}
 
 	// Decode
-	decoded := sq.Decode(quantized)
+	decoded, err := sq.Decode(quantized)
+	if err != nil {
+		t.Fatalf("Decode failed: %v", err)
+	}
 	if len(decoded) != len(original) {
 		t.Fatalf("Expected %d floats, got %d", len(original), len(decoded))
 	}
@@ -123,8 +129,14 @@ func TestScalarQuantizer_UniformValues(t *testing.T) {
 
 	// Encode/decode should still work
 	original := []float32{5.0, 5.0, 5.0}
-	quantized := sq.Encode(original)
-	decoded := sq.Decode(quantized)
+	quantized, err := sq.Encode(original)
+	if err != nil {
+		t.Fatalf("Encode failed: %v", err)
+	}
+	decoded, err := sq.Decode(quantized)
+	if err != nil {
+		t.Fatalf("Decode failed: %v", err)
+	}
 
 	for i := range decoded {
 		if math.Abs(float64(decoded[i]-5.0)) > 0.01 {
@@ -143,8 +155,14 @@ func TestScalarQuantizer_Clamping(t *testing.T) {
 
 	// Test values outside trained range
 	original := []float32{-1.0, 0.5, 2.0}
-	quantized := sq.Encode(original)
-	decoded := sq.Decode(quantized)
+	quantized, err := sq.Encode(original)
+	if err != nil {
+		t.Fatalf("Encode failed: %v", err)
+	}
+	decoded, err := sq.Decode(quantized)
+	if err != nil {
+		t.Fatalf("Decode failed: %v", err)
+	}
 
 	// Values should be clamped to [0, 1]
 	if decoded[0] < -0.01 { // Small tolerance
@@ -177,7 +195,7 @@ func BenchmarkScalarQuantizer_Encode(b *testing.B) {
 
 	b.ResetTimer()
 	for b.Loop() {
-		_ = sq.Encode(vec)
+		_, _ = sq.Encode(vec)
 	}
 }
 
@@ -201,11 +219,11 @@ func BenchmarkScalarQuantizer_Decode(b *testing.B) {
 		vec[i] = float32(i%256)/128.0 - 1.0
 	}
 
-	quantized := sq.Encode(vec)
+	quantized, _ := sq.Encode(vec)
 
 	b.ResetTimer()
 	for b.Loop() {
-		_ = sq.Decode(quantized)
+		_, _ = sq.Decode(quantized)
 	}
 }
 
@@ -228,15 +246,18 @@ func TestScalarQuantizer_L2DistanceBatch(t *testing.T) {
 	v1 := []float32{1, 2, 3, 4} // Distance 0
 	v2 := []float32{2, 3, 4, 5} // Distance 1+1+1+1 = 4
 
-	code1 := sq.Encode(v1)
-	code2 := sq.Encode(v2)
+	code1, _ := sq.Encode(v1)
+	code2, _ := sq.Encode(v2)
 
 	codes := make([]byte, 0, dim*2)
 	codes = append(codes, code1...)
 	codes = append(codes, code2...)
 
 	out := make([]float32, 2)
-	sq.L2DistanceBatch(query, codes, 2, out)
+	err := sq.L2DistanceBatch(query, codes, 2, out)
+	if err != nil {
+		t.Fatalf("L2DistanceBatch failed: %v", err)
+	}
 
 	// Check v1 distance (should be close to 0)
 	if out[0] > 0.1 {

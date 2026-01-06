@@ -8,9 +8,9 @@ import (
 
 	"github.com/hupe1980/vecgo/blobstore"
 	"github.com/hupe1980/vecgo/distance"
+	"github.com/hupe1980/vecgo/internal/searcher"
 	"github.com/hupe1980/vecgo/metadata"
 	"github.com/hupe1980/vecgo/model"
-	"github.com/hupe1980/vecgo/searcher"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -36,7 +36,7 @@ func TestBlockSkipping(t *testing.T) {
 		md := metadata.Document{
 			"price": metadata.Value{Kind: metadata.KindFloat, F64: float64(i % 100)},
 		}
-		err := w.Add(model.PrimaryKey(i), []float32{0.0, 0.0}, md, nil)
+		err := w.Add(model.PKUint64(uint64(i)), []float32{0.0, 0.0}, md, nil)
 		require.NoError(t, err)
 	}
 
@@ -45,7 +45,7 @@ func TestBlockSkipping(t *testing.T) {
 		md := metadata.Document{
 			"price": metadata.Value{Kind: metadata.KindFloat, F64: float64(200 + (i % 100))},
 		}
-		err := w.Add(model.PrimaryKey(i), []float32{1.0, 1.0}, md, nil) // Different vector to distinguish
+		err := w.Add(model.PKUint64(uint64(i)), []float32{1.0, 1.0}, md, nil) // Different vector to distinguish
 		require.NoError(t, err)
 	}
 

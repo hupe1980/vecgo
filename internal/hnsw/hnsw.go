@@ -18,7 +18,7 @@ import (
 	"github.com/hupe1980/vecgo/internal/bitset"
 	"github.com/hupe1980/vecgo/internal/conv"
 	"github.com/hupe1980/vecgo/model"
-	"github.com/hupe1980/vecgo/searcher"
+	"github.com/hupe1980/vecgo/internal/searcher"
 	"github.com/hupe1980/vecgo/vectorstore"
 )
 
@@ -221,7 +221,11 @@ func New(optFns ...func(o *Options)) (*HNSW, error) {
 	}
 	h.dimensionAtomic.Store(dimI32)
 	if h.vectors == nil {
-		h.vectors = vectorstore.New(opts.Dimension)
+		var err error
+		h.vectors, err = vectorstore.New(opts.Dimension)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	return h, nil

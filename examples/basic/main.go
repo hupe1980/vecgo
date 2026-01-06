@@ -37,7 +37,7 @@ func main() {
 
 	fmt.Println("Inserting vectors...")
 	for _, v := range vectors {
-		if err := eng.Insert(vecgo.PrimaryKey(v.id), v.vec, nil, nil); err != nil {
+		if err := eng.Insert(vecgo.PKUint64(v.id), v.vec, nil, nil); err != nil {
 			log.Fatalf("Insert failed: %v", err)
 		}
 	}
@@ -56,7 +56,7 @@ func main() {
 	}
 
 	for i, res := range results {
-		fmt.Printf("%d. PK: %d, Score: %.4f\n", i+1, res.PK, res.Score)
+		fmt.Printf("%d. PK: %v, Score: %.4f\n", i+1, res.PK, res.Score)
 	}
 
 	// 4. Flush (force persistence)

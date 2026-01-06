@@ -45,7 +45,7 @@ func benchmarkIngest(b *testing.B, durability engine.Durability) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		pk := model.PrimaryKey(i)
+		pk := model.PKUint64(uint64(i))
 		if err := eng.Insert(pk, vec, nil, nil); err != nil {
 			b.Fatal(err)
 		}
@@ -70,7 +70,7 @@ func benchmarkIngestParallel(b *testing.B, durability engine.Durability) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			pk := model.PrimaryKey(rand.Int63())
+			pk := model.PKUint64(uint64(rand.Int63()))
 			if err := eng.Insert(pk, vec, nil, nil); err != nil {
 				b.Fatal(err)
 			}
@@ -95,7 +95,7 @@ func BenchmarkSearch_L0(b *testing.B) {
 		vec := make([]float32, 128)
 		rng.FillUniform(vec)
 		data[i] = vec
-		if err := eng.Insert(model.PrimaryKey(i), vec, nil, nil); err != nil {
+		if err := eng.Insert(model.PKUint64(uint64(i)), vec, nil, nil); err != nil {
 			b.Fatal(err)
 		}
 	}

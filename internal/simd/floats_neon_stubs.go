@@ -1,0 +1,18 @@
+//go:build !noasm && arm64
+
+package simd
+
+import "unsafe"
+
+//go:noescape
+func dotProductNeon(a unsafe.Pointer, b unsafe.Pointer, n int64, result unsafe.Pointer)
+
+//go:noescape
+func pqAdcLookupNeon(table unsafe.Pointer, codes unsafe.Pointer, m int64, result unsafe.Pointer)
+
+//go:noescape
+func scaleNeon(a unsafe.Pointer, n int64, scalar unsafe.Pointer)
+
+//go:noescape
+func squaredL2Neon(a unsafe.Pointer, b unsafe.Pointer, n int64, result unsafe.Pointer)
+

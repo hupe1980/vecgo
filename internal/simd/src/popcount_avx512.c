@@ -14,9 +14,11 @@ long long popcountAvx512(const unsigned char *a, int64_t n) {
 
     result = _mm512_reduce_add_epi64(acc);
 
+#ifndef SIMD_NO_TAIL
     for (; i < n; i++) {
         result += __builtin_popcount(a[i]);
     }
+#endif
     return result;
 }
 
@@ -35,8 +37,10 @@ long long hammingAvx512(const unsigned char *a, const unsigned char *b, int64_t 
 
     result = _mm512_reduce_add_epi64(acc);
 
+#ifndef SIMD_NO_TAIL
     for (; i < n; i++) {
         result += __builtin_popcount(a[i] ^ b[i]);
     }
+#endif
     return result;
 }

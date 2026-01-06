@@ -85,9 +85,9 @@ func (bq *BinaryQuantizer) Train(vectors [][]float32) error {
 // The result is packed into uint64 words for efficient storage and POPCNT operations.
 //
 // Storage format: ceil(dimension / 64) uint64 words, little-endian bit packing.
-func (bq *BinaryQuantizer) Encode(v []float32) []byte {
+func (bq *BinaryQuantizer) Encode(v []float32) ([]byte, error) {
 	if len(v) != bq.dimension {
-		panic("vector dimension mismatch")
+		return nil, errors.New("vector dimension mismatch")
 	}
 	// Note: We don't strictly require trained=true for Encode if the user is okay with default threshold 0.0.
 	// But for consistency with other quantizers, we could enforce it.
@@ -108,31 +108,33 @@ func (bq *BinaryQuantizer) Encode(v []float32) []byte {
 		}
 	}
 
-	return result
+	return result, nil
 }
 
 // EncodeUint64 quantizes a float32 vector to packed uint64 words.
 // This is more efficient for distance computation as it avoids byte-to-uint64 conversion.
-func (bq *BinaryQuantizer) EncodeUint64(v []float32) []uint64 {
+func (bq *BinaryQuantizer) EncodeUint64(v []float32) ([]uint64, error) {
 	if len(v) != bq.dimension {
-		panic("vector dimension mismatch")
+		return nil, errors.New("vector dimension mismatch")
 	}
 
 	numWords := (len(v) + 63) / 64
 	result := make([]uint64, numWords)
-	bq.EncodeUint64Into(result, v)
-	return result
+	if err := bq.EncodeUint64Into(result, v); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 // EncodeUint64Into quantizes a float32 vector into an existing uint64 slice.
 // The destination slice must be large enough to hold the quantized vector.
-func (bq *BinaryQuantizer) EncodeUint64Into(dst []uint64, v []float32) {
+func (bq *BinaryQuantizer) EncodeUint64Into(dst []uint64, v []float32) error {
 	if len(v) != bq.dimension {
-		panic("vector dimension mismatch")
+		return errors.New("vector dimension mismatch")
 	}
 	numWords := (len(v) + 63) / 64
 	if len(dst) < numWords {
-		panic("destination buffer too small")
+		return errors.New("destination buffer too small")
 	}
 
 	// Clear buffer first if needed?
@@ -151,26 +153,29 @@ func (bq *BinaryQuantizer) EncodeUint64Into(dst []uint64, v []float32) {
 			dst[wordIdx] |= 1 << bitIdx
 		}
 	}
+	return nil
 }
 
 // ComputeHammingDistance computes the Hamming distance between a float32 query and binary codes.
 // It uses a pooled buffer for the quantized query to avoid allocations.
-func (bq *BinaryQuantizer) ComputeHammingDistance(query []float32, codes []uint64) int {
+func (bq *BinaryQuantizer) ComputeHammingDistance(query []float32, codes []uint64) (int, error) {
 	// Get buffer from pool
 	qCodesPtr := bq.uint64Pool.Get().(*[]uint64)
 	qCodes := *qCodesPtr
 	defer bq.uint64Pool.Put(qCodesPtr)
 
 	// Encode query
-	bq.EncodeUint64Into(qCodes, query)
+	if err := bq.EncodeUint64Into(qCodes, query); err != nil {
+		return 0, err
+	}
 
 	// Compute distance
-	return HammingDistance(qCodes, codes)
+	return HammingDistance(qCodes, codes), nil
 }
 
 // Decode reconstructs a float32 vector from binary representation.
 // Note: This is a lossy reconstruction - values are either threshold-0.5 or threshold+0.5.
-func (bq *BinaryQuantizer) Decode(b []byte) []float32 {
+func (bq *BinaryQuantizer) Decode(b []byte) ([]float32, error) {
 	decoded := make([]float32, bq.dimension)
 
 	for i := 0; i < bq.dimension; i++ {
@@ -183,7 +188,7 @@ func (bq *BinaryQuantizer) Decode(b []byte) []float32 {
 		}
 	}
 
-	return decoded
+	return decoded, nil
 }
 
 // BytesPerDimension returns the storage size per dimension.

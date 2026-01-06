@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/hupe1980/vecgo/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -13,23 +14,23 @@ func TestWAL(t *testing.T) {
 	path := filepath.Join(dir, "test.wal")
 
 	// 1. Write records
-	w, err := Open(path, DefaultOptions())
+	w, err := Open(nil, path, DefaultOptions())
 	require.NoError(t, err)
 
 	recs := []*Record{
 		{
 			Type:     RecordTypeUpsert,
-			PK:       1,
+			PK:       model.PKUint64(1),
 			Vector:   []float32{1.0, 2.0, 3.0},
 			Metadata: []byte("meta1"),
 		},
 		{
 			Type: RecordTypeDelete,
-			PK:   2,
+			PK:   model.PKUint64(2),
 		},
 		{
 			Type:     RecordTypeUpsert,
-			PK:       3,
+			PK:       model.PKUint64(3),
 			Vector:   []float32{4.0, 5.0, 6.0},
 			Metadata: []byte("meta3"),
 		},
@@ -42,7 +43,7 @@ func TestWAL(t *testing.T) {
 	require.NoError(t, w.Close())
 
 	// 2. Read records
-	w2, err := Open(path, DefaultOptions())
+	w2, err := Open(nil, path, DefaultOptions())
 	require.NoError(t, err)
 	defer w2.Close()
 

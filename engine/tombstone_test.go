@@ -25,7 +25,7 @@ func getPK(t *testing.T, e *Engine, loc model.Location) uint64 {
 	if loc.SegmentID == snap.active.ID() {
 		err := snap.active.Iterate(func(rowID uint32, pk model.PrimaryKey, vec []float32, md metadata.Document, payload []byte) error {
 			if rowID == uint32(loc.RowID) {
-				foundPK = uint64(pk)
+				foundPK, _ = pk.Uint64()
 				found = true
 				return stopErr
 			}
@@ -39,7 +39,7 @@ func getPK(t *testing.T, e *Engine, loc model.Location) uint64 {
 		require.True(t, ok, "Segment %d not found", loc.SegmentID)
 		err := seg.Iterate(func(rowID uint32, pk model.PrimaryKey, vec []float32, md metadata.Document, payload []byte) error {
 			if rowID == uint32(loc.RowID) {
-				foundPK = uint64(pk)
+				foundPK, _ = pk.Uint64()
 				found = true
 				return stopErr
 			}
@@ -62,14 +62,14 @@ func TestTombstonePersistence(t *testing.T) {
 	require.NoError(t, err)
 
 	// 2. Insert data
-	require.NoError(t, e.Insert(1, []float32{1.0, 0.0}, nil, nil))
-	require.NoError(t, e.Insert(2, []float32{0.0, 1.0}, nil, nil))
+	require.NoError(t, e.Insert(model.PKUint64(1), []float32{1.0, 0.0}, nil, nil))
+	require.NoError(t, e.Insert(model.PKUint64(2), []float32{0.0, 1.0}, nil, nil))
 
 	// 3. Flush to create L1 segment (Segment 0)
 	require.NoError(t, e.Flush())
 
 	// 4. Delete PK 1 (which is in Segment 0)
-	require.NoError(t, e.Delete(1))
+	require.NoError(t, e.Delete(model.PKUint64(1)))
 
 	// Verify deletion in memory
 	cands, err := e.Search(ctx, []float32{1.0, 0.0}, 10)

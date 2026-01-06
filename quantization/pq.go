@@ -138,13 +138,13 @@ func (pq *ProductQuantizer) Train(vectors [][]float32) error {
 
 // Encode quantizes a vector into PQ codes.
 // Returns M uint8 codes (one per subvector).
-func (pq *ProductQuantizer) Encode(vec []float32) []byte {
+func (pq *ProductQuantizer) Encode(vec []float32) ([]byte, error) {
 	if !pq.trained {
-		panic("ProductQuantizer not trained")
+		return nil, errors.New("ProductQuantizer not trained")
 	}
 
 	if len(vec) != pq.dimension {
-		panic("vector dimension mismatch")
+		return nil, errors.New("vector dimension mismatch")
 	}
 
 	codes := make([]byte, pq.numSubvectors)
@@ -166,41 +166,23 @@ func (pq *ProductQuantizer) Encode(vec []float32) []byte {
 		codes[m] = uint8(nearestIdx) //nolint:gosec
 	}
 
-	return codes
+	return codes, nil
 }
 
 // findNearestQuantizedCentroid finds the index of the nearest quantized centroid.
 func (pq *ProductQuantizer) findNearestQuantizedCentroid(vec []float32, codebook []int8, scale, offset float32) int {
-	minDist := float32(math.MaxFloat32)
-	nearestIdx := 0
-	scratch := make([]float32, pq.subvectorDim)
-
-	for i := 0; i < pq.numCentroids; i++ {
-		start := i * pq.subvectorDim
-
-		// Dequantize
-		for j := 0; j < pq.subvectorDim; j++ {
-			scratch[j] = float32(codebook[start+j])*scale + offset
-		}
-
-		dist := simd.SquaredL2(vec, scratch)
-		if dist < minDist {
-			minDist = dist
-			nearestIdx = i
-		}
-	}
-
-	return nearestIdx
+	// Fused path: avoid materializing a float32 scratch centroid.
+	return simd.FindNearestCentroidInt8(vec, codebook, pq.subvectorDim, scale, offset)
 }
 
 // Decode reconstructs an approximate vector from PQ codes.
-func (pq *ProductQuantizer) Decode(codes []byte) []float32 {
+func (pq *ProductQuantizer) Decode(codes []byte) ([]float32, error) {
 	if !pq.trained {
-		panic("ProductQuantizer not trained")
+		return nil, errors.New("ProductQuantizer not trained")
 	}
 
 	if len(codes) != pq.numSubvectors {
-		panic("invalid code length")
+		return nil, errors.New("invalid code length")
 	}
 
 	reconstructed := make([]float32, pq.dimension)
@@ -237,19 +219,18 @@ func (pq *ProductQuantizer) Decode(codes []byte) []float32 {
 		}
 	}
 
-	return reconstructed
+	return reconstructed, nil
 }
 
 // ComputeAsymmetricDistance computes distance between a query vector and PQ codes.
 // This is asymmetric distance computation (ADC) - query is full precision, database is quantized.
 // Much faster than decoding and computing full distance.
-func (pq *ProductQuantizer) ComputeAsymmetricDistance(query []float32, codes []byte) float32 {
+func (pq *ProductQuantizer) ComputeAsymmetricDistance(query []float32, codes []byte) (float32, error) {
 	if !pq.trained {
-		panic("ProductQuantizer not trained")
+		return 0, errors.New("ProductQuantizer not trained")
 	}
 
 	var distance float32
-	scratch := make([]float32, pq.subvectorDim)
 
 	// Compute distance contribution from each subvector
 	for m := 0; m < pq.numSubvectors; m++ {
@@ -263,18 +244,13 @@ func (pq *ProductQuantizer) ComputeAsymmetricDistance(query []float32, codes []b
 
 		codebookStart := m * pq.numCentroids * pq.subvectorDim
 		centroidStart := codebookStart + centroidIdx*pq.subvectorDim
+		centroidCode := pq.codebooks[centroidStart : centroidStart+pq.subvectorDim]
 
-		// Dequantize
-		for i := 0; i < pq.subvectorDim; i++ {
-			qVal := pq.codebooks[centroidStart+i]
-			scratch[i] = float32(qVal)*scale + offset
-		}
-
-		// Squared L2 distance between query subvector and centroid
-		distance += simd.SquaredL2(querySubvec, scratch)
+		// Squared L2 distance between query subvector and centroid (fused dequantize + L2)
+		distance += simd.SquaredL2Int8Dequantized(querySubvec, centroidCode, scale, offset)
 	}
 
-	return distance
+	return distance, nil
 }
 
 // BytesPerVector returns the compressed size per vector in bytes.
@@ -489,7 +465,6 @@ func (pq *ProductQuantizer) BuildDistanceTable(query []float32) []float32 {
 	}
 
 	table := make([]float32, pq.numSubvectors*pq.numCentroids)
-	scratch := make([]float32, pq.subvectorDim)
 
 	for m := 0; m < pq.numSubvectors; m++ {
 		start := m * pq.subvectorDim
@@ -499,20 +474,11 @@ func (pq *ProductQuantizer) BuildDistanceTable(query []float32) []float32 {
 		scale := pq.scales[m]
 		offset := pq.offsets[m]
 		codebookStart := m * pq.numCentroids * pq.subvectorDim
+		codebook := pq.codebooks[codebookStart : codebookStart+pq.numCentroids*pq.subvectorDim]
+		out := table[m*pq.numCentroids : (m+1)*pq.numCentroids]
 
-		for k := 0; k < pq.numCentroids; k++ {
-			centroidStart := codebookStart + k*pq.subvectorDim
-
-			// Dequantize centroid on the fly
-			// This fits in L1 cache better than storing float32 codebooks
-			for i := 0; i < pq.subvectorDim; i++ {
-				qVal := pq.codebooks[centroidStart+i]
-				scratch[i] = float32(qVal)*scale + offset
-			}
-
-			dist := simd.SquaredL2(querySubvec, scratch)
-			table[m*pq.numCentroids+k] = dist
-		}
+		// Fused path: avoid materializing float32 centroid scratch for each k.
+		simd.BuildDistanceTableInt8(querySubvec, codebook, pq.subvectorDim, scale, offset, out)
 	}
 
 	return table
@@ -520,9 +486,9 @@ func (pq *ProductQuantizer) BuildDistanceTable(query []float32) []float32 {
 
 // AdcDistance computes the approximate distance between a query (represented by the distance table)
 // and a quantized vector (represented by codes).
-func (pq *ProductQuantizer) AdcDistance(table []float32, codes []byte) float32 {
+func (pq *ProductQuantizer) AdcDistance(table []float32, codes []byte) (float32, error) {
 	if len(codes) != pq.numSubvectors {
-		panic("codes length mismatch")
+		return 0, errors.New("codes length mismatch")
 	}
-	return simd.PqAdcLookup(table, codes, pq.numSubvectors)
+	return simd.PqAdcLookup(table, codes, pq.numSubvectors), nil
 }

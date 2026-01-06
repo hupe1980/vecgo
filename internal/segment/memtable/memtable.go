@@ -9,10 +9,10 @@ import (
 	"github.com/hupe1980/vecgo/distance"
 	"github.com/hupe1980/vecgo/internal/arena"
 	idxhnsw "github.com/hupe1980/vecgo/internal/hnsw"
+	"github.com/hupe1980/vecgo/internal/searcher"
 	"github.com/hupe1980/vecgo/internal/segment"
 	"github.com/hupe1980/vecgo/metadata"
 	"github.com/hupe1980/vecgo/model"
-	"github.com/hupe1980/vecgo/searcher"
 	"github.com/hupe1980/vecgo/vectorstore"
 )
 
@@ -25,19 +25,24 @@ type MemTable struct {
 	metric   distance.Metric
 	idx      *idxhnsw.HNSW
 	vectors  vectorstore.VectorStore
-	pks      []model.PrimaryKey
+	pks      []model.PK
 	metadata []metadata.InternedDocument
 	payloads [][]byte
 }
 
 // New creates a new MemTable.
-func New(id model.SegmentID, dim int, metric distance.Metric, acquirer arena.MemoryAcquirer) *MemTable {
-	store := vectorstore.New(dim)
+func New(id model.SegmentID, dim int, metric distance.Metric, acquirer arena.MemoryAcquirer) (*MemTable, error) {
+	store, err := vectorstore.New(dim)
+	if err != nil {
+		return nil, err
+	}
 
 	// Configure HNSW for L0:
-	// - M=16, EF=100 (standard defaults)
+	// - M=32, EF=300 (tuned for higher recall)
 	// - Use the shared vector store
 	opts := idxhnsw.DefaultOptions
+	opts.M = 32
+	opts.EF = 300
 	opts.Dimension = dim
 	opts.DistanceType = metric
 	opts.Vectors = store
@@ -48,7 +53,7 @@ func New(id model.SegmentID, dim int, metric distance.Metric, acquirer arena.Mem
 		*o = opts
 	})
 	if err != nil {
-		panic(fmt.Errorf("failed to create memtable hnsw: %w", err))
+		return nil, fmt.Errorf("failed to create memtable hnsw: %w", err)
 	}
 
 	return &MemTable{
@@ -58,9 +63,9 @@ func New(id model.SegmentID, dim int, metric distance.Metric, acquirer arena.Mem
 		metric:   metric,
 		idx:      h,
 		vectors:  store,
-		pks:      make([]model.PrimaryKey, 0, 1024),
+		pks:      make([]model.PK, 0, 1024),
 		metadata: make([]metadata.InternedDocument, 0, 1024),
-	}
+	}, nil
 }
 
 // IncRef increments the reference count.
@@ -77,12 +82,12 @@ func (m *MemTable) DecRef() {
 
 // Insert adds a vector to the memtable.
 // Returns the assigned RowID.
-func (m *MemTable) Insert(pk model.PrimaryKey, vec []float32) (model.RowID, error) {
+func (m *MemTable) Insert(pk model.PK, vec []float32) (model.RowID, error) {
 	return m.InsertWithPayload(pk, vec, nil, nil)
 }
 
 // InsertWithPayload adds a vector and metadata to the memtable.
-func (m *MemTable) InsertWithPayload(pk model.PrimaryKey, vec []float32, md metadata.Document, payload []byte) (model.RowID, error) {
+func (m *MemTable) InsertWithPayload(pk model.PK, vec []float32, md metadata.Document, payload []byte) (model.RowID, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -114,7 +119,7 @@ func (m *MemTable) InsertWithPayload(pk model.PrimaryKey, vec []float32, md meta
 	} else {
 		// Resize if needed
 		if int(id) >= cap(m.pks) {
-			newPks := make([]model.PrimaryKey, int(id)+1, int(id)*2)
+			newPks := make([]model.PK, int(id)+1, int(id)*2)
 			copy(newPks, m.pks)
 			m.pks = newPks
 
@@ -191,21 +196,20 @@ func (m *MemTable) Search(ctx context.Context, q []float32, k int, filter segmen
 
 	// Handle user metadata filter
 	if opts.Filter != nil {
-		if fs, ok := opts.Filter.(*metadata.FilterSet); ok {
-			prevFilter := hnswFilter
-			hnswFilter = func(id model.RowID) bool {
-				if prevFilter != nil && !prevFilter(id) {
-					return false
-				}
-				if int(id) >= len(m.metadata) {
-					return false
-				}
-				doc := m.metadata[int(id)]
-				if doc == nil {
-					return false
-				}
-				return fs.MatchesInterned(doc)
+		fs := opts.Filter
+		prevFilter := hnswFilter
+		hnswFilter = func(id model.RowID) bool {
+			if prevFilter != nil && !prevFilter(id) {
+				return false
 			}
+			if int(id) >= len(m.metadata) {
+				return false
+			}
+			doc := m.metadata[int(id)]
+			if doc == nil {
+				return false
+			}
+			return fs.MatchesInterned(doc)
 		}
 	}
 
@@ -214,7 +218,12 @@ func (m *MemTable) Search(ctx context.Context, q []float32, k int, filter segmen
 		Filter:   hnswFilter,
 	}
 	if hnswOpts.EFSearch == 0 {
+		// Default EFSearch logic:
+		// Ensure at least 200 for good recall, but scale with k.
 		hnswOpts.EFSearch = k + 100
+		if hnswOpts.EFSearch < 200 {
+			hnswOpts.EFSearch = 200
+		}
 	}
 
 	var s *searcher.Searcher
@@ -333,7 +342,7 @@ func (m *MemTable) Fetch(ctx context.Context, rows []uint32, cols []string) (seg
 	}
 
 	batch := &segment.SimpleRecordBatch{
-		PKs: make([]model.PrimaryKey, len(rows)),
+		PKs: make([]model.PK, len(rows)),
 	}
 	if fetchVectors {
 		batch.Vectors = make([][]float32, len(rows))
@@ -376,8 +385,29 @@ func (m *MemTable) Fetch(ctx context.Context, rows []uint32, cols []string) (seg
 	return batch, nil
 }
 
+func (m *MemTable) FetchPKs(ctx context.Context, rows []uint32, dst []model.PK) error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if m.idx == nil {
+		return fmt.Errorf("memtable is closed")
+	}
+
+	if len(dst) != len(rows) {
+		return fmt.Errorf("dst length mismatch")
+	}
+
+	for i, rowID := range rows {
+		if int(rowID) >= len(m.pks) {
+			return fmt.Errorf("rowID out of bounds")
+		}
+		dst[i] = m.pks[rowID]
+	}
+	return nil
+}
+
 // Iterate iterates over all valid (non-deleted) vectors in the memtable.
-func (m *MemTable) Iterate(fn func(rowID uint32, pk model.PrimaryKey, vec []float32, md metadata.Document, payload []byte) error) error {
+func (m *MemTable) Iterate(fn func(rowID uint32, pk model.PK, vec []float32, md metadata.Document, payload []byte) error) error {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -442,7 +472,10 @@ func (m *MemTable) Size() int64 {
 	}
 
 	// PKs size
-	size += int64(cap(m.pks)) * 8
+	// model.PK is struct { Kind uint8; U64 uint64; S string }
+	// Size is roughly 1 + 8 + 16 = 25 bytes + padding -> 32 bytes.
+	// Plus string content if any.
+	size += int64(cap(m.pks)) * 32
 
 	return size
 }

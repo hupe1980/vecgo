@@ -35,7 +35,7 @@ func TestAutoFlush(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		for i := 0; i < 1000; i++ {
-			pk := model.PrimaryKey(i)
+			pk := model.PKUint64(uint64(i))
 			vec := []float32{0.1, 0.2, 0.3, 0.4}
 			err := e.Insert(pk, vec, nil, nil)
 			assert.NoError(t, err)

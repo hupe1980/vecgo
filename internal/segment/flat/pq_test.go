@@ -8,8 +8,8 @@ import (
 
 	"github.com/hupe1980/vecgo/blobstore"
 	"github.com/hupe1980/vecgo/distance"
+	"github.com/hupe1980/vecgo/internal/searcher"
 	"github.com/hupe1980/vecgo/model"
-	"github.com/hupe1980/vecgo/searcher"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -54,7 +54,7 @@ func TestPQSegment(t *testing.T) {
 	// Actually I already added it.
 
 	for i, vec := range vectors {
-		err := w.Add(model.PrimaryKey(i), vec, nil, nil)
+		err := w.Add(model.PKUint64(uint64(i)), vec, nil, nil)
 		require.NoError(t, err)
 	}
 

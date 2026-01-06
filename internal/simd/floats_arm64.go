@@ -19,43 +19,11 @@ func init() {
 		dotBatchImpl = dotBatchNEON
 		f16ToF32Impl = f16ToF32NEON
 		sq8L2BatchImpl = sq8L2BatchNEON
+		sq8uL2BatchPerDimensionImpl = sq8uL2BatchPerDimensionNEON
 		popcountImpl = popcountNEON
-		// hammingImpl = hammingNEON   // Fails tests
+		hammingImpl = hammingNEON
 	}
 }
-
-//go:noescape
-func dotProductNeon(a unsafe.Pointer, b unsafe.Pointer, n int64, result unsafe.Pointer)
-
-//go:noescape
-func squaredL2Neon(a, b unsafe.Pointer, n int64, result unsafe.Pointer)
-
-//go:noescape
-func pqAdcLookupNeon(table, codes unsafe.Pointer, m int64, result unsafe.Pointer)
-
-// NOTE: The generated assembly currently expects 3 args laid out as:
-// a @ +0, n @ +8, scalar @ +16.
-//
-//go:noescape
-func scaleNeon(a unsafe.Pointer, n int64, scalar unsafe.Pointer)
-
-//go:noescape
-func squaredL2BatchNeon(query, targets unsafe.Pointer, dim, n int64, out unsafe.Pointer)
-
-//go:noescape
-func dotBatchNeon(query, targets unsafe.Pointer, dim, n int64, out unsafe.Pointer)
-
-//go:noescape
-func f16ToF32Neon(in, out unsafe.Pointer, n int64)
-
-//go:noescape
-func sq8L2BatchNeon(query, codes, scales, biases unsafe.Pointer, dim, n int64, out unsafe.Pointer)
-
-//go:noescape
-func popcountNeon(a unsafe.Pointer, n int) int64
-
-//go:noescape
-func hammingNeon(a, b unsafe.Pointer, n int) int64
 
 func dotNEON(a, b []float32) float32 {
 	var ret float32
@@ -115,16 +83,32 @@ func sq8L2BatchNEON(query []float32, codes []int8, scales []float32, biases []fl
 	}
 }
 
+func sq8uL2BatchPerDimensionNEON(query []float32, codes []byte, mins []float32, invScales []float32, dim int, out []float32) {
+	if len(out) > 0 {
+		sq8uL2BatchPerDimensionNeon(
+			unsafe.Pointer(&query[0]),
+			unsafe.Pointer(&codes[0]),
+			unsafe.Pointer(&mins[0]),
+			unsafe.Pointer(&invScales[0]),
+			int64(dim),
+			int64(len(out)),
+			unsafe.Pointer(&out[0]),
+		)
+	}
+}
+
 func popcountNEON(a []byte) int64 {
-	if len(a) == 0 {
+	n := len(a)
+	if n == 0 {
 		return 0
 	}
-	return popcountNeon(unsafe.Pointer(&a[0]), len(a))
+	return popcountNeon(unsafe.Pointer(&a[0]), int64(n))
 }
 
 func hammingNEON(a, b []byte) int64 {
-	if len(a) == 0 {
+	n := len(a)
+	if n == 0 {
 		return 0
 	}
-	return hammingNeon(unsafe.Pointer(&a[0]), unsafe.Pointer(&b[0]), len(a))
+	return hammingNeon(unsafe.Pointer(&a[0]), unsafe.Pointer(&b[0]), int64(n))
 }

@@ -1,8 +1,9 @@
-package metadata
+package imetadata
 
 import (
 	"testing"
 
+	"github.com/hupe1980/vecgo/metadata"
 	"github.com/hupe1980/vecgo/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -11,10 +12,10 @@ import (
 func TestUnifiedIndex_SetGet(t *testing.T) {
 	ui := NewUnifiedIndex()
 
-	doc := Document{
-		"category": String("technology"),
-		"year":     Int(2024),
-		"active":   Bool(true),
+	doc := metadata.Document{
+		"category": metadata.String("technology"),
+		"year":     metadata.Int(2024),
+		"active":   metadata.Bool(true),
 	}
 
 	// Set metadata
@@ -34,31 +35,31 @@ func TestUnifiedIndex_Update(t *testing.T) {
 	ui := NewUnifiedIndex()
 
 	// Initial document
-	doc1 := Document{
-		"category": String("technology"),
-		"year":     Int(2023),
+	doc1 := metadata.Document{
+		"category": metadata.String("technology"),
+		"year":     metadata.Int(2023),
 	}
 	ui.Set(1, doc1)
 
 	// Update document
-	doc2 := Document{
-		"category": String("science"),
-		"year":     Int(2024),
+	doc2 := metadata.Document{
+		"category": metadata.String("science"),
+		"year":     metadata.Int(2024),
 	}
 	ui.Set(1, doc2)
 
 	// Verify update
 	retrieved, ok := ui.Get(1)
 	require.True(t, ok)
-	assert.Equal(t, String("science"), retrieved["category"])
-	assert.Equal(t, Int(2024), retrieved["year"])
+	assert.Equal(t, metadata.String("science"), retrieved["category"])
+	assert.Equal(t, metadata.Int(2024), retrieved["year"])
 }
 
 func TestUnifiedIndex_Delete(t *testing.T) {
 	ui := NewUnifiedIndex()
 
-	doc := Document{
-		"category": String("technology"),
+	doc := metadata.Document{
+		"category": metadata.String("technology"),
 	}
 	ui.Set(1, doc)
 
@@ -78,14 +79,14 @@ func TestUnifiedIndex_CompileFilter_Equal(t *testing.T) {
 	ui := NewUnifiedIndex()
 
 	// Add test documents
-	ui.Set(1, Document{"category": String("tech")})
-	ui.Set(2, Document{"category": String("science")})
-	ui.Set(3, Document{"category": String("tech")})
+	ui.Set(1, metadata.Document{"category": metadata.String("tech")})
+	ui.Set(2, metadata.Document{"category": metadata.String("science")})
+	ui.Set(3, metadata.Document{"category": metadata.String("tech")})
 
 	// Compile filter: category == "tech"
-	fs := &FilterSet{
-		Filters: []Filter{
-			{Key: "category", Operator: OpEqual, Value: String("tech")},
+	fs := &metadata.FilterSet{
+		Filters: []metadata.Filter{
+			{Key: "category", Operator: metadata.OpEqual, Value: metadata.String("tech")},
 		},
 	}
 
@@ -100,15 +101,15 @@ func TestUnifiedIndex_CompileFilter_Equal(t *testing.T) {
 func TestUnifiedIndex_CompileFilter_In(t *testing.T) {
 	ui := NewUnifiedIndex()
 
-	ui.Set(1, Document{"status": String("active")})
-	ui.Set(2, Document{"status": String("pending")})
-	ui.Set(3, Document{"status": String("inactive")})
-	ui.Set(4, Document{"status": String("active")})
+	ui.Set(1, metadata.Document{"status": metadata.String("active")})
+	ui.Set(2, metadata.Document{"status": metadata.String("pending")})
+	ui.Set(3, metadata.Document{"status": metadata.String("inactive")})
+	ui.Set(4, metadata.Document{"status": metadata.String("active")})
 
 	// Compile filter: status IN ["active", "pending"]
-	fs := &FilterSet{
-		Filters: []Filter{
-			{Key: "status", Operator: OpIn, Value: Array([]Value{String("active"), String("pending")})},
+	fs := &metadata.FilterSet{
+		Filters: []metadata.Filter{
+			{Key: "status", Operator: metadata.OpIn, Value: metadata.Array([]metadata.Value{metadata.String("active"), metadata.String("pending")})},
 		},
 	}
 
@@ -124,15 +125,15 @@ func TestUnifiedIndex_CompileFilter_In(t *testing.T) {
 func TestUnifiedIndex_CompileFilter_MultipleConditions(t *testing.T) {
 	ui := NewUnifiedIndex()
 
-	ui.Set(1, Document{"category": String("tech"), "year": Int(2024)})
-	ui.Set(2, Document{"category": String("tech"), "year": Int(2023)})
-	ui.Set(3, Document{"category": String("science"), "year": Int(2024)})
+	ui.Set(1, metadata.Document{"category": metadata.String("tech"), "year": metadata.Int(2024)})
+	ui.Set(2, metadata.Document{"category": metadata.String("tech"), "year": metadata.Int(2023)})
+	ui.Set(3, metadata.Document{"category": metadata.String("science"), "year": metadata.Int(2024)})
 
 	// Compile filter: category == "tech" AND year == 2024
-	fs := &FilterSet{
-		Filters: []Filter{
-			{Key: "category", Operator: OpEqual, Value: String("tech")},
-			{Key: "year", Operator: OpEqual, Value: Int(2024)},
+	fs := &metadata.FilterSet{
+		Filters: []metadata.Filter{
+			{Key: "category", Operator: metadata.OpEqual, Value: metadata.String("tech")},
+			{Key: "year", Operator: metadata.OpEqual, Value: metadata.Int(2024)},
 		},
 	}
 
@@ -147,12 +148,12 @@ func TestUnifiedIndex_CompileFilter_MultipleConditions(t *testing.T) {
 func TestUnifiedIndex_CompileFilter_NoMatches(t *testing.T) {
 	ui := NewUnifiedIndex()
 
-	ui.Set(1, Document{"category": String("tech")})
+	ui.Set(1, metadata.Document{"category": metadata.String("tech")})
 
 	// Filter with no matches
-	fs := &FilterSet{
-		Filters: []Filter{
-			{Key: "category", Operator: OpEqual, Value: String("nonexistent")},
+	fs := &metadata.FilterSet{
+		Filters: []metadata.Filter{
+			{Key: "category", Operator: metadata.OpEqual, Value: metadata.String("nonexistent")},
 		},
 	}
 
@@ -164,14 +165,14 @@ func TestUnifiedIndex_CompileFilter_NoMatches(t *testing.T) {
 func TestUnifiedIndex_ScanFilter(t *testing.T) {
 	ui := NewUnifiedIndex()
 
-	ui.Set(1, Document{"score": Int(100)})
-	ui.Set(2, Document{"score": Int(50)})
-	ui.Set(3, Document{"score": Int(150)})
+	ui.Set(1, metadata.Document{"score": metadata.Int(100)})
+	ui.Set(2, metadata.Document{"score": metadata.Int(50)})
+	ui.Set(3, metadata.Document{"score": metadata.Int(150)})
 
 	// Scan filter: score > 75 (not supported by CompileFilter)
-	fs := &FilterSet{
-		Filters: []Filter{
-			{Key: "score", Operator: OpGreaterThan, Value: Int(75)},
+	fs := &metadata.FilterSet{
+		Filters: []metadata.Filter{
+			{Key: "score", Operator: metadata.OpGreaterThan, Value: metadata.Int(75)},
 		},
 	}
 
@@ -189,14 +190,14 @@ func TestUnifiedIndex_ScanFilter(t *testing.T) {
 func TestUnifiedIndex_CreateFilterFunc(t *testing.T) {
 	ui := NewUnifiedIndex()
 
-	ui.Set(1, Document{"category": String("tech")})
-	ui.Set(2, Document{"category": String("science")})
-	ui.Set(3, Document{"category": String("tech")})
+	ui.Set(1, metadata.Document{"category": metadata.String("tech")})
+	ui.Set(2, metadata.Document{"category": metadata.String("science")})
+	ui.Set(3, metadata.Document{"category": metadata.String("tech")})
 
 	// Create filter function
-	fs := &FilterSet{
-		Filters: []Filter{
-			{Key: "category", Operator: OpEqual, Value: String("tech")},
+	fs := &metadata.FilterSet{
+		Filters: []metadata.Filter{
+			{Key: "category", Operator: metadata.OpEqual, Value: metadata.String("tech")},
 		},
 	}
 
@@ -213,12 +214,12 @@ func TestUnifiedIndex_InvertedIndexUpdate(t *testing.T) {
 	ui := NewUnifiedIndex()
 
 	// Initial document
-	ui.Set(1, Document{"category": String("tech")})
+	ui.Set(1, metadata.Document{"category": metadata.String("tech")})
 
 	// Verify inverted index has entry
-	fs1 := &FilterSet{
-		Filters: []Filter{
-			{Key: "category", Operator: OpEqual, Value: String("tech")},
+	fs1 := &metadata.FilterSet{
+		Filters: []metadata.Filter{
+			{Key: "category", Operator: metadata.OpEqual, Value: metadata.String("tech")},
 		},
 	}
 	bitmap1 := ui.CompileFilter(fs1)
@@ -226,7 +227,7 @@ func TestUnifiedIndex_InvertedIndexUpdate(t *testing.T) {
 	assert.True(t, bitmap1.Contains(1))
 
 	// Update to different category
-	ui.Set(1, Document{"category": String("science")})
+	ui.Set(1, metadata.Document{"category": metadata.String("science")})
 
 	// Old inverted index entry should be cleaned up
 	bitmap2 := ui.CompileFilter(fs1)
@@ -234,9 +235,9 @@ func TestUnifiedIndex_InvertedIndexUpdate(t *testing.T) {
 	assert.False(t, bitmap2.Contains(1)) // No longer in "tech"
 
 	// New category should be indexed
-	fs2 := &FilterSet{
-		Filters: []Filter{
-			{Key: "category", Operator: OpEqual, Value: String("science")},
+	fs2 := &metadata.FilterSet{
+		Filters: []metadata.Filter{
+			{Key: "category", Operator: metadata.OpEqual, Value: metadata.String("science")},
 		},
 	}
 	bitmap3 := ui.CompileFilter(fs2)
@@ -247,13 +248,13 @@ func TestUnifiedIndex_InvertedIndexUpdate(t *testing.T) {
 func TestUnifiedIndex_InvertedIndexDelete(t *testing.T) {
 	ui := NewUnifiedIndex()
 
-	ui.Set(1, Document{"category": String("tech")})
-	ui.Set(2, Document{"category": String("tech")})
+	ui.Set(1, metadata.Document{"category": metadata.String("tech")})
+	ui.Set(2, metadata.Document{"category": metadata.String("tech")})
 
 	// Both should match
-	fs := &FilterSet{
-		Filters: []Filter{
-			{Key: "category", Operator: OpEqual, Value: String("tech")},
+	fs := &metadata.FilterSet{
+		Filters: []metadata.Filter{
+			{Key: "category", Operator: metadata.OpEqual, Value: metadata.String("tech")},
 		},
 	}
 	bitmap := ui.CompileFilter(fs)
@@ -289,9 +290,9 @@ func TestUnifiedIndex_Stats(t *testing.T) {
 	assert.Equal(t, 0, stats.BitmapCount)
 
 	// Add documents
-	ui.Set(1, Document{"category": String("tech"), "year": Int(2024)})
-	ui.Set(2, Document{"category": String("science"), "year": Int(2024)})
-	ui.Set(3, Document{"category": String("tech"), "year": Int(2023)})
+	ui.Set(1, metadata.Document{"category": metadata.String("tech"), "year": metadata.Int(2024)})
+	ui.Set(2, metadata.Document{"category": metadata.String("science"), "year": metadata.Int(2024)})
+	ui.Set(3, metadata.Document{"category": metadata.String("tech"), "year": metadata.Int(2023)})
 
 	stats = ui.GetStats()
 	assert.Equal(t, 3, stats.DocumentCount)
@@ -306,10 +307,10 @@ func TestUnifiedIndex_Len(t *testing.T) {
 
 	assert.Equal(t, 0, ui.Len())
 
-	ui.Set(1, Document{"key": String("value")})
+	ui.Set(1, metadata.Document{"key": metadata.String("value")})
 	assert.Equal(t, 1, ui.Len())
 
-	ui.Set(2, Document{"key": String("value")})
+	ui.Set(2, metadata.Document{"key": metadata.String("value")})
 	assert.Equal(t, 2, ui.Len())
 
 	ui.Delete(1)
@@ -326,12 +327,12 @@ func BenchmarkUnifiedIndex_CompileFilter(b *testing.B) {
 		if i%3 == 0 {
 			category = "science"
 		}
-		ui.Set(i, Document{"category": String(category)})
+		ui.Set(i, metadata.Document{"category": metadata.String(category)})
 	}
 
-	fs := &FilterSet{
-		Filters: []Filter{
-			{Key: "category", Operator: OpEqual, Value: String("tech")},
+	fs := &metadata.FilterSet{
+		Filters: []metadata.Filter{
+			{Key: "category", Operator: metadata.OpEqual, Value: metadata.String("tech")},
 		},
 	}
 
@@ -348,12 +349,12 @@ func BenchmarkUnifiedIndex_ScanFilter(b *testing.B) {
 	// Add 10k documents
 	for i := model.RowID(0); i < 10000; i++ {
 		score := int64(i % 100)
-		ui.Set(i, Document{"score": Int(score)})
+		ui.Set(i, metadata.Document{"score": metadata.Int(score)})
 	}
 
-	fs := &FilterSet{
-		Filters: []Filter{
-			{Key: "score", Operator: OpGreaterThan, Value: Int(50)},
+	fs := &metadata.FilterSet{
+		Filters: []metadata.Filter{
+			{Key: "score", Operator: metadata.OpGreaterThan, Value: metadata.Int(50)},
 		},
 	}
 

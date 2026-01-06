@@ -14,6 +14,10 @@ sudo apt-get install -y \
     binutils \
     build-essential
 
+# Install just (command runner for Justfile targets)
+echo "📦 Installing just..."
+sudo apt-get install -y just
+
 # Install cross-compilation toolchain for x86_64 (AMD64)
 echo "🔀 Installing x86_64 cross-compilation toolchain..."
 sudo apt-get install -y \

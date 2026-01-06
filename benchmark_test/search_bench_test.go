@@ -42,7 +42,7 @@ func BenchmarkSearch_Mixed(b *testing.B) {
 		v := make([]float32, dim)
 		rng.FillUniform(v)
 		data[i] = v
-		if err := eng.Insert(model.PrimaryKey(i), v, nil, nil); err != nil {
+		if err := eng.Insert(model.PKUint64(uint64(i)), v, nil, nil); err != nil {
 			b.Fatal(err)
 		}
 
@@ -119,14 +119,14 @@ func BenchmarkSearchFiltered(b *testing.B) {
 			cat = "B"
 		} else {
 			dataA = append(dataA, vec)
-			pksA = append(pksA, model.PrimaryKey(i))
+			pksA = append(pksA, model.PKUint64(uint64(i)))
 		}
 
 		md := map[string]interface{}{
 			"category": cat,
 		}
 
-		if err := eng.Insert(model.PrimaryKey(i), vec, md, nil); err != nil {
+		if err := eng.Insert(model.PKUint64(uint64(i)), vec, md, nil); err != nil {
 			b.Fatal(err)
 		}
 	}

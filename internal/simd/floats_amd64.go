@@ -34,60 +34,6 @@ func init() {
 	}
 }
 
-//go:noescape
-func dotProductAvx(a, b unsafe.Pointer, n int64, result unsafe.Pointer)
-
-//go:noescape
-func dotProductAvx512(a, b unsafe.Pointer, n int64, result unsafe.Pointer)
-
-//go:noescape
-func squaredL2Avx(a, b unsafe.Pointer, n int64, result unsafe.Pointer)
-
-//go:noescape
-func squaredL2Avx512(a, b unsafe.Pointer, n int64, result unsafe.Pointer)
-
-//go:noescape
-func pqAdcLookupAvx(table, codes unsafe.Pointer, m int64, result unsafe.Pointer)
-
-//go:noescape
-func pqAdcLookupAvx512(table, codes unsafe.Pointer, m int64, result unsafe.Pointer)
-
-//go:noescape
-func squaredL2BatchAvx(query, targets unsafe.Pointer, dim, n int64, out unsafe.Pointer)
-
-//go:noescape
-func squaredL2BatchAvx512(query, targets unsafe.Pointer, dim, n int64, out unsafe.Pointer)
-
-//go:noescape
-func dotBatchAvx(query, targets unsafe.Pointer, dim, n int64, out unsafe.Pointer)
-
-//go:noescape
-func dotBatchAvx512(query, targets unsafe.Pointer, dim, n int64, out unsafe.Pointer)
-
-//go:noescape
-func f16ToF32Avx(in, out unsafe.Pointer, n int64)
-
-//go:noescape
-func f16ToF32Avx512(in, out unsafe.Pointer, n int64)
-
-//go:noescape
-func sq8L2BatchAvx(query, codes, scales, biases unsafe.Pointer, dim, n int64, out unsafe.Pointer)
-
-//go:noescape
-func sq8L2BatchAvx512(query, codes, scales, biases unsafe.Pointer, dim, n int64, out unsafe.Pointer)
-
-//go:noescape
-func popcountAvx(a unsafe.Pointer, n int) int64
-
-//go:noescape
-func popcountAvx512(a unsafe.Pointer, n int) int64
-
-//go:noescape
-func hammingAvx(a, b unsafe.Pointer, n int) int64
-
-//go:noescape
-func hammingAvx512(a, b unsafe.Pointer, n int) int64
-
 func dotAVX(a, b []float32) float32 {
 	var ret float32
 	if len(a) > 0 {
@@ -123,7 +69,13 @@ func squaredL2AVX512(a, b []float32) float32 {
 func pqAdcAVX(table []float32, codes []byte, m int) float32 {
 	var ret float32
 	if m > 0 {
-		pqAdcLookupAvx(unsafe.Pointer(&table[0]), unsafe.Pointer(&codes[0]), int64(m), unsafe.Pointer(&ret))
+		pqAdcLookupAvx(
+			unsafe.Pointer(&table[0]),
+			unsafe.Pointer(&codes[0]),
+			int64(m),
+			unsafe.Pointer(&ret),
+			unsafe.Pointer(&pqAdcAVXOffsets[0]),
+		)
 	}
 	return ret
 }
@@ -131,10 +83,20 @@ func pqAdcAVX(table []float32, codes []byte, m int) float32 {
 func pqAdcAVX512(table []float32, codes []byte, m int) float32 {
 	var ret float32
 	if m > 0 {
-		pqAdcLookupAvx512(unsafe.Pointer(&table[0]), unsafe.Pointer(&codes[0]), int64(m), unsafe.Pointer(&ret))
+		pqAdcLookupAvx512(
+			unsafe.Pointer(&table[0]),
+			unsafe.Pointer(&codes[0]),
+			int64(m),
+			unsafe.Pointer(&ret),
+			unsafe.Pointer(&pqAdcAVX512Offsets[0]),
+		)
 	}
 	return ret
 }
+
+var pqAdcAVXOffsets = [8]uint32{0, 256, 512, 768, 1024, 1280, 1536, 1792}
+
+var pqAdcAVX512Offsets = [16]uint32{0, 256, 512, 768, 1024, 1280, 1536, 1792, 2048, 2304, 2560, 2816, 3072, 3328, 3584, 3840}
 
 func squaredL2BatchAVX(query []float32, targets []float32, dim int, out []float32) {
 	if len(out) > 0 {
@@ -185,29 +147,64 @@ func sq8L2BatchAVX512(query []float32, codes []int8, scales []float32, biases []
 }
 
 func popcountAVX(a []byte) int64 {
-	if len(a) == 0 {
+	n := len(a)
+	if n == 0 {
 		return 0
 	}
-	return popcountAvx(unsafe.Pointer(&a[0]), len(a))
+
+	return popcountAvx(
+		unsafe.Pointer(&a[0]),
+		int64(n),
+		unsafe.Pointer(&popcountAVXLookup[0]),
+		unsafe.Pointer(&popcountAVXLowMask[0]),
+	)
 }
 
 func popcountAVX512(a []byte) int64 {
-	if len(a) == 0 {
+	n := len(a)
+	if n == 0 {
 		return 0
 	}
-	return popcountAvx512(unsafe.Pointer(&a[0]), len(a))
+
+	return popcountAvx512(unsafe.Pointer(&a[0]), int64(n))
 }
 
 func hammingAVX(a, b []byte) int64 {
-	if len(a) == 0 {
+	n := len(a)
+	if n == 0 {
 		return 0
 	}
-	return hammingAvx(unsafe.Pointer(&a[0]), unsafe.Pointer(&b[0]), len(a))
+
+	return hammingAvx(
+		unsafe.Pointer(&a[0]),
+		unsafe.Pointer(&b[0]),
+		int64(n),
+		unsafe.Pointer(&popcountAVXLookup[0]),
+		unsafe.Pointer(&popcountAVXLowMask[0]),
+	)
+}
+
+// popcountAVXLookup matches the byte order of _mm256_setr_epi8(
+//
+//	0,1,1,2,1,2,2,3,1,2,2,3,2,3,3,4,
+//	0,1,1,2,1,2,2,3,1,2,2,3,2,3,3,4).
+var popcountAVXLookup = [32]byte{
+	0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4,
+	0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4,
+}
+
+var popcountAVXLowMask = [32]byte{
+	0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F,
+	0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F,
+	0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F,
+	0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F,
 }
 
 func hammingAVX512(a, b []byte) int64 {
-	if len(a) == 0 {
+	n := len(a)
+	if n == 0 {
 		return 0
 	}
-	return hammingAvx512(unsafe.Pointer(&a[0]), unsafe.Pointer(&b[0]), len(a))
+
+	return hammingAvx512(unsafe.Pointer(&a[0]), unsafe.Pointer(&b[0]), int64(n))
 }

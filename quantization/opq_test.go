@@ -40,10 +40,12 @@ func TestOPQ_TrainEncodeDecode(t *testing.T) {
 
 	// Test encode/decode
 	testVec := vectors[0]
-	codes := opq.Encode(testVec)
+	codes, err := opq.Encode(testVec)
+	require.NoError(t, err)
 	assert.Equal(t, 8, len(codes)) // 8 subvectors = 8 bytes
 
-	reconstructed := opq.Decode(codes)
+	reconstructed, err := opq.Decode(codes)
+	require.NoError(t, err)
 	assert.Equal(t, dim, len(reconstructed))
 
 	// Verify compression ratio
@@ -112,15 +114,19 @@ func TestOPQ_AsymmetricDistance(t *testing.T) {
 	query := vectors[0]
 	target := vectors[1]
 
-	codes := opq.Encode(target)
-	asymDist := opq.ComputeAsymmetricDistance(query, codes)
+	codes, err := opq.Encode(target)
+	require.NoError(t, err)
+	asymDist, err := opq.ComputeAsymmetricDistance(query, codes)
+	require.NoError(t, err)
 
 	// Asymmetric distance should be positive
 	assert.Greater(t, asymDist, float32(0))
 
 	// Distance to itself should be small (but not zero due to quantization error)
-	selfCodes := opq.Encode(query)
-	selfDist := opq.ComputeAsymmetricDistance(query, selfCodes)
+	selfCodes, err := opq.Encode(query)
+	require.NoError(t, err)
+	selfDist, err := opq.ComputeAsymmetricDistance(query, selfCodes)
+	require.NoError(t, err)
 	assert.Less(t, selfDist, asymDist) // Distance to self should be less than to other vector
 }
 
@@ -149,13 +155,25 @@ func TestOPQ_ReconstructionQuality(t *testing.T) {
 	testVectors := vectors[:100] // Test on subset
 	for _, vec := range testVectors {
 		// OPQ reconstruction
-		opqCodes := opq.Encode(vec)
-		opqRecon := opq.Decode(opqCodes)
+		opqCodes, err := opq.Encode(vec)
+		if err != nil {
+			t.Fatalf("OPQ Encode error: %v", err)
+		}
+		opqRecon, err := opq.Decode(opqCodes)
+		if err != nil {
+			t.Fatalf("OPQ Decode error: %v", err)
+		}
 		opqError += l2DistanceSquared(vec, opqRecon)
 
 		// PQ reconstruction
-		pqCodes := pq.Encode(vec)
-		pqRecon := pq.Decode(pqCodes)
+		pqCodes, err := pq.Encode(vec)
+		if err != nil {
+			t.Fatalf("PQ Encode error: %v", err)
+		}
+		pqRecon, err := pq.Decode(pqCodes)
+		if err != nil {
+			t.Fatalf("PQ Decode error: %v", err)
+		}
 		pqError += l2DistanceSquared(vec, pqRecon)
 	}
 
@@ -181,26 +199,25 @@ func TestOPQ_BytesPerVector(t *testing.T) {
 	assert.Equal(t, 8, opq.BytesPerVector())
 }
 
-func TestOPQ_NotTrainedPanic(t *testing.T) {
+func TestOPQ_NotTrainedError(t *testing.T) {
 	opq, err := NewOptimizedProductQuantizer(32, 4, 256, 10)
 	require.NoError(t, err)
 
 	vec := make([]float32, 32)
 
-	// Should panic when not trained
-	assert.Panics(t, func() {
-		opq.Encode(vec)
-	})
+	// Should return error when not trained
+	_, err = opq.Encode(vec)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not trained")
 
-	assert.Panics(t, func() {
-		codes := make([]byte, 4)
-		opq.Decode(codes)
-	})
+	codes := make([]byte, 4)
+	_, err = opq.Decode(codes)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not trained")
 
-	assert.Panics(t, func() {
-		codes := make([]byte, 4)
-		opq.ComputeAsymmetricDistance(vec, codes)
-	})
+	_, err = opq.ComputeAsymmetricDistance(vec, codes)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not trained")
 }
 
 func TestOPQ_EmptyTrainingData(t *testing.T) {
@@ -246,7 +263,7 @@ func BenchmarkOPQ_Encode(b *testing.B) {
 
 	b.ResetTimer()
 	for b.Loop() {
-		_ = opq.Encode(testVec)
+		_, _ = opq.Encode(testVec)
 	}
 }
 
@@ -259,11 +276,11 @@ func BenchmarkOPQ_Decode(b *testing.B) {
 	opq, _ := NewOptimizedProductQuantizer(dim, 8, 256, 10)
 	_ = opq.Train(vectors)
 
-	codes := opq.Encode(vectors[0])
+	codes, _ := opq.Encode(vectors[0])
 
 	b.ResetTimer()
 	for b.Loop() {
-		_ = opq.Decode(codes)
+		_, _ = opq.Decode(codes)
 	}
 }
 
@@ -277,11 +294,11 @@ func BenchmarkOPQ_AsymmetricDistance(b *testing.B) {
 	_ = opq.Train(vectors)
 
 	query := vectors[0]
-	codes := opq.Encode(vectors[1])
+	codes, _ := opq.Encode(vectors[1])
 
 	b.ResetTimer()
 	for b.Loop() {
-		_ = opq.ComputeAsymmetricDistance(query, codes)
+		_, _ = opq.ComputeAsymmetricDistance(query, codes)
 	}
 }
 
@@ -301,8 +318,8 @@ func BenchmarkOPQ_vs_PQ_ReconstructionQuality(b *testing.B) {
 		b.ResetTimer()
 		for b.Loop() {
 			for _, vec := range testVectors {
-				codes := opq.Encode(vec)
-				recon := opq.Decode(codes)
+				codes, _ := opq.Encode(vec)
+				recon, _ := opq.Decode(codes)
 				totalError += l2DistanceSquared(vec, recon)
 			}
 		}
@@ -319,8 +336,8 @@ func BenchmarkOPQ_vs_PQ_ReconstructionQuality(b *testing.B) {
 		b.ResetTimer()
 		for b.Loop() {
 			for _, vec := range testVectors {
-				codes := pq.Encode(vec)
-				recon := pq.Decode(codes)
+				codes, _ := pq.Encode(vec)
+				recon, _ := pq.Decode(codes)
 				totalError += l2DistanceSquared(vec, recon)
 			}
 		}

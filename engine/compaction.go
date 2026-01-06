@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,10 +12,11 @@ import (
 
 	"github.com/hupe1980/vecgo/blobstore"
 	"github.com/hupe1980/vecgo/cache"
+	"github.com/hupe1980/vecgo/internal/manifest"
+	imetadata "github.com/hupe1980/vecgo/internal/metadata"
 	"github.com/hupe1980/vecgo/internal/segment"
 	"github.com/hupe1980/vecgo/internal/segment/diskann"
 	"github.com/hupe1980/vecgo/internal/segment/flat"
-	"github.com/hupe1980/vecgo/manifest"
 	"github.com/hupe1980/vecgo/metadata"
 	"github.com/hupe1980/vecgo/model"
 	"github.com/hupe1980/vecgo/resource"
@@ -25,8 +27,13 @@ import (
 // 1. Holds Lock to snapshot state (segments + tombstones).
 // 2. Releases Lock to perform heavy I/O (merge).
 // 3. Re-acquires Lock to commit changes (CAS on PK Index).
-func (e *Engine) Compact(segmentIDs []model.SegmentID) error {
+func (e *Engine) Compact(segmentIDs []model.SegmentID) (err error) {
 	start := time.Now()
+	var dropped, created int
+	defer func() {
+		e.metrics.OnCompaction(time.Since(start), dropped, created, err)
+	}()
+
 	// --- Phase 1: Snapshot State ---
 	// We need a snapshot to read from.
 	snap := e.current.Load()
@@ -35,7 +42,7 @@ func (e *Engine) Compact(segmentIDs []model.SegmentID) error {
 
 	// Validate segments and snapshot tombstones
 	segments := make([]segment.Segment, 0, len(segmentIDs))
-	tombstones := make(map[model.SegmentID]*metadata.LocalBitmap)
+	tombstones := make(map[model.SegmentID]*imetadata.LocalBitmap)
 
 	for _, id := range segmentIDs {
 		seg, ok := snap.segments[id]
@@ -58,11 +65,14 @@ func (e *Engine) Compact(segmentIDs []model.SegmentID) error {
 	// --- Phase 2: Merge (No Lock) ---
 
 	filename := fmt.Sprintf("segment_%d.bin", newSegID)
-	tmpFilename := fmt.Sprintf("segment_%d.tmp", newSegID)
 	path := filepath.Join(e.dir, filename)
-	tmpPath := filepath.Join(e.dir, tmpFilename)
+	tmpPath := path + ".tmp"
 
-	f, err := os.Create(tmpPath)
+	payloadFilename := fmt.Sprintf("segment_%d.payload", newSegID)
+	payloadPath := filepath.Join(e.dir, payloadFilename)
+	payloadTmpPath := payloadPath + ".tmp"
+
+	f, err := e.fs.OpenFile(tmpPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
 	if err != nil {
 		return err
 	}
@@ -70,7 +80,18 @@ func (e *Engine) Compact(segmentIDs []model.SegmentID) error {
 	defer func() {
 		if f != nil {
 			f.Close()
-			os.Remove(tmpPath) // Clean up temp file on error
+			e.fs.Remove(tmpPath) // Clean up temp file on error
+		}
+	}()
+
+	payloadF, err := e.fs.OpenFile(payloadTmpPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if payloadF != nil {
+			payloadF.Close()
+			e.fs.Remove(payloadTmpPath) // Clean up temp file on error
 		}
 	}()
 
@@ -104,32 +125,16 @@ func (e *Engine) Compact(segmentIDs []model.SegmentID) error {
 		}
 		opts.ResourceController = e.resourceController
 
-		// Create payload file
-		payloadFilename := fmt.Sprintf("segment_%d.payload", newSegID)
-		payloadPath := filepath.Join(e.dir, payloadFilename)
-		payloadF, err := os.Create(payloadPath)
-		if err != nil {
-			return err
-		}
-		defer func() {
-			if payloadF != nil {
-				payloadF.Close()
-				if err != nil {
-					os.Remove(payloadPath)
-				}
-			}
-		}()
-
 		w := diskann.NewWriter(writer, payloadF, uint64(newSegID), e.dim, e.metric, opts)
 
 		addFunc = func(pk model.PrimaryKey, vec []float32, md metadata.Document, payload []byte) error {
-			return w.Add(uint64(pk), vec, md, payload)
+			return w.Add(pk, vec, md, payload)
 		}
 		flushFunc = func() error {
 			if err := w.Write(context.Background()); err != nil {
 				return err
 			}
-			return payloadF.Sync()
+			return nil
 		}
 	} else {
 		// Heuristic: rows / 8192
@@ -139,25 +144,6 @@ func (e *Engine) Compact(segmentIDs []model.SegmentID) error {
 		}
 
 		quantType := e.compactionConfig.FlatQuantizationType
-		// TODO: Pass payload writer for compaction
-		// For now, we don't support payload in compaction for Flat segments properly
-		// because we need a separate writer.
-		// Let's create a payload file for compaction too.
-		payloadFilename := fmt.Sprintf("segment_%d.payload", newSegID)
-		payloadPath := filepath.Join(e.dir, payloadFilename)
-		payloadF, err := os.Create(payloadPath)
-		if err != nil {
-			return err
-		}
-		defer func() {
-			if payloadF != nil {
-				payloadF.Close()
-				if err != nil {
-					os.Remove(payloadPath)
-				}
-			}
-		}()
-
 		w := flat.NewWriter(writer, payloadF, newSegID, e.dim, e.metric, k, quantType)
 
 		addFunc = w.Add
@@ -165,7 +151,7 @@ func (e *Engine) Compact(segmentIDs []model.SegmentID) error {
 			if err := w.Flush(); err != nil {
 				return err
 			}
-			return payloadF.Sync()
+			return nil
 		}
 	}
 
@@ -211,39 +197,53 @@ func (e *Engine) Compact(segmentIDs []model.SegmentID) error {
 	if err := flushFunc(); err != nil {
 		return err
 	}
+	if err := payloadF.Sync(); err != nil {
+		return err
+	}
 	if err := f.Sync(); err != nil {
 		return err
 	}
+	if err := payloadF.Close(); err != nil {
+		return err
+	}
+	payloadF = nil // Prevent deferred close/remove
 	if err := f.Close(); err != nil {
 		return err
 	}
 	f = nil // Prevent defer close/remove
 
-	// Atomic Rename
-	if err := os.Rename(tmpPath, path); err != nil {
+	// Atomic Rename (publish) + dir fsync
+	if err := e.fs.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	if err := e.fs.Rename(payloadTmpPath, payloadPath); err != nil {
+		_ = e.fs.Remove(path)
+		return err
+	}
+	if err := syncDir(e.fs, e.dir); err != nil {
 		return err
 	}
 
 	// Open the new segment to verify and have it ready
 	var payloadBlob blobstore.Blob
-	payloadFilename := fmt.Sprintf("segment_%d.payload", newSegID)
-	if _, err := os.Stat(filepath.Join(e.dir, payloadFilename)); err == nil {
-		payloadBlob, err = e.store.Open(payloadFilename)
-		if err != nil {
-			fmt.Printf("Compaction failed: open payload blob: %v\n", err)
-			os.Remove(path)
-			return err
-		}
+	if b, err := e.store.Open(payloadFilename); err == nil {
+		payloadBlob = b
+	} else if !errors.Is(err, blobstore.ErrNotFound) {
+		fmt.Printf("Compaction failed: open payload blob: %v\n", err)
+		e.fs.Remove(path)
+		e.fs.Remove(payloadPath)
+		return err
 	}
 
 	newSeg, err := openSegment(e.store, filename, e.blockCache, payloadBlob)
 	if err != nil {
 		fmt.Printf("Compaction failed: openSegment: %v\n", err)
-		os.Remove(path)
+		e.fs.Remove(path)
+		e.fs.Remove(payloadPath)
 		return err
 	}
 
-	if stat, err := os.Stat(path); err == nil {
+	if stat, err := e.fs.Stat(path); err == nil {
 		e.metrics.OnThroughput("compaction_write", stat.Size())
 	}
 
@@ -259,17 +259,20 @@ func (e *Engine) Compact(segmentIDs []model.SegmentID) error {
 		if _, ok := currentSnap.segments[id]; !ok {
 			// Abort! Segments disappeared (maybe another compaction?)
 			newSeg.Close()
-			os.Remove(path)
+			e.fs.Remove(path)
 			return fmt.Errorf("compaction aborted: segment %d missing", id)
 		}
 	}
 
+	// 3. Update Engine State (Create New Snapshot)
+	newSnap := currentSnap.Clone()
+
 	// 2. Update PK Index (CAS)
 	for pk, m := range moves {
-		currentLoc, exists := e.pkIndex.Lookup(pk)
+		currentLoc, exists := newSnap.pkIndex.Lookup(pk)
 		if exists && currentLoc.SegmentID == m.OldSegID && currentLoc.RowID == model.RowID(m.OldRowID) {
 			// Still pointing to the record we moved. Update it.
-			e.pkIndex.Upsert(pk, model.Location{
+			newSnap.pkIndex = newSnap.pkIndex.Insert(pk, model.Location{
 				SegmentID: newSegID,
 				RowID:     model.RowID(m.NewRowID),
 			})
@@ -277,12 +280,9 @@ func (e *Engine) Compact(segmentIDs []model.SegmentID) error {
 		// Else: Record was updated or deleted concurrently. Do not update index.
 	}
 
-	// 3. Update Engine State (Create New Snapshot)
-	newSnap := currentSnap.Clone()
-
 	// Add new segment
 	newSnap.segments[newSegID] = NewRefCountedSegment(newSeg)
-	newSnap.tombstones[newSegID] = metadata.NewLocalBitmap()
+	newSnap.tombstones[newSegID] = imetadata.NewLocalBitmap()
 
 	// Remove old segments
 	for _, id := range segmentIDs {
@@ -297,9 +297,11 @@ func (e *Engine) Compact(segmentIDs []model.SegmentID) error {
 
 		// Register cleanup callback to delete file when last ref is dropped
 		oldPath := filepath.Join(e.dir, fmt.Sprintf("segment_%d.bin", id))
+		oldPayloadPath := filepath.Join(e.dir, fmt.Sprintf("segment_%d.payload", id))
 		if seg, ok := currentSnap.segments[id]; ok {
 			seg.SetOnClose(func() {
-				os.Remove(oldPath)
+				e.fs.Remove(oldPath)
+				e.fs.Remove(oldPayloadPath)
 			})
 		}
 	}
@@ -332,11 +334,12 @@ func (e *Engine) Compact(segmentIDs []model.SegmentID) error {
 	e.manifest.Segments = newSegments
 
 	// Save Manifest
-	if err := manifest.NewStore(e.dir).Save(e.manifest); err != nil {
+	if err := manifest.NewStore(e.fs, e.dir).Save(e.manifest); err != nil {
 		return fmt.Errorf("failed to save manifest: %w", err)
 	}
 
-	e.metrics.OnCompaction(time.Since(start), len(segmentIDs), int(totalRows), nil)
+	dropped = int(totalRows) - int(count)
+	created = 1
 	return nil
 }
 

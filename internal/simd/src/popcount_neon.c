@@ -16,9 +16,11 @@ long long popcountNeon(const unsigned char *a, int64_t n) {
     uint64x2_t acc_64 = vpaddlq_u32(acc_32);
     result = vgetq_lane_u64(acc_64, 0) + vgetq_lane_u64(acc_64, 1);
 
+#ifndef SIMD_NO_TAIL
     for (; i < n; i++) {
         result += __builtin_popcount(a[i]);
     }
+#endif
     return result;
 }
 
@@ -39,8 +41,10 @@ long long hammingNeon(const unsigned char *a, const unsigned char *b, int64_t n)
     uint64x2_t acc_64 = vpaddlq_u32(acc_32);
     result = vgetq_lane_u64(acc_64, 0) + vgetq_lane_u64(acc_64, 1);
 
+#ifndef SIMD_NO_TAIL
     for (; i < n; i++) {
         result += __builtin_popcount(a[i] ^ b[i]);
     }
+#endif
     return result;
 }

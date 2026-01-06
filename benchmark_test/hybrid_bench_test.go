@@ -35,7 +35,7 @@ func BenchmarkHybridSearch(b *testing.B) {
 		w2 := vocab[rng.Intn(len(vocab))]
 		text := fmt.Sprintf("%s %s", w1, w2)
 
-		e.Insert(model.PrimaryKey(i), vec, map[string]interface{}{"text": text}, nil)
+		e.Insert(model.PKUint64(uint64(i)), vec, map[string]interface{}{"text": text}, nil)
 	}
 
 	ctx := context.Background()
@@ -64,6 +64,23 @@ func BenchmarkHybridSearch(b *testing.B) {
 		res, _ := e.HybridSearch(ctx, qVec, qText, 10, 60)
 		b.ReportMetric(recallAtK(res, truth), "recall@10")
 	})
+
+	b.Run("DAAT", func(b *testing.B) {
+		// Truth (TAAT)
+		truthCands, _ := lexIdx.Search(qText, 10)
+		truth := make([]model.PrimaryKey, len(truthCands))
+		for i, c := range truthCands {
+			truth[i] = c.PK
+		}
+
+		for i := 0; i < b.N; i++ {
+			lexIdx.SearchDAAT(qText, 10)
+		}
+		b.StopTimer()
+
+		res, _ := lexIdx.SearchDAAT(qText, 10)
+		b.ReportMetric(recallAtK(res, truth), "recall@10")
+	})
 }
 
 func naiveHybridSearch(data [][]float32, lexIdx lexical.Index, qVec []float32, qText string, k int, rrfK int) []model.PrimaryKey {
@@ -76,7 +93,7 @@ func naiveHybridSearch(data [][]float32, lexIdx lexical.Index, qVec []float32, q
 	vecPKs := exactTopK_L2(data, qVec, vectorK)
 
 	// 2. Lexical Search
-	lexScores, _ := lexIdx.Search(qText)
+	lexResults, _ := lexIdx.Search(qText, vectorK)
 
 	// 3. RRF Fusion
 	finalScores := make(map[model.PrimaryKey]float32)
@@ -88,21 +105,9 @@ func naiveHybridSearch(data [][]float32, lexIdx lexical.Index, qVec []float32, q
 	}
 
 	// Lexical Ranks
-	type lexResult struct {
-		pk    model.PrimaryKey
-		score float32
-	}
-	lexSorted := make([]lexResult, 0, len(lexScores))
-	for pk, score := range lexScores {
-		lexSorted = append(lexSorted, lexResult{pk: pk, score: score})
-	}
-	sort.Slice(lexSorted, func(i, j int) bool {
-		return lexSorted[i].score > lexSorted[j].score
-	})
-
-	for rank, res := range lexSorted {
+	for rank, c := range lexResults {
 		score := 1.0 / float32(rrfK+rank+1)
-		finalScores[res.pk] += score
+		finalScores[c.PK] += score
 	}
 
 	// 4. Sort Final

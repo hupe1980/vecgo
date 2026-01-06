@@ -8,7 +8,7 @@ lint:
 
 # Runs go test with default values
 test:
-    go test -v -timeout 30s ./...
+    go test -v -timeout 120s ./...
 
 # Runs go test with the race detector
 test-race:
@@ -33,6 +33,18 @@ bench-baseline:
 # Requires: go install golang.org/x/perf/cmd/benchstat@latest
 bench-compare:
     benchstat benchmark_test/baseline.txt benchmark_test/current.txt
+
+# Runs SIMD microbenchmarks (asm enabled via runtime dispatch).
+simd-bench:
+    go test ./internal/simd -run '^$' -bench . -benchmem
+
+# Runs SIMD microbenchmarks with `-tags noasm` (pure-Go fallbacks).
+simd-bench-noasm:
+    go test ./internal/simd -run '^$' -bench . -benchmem -tags noasm
+
+# Runs internal/simd unit tests.
+simd-test:
+    go test -v -timeout 60s ./internal/simd
 
 # CPU profile a specific benchmark (edit BENCH to target).
 profile-cpu BENCH='BenchmarkSearch_Mixed':

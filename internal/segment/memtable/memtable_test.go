@@ -5,22 +5,23 @@ import (
 	"testing"
 
 	"github.com/hupe1980/vecgo/distance"
+	"github.com/hupe1980/vecgo/internal/searcher"
 	"github.com/hupe1980/vecgo/model"
-	"github.com/hupe1980/vecgo/searcher"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestMemTable(t *testing.T) {
-	mt := New(1, 2, distance.MetricL2, nil)
+	mt, err := New(1, 2, distance.MetricL2, nil)
+	require.NoError(t, err)
 	defer mt.Close()
 
 	// 1. Insert
-	id1, err := mt.Insert(1, []float32{1.0, 0.0})
+	id1, err := mt.Insert(model.PKUint64(1), []float32{1.0, 0.0})
 	require.NoError(t, err)
 	assert.Equal(t, model.RowID(0), id1)
 
-	id2, err := mt.Insert(2, []float32{0.0, 1.0})
+	id2, err := mt.Insert(model.PKUint64(2), []float32{0.0, 1.0})
 	require.NoError(t, err)
 	assert.Equal(t, model.RowID(1), id2)
 

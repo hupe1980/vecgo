@@ -24,7 +24,10 @@ func TestNew(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s := New(tt.dim)
+			s, err := New(tt.dim)
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
 			if s.Dimension() != tt.want {
 				t.Errorf("Dimension() = %v, want %v", s.Dimension(), tt.want)
 			}
@@ -39,7 +42,10 @@ func TestNew(t *testing.T) {
 }
 
 func TestAppend(t *testing.T) {
-	s := New(3)
+	s, err := New(3)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
 
 	vec1 := []float32{1.0, 2.0, 3.0}
 	id1, err := s.Append(vec1)
@@ -84,15 +90,21 @@ func TestAppend(t *testing.T) {
 }
 
 func TestAppend_WrongDimension(t *testing.T) {
-	s := New(3)
-	_, err := s.Append([]float32{1.0, 2.0})
+	s, err := New(3)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	_, err = s.Append([]float32{1.0, 2.0})
 	if err == nil {
 		t.Error("Append() with wrong dimension should return error")
 	}
 }
 
 func TestSetVector(t *testing.T) {
-	s := New(3)
+	s, err := New(3)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
 
 	vec := []float32{1.0, 2.0, 3.0}
 	if err := s.SetVector(0, vec); err != nil {
@@ -130,7 +142,10 @@ func TestSetVector(t *testing.T) {
 }
 
 func TestDelete(t *testing.T) {
-	s := New(3)
+	s, err := New(3)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
 
 	s.Append([]float32{1.0, 2.0, 3.0})
 	s.Append([]float32{4.0, 5.0, 6.0})
@@ -167,7 +182,10 @@ func TestDelete(t *testing.T) {
 }
 
 func TestDelete_OutOfBounds(t *testing.T) {
-	s := New(3)
+	s, err := New(3)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
 	s.Append([]float32{1.0, 2.0, 3.0})
 
 	if err := s.DeleteVector(10); err == nil {
@@ -176,7 +194,10 @@ func TestDelete_OutOfBounds(t *testing.T) {
 }
 
 func TestCompact(t *testing.T) {
-	s := New(3)
+	s, err := New(3)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
 
 	vec0 := []float32{1.0, 2.0, 3.0}
 	vec1 := []float32{4.0, 5.0, 6.0}
@@ -235,7 +256,10 @@ func TestCompact(t *testing.T) {
 }
 
 func TestCompact_NothingToCompact(t *testing.T) {
-	s := New(3)
+	s, err := New(3)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
 	s.Append([]float32{1.0, 2.0, 3.0})
 	s.Append([]float32{4.0, 5.0, 6.0})
 
@@ -246,7 +270,10 @@ func TestCompact_NothingToCompact(t *testing.T) {
 }
 
 func TestIterate(t *testing.T) {
-	s := New(3)
+	s, err := New(3)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
 	s.Append([]float32{1.0, 2.0, 3.0})
 	s.Append([]float32{4.0, 5.0, 6.0})
 	s.Append([]float32{7.0, 8.0, 9.0})
@@ -267,7 +294,10 @@ func TestIterate(t *testing.T) {
 }
 
 func TestIterate_EarlyStop(t *testing.T) {
-	s := New(3)
+	s, err := New(3)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
 	for i := 0; i < 10; i++ {
 		s.Append([]float32{float32(i), float32(i), float32(i)})
 	}
@@ -284,19 +314,25 @@ func TestIterate_EarlyStop(t *testing.T) {
 }
 
 func TestWriteRead(t *testing.T) {
-	s := New(3)
+	s, err := New(3)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
 	s.Append([]float32{1.0, 2.0, 3.0})
 	s.Append([]float32{4.0, 5.0, 6.0})
 	s.Append([]float32{7.0, 8.0, 9.0})
 	s.DeleteVector(1)
 
 	var buf bytes.Buffer
-	_, err := s.WriteTo(&buf)
+	_, err = s.WriteTo(&buf)
 	if err != nil {
 		t.Fatalf("WriteTo() error = %v", err)
 	}
 
-	s2 := New(0)
+	s2, err := New(0)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
 	_, err = s2.ReadFrom(&buf)
 	if err != nil {
 		t.Fatalf("ReadFrom() error = %v", err)
@@ -337,7 +373,10 @@ func TestMmap(t *testing.T) {
 	tmpDir := t.TempDir()
 	filename := filepath.Join(tmpDir, "test.col")
 
-	s := New(128)
+	s, err := New(128)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
 	vecs := make([][]float32, 100)
 	for i := range vecs {
 		vecs[i] = make([]float32, 128)
@@ -400,7 +439,10 @@ func TestMmap(t *testing.T) {
 }
 
 func TestConcurrentRead(t *testing.T) {
-	s := New(64)
+	s, err := New(64)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
 	for i := 0; i < 1000; i++ {
 		vec := make([]float32, 64)
 		for j := range vec {
@@ -426,7 +468,10 @@ func TestConcurrentRead(t *testing.T) {
 }
 
 func TestRawData(t *testing.T) {
-	s := New(3)
+	s, err := New(3)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
 	s.Append([]float32{1.0, 2.0, 3.0})
 	s.Append([]float32{4.0, 5.0, 6.0})
 
@@ -447,7 +492,10 @@ func TestLargeStore(t *testing.T) {
 
 	dim := 128
 	count := 100000
-	s := New(dim)
+	s, err := New(dim)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
 
 	vec := make([]float32, dim)
 	for i := 0; i < count; i++ {
@@ -494,7 +542,10 @@ func BenchmarkAppend(b *testing.B) {
 	dims := []int{64, 128, 256, 512, 1024}
 	for _, dim := range dims {
 		b.Run("dim="+string(rune('0'+dim/100)), func(b *testing.B) {
-			s := New(dim)
+			s, err := New(dim)
+			if err != nil {
+				b.Fatalf("New() error = %v", err)
+			}
 			vec := make([]float32, dim)
 			for i := range vec {
 				vec[i] = float32(i)
@@ -509,7 +560,10 @@ func BenchmarkAppend(b *testing.B) {
 
 func BenchmarkGetVector(b *testing.B) {
 	dim := 128
-	s := New(dim)
+	s, err := New(dim)
+	if err != nil {
+		b.Fatalf("New() error = %v", err)
+	}
 	for i := 0; i < 10000; i++ {
 		vec := make([]float32, dim)
 		s.Append(vec)
@@ -525,7 +579,10 @@ func BenchmarkGetVector(b *testing.B) {
 
 func BenchmarkIterate(b *testing.B) {
 	dim := 128
-	s := New(dim)
+	s, err := New(dim)
+	if err != nil {
+		b.Fatalf("New() error = %v", err)
+	}
 	for i := 0; i < 10000; i++ {
 		vec := make([]float32, dim)
 		s.Append(vec)

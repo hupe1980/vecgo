@@ -65,7 +65,7 @@ func main() {
 		// We store the text content as the 'payload'.
 		// We could also store metadata (e.g., source, date) in the 3rd argument.
 		err := eng.Insert(
-			model.PrimaryKey(doc.ID),
+			model.PKUint64(doc.ID),
 			doc.Vector,
 			map[string]any{"source": "wiki-sim"}, // Metadata
 			[]byte(doc.Content),                  // Payload (The text chunk)

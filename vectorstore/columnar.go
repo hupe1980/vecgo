@@ -42,7 +42,7 @@ type ColumnarStore struct {
 }
 
 // New creates a new in-memory columnar store with the given dimension.
-func New(dim int) *ColumnarStore {
+func New(dim int) (*ColumnarStore, error) {
 	if dim <= 0 {
 		dim = 1
 	}
@@ -53,8 +53,7 @@ func New(dim int) *ColumnarStore {
 
 	dimU32, err := conv.IntToUint32(dim)
 	if err != nil {
-		// Should not happen as dim > 0 checked above
-		panic(err)
+		return nil, err
 	}
 	s := &ColumnarStore{
 		dim:      dimU32,
@@ -65,7 +64,7 @@ func New(dim int) *ColumnarStore {
 	deleted := make([]uint64, 0)
 	s.deleted.Store(&deleted)
 
-	return s
+	return s, nil
 }
 
 // Close releases resources.

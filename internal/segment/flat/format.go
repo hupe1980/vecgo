@@ -3,6 +3,7 @@ package flat
 import (
 	"encoding/binary"
 	"errors"
+	"math"
 
 	"github.com/hupe1980/vecgo/internal/segment"
 )
@@ -52,6 +53,57 @@ type FileHeader struct {
 // BlockStats stores statistics for a block of rows.
 type BlockStats struct {
 	Fields map[string]segment.FieldStats `json:"fields"`
+}
+
+func (bs *BlockStats) MarshalBinary() ([]byte, error) {
+	var buf []byte
+	// Count
+	buf = binary.AppendUvarint(buf, uint64(len(bs.Fields)))
+	for k, v := range bs.Fields {
+		// Key
+		buf = binary.AppendUvarint(buf, uint64(len(k)))
+		buf = append(buf, k...)
+		// Min/Max
+		buf = binary.LittleEndian.AppendUint64(buf, math.Float64bits(v.Min))
+		buf = binary.LittleEndian.AppendUint64(buf, math.Float64bits(v.Max))
+	}
+	return buf, nil
+}
+
+func (bs *BlockStats) UnmarshalBinary(data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+	count, n := binary.Uvarint(data)
+	if n <= 0 {
+		return errors.New("invalid block stats count")
+	}
+	data = data[n:]
+	bs.Fields = make(map[string]segment.FieldStats, count)
+	for i := 0; i < int(count); i++ {
+		// Key
+		kLen, n := binary.Uvarint(data)
+		if n <= 0 {
+			return errors.New("invalid key length")
+		}
+		data = data[n:]
+		if uint64(len(data)) < kLen {
+			return errors.New("key too short")
+		}
+		key := string(data[:kLen])
+		data = data[kLen:]
+
+		// Min/Max
+		if len(data) < 16 {
+			return errors.New("stats too short")
+		}
+		min := math.Float64frombits(binary.LittleEndian.Uint64(data[:8]))
+		max := math.Float64frombits(binary.LittleEndian.Uint64(data[8:16]))
+		data = data[16:]
+
+		bs.Fields[key] = segment.FieldStats{Min: min, Max: max}
+	}
+	return nil
 }
 
 // Size of the header in bytes.

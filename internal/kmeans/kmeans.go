@@ -33,16 +33,16 @@ func TrainKMeans(vectors []float32, dim int, k int, metric distance.Metric, maxI
 		return nil, err
 	}
 
-	for iter := 0; iter < maxIter; iter++ {
+	for range maxIter {
 		changed := false
 
 		// Assignment step
-		for i := 0; i < n; i++ {
+		for i := range n {
 			vec := vectors[i*dim : (i+1)*dim]
 			bestCluster := -1
 			minDist := float32(math.MaxFloat32)
 
-			for j := 0; j < k; j++ {
+			for j := range k {
 				center := centroids[j*dim : (j+1)*dim]
 				d := distFunc(vec, center)
 				if d < minDist {
@@ -137,7 +137,7 @@ func FindClosestCentroids(query []float32, centroids []float32, dim int, n int, 
 	}
 
 	dists := make([]centroidDist, k)
-	for i := 0; i < k; i++ {
+	for i := range k {
 		center := centroids[i*dim : (i+1)*dim]
 		d := distFunc(query, center)
 		dists[i] = centroidDist{id: i, dist: d}

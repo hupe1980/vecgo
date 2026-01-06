@@ -1,6 +1,6 @@
 # Vecgo Performance Tuning Guide
 
-This guide describes tuning for the **current public API** (Jan 2026) in this repo:
+This guide describes tuning for the **current public API** in this repo:
 
 - Public entry point: `vecgo.Open(dir, dim, metric, ...opts)`.
 - Storage engine: a tiered engine with an in-memory L0 MemTable and immutable on-disk segments.
@@ -34,7 +34,7 @@ _ = results
 
 Operational note: the engine supports **automatic flush triggers** via `engine.FlushConfig` (MemTable size / WAL size), and applies backpressure via `resource.Controller` when configured budgets are reached. You can still call `Flush()` explicitly (e.g. at batch boundaries).
 
-See `REFACTORING.md` for the current technical concept and roadmap.
+See `TODO.md` for the current technical concept and roadmap.
 
 Benchmarking note: the benchmark suite is treated as a correctness+performance harness — benchmarks report allocation metrics by default, and search benchmarks additionally report `recall@k` against an exact baseline.
 
@@ -48,6 +48,18 @@ Practical guidance:
 
 - Prefer AVX2/AVX-512 (amd64) or NEON (arm64) for best throughput.
 - Build with `-tags noasm` when debugging portability issues (forces generic math).
+
+## HNSW Parameters (L0 MemTable)
+
+The in-memory L0 layer uses HNSW for fast approximate search. The default parameters are tuned for high recall (>95% @ k=10) on typical datasets.
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `M` | 32 | Max connections per node. Higher = better recall, slower insert/search, more memory. |
+| `EF` | 300 | Candidate queue size during construction. Higher = better graph quality, slower insert. |
+| `EFSearch` | max(k+100, 200) | Candidate queue size during search. Higher = better recall, slower search. |
+
+To tune these, you currently need to modify the source code in `internal/segment/memtable/memtable.go` as they are not yet exposed via `engine.Config`.
 - If you control embedding size, common dims like 128/256/384/512 tend to perform well.
 
 ---

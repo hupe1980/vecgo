@@ -51,7 +51,7 @@ func main() {
 	vec := make([]float32, 128)
 	for i := 0; i < 5000; i++ {
 		rng.FillUniform(vec)
-		if err := eng.Insert(model.PrimaryKey(i), vec, nil, nil); err != nil {
+		if err := eng.Insert(model.PKUint64(uint64(i)), vec, nil, nil); err != nil {
 			log.Fatalf("Insert failed: %v", err)
 		}
 		if i%1000 == 0 {

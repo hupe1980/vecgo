@@ -6,7 +6,7 @@ import (
 
 // Index is the persistent index mapping PrimaryKey -> Location.
 type Index interface {
-	Lookup(pk model.PrimaryKey) (model.Location, bool)
-	Upsert(pk model.PrimaryKey, loc model.Location) error
-	Delete(pk model.PrimaryKey) error
+	Lookup(pk model.PK) (model.Location, bool)
+	Upsert(pk model.PK, loc model.Location) error
+	Delete(pk model.PK) error
 }

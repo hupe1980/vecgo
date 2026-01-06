@@ -21,9 +21,9 @@ func TestEngine(t *testing.T) {
 	require.NoError(t, err)
 
 	// 2. Insert
-	err = e.Insert(1, []float32{1.0, 0.0}, nil, nil)
+	err = e.Insert(model.PKUint64(1), []float32{1.0, 0.0}, nil, nil)
 	require.NoError(t, err)
-	err = e.Insert(2, []float32{0.0, 1.0}, nil, nil)
+	err = e.Insert(model.PKUint64(2), []float32{0.0, 1.0}, nil, nil)
 	require.NoError(t, err)
 
 	// 3. Search
@@ -46,7 +46,7 @@ func TestEngine(t *testing.T) {
 	assert.Len(t, cands2, 2)
 
 	// 6. Update (Delete + Insert)
-	err = e2.Insert(1, []float32{0.0, 0.0}, nil, nil) // Move 1 to origin
+	err = e2.Insert(model.PKUint64(1), []float32{0.0, 0.0}, nil, nil) // Move 1 to origin
 	require.NoError(t, err)
 
 	cands3, err := e2.Search(ctx, []float32{0.0, 0.0}, 10)
@@ -75,7 +75,7 @@ func TestEngine(t *testing.T) {
 	assert.Len(t, cands5, 2)
 
 	// 10. Delete
-	err = e3.Delete(2)
+	err = e3.Delete(model.PKUint64(2))
 	require.NoError(t, err)
 
 	cands6, err := e3.Search(ctx, []float32{0.0, 1.0}, 10)
@@ -84,7 +84,7 @@ func TestEngine(t *testing.T) {
 
 	// 11. Compact
 	// Insert 3 and Flush to create Seg 3
-	err = e3.Insert(3, []float32{1.0, 1.0}, nil, nil)
+	err = e3.Insert(model.PKUint64(3), []float32{1.0, 1.0}, nil, nil)
 	require.NoError(t, err)
 	err = e3.Flush()
 	require.NoError(t, err)
@@ -111,5 +111,9 @@ func TestEngine(t *testing.T) {
 		filename := filepath.Join(dir, fmt.Sprintf("segment_%d.bin", id))
 		_, err := os.Stat(filename)
 		assert.True(t, os.IsNotExist(err), "segment %d should be deleted", id)
+
+		payloadFilename := filepath.Join(dir, fmt.Sprintf("segment_%d.payload", id))
+		_, err = os.Stat(payloadFilename)
+		assert.True(t, os.IsNotExist(err), "segment %d payload should be deleted", id)
 	}
 }

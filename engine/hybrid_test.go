@@ -21,15 +21,15 @@ func TestHybridSearch(t *testing.T) {
 
 	// Insert data
 	// 1. "apple" near origin
-	err = e.Insert(1, []float32{0.1, 0.1}, map[string]interface{}{"text": "apple fruit"}, nil)
+	err = e.Insert(model.PKUint64(1), []float32{0.1, 0.1}, map[string]interface{}{"text": "apple fruit"}, nil)
 	require.NoError(t, err)
 
 	// 2. "banana" far from origin
-	err = e.Insert(2, []float32{10.0, 10.0}, map[string]interface{}{"text": "banana fruit"}, nil)
+	err = e.Insert(model.PKUint64(2), []float32{10.0, 10.0}, map[string]interface{}{"text": "banana fruit"}, nil)
 	require.NoError(t, err)
 
 	// 3. "apple" far from origin
-	err = e.Insert(3, []float32{10.0, 10.1}, map[string]interface{}{"text": "apple pie"}, nil)
+	err = e.Insert(model.PKUint64(3), []float32{10.0, 10.1}, map[string]interface{}{"text": "apple pie"}, nil)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -37,7 +37,7 @@ func TestHybridSearch(t *testing.T) {
 	// Case 1: Vector search only (near origin) -> should find 1
 	vecRes, err := e.Search(ctx, []float32{0.0, 0.0}, 10)
 	require.NoError(t, err)
-	assert.Equal(t, model.PrimaryKey(1), vecRes[0].PK)
+	assert.Equal(t, model.PKUint64(1), vecRes[0].PK)
 
 	// Case 2: Lexical search only (via Hybrid with dummy vector?)
 	// HybridSearch requires vector.
@@ -57,7 +57,7 @@ func TestHybridSearch(t *testing.T) {
 	res, err := e.HybridSearch(ctx, []float32{0.0, 0.0}, "banana", 10, 60)
 	require.NoError(t, err)
 	require.NotEmpty(t, res)
-	assert.Equal(t, model.PrimaryKey(2), res[0].PK)
+	assert.Equal(t, model.PKUint64(2), res[0].PK)
 
 	// Case 3: Search "apple" near {10, 10}
 	// Vector ranks: 2 (dist 0), 3 (dist 0.1), 1 (dist ~14)
@@ -79,7 +79,7 @@ func TestHybridSearch(t *testing.T) {
 	// Let's check if 3 is in top 2.
 	found3 := false
 	for _, c := range res {
-		if c.PK == 3 {
+		if c.PK == model.PKUint64(3) {
 			found3 = true
 			break
 		}

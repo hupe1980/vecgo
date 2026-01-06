@@ -50,14 +50,9 @@ void dotProductNeon(float *__restrict a, float *__restrict b, int64_t n, float *
     sum1 = vaddq_f32(sum1, sum2);
     sum3 = vaddq_f32(sum3, sum4);
     sum1 = vaddq_f32(sum1, sum3);
-    
-    // Portable horizontal reduction (compatible with all ARMv8-A)
-    float32x2_t low = vget_low_f32(sum1);
-    float32x2_t high = vget_high_f32(sum1);
-    float32x2_t sum_pair = vadd_f32(low, high);
-    sum_pair = vpadd_f32(sum_pair, sum_pair);
-    
-    *result = vget_lane_f32(sum_pair, 0) + remain_sum;
+
+    // Horizontal reduction (AArch64 ASIMD)
+    *result = vaddvq_f32(sum1) + remain_sum;
 }
 
 void pqAdcLookupNeon(float *__restrict table, uint8_t *__restrict codes, int64_t m, float *__restrict result)
@@ -122,14 +117,9 @@ void squaredL2Neon(float *__restrict a, float *__restrict b, int64_t n, float *_
     sum1 = vaddq_f32(sum1, sum2);
     sum3 = vaddq_f32(sum3, sum4);
     sum1 = vaddq_f32(sum1, sum3);
-    
-    // Portable horizontal reduction
-    float32x2_t low = vget_low_f32(sum1);
-    float32x2_t high = vget_high_f32(sum1);
-    float32x2_t sum_pair = vadd_f32(low, high);
-    sum_pair = vpadd_f32(sum_pair, sum_pair);
-    
-    float sum = vget_lane_f32(sum_pair, 0);
+
+    // Horizontal reduction (AArch64 ASIMD)
+    float sum = vaddvq_f32(sum1);
 
     // Scalar cleanup for remaining elements
     for (int64_t i = 0; i < remainder; ++i) 

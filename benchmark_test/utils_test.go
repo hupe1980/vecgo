@@ -27,11 +27,11 @@ func exactTopK_L2(data [][]float32, q []float32, k int) []model.PrimaryKey {
 	for pk, v := range data {
 		d := distance.SquaredL2(q, v)
 		if len(h) < k {
-			heap.Push(&h, topKItem{pk: model.PrimaryKey(pk), dist: d})
+			heap.Push(&h, topKItem{pk: model.PKUint64(uint64(pk)), dist: d})
 			continue
 		}
 		if d < h[0].dist {
-			h[0] = topKItem{pk: model.PrimaryKey(pk), dist: d}
+			h[0] = topKItem{pk: model.PKUint64(uint64(pk)), dist: d}
 			heap.Fix(&h, 0)
 		}
 	}

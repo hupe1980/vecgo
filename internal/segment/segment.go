@@ -4,9 +4,9 @@ import (
 	"context"
 
 	"github.com/hupe1980/vecgo/distance"
+	"github.com/hupe1980/vecgo/internal/searcher"
 	"github.com/hupe1980/vecgo/metadata"
 	"github.com/hupe1980/vecgo/model"
-	"github.com/hupe1980/vecgo/searcher"
 )
 
 // AccessPattern hints for memory access.
@@ -23,7 +23,7 @@ const (
 // RecordBatch represents a batch of columnar data fetched from a segment.
 type RecordBatch interface {
 	RowCount() int
-	PK(i int) model.PrimaryKey
+	PK(i int) model.PK
 	Vector(i int) []float32
 	Metadata(i int) metadata.Document
 	Payload(i int) []byte
@@ -31,7 +31,7 @@ type RecordBatch interface {
 
 // SimpleRecordBatch is a basic implementation of RecordBatch.
 type SimpleRecordBatch struct {
-	PKs       []model.PrimaryKey
+	PKs       []model.PK
 	Vectors   [][]float32
 	Metadatas []metadata.Document
 	Payloads  [][]byte
@@ -41,7 +41,7 @@ func (b *SimpleRecordBatch) RowCount() int {
 	return len(b.PKs)
 }
 
-func (b *SimpleRecordBatch) PK(i int) model.PrimaryKey {
+func (b *SimpleRecordBatch) PK(i int) model.PK {
 	return b.PKs[i]
 }
 
@@ -86,8 +86,12 @@ type Segment interface {
 	// Fetch resolves RowIDs to payload columns.
 	Fetch(ctx context.Context, rows []uint32, cols []string) (RecordBatch, error)
 
+	// FetchPKs resolves RowIDs to PrimaryKeys.
+	// Results are written to dst.
+	FetchPKs(ctx context.Context, rows []uint32, dst []model.PK) error
+
 	// Iterate iterates over all vectors in the segment.
-	Iterate(fn func(rowID uint32, pk model.PrimaryKey, vec []float32, md metadata.Document, payload []byte) error) error
+	Iterate(fn func(rowID uint32, pk model.PK, vec []float32, md metadata.Document, payload []byte) error) error
 
 	// Advise hints the kernel about access patterns.
 	Advise(pattern AccessPattern) error

@@ -13,10 +13,10 @@ import (
 // Quantizer defines the interface for vector quantization methods.
 type Quantizer interface {
 	// Encode quantizes a float32 vector to compressed representation
-	Encode(v []float32) []byte
+	Encode(v []float32) ([]byte, error)
 
 	// Decode reconstructs a float32 vector from quantized representation
-	Decode(b []byte) []float32
+	Decode(b []byte) ([]float32, error)
 
 	// Train calibrates the quantizer on a set of vectors (optional for some quantizers)
 	Train(vectors [][]float32) error
@@ -81,7 +81,10 @@ func (sq *ScalarQuantizer) SetBounds(mins, maxs []float32) error {
 }
 
 // L2Distance computes the squared L2 distance between a float32 query and a quantized vector.
-func (sq *ScalarQuantizer) L2Distance(q []float32, code []byte) float32 {
+func (sq *ScalarQuantizer) L2Distance(q []float32, code []byte) (float32, error) {
+	if len(q) != sq.dimension || len(code) != sq.dimension {
+		return 0, errors.New("dimension mismatch")
+	}
 	var dist float32
 	for i := 0; i < sq.dimension; i++ {
 		// Reconstruct value: min + code * scale
@@ -90,22 +93,35 @@ func (sq *ScalarQuantizer) L2Distance(q []float32, code []byte) float32 {
 		diff := q[i] - val
 		dist += diff * diff
 	}
-	return dist
+	return dist, nil
 }
 
 // L2DistanceBatch computes the squared L2 distance between a float32 query and a batch of quantized vectors.
-func (sq *ScalarQuantizer) L2DistanceBatch(q []float32, codes []byte, n int, out []float32) {
+func (sq *ScalarQuantizer) L2DistanceBatch(q []float32, codes []byte, n int, out []float32) error {
+	if len(q) != sq.dimension {
+		return errors.New("query dimension mismatch")
+	}
+	if len(codes) < n*sq.dimension {
+		return errors.New("codes buffer too small")
+	}
+	if len(out) < n {
+		return errors.New("output buffer too small")
+	}
 	simd.Sq8uL2BatchPerDimension(q, codes, sq.mins, sq.invScales, sq.dimension, out)
+	return nil
 }
 
 // DotProduct computes the dot product between a float32 query and a quantized vector.
-func (sq *ScalarQuantizer) DotProduct(q []float32, code []byte) float32 {
+func (sq *ScalarQuantizer) DotProduct(q []float32, code []byte) (float32, error) {
+	if len(q) != sq.dimension || len(code) != sq.dimension {
+		return 0, errors.New("dimension mismatch")
+	}
 	var dot float32
 	for i := 0; i < sq.dimension; i++ {
 		val := sq.mins[i] + float32(code[i])*sq.invScales[i]
 		dot += q[i] * val
 	}
-	return dot
+	return dot, nil
 }
 
 // NewScalarQuantizer creates a new 8-bit scalar quantizer for the given dimension.
@@ -181,12 +197,12 @@ func (sq *ScalarQuantizer) Train(vectors [][]float32) error {
 
 // Encode quantizes a float32 vector to 8-bit representation.
 // Each dimension is linearly mapped from [min, max] to [0, 255].
-func (sq *ScalarQuantizer) Encode(v []float32) []byte {
+func (sq *ScalarQuantizer) Encode(v []float32) ([]byte, error) {
 	if !sq.trained {
-		panic("ScalarQuantizer not trained")
+		return nil, errors.New("ScalarQuantizer not trained")
 	}
 	if len(v) != sq.dimension {
-		panic("vector dimension mismatch")
+		return nil, errors.New("vector dimension mismatch")
 	}
 
 	// Use pooled buffer if possible, but Encode returns a new slice usually.
@@ -217,16 +233,16 @@ func (sq *ScalarQuantizer) Encode(v []float32) []byte {
 		quantized[i] = uint8(normalized + 0.5) // Round to nearest
 	}
 
-	return quantized
+	return quantized, nil
 }
 
 // Decode reconstructs a float32 vector from quantized representation.
-func (sq *ScalarQuantizer) Decode(b []byte) []float32 {
+func (sq *ScalarQuantizer) Decode(b []byte) ([]float32, error) {
 	if !sq.trained {
-		panic("ScalarQuantizer not trained")
+		return nil, errors.New("ScalarQuantizer not trained")
 	}
 	if len(b) != sq.dimension {
-		panic("vector dimension mismatch")
+		return nil, errors.New("vector dimension mismatch")
 	}
 
 	decoded := make([]float32, len(b))
@@ -235,14 +251,14 @@ func (sq *ScalarQuantizer) Decode(b []byte) []float32 {
 
 	// Bounds check elimination hint
 	if len(invScales) < len(b) || len(mins) < len(b) {
-		panic("invalid quantizer state")
+		return nil, errors.New("invalid quantizer state")
 	}
 
 	for i, val := range b {
 		decoded[i] = float32(val)*invScales[i] + mins[i]
 	}
 
-	return decoded
+	return decoded, nil
 }
 
 // BytesPerDimension returns 1 (uint8 storage).

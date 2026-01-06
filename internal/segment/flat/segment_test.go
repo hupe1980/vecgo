@@ -8,8 +8,8 @@ import (
 
 	"github.com/hupe1980/vecgo/blobstore"
 	"github.com/hupe1980/vecgo/distance"
+	"github.com/hupe1980/vecgo/internal/searcher"
 	"github.com/hupe1980/vecgo/model"
-	"github.com/hupe1980/vecgo/searcher"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -24,9 +24,9 @@ func TestFlatSegment(t *testing.T) {
 
 	w := NewWriter(f, nil, 1, 2, distance.MetricL2, 0, QuantizationNone)
 
-	err = w.Add(1, []float32{1.0, 0.0}, nil, nil)
+	err = w.Add(model.PKUint64(1), []float32{1.0, 0.0}, nil, nil)
 	require.NoError(t, err)
-	err = w.Add(2, []float32{0.0, 1.0}, nil, nil)
+	err = w.Add(model.PKUint64(2), []float32{0.0, 1.0}, nil, nil)
 	require.NoError(t, err)
 
 	err = w.Flush()

@@ -1,7 +1,7 @@
 // Package metadata provides a unified metadata storage and indexing system.
 // This package combines metadata storage with inverted indexing using Bitmaps
 // for efficient hybrid vector + metadata search.
-package metadata
+package imetadata
 
 import (
 	"encoding/binary"
@@ -9,11 +9,12 @@ import (
 	"sync"
 	"unique"
 
+	"github.com/hupe1980/vecgo/metadata"
 	"github.com/hupe1980/vecgo/model"
 )
 
 // DocumentProvider is a function that retrieves a document by ID.
-type DocumentProvider func(id model.RowID) (Document, bool)
+type DocumentProvider func(id model.RowID) (metadata.Document, bool)
 
 // UnifiedIndex combines metadata storage with inverted indexing using Bitmaps.
 // This provides efficient hybrid vector + metadata search with minimal memory overhead.
@@ -30,7 +31,7 @@ type UnifiedIndex struct {
 	mu sync.RWMutex
 
 	// Primary metadata storage (id -> metadata document)
-	documents map[model.RowID]InternedDocument
+	documents map[model.RowID]metadata.InternedDocument
 
 	// Inverted index for fast filtering
 	// Structure: field -> valueKey -> bitmap of IDs
@@ -44,20 +45,20 @@ type UnifiedIndex struct {
 // NewUnifiedIndex creates a new unified metadata index.
 func NewUnifiedIndex() *UnifiedIndex {
 	return &UnifiedIndex{
-		documents: make(map[model.RowID]InternedDocument),
+		documents: make(map[model.RowID]metadata.InternedDocument),
 		inverted:  make(map[unique.Handle[string]]map[unique.Handle[string]]*LocalBitmap),
 	}
 }
 
 // Set stores metadata for an ID and updates the inverted index.
 // This replaces any existing metadata for the ID.
-func (ui *UnifiedIndex) Set(id model.RowID, doc Document) {
+func (ui *UnifiedIndex) Set(id model.RowID, doc metadata.Document) {
 	if doc == nil {
 		return
 	}
 
 	// Convert to interned format
-	iDoc := make(InternedDocument, len(doc))
+	iDoc := make(metadata.InternedDocument, len(doc))
 	for k, v := range doc {
 		iDoc[unique.Make(k)] = v
 	}
@@ -80,13 +81,13 @@ func (ui *UnifiedIndex) Set(id model.RowID, doc Document) {
 // AddInvertedIndex adds a document to the inverted index without storing the document itself.
 // This is useful for building an index for immutable segments where documents are stored separately.
 // Note: This does not support updates/deletes correctly as the old document is not known.
-func (ui *UnifiedIndex) AddInvertedIndex(id model.RowID, doc Document) {
+func (ui *UnifiedIndex) AddInvertedIndex(id model.RowID, doc metadata.Document) {
 	if doc == nil {
 		return
 	}
 
 	// Convert to interned format
-	iDoc := make(InternedDocument, len(doc))
+	iDoc := make(metadata.InternedDocument, len(doc))
 	for k, v := range doc {
 		iDoc[unique.Make(k)] = v
 	}
@@ -107,14 +108,14 @@ func (ui *UnifiedIndex) SetDocumentProvider(provider DocumentProvider) {
 
 // Get retrieves metadata for an ID.
 // Returns nil if the ID doesn't exist.
-func (ui *UnifiedIndex) Get(id model.RowID) (Document, bool) {
+func (ui *UnifiedIndex) Get(id model.RowID) (metadata.Document, bool) {
 	ui.mu.RLock()
 	defer ui.mu.RUnlock()
 
 	iDoc, ok := ui.documents[id]
 	if ok {
 		// Convert to public format
-		doc := make(Document, len(iDoc))
+		doc := make(metadata.Document, len(iDoc))
 		for k, v := range iDoc {
 			doc[k.Value()] = v
 		}
@@ -152,13 +153,13 @@ func (ui *UnifiedIndex) Len() int {
 
 // ToMap returns a copy of all documents as a map.
 // This is useful for serialization and snapshot creation.
-func (ui *UnifiedIndex) ToMap() map[model.RowID]Document {
+func (ui *UnifiedIndex) ToMap() map[model.RowID]metadata.Document {
 	ui.mu.RLock()
 	defer ui.mu.RUnlock()
 
-	result := make(map[model.RowID]Document, len(ui.documents))
+	result := make(map[model.RowID]metadata.Document, len(ui.documents))
 	for id, iDoc := range ui.documents {
-		doc := make(Document, len(iDoc))
+		doc := make(metadata.Document, len(iDoc))
 		for k, v := range iDoc {
 			doc[k.Value()] = v
 		}
@@ -169,7 +170,7 @@ func (ui *UnifiedIndex) ToMap() map[model.RowID]Document {
 
 // addToIndexLocked adds a document to the inverted index.
 // Caller must hold ui.mu.Lock().
-func (ui *UnifiedIndex) addToIndexLocked(id model.RowID, doc InternedDocument) {
+func (ui *UnifiedIndex) addToIndexLocked(id model.RowID, doc metadata.InternedDocument) {
 	for key, value := range doc {
 		// Get or create value map for this field
 		valueMap, ok := ui.inverted[key]
@@ -193,7 +194,7 @@ func (ui *UnifiedIndex) addToIndexLocked(id model.RowID, doc InternedDocument) {
 
 // removeFromIndexLocked removes a document from the inverted index.
 // Caller must hold ui.mu.Lock().
-func (ui *UnifiedIndex) removeFromIndexLocked(id model.RowID, doc InternedDocument) {
+func (ui *UnifiedIndex) removeFromIndexLocked(id model.RowID, doc metadata.InternedDocument) {
 	for key, value := range doc {
 		valueMap, ok := ui.inverted[key]
 		if !ok {
@@ -231,7 +232,7 @@ func (ui *UnifiedIndex) RUnlock() {
 
 // CreateStreamingFilter creates a filter function that checks the index without allocating intermediate bitmaps.
 // The caller MUST hold the read lock (RLock) while using the returned function.
-func (ui *UnifiedIndex) CreateStreamingFilter(fs *FilterSet) func(model.RowID) bool {
+func (ui *UnifiedIndex) CreateStreamingFilter(fs *metadata.FilterSet) func(model.RowID) bool {
 	if fs == nil || len(fs.Filters) == 0 {
 		return func(model.RowID) bool { return true }
 	}
@@ -253,18 +254,18 @@ func (ui *UnifiedIndex) CreateStreamingFilter(fs *FilterSet) func(model.RowID) b
 	}
 }
 
-func (ui *UnifiedIndex) createFilterCheck(filter Filter) func(model.RowID) bool {
+func (ui *UnifiedIndex) createFilterCheck(filter metadata.Filter) func(model.RowID) bool {
 	switch filter.Operator {
-	case OpEqual:
+	case metadata.OpEqual:
 		return ui.createEqualCheck(filter)
-	case OpIn:
+	case metadata.OpIn:
 		return ui.createInCheck(filter)
 	default:
 		return ui.createFallbackCheck(filter)
 	}
 }
 
-func (ui *UnifiedIndex) createEqualCheck(filter Filter) func(model.RowID) bool {
+func (ui *UnifiedIndex) createEqualCheck(filter metadata.Filter) func(model.RowID) bool {
 	// Fast path: check bitmap directly
 	bitmap := ui.getBitmapLocked(filter.Key, filter.Value)
 	if bitmap == nil {
@@ -275,7 +276,7 @@ func (ui *UnifiedIndex) createEqualCheck(filter Filter) func(model.RowID) bool {
 	}
 }
 
-func (ui *UnifiedIndex) createInCheck(filter Filter) func(model.RowID) bool {
+func (ui *UnifiedIndex) createInCheck(filter metadata.Filter) func(model.RowID) bool {
 	// Check if ID is in ANY of the bitmaps
 	arr, ok := filter.Value.AsArray()
 	if !ok {
@@ -303,7 +304,7 @@ func (ui *UnifiedIndex) createInCheck(filter Filter) func(model.RowID) bool {
 	}
 }
 
-func (ui *UnifiedIndex) createFallbackCheck(filter Filter) func(model.RowID) bool {
+func (ui *UnifiedIndex) createFallbackCheck(filter metadata.Filter) func(model.RowID) bool {
 	// Fallback for unsupported operators: check document
 	// This is slow but necessary
 	return func(id model.RowID) bool {
@@ -328,7 +329,7 @@ func (ui *UnifiedIndex) createFallbackCheck(filter Filter) func(model.RowID) boo
 //   - OpEqual: field == value
 //   - OpIn: field IN (value1, value2, ...)
 //   - OpNotEqual, OpGreaterThan, etc.: Falls back to scanning
-func (ui *UnifiedIndex) CompileFilter(fs *FilterSet) *LocalBitmap {
+func (ui *UnifiedIndex) CompileFilter(fs *metadata.FilterSet) *LocalBitmap {
 	dst := NewLocalBitmap()
 	if ui.CompileFilterTo(fs, dst) {
 		return dst
@@ -339,7 +340,7 @@ func (ui *UnifiedIndex) CompileFilter(fs *FilterSet) *LocalBitmap {
 // CompileFilterTo compiles a FilterSet into the provided destination bitmap.
 // Returns true if compilation succeeded (all operators supported), false otherwise.
 // The destination bitmap is cleared before use.
-func (ui *UnifiedIndex) CompileFilterTo(fs *FilterSet, dst *LocalBitmap) bool {
+func (ui *UnifiedIndex) CompileFilterTo(fs *metadata.FilterSet, dst *LocalBitmap) bool {
 	if fs == nil || len(fs.Filters) == 0 {
 		dst.Clear()
 		return true
@@ -365,18 +366,18 @@ func (ui *UnifiedIndex) CompileFilterTo(fs *FilterSet, dst *LocalBitmap) bool {
 	return true
 }
 
-func (ui *UnifiedIndex) applyFilterToBitmap(filter Filter, dst *LocalBitmap, first bool) bool {
+func (ui *UnifiedIndex) applyFilterToBitmap(filter metadata.Filter, dst *LocalBitmap, first bool) bool {
 	switch filter.Operator {
-	case OpEqual:
+	case metadata.OpEqual:
 		return ui.applyEqualFilter(filter, dst, first)
-	case OpIn:
+	case metadata.OpIn:
 		return ui.applyInFilter(filter, dst, first)
 	default:
 		return false
 	}
 }
 
-func (ui *UnifiedIndex) applyEqualFilter(filter Filter, dst *LocalBitmap, first bool) bool {
+func (ui *UnifiedIndex) applyEqualFilter(filter metadata.Filter, dst *LocalBitmap, first bool) bool {
 	bitmap := ui.getBitmapLocked(filter.Key, filter.Value)
 	if bitmap == nil {
 		dst.Clear()
@@ -391,7 +392,7 @@ func (ui *UnifiedIndex) applyEqualFilter(filter Filter, dst *LocalBitmap, first 
 	return true
 }
 
-func (ui *UnifiedIndex) applyInFilter(filter Filter, dst *LocalBitmap, first bool) bool {
+func (ui *UnifiedIndex) applyInFilter(filter metadata.Filter, dst *LocalBitmap, first bool) bool {
 	arr, ok := filter.Value.AsArray()
 	if !ok {
 		return false
@@ -419,7 +420,7 @@ func (ui *UnifiedIndex) applyInFilter(filter Filter, dst *LocalBitmap, first boo
 
 // getBitmapLocked retrieves the bitmap for a specific field=value combination.
 // Returns nil if no matches exist. Caller must hold ui.mu.RLock().
-func (ui *UnifiedIndex) getBitmapLocked(key string, value Value) *LocalBitmap {
+func (ui *UnifiedIndex) getBitmapLocked(key string, value metadata.Value) *LocalBitmap {
 	valueMap, ok := ui.inverted[unique.Make(key)]
 	if !ok {
 		return nil
@@ -436,7 +437,7 @@ func (ui *UnifiedIndex) getBitmapLocked(key string, value Value) *LocalBitmap {
 // ScanFilter evaluates a FilterSet by scanning all documents.
 // This is slower than CompileFilter but supports all operators.
 // Use this as a fallback when CompileFilter returns nil.
-func (ui *UnifiedIndex) ScanFilter(fs *FilterSet) []model.RowID {
+func (ui *UnifiedIndex) ScanFilter(fs *metadata.FilterSet) []model.RowID {
 	if fs == nil {
 		return nil
 	}
@@ -461,7 +462,7 @@ func (ui *UnifiedIndex) ScanFilter(fs *FilterSet) []model.RowID {
 // Returns:
 //   - Fast path: If compilation succeeds, returns bitmap-based O(1) lookup
 //   - Slow path: Falls back to scanning + evaluating each document
-func (ui *UnifiedIndex) CreateFilterFunc(fs *FilterSet) func(model.RowID) bool {
+func (ui *UnifiedIndex) CreateFilterFunc(fs *metadata.FilterSet) func(model.RowID) bool {
 	if fs == nil || len(fs.Filters) == 0 {
 		return nil
 	}

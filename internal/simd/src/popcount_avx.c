@@ -1,14 +1,11 @@
 #include <immintrin.h>
 #include <stdint.h>
 
-long long popcountAvx(const unsigned char *a, int64_t n) {
+long long popcountAvx(const unsigned char *a, int64_t n, const __m256i *lookup_ptr, const __m256i *low_mask_ptr) {
     long long result = 0;
     int64_t i = 0;
-    const __m256i lookup = _mm256_setr_epi8(
-        0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4,
-        0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4
-    );
-    const __m256i low_mask = _mm256_set1_epi8(0x0F);
+    const __m256i lookup = _mm256_loadu_si256(lookup_ptr);
+    const __m256i low_mask = _mm256_loadu_si256(low_mask_ptr);
     __m256i acc = _mm256_setzero_si256();
 
     for (; i <= n - 32; i += 32) {
@@ -24,20 +21,19 @@ long long popcountAvx(const unsigned char *a, int64_t n) {
     result += _mm256_extract_epi64(acc, 2);
     result += _mm256_extract_epi64(acc, 3);
 
+#ifndef SIMD_NO_TAIL
     for (; i < n; i++) {
         result += __builtin_popcount(a[i]);
     }
+#endif
     return result;
 }
 
-long long hammingAvx(const unsigned char *a, const unsigned char *b, int64_t n) {
+long long hammingAvx(const unsigned char *a, const unsigned char *b, int64_t n, const __m256i *lookup_ptr, const __m256i *low_mask_ptr) {
     long long result = 0;
     int64_t i = 0;
-    const __m256i lookup = _mm256_setr_epi8(
-        0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4,
-        0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4
-    );
-    const __m256i low_mask = _mm256_set1_epi8(0x0F);
+    const __m256i lookup = _mm256_loadu_si256(lookup_ptr);
+    const __m256i low_mask = _mm256_loadu_si256(low_mask_ptr);
     __m256i acc = _mm256_setzero_si256();
 
     for (; i <= n - 32; i += 32) {
@@ -56,8 +52,10 @@ long long hammingAvx(const unsigned char *a, const unsigned char *b, int64_t n) 
     result += _mm256_extract_epi64(acc, 2);
     result += _mm256_extract_epi64(acc, 3);
 
+#ifndef SIMD_NO_TAIL
     for (; i < n; i++) {
         result += __builtin_popcount(a[i] ^ b[i]);
     }
+#endif
     return result;
 }

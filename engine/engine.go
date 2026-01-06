@@ -6,9 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,18 +19,20 @@ import (
 	"github.com/hupe1980/vecgo/blobstore"
 	"github.com/hupe1980/vecgo/cache"
 	"github.com/hupe1980/vecgo/distance"
+	"github.com/hupe1980/vecgo/internal/fs"
+	"github.com/hupe1980/vecgo/internal/manifest"
+	imetadata "github.com/hupe1980/vecgo/internal/metadata"
+	"github.com/hupe1980/vecgo/internal/searcher"
 	"github.com/hupe1980/vecgo/internal/segment"
 	"github.com/hupe1980/vecgo/internal/segment/diskann"
 	"github.com/hupe1980/vecgo/internal/segment/flat"
 	"github.com/hupe1980/vecgo/internal/segment/memtable"
 	"github.com/hupe1980/vecgo/internal/wal"
 	"github.com/hupe1980/vecgo/lexical"
-	"github.com/hupe1980/vecgo/manifest"
 	"github.com/hupe1980/vecgo/metadata"
 	"github.com/hupe1980/vecgo/model"
 	"github.com/hupe1980/vecgo/pk"
 	"github.com/hupe1980/vecgo/resource"
-	"github.com/hupe1980/vecgo/searcher"
 )
 
 // Engine is the main entry point for the vector database.
@@ -40,8 +45,8 @@ type Engine struct {
 
 	manifest *manifest.Manifest
 	wal      *wal.WAL
-	pkIndex  *pk.MemoryIndex
-	lsn      atomic.Uint64
+	// pkIndex moved to Snapshot
+	lsn atomic.Uint64
 
 	current atomic.Pointer[Snapshot]
 
@@ -65,20 +70,11 @@ type Engine struct {
 	lexicalIndex lexical.Index
 	lexicalField string
 
-	logger Logger
+	schema metadata.Schema
+
+	fs     fs.FileSystem
+	logger *slog.Logger
 }
-
-// Logger is a simple interface for logging.
-type Logger interface {
-	Infof(format string, args ...interface{})
-	Errorf(format string, args ...interface{})
-}
-
-// noopLogger is a default logger that does nothing.
-type noopLogger struct{}
-
-func (l *noopLogger) Infof(format string, args ...interface{})  {}
-func (l *noopLogger) Errorf(format string, args ...interface{}) {}
 
 // FlushConfig holds configuration for automatic flushing.
 type FlushConfig struct {
@@ -109,7 +105,7 @@ type CompactionConfig struct {
 type Option func(*Engine)
 
 // WithLogger sets the logger for the engine.
-func WithLogger(l Logger) Option {
+func WithLogger(l *slog.Logger) Option {
 	return func(e *Engine) {
 		e.logger = l
 	}
@@ -151,7 +147,7 @@ func WithCompactionPolicy(policy CompactionPolicy) Option {
 func WithCompactionThreshold(threshold int) Option {
 	return func(e *Engine) {
 		if threshold > 0 {
-			e.policy = &TieredCompactionPolicy{Threshold: threshold}
+			e.policy = &BoundedSizeTieredPolicy{Threshold: threshold}
 		}
 	}
 }
@@ -161,6 +157,13 @@ func WithLexicalIndex(idx lexical.Index, field string) Option {
 	return func(e *Engine) {
 		e.lexicalIndex = idx
 		e.lexicalField = field
+	}
+}
+
+// WithSchema sets the metadata schema for the engine.
+func WithSchema(schema metadata.Schema) Option {
+	return func(e *Engine) {
+		e.schema = schema
 	}
 }
 
@@ -175,6 +178,14 @@ func WithCompactionConfig(cfg CompactionConfig) Option {
 func WithFlushConfig(cfg FlushConfig) Option {
 	return func(e *Engine) {
 		e.flushConfig = cfg
+	}
+}
+
+// WithFileSystem sets the file system for the engine.
+// This is primarily used for testing and fault injection.
+func WithFileSystem(fs fs.FileSystem) Option {
+	return func(e *Engine) {
+		e.fs = fs
 	}
 }
 
@@ -197,13 +208,12 @@ func Open(dir string, dim int, metric distance.Metric, opts ...Option) (*Engine,
 		store:        blobstore.NewLocalStore(dir),
 		dim:          dim,
 		metric:       metric,
-		policy:       &TieredCompactionPolicy{Threshold: 4},
+		policy:       &BoundedSizeTieredPolicy{Threshold: 4},
 		compactionCh: make(chan struct{}, 1),
 		flushCh:      make(chan struct{}, 1),
 		closeCh:      make(chan struct{}),
 		metrics:      &NoopMetricsObserver{},
 		walOptions:   DefaultWALOptions(),
-		logger:       &noopLogger{},
 	}
 
 	for _, opt := range opts {
@@ -225,35 +235,48 @@ func Open(dir string, dim int, metric distance.Metric, opts ...Option) (*Engine,
 
 	e.blockCache = cache.NewLRUBlockCache(256<<20, e.resourceController) // 256MB default
 
+	if e.fs == nil {
+		e.fs = fs.LocalFS{}
+	}
+
 	// Ensure dir exists
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := e.fs.MkdirAll(dir, 0755); err != nil {
 		return nil, err
 	}
 
 	// 1. Load Manifest
-	mStore := manifest.NewStore(dir)
+	mStore := manifest.NewStore(e.fs, dir)
 	m, err := mStore.Load()
 	if err != nil {
 		return nil, fmt.Errorf("failed to load manifest: %w", err)
 	}
 
-	// 2. Load PK Index
-	pkIdx := pk.NewMemoryIndex()
-	pkPath := filepath.Join(dir, "pk_index.bin")
-	if _, err := os.Stat(pkPath); err == nil {
-		f, err := os.Open(pkPath)
-		if err != nil {
-			return nil, err
-		}
-		defer f.Close()
-		if err := pkIdx.Load(f); err != nil {
-			return nil, fmt.Errorf("failed to load pk index: %w", err)
+	// Clean up orphan segments (crash recovery)
+	validSegIDs := make(map[uint64]struct{})
+	for _, segMeta := range m.Segments {
+		validSegIDs[uint64(segMeta.ID)] = struct{}{}
+	}
+	if entries, err := e.fs.ReadDir(dir); err == nil {
+		for _, entry := range entries {
+			name := entry.Name()
+			if strings.HasPrefix(name, "segment_") {
+				parts := strings.Split(name, ".")
+				if len(parts) >= 2 {
+					var id uint64
+					if n, _ := fmt.Sscanf(parts[0], "segment_%d", &id); n == 1 {
+						if _, ok := validSegIDs[id]; !ok {
+							_ = e.fs.Remove(filepath.Join(dir, name))
+						}
+					}
+				}
+			}
 		}
 	}
 
-	// 3. Open Segments and Tombstones
+	// 2. Open Segments and Tombstones (and Rebuild PK Index)
 	segments := make(map[model.SegmentID]*RefCountedSegment)
-	tombstones := make(map[model.SegmentID]*metadata.LocalBitmap)
+	tombstones := make(map[model.SegmentID]*imetadata.LocalBitmap)
+	pkIdx := pk.NewPersistentIndex()
 
 	for _, segMeta := range m.Segments {
 		// Optional payload file.
@@ -271,11 +294,37 @@ func Open(dir string, dim int, metric distance.Metric, opts ...Option) (*Engine,
 		}
 		segments[segMeta.ID] = NewRefCountedSegment(seg)
 
+		// Populate PK Index
+		rowCount := int(seg.RowCount())
+		batchSize := 1024
+		for i := 0; i < rowCount; i += batchSize {
+			end := i + batchSize
+			if end > rowCount {
+				end = rowCount
+			}
+			rows := make([]uint32, end-i)
+			for j := 0; j < len(rows); j++ {
+				rows[j] = uint32(i + j)
+			}
+
+			batch, err := seg.Fetch(context.Background(), rows, []string{})
+			if err != nil {
+				return nil, fmt.Errorf("failed to fetch pks from segment %d: %w", segMeta.ID, err)
+			}
+
+			for j := 0; j < batch.RowCount(); j++ {
+				pkIdx = pkIdx.Insert(batch.PK(j), model.Location{
+					SegmentID: segMeta.ID,
+					RowID:     model.RowID(rows[j]),
+				})
+			}
+		}
+
 		// Load Tombstone
-		ts := metadata.NewLocalBitmap()
+		ts := imetadata.NewLocalBitmap()
 		tombPath := filepath.Join(dir, fmt.Sprintf("segment_%d.tomb", segMeta.ID))
-		if _, err := os.Stat(tombPath); err == nil {
-			f, err := os.Open(tombPath)
+		if _, err := e.fs.Stat(tombPath); err == nil {
+			f, err := e.fs.OpenFile(tombPath, os.O_RDONLY, 0)
 			if err != nil {
 				return nil, fmt.Errorf("failed to open tombstone file for segment %d: %w", segMeta.ID, err)
 			}
@@ -288,17 +337,21 @@ func Open(dir string, dim int, metric distance.Metric, opts ...Option) (*Engine,
 		tombstones[segMeta.ID] = ts
 	}
 
-	// 4. Open WAL
-	walPath := filepath.Join(dir, "wal.log")
-	w, err := wal.Open(walPath, toInternalWALOptions(e.walOptions))
+	// 3. Open WAL
+	walPath := e.getWALPath(m.WALID)
+	w, err := wal.Open(e.fs, walPath, toInternalWALOptions(e.walOptions))
 	if err != nil {
 		return nil, fmt.Errorf("failed to open wal: %w", err)
 	}
 
-	// 5. Create Active MemTable
+	// 4. Create Active MemTable
 	activeID := m.NextSegmentID
 	m.NextSegmentID++ // Reserve ID for active MemTable
-	active := memtable.New(activeID, dim, metric, e.resourceController)
+	active, err := memtable.New(activeID, dim, metric, e.resourceController)
+	if err != nil {
+		w.Close()
+		return nil, fmt.Errorf("failed to create memtable: %w", err)
+	}
 
 	// Initial Snapshot
 	snap := &Snapshot{
@@ -307,6 +360,7 @@ func Open(dir string, dim int, metric distance.Metric, opts ...Option) (*Engine,
 		sortedSegments: make([]*RefCountedSegment, 0),
 		tombstones:     tombstones,
 		active:         active,
+		pkIndex:        pkIdx,
 	}
 	snap.RebuildSorted()
 
@@ -325,6 +379,37 @@ func Open(dir string, dim int, metric distance.Metric, opts ...Option) (*Engine,
 			break
 		}
 		if err != nil {
+			if errors.Is(err, wal.ErrInvalidCRC) || errors.Is(err, wal.ErrShortRead) || errors.Is(err, wal.ErrRecordTooLarge) || errors.Is(err, io.ErrUnexpectedEOF) {
+				if e.metrics != nil {
+					// We can't easily log via metrics, but we can log if logger exists
+				}
+				if e.logger != nil {
+					e.logger.Warn("Truncating corrupted WAL", "error", err, "path", walPath)
+				}
+				// Corruption detected (tail garbage). Truncate and ignore.
+				validOffset := reader.Offset()
+				// Determine truncation behavior:
+				// We must close the reader and the file before truncating (on Windows at least, safer generally).
+				// reader.Close uses a separate file handle. w uses a separate file handle.
+				_ = reader.Close()
+				_ = w.Close()
+
+				if tErr := e.fs.Truncate(walPath, validOffset); tErr != nil {
+					return nil, fmt.Errorf("failed to truncate corrupt wal: %w (original error: %v)", tErr, err)
+				}
+
+				// Reopen WAL in append mode
+				w, err = wal.Open(e.fs, walPath, toInternalWALOptions(e.walOptions))
+				if err != nil {
+					return nil, fmt.Errorf("failed to reopen wal after truncation: %w", err)
+				}
+
+				// Stop replaying
+				// Since we truncated the rest, there are no more records.
+				// However, 'reader' is invalid now. We break.
+				// We need to ensure 'defer reader.Close()' doesn't crash or double close (which is fine).
+				break
+			}
 			return nil, fmt.Errorf("wal replay failed: %w", err)
 		}
 
@@ -344,6 +429,16 @@ func Open(dir string, dim int, metric distance.Metric, opts ...Option) (*Engine,
 				}
 			}
 
+			// Check if PK exists and update tombstones (handle updates)
+			if oldLoc, exists := snap.pkIndex.Lookup(rec.PK); exists {
+				ts, ok := tombstones[oldLoc.SegmentID]
+				if !ok {
+					ts = imetadata.NewLocalBitmap()
+				}
+				ts.Add(uint32(oldLoc.RowID))
+				tombstones[oldLoc.SegmentID] = ts
+			}
+
 			// Insert into active MemTable
 			rowID, err := active.InsertWithPayload(rec.PK, rec.Vector, md, rec.Payload)
 			if err != nil {
@@ -351,34 +446,32 @@ func Open(dir string, dim int, metric distance.Metric, opts ...Option) (*Engine,
 			}
 
 			// Update PK Index
-			pkIdx.Upsert(rec.PK, model.Location{
+			snap.pkIndex = snap.pkIndex.Insert(rec.PK, model.Location{
 				SegmentID: activeID,
 				RowID:     rowID,
 			})
 		} else if rec.Type == wal.RecordTypeDelete {
 			// Handle delete
-			if oldLoc, exists := pkIdx.Lookup(rec.PK); exists {
-				if oldLoc.SegmentID == activeID {
-					active.Delete(oldLoc.RowID)
-				} else {
-					ts, ok := tombstones[oldLoc.SegmentID]
-					if !ok {
-						ts = metadata.NewLocalBitmap()
-					}
-					ts.Add(uint32(oldLoc.RowID))
-					tombstones[oldLoc.SegmentID] = ts
+			if oldLoc, exists := snap.pkIndex.Lookup(rec.PK); exists {
+				ts, ok := tombstones[oldLoc.SegmentID]
+				if !ok {
+					ts = imetadata.NewLocalBitmap()
 				}
-				if err := pkIdx.Delete(rec.PK); err != nil {
-					return nil, fmt.Errorf("failed to replay delete: %w", err)
-				}
+				ts.Add(uint32(oldLoc.RowID))
+				tombstones[oldLoc.SegmentID] = ts
+
+				snap.pkIndex = snap.pkIndex.Delete(rec.PK)
 			}
 		}
 	}
 
 	e.manifest = m
 	e.wal = w
-	e.pkIndex = pkIdx
 	e.lsn.Store(maxReplayedLSN)
+
+	// Ensure active watermark covers replayed data
+	snap.activeWatermark = active.RowCount()
+
 	e.current.Store(snap)
 
 	e.wg.Add(2)
@@ -389,9 +482,20 @@ func Open(dir string, dim int, metric distance.Metric, opts ...Option) (*Engine,
 }
 
 // Insert adds a vector to the engine.
-func (e *Engine) Insert(pk model.PrimaryKey, vec []float32, md map[string]interface{}, payload []byte) error {
+func (e *Engine) Insert(pk model.PK, vec []float32, md map[string]interface{}, payload []byte) (err error) {
+	start := time.Now()
+	defer func() {
+		e.metrics.OnInsert(time.Since(start), err)
+	}()
+
 	if len(vec) != e.dim {
 		return fmt.Errorf("%w: expected %d, got %d", ErrInvalidArgument, e.dim, len(vec))
+	}
+
+	if e.schema != nil {
+		if err := e.schema.Validate(md); err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidArgument, err)
+		}
 	}
 
 	e.mu.Lock()
@@ -402,29 +506,21 @@ func (e *Engine) Insert(pk model.PrimaryKey, vec []float32, md map[string]interf
 
 	snap := e.current.Load()
 
+	// Always clone snapshot because we update pkIndex
+	newSnap := snap.Clone()
+	newSnap.RebuildSorted()
+
 	// 1. Check PK Index
-	if oldLoc, exists := e.pkIndex.Lookup(pk); exists {
+	if oldLoc, exists := newSnap.pkIndex.Lookup(pk); exists {
 		// Mark old location as deleted
-		if oldLoc.SegmentID == snap.active.ID() {
-			snap.active.Delete(oldLoc.RowID)
+		ts, ok := newSnap.tombstones[oldLoc.SegmentID]
+		if !ok {
+			ts = imetadata.NewLocalBitmap()
 		} else {
-			// COW for tombstones
-			newSnap := snap.Clone()
-			newSnap.RebuildSorted()
-
-			ts, ok := newSnap.tombstones[oldLoc.SegmentID]
-			if !ok {
-				ts = metadata.NewLocalBitmap()
-			} else {
-				ts = ts.Clone()
-			}
-			ts.Add(uint32(oldLoc.RowID))
-			newSnap.tombstones[oldLoc.SegmentID] = ts
-
-			e.current.Store(newSnap)
-			snap.DecRef()
-			snap = newSnap
+			ts = ts.Clone()
 		}
+		ts.Add(uint32(oldLoc.RowID))
+		newSnap.tombstones[oldLoc.SegmentID] = ts
 	}
 
 	// Serialize metadata
@@ -448,7 +544,9 @@ func (e *Engine) Insert(pk model.PrimaryKey, vec []float32, md map[string]interf
 		Metadata: mdBytes,
 		Payload:  payload,
 	}
+	walStart := time.Now()
 	offset, err := e.wal.AppendAsync(rec)
+	e.metrics.OnWALWrite(time.Since(walStart), rec.Size())
 	if err != nil {
 		e.mu.Unlock()
 		return err
@@ -460,15 +558,16 @@ func (e *Engine) Insert(pk model.PrimaryKey, vec []float32, md map[string]interf
 		e.mu.Unlock()
 		return fmt.Errorf("failed to convert metadata: %w", err)
 	}
-	rowID, err := snap.active.InsertWithPayload(pk, vec, mdDoc, payload)
+	rowID, err := newSnap.active.InsertWithPayload(pk, vec, mdDoc, payload)
 	if err != nil {
 		e.mu.Unlock()
 		return err
 	}
+	newSnap.activeWatermark = uint32(rowID) + 1
 
 	// 4. Update PK Index
-	e.pkIndex.Upsert(pk, model.Location{
-		SegmentID: snap.active.ID(),
+	newSnap.pkIndex = newSnap.pkIndex.Insert(pk, model.Location{
+		SegmentID: newSnap.active.ID(),
 		RowID:     rowID,
 	})
 
@@ -477,19 +576,26 @@ func (e *Engine) Insert(pk model.PrimaryKey, vec []float32, md map[string]interf
 		if val, ok := md[e.lexicalField]; ok {
 			if str, ok := val.(string); ok {
 				if err := e.lexicalIndex.Add(pk, str); err != nil {
-					// Log error but don't fail insert?
-					// Or fail?
-					// For now, log.
-					e.logger.Errorf("failed to update lexical index for pk %v: %v", pk, err)
+					if e.logger != nil {
+						e.logger.Error("failed to update lexical index", "pk", pk, "error", err)
+					}
 				}
 			}
 		}
 	}
 
+	// Publish new snapshot
+	e.current.Store(newSnap)
+	snap.DecRef()
+
 	// Check triggers
-	memSize := snap.active.Size()
+	memSize := newSnap.active.Size()
 	walSize := e.wal.Size()
 	shouldFlush := memSize > e.flushConfig.MaxMemTableSize || walSize > e.flushConfig.MaxWALSize
+
+	if e.flushConfig.MaxMemTableSize > 0 {
+		e.metrics.OnMemTableStatus(memSize, float64(memSize)/float64(e.flushConfig.MaxMemTableSize))
+	}
 
 	e.mu.Unlock()
 
@@ -518,6 +624,11 @@ func (e *Engine) BatchInsert(records []model.Record) error {
 		if len(r.Vector) != e.dim {
 			return fmt.Errorf("record %d: %w: expected %d, got %d", i, ErrInvalidArgument, e.dim, len(r.Vector))
 		}
+		if e.schema != nil {
+			if err := e.schema.Validate(r.Metadata); err != nil {
+				return fmt.Errorf("record %d: %w: %v", i, ErrInvalidArgument, err)
+			}
+		}
 	}
 
 	e.mu.Lock()
@@ -527,33 +638,29 @@ func (e *Engine) BatchInsert(records []model.Record) error {
 	}
 
 	snap := e.current.Load()
-	var maxOffset int64
 
-	// We need to track if we need to clone the snapshot for tombstones
-	var newSnap *Snapshot
+	// Always clone snapshot
+	newSnap := snap.Clone()
+	newSnap.RebuildSorted()
+
+	var maxOffset int64
 
 	for _, r := range records {
 		// 1. Check PK Index
-		if oldLoc, exists := e.pkIndex.Lookup(r.PK); exists {
+		if oldLoc, exists := newSnap.pkIndex.Lookup(r.PK); exists {
 			// Mark old location as deleted
-			if oldLoc.SegmentID == snap.active.ID() {
-				snap.active.Delete(oldLoc.RowID)
+			ts, ok := newSnap.tombstones[oldLoc.SegmentID]
+			if !ok {
+				ts = imetadata.NewLocalBitmap()
 			} else {
-				// COW for tombstones
-				if newSnap == nil {
-					newSnap = snap.Clone()
-					newSnap.RebuildSorted()
-				}
-
-				ts, ok := newSnap.tombstones[oldLoc.SegmentID]
-				if !ok {
-					ts = metadata.NewLocalBitmap()
-				} else {
+				// Check if we need to clone (COW)
+				oldTs := snap.tombstones[oldLoc.SegmentID]
+				if ts == oldTs {
 					ts = ts.Clone()
+					newSnap.tombstones[oldLoc.SegmentID] = ts
 				}
-				ts.Add(uint32(oldLoc.RowID))
-				newSnap.tombstones[oldLoc.SegmentID] = ts
 			}
+			ts.Add(uint32(oldLoc.RowID))
 		}
 
 		// Serialize metadata
@@ -592,15 +699,15 @@ func (e *Engine) BatchInsert(records []model.Record) error {
 			e.mu.Unlock()
 			return fmt.Errorf("failed to convert metadata for pk %v: %w", r.PK, err)
 		}
-		rowID, err := snap.active.InsertWithPayload(r.PK, r.Vector, mdDoc, r.Payload)
+		rowID, err := newSnap.active.InsertWithPayload(r.PK, r.Vector, mdDoc, r.Payload)
 		if err != nil {
 			e.mu.Unlock()
 			return err
 		}
 
 		// 4. Update PK Index
-		e.pkIndex.Upsert(r.PK, model.Location{
-			SegmentID: snap.active.ID(),
+		newSnap.pkIndex = newSnap.pkIndex.Insert(r.PK, model.Location{
+			SegmentID: newSnap.active.ID(),
 			RowID:     rowID,
 		})
 
@@ -609,21 +716,23 @@ func (e *Engine) BatchInsert(records []model.Record) error {
 			if val, ok := r.Metadata[e.lexicalField]; ok {
 				if str, ok := val.(string); ok {
 					if err := e.lexicalIndex.Add(r.PK, str); err != nil {
-						e.logger.Errorf("failed to update lexical index for pk %v: %v", r.PK, err)
+						if e.logger != nil {
+							e.logger.Error("failed to update lexical index", "pk", r.PK, "error", err)
+						}
 					}
 				}
 			}
 		}
 	}
 
-	if newSnap != nil {
-		e.current.Store(newSnap)
-		snap.DecRef()
-		snap = newSnap
-	}
+	// Ensure active watermark covers all new records
+	newSnap.activeWatermark = newSnap.active.RowCount()
+
+	e.current.Store(newSnap)
+	snap.DecRef()
 
 	// Check triggers
-	memSize := snap.active.Size()
+	memSize := newSnap.active.Size()
 	walSize := e.wal.Size()
 	shouldFlush := memSize > e.flushConfig.MaxMemTableSize || walSize > e.flushConfig.MaxWALSize
 
@@ -644,7 +753,12 @@ func (e *Engine) BatchInsert(records []model.Record) error {
 }
 
 // Delete removes a vector from the engine.
-func (e *Engine) Delete(pk model.PrimaryKey) error {
+func (e *Engine) Delete(pk model.PK) (err error) {
+	start := time.Now()
+	defer func() {
+		e.metrics.OnDelete(time.Since(start), err)
+	}()
+
 	e.mu.Lock()
 	if e.closed {
 		e.mu.Unlock()
@@ -654,7 +768,7 @@ func (e *Engine) Delete(pk model.PrimaryKey) error {
 	snap := e.current.Load()
 
 	// 1. Check PK Index
-	oldLoc, exists := e.pkIndex.Lookup(pk)
+	oldLoc, exists := snap.pkIndex.Lookup(pk)
 	if !exists {
 		e.mu.Unlock()
 		return nil // Idempotent
@@ -674,38 +788,33 @@ func (e *Engine) Delete(pk model.PrimaryKey) error {
 	}
 
 	// 3. Apply Delete
-	if oldLoc.SegmentID == snap.active.ID() {
-		snap.active.Delete(oldLoc.RowID)
+	// Always clone snapshot
+	newSnap := snap.Clone()
+	newSnap.RebuildSorted()
+
+	ts, ok := newSnap.tombstones[oldLoc.SegmentID]
+	if !ok {
+		ts = imetadata.NewLocalBitmap()
 	} else {
-		// COW for tombstones
-		newSnap := snap.Clone()
-		newSnap.RebuildSorted()
-
-		ts, ok := newSnap.tombstones[oldLoc.SegmentID]
-		if !ok {
-			ts = metadata.NewLocalBitmap()
-		} else {
-			ts = ts.Clone()
-		}
-		ts.Add(uint32(oldLoc.RowID))
-		newSnap.tombstones[oldLoc.SegmentID] = ts
-
-		e.current.Store(newSnap)
-		snap.DecRef()
+		ts = ts.Clone()
 	}
+	ts.Add(uint32(oldLoc.RowID))
+	newSnap.tombstones[oldLoc.SegmentID] = ts
 
 	// 4. Update PK Index
-	if err := e.pkIndex.Delete(pk); err != nil {
-		e.mu.Unlock()
-		return err
-	}
+	newSnap.pkIndex = newSnap.pkIndex.Delete(pk)
 
 	// 5. Update Lexical Index
 	if e.lexicalIndex != nil {
 		if err := e.lexicalIndex.Delete(pk); err != nil {
-			e.logger.Errorf("failed to delete from lexical index for pk %v: %v", pk, err)
+			if e.logger != nil {
+				e.logger.Error("failed to delete from lexical index", "pk", pk, "error", err)
+			}
 		}
 	}
+
+	e.current.Store(newSnap)
+	snap.DecRef()
 
 	e.mu.Unlock()
 
@@ -716,8 +825,102 @@ func (e *Engine) Delete(pk model.PrimaryKey) error {
 	return nil
 }
 
+// BatchDelete removes multiple vectors from the engine in a single operation.
+// It is atomic and more efficient than calling Delete in a loop.
+func (e *Engine) BatchDelete(pks []model.PK) error {
+	e.mu.Lock()
+	if e.closed {
+		e.mu.Unlock()
+		return ErrClosed
+	}
+
+	snap := e.current.Load()
+	newSnap := snap.Clone()
+	newSnap.RebuildSorted()
+
+	var maxOffset int64
+	var anyDeleted bool
+	clonedTombstones := make(map[model.SegmentID]bool)
+
+	for _, pk := range pks {
+		// 1. Check PK Index
+		oldLoc, exists := newSnap.pkIndex.Lookup(pk)
+		if !exists {
+			continue
+		}
+		anyDeleted = true
+
+		// 2. Write to WAL
+		lsn := e.lsn.Add(1)
+		rec := &wal.Record{
+			LSN:  lsn,
+			Type: wal.RecordTypeDelete,
+			PK:   pk,
+		}
+		offset, err := e.wal.AppendAsync(rec)
+		if err != nil {
+			e.mu.Unlock()
+			// Note: We might have written some WAL records but not updated memory.
+			// This is safe because replay will just delete them again (idempotent).
+			// But we fail the batch.
+			return err
+		}
+		if offset > maxOffset {
+			maxOffset = offset
+		}
+
+		// 3. Apply Delete
+		ts, ok := newSnap.tombstones[oldLoc.SegmentID]
+		if !ok {
+			ts = imetadata.NewLocalBitmap()
+			newSnap.tombstones[oldLoc.SegmentID] = ts
+			clonedTombstones[oldLoc.SegmentID] = true
+		} else if !clonedTombstones[oldLoc.SegmentID] {
+			ts = ts.Clone()
+			newSnap.tombstones[oldLoc.SegmentID] = ts
+			clonedTombstones[oldLoc.SegmentID] = true
+		}
+		ts.Add(uint32(oldLoc.RowID))
+
+		// 4. Update PK Index
+		newSnap.pkIndex = newSnap.pkIndex.Delete(pk)
+
+		// 5. Update Lexical Index
+		if e.lexicalIndex != nil {
+			if err := e.lexicalIndex.Delete(pk); err != nil {
+				if e.logger != nil {
+					e.logger.Error("failed to delete from lexical index", "pk", pk, "error", err)
+				}
+			}
+		}
+	}
+
+	if anyDeleted {
+		e.current.Store(newSnap)
+		snap.DecRef()
+	} else {
+		newSnap.DecRef()
+	}
+
+	e.mu.Unlock()
+
+	if anyDeleted && e.walOptions.Durability == DurabilitySync {
+		return e.wal.WaitFor(maxOffset)
+	}
+
+	return nil
+}
+
 // Search performs a k-NN search.
-func (e *Engine) Search(ctx context.Context, q []float32, k int, opts ...func(*model.SearchOptions)) ([]model.Candidate, error) {
+func (e *Engine) Search(ctx context.Context, q []float32, k int, opts ...func(*model.SearchOptions)) (res []model.Candidate, err error) {
+	start := time.Now()
+	defer func() {
+		// Heuristic: determine segment type.
+		// For now we just say "mixed" or "l0" depending on snapshot.
+		// Detailed breakdown per segment is hard here.
+		e.metrics.OnSearch(time.Since(start), "mixed", k, len(res), err)
+	}()
+
 	select {
 	case <-e.closeCh:
 		return nil, ErrClosed
@@ -776,7 +979,18 @@ func (e *Engine) Search(ctx context.Context, q []float32, k int, opts ...func(*m
 	}
 
 	// Search Active MemTable
-	if err := snap.active.Search(ctx, qExec, searchK, nil, options, s); err != nil {
+	var activeFilter segment.Filter
+	if ts, ok := snap.tombstones[snap.active.ID()]; ok && !ts.IsEmpty() {
+		activeFilter = &tombstoneFilter{ts: ts}
+	}
+
+	// Apply Snapshot Isolation to Active Segment
+	activeFilter = &watermarkFilter{
+		limit: snap.activeWatermark,
+		next:  activeFilter,
+	}
+
+	if err := snap.active.Search(ctx, qExec, searchK, activeFilter, options, s); err != nil {
 		return nil, err
 	}
 
@@ -919,21 +1133,36 @@ func (e *Engine) Search(ctx context.Context, q []float32, k int, opts ...func(*m
 				s.ScratchIDs[k] = uint32(s.Results[i+k].Loc.RowID)
 			}
 
-			batch, err := seg.Fetch(ctx, s.ScratchIDs, cols)
-			if err != nil {
-				return nil, err
-			}
+			if len(cols) == 0 {
+				// Fast path: Fetch only PKs
+				if cap(s.ScratchPKs) < count {
+					s.ScratchPKs = make([]model.PK, count)
+				}
+				s.ScratchPKs = s.ScratchPKs[:count]
 
-			for k := 0; k < count; k++ {
-				s.Results[i+k].PK = batch.PK(k)
-				if options.IncludeVector {
-					s.Results[i+k].Vector = batch.Vector(k)
+				if err := seg.FetchPKs(ctx, s.ScratchIDs, s.ScratchPKs); err != nil {
+					return nil, err
 				}
-				if options.IncludeMetadata {
-					s.Results[i+k].Metadata = batch.Metadata(k).ToMap()
+				for k := 0; k < count; k++ {
+					s.Results[i+k].PK = s.ScratchPKs[k]
 				}
-				if options.IncludePayload {
-					s.Results[i+k].Payload = batch.Payload(k)
+			} else {
+				batch, err := seg.Fetch(ctx, s.ScratchIDs, cols)
+				if err != nil {
+					return nil, err
+				}
+
+				for k := 0; k < count; k++ {
+					s.Results[i+k].PK = batch.PK(k)
+					if options.IncludeVector {
+						s.Results[i+k].Vector = batch.Vector(k)
+					}
+					if options.IncludeMetadata {
+						s.Results[i+k].Metadata = batch.Metadata(k).ToMap()
+					}
+					if options.IncludePayload {
+						s.Results[i+k].Payload = batch.Payload(k)
+					}
 				}
 			}
 		}
@@ -974,6 +1203,25 @@ func (e *Engine) Search(ctx context.Context, q []float32, k int, opts ...func(*m
 		}
 		return 0
 	})
+
+	// 8. Visibility Check (Belt-and-Suspenders)
+	// Ensure that the returned candidates are consistent with the snapshot's PK index.
+	// This protects against stale versions resurfacing due to compaction bugs or tombstone issues.
+	validCount := 0
+	for _, cand := range s.Results {
+		loc, ok := snap.pkIndex.Lookup(cand.PK)
+		if !ok {
+			// PK not found in index -> deleted
+			continue
+		}
+		if loc != cand.Loc {
+			// Location mismatch -> stale version
+			continue
+		}
+		s.Results[validCount] = cand
+		validCount++
+	}
+	s.Results = s.Results[:validCount]
 
 	// Return copy
 	ret := make([]model.Candidate, len(s.Results))
@@ -1023,6 +1271,116 @@ func (e *Engine) BatchSearch(ctx context.Context, queries [][]float32, k int, op
 		return nil, firstErr
 	}
 	return results, nil
+}
+
+// ScanOption configures a Scan operation.
+type ScanOption func(*ScanConfig)
+
+// ScanConfig holds configuration for Scan.
+type ScanConfig struct {
+	BatchSize int
+	Filter    *metadata.Filter
+}
+
+// WithScanBatchSize sets the batch size for prefetching (hint).
+func WithScanBatchSize(n int) ScanOption {
+	return func(c *ScanConfig) {
+		c.BatchSize = n
+	}
+}
+
+// WithScanFilter sets a metadata filter for the scan.
+func WithScanFilter(f *metadata.Filter) ScanOption {
+	return func(c *ScanConfig) {
+		c.Filter = f
+	}
+}
+
+// Scan returns an iterator over all records matching the filter.
+// Uses Go 1.23+ iter.Seq2 for best-in-class ergonomics and performance.
+func (e *Engine) Scan(ctx context.Context, opts ...ScanOption) iter.Seq2[*model.Record, error] {
+	cfg := ScanConfig{
+		BatchSize: 100,
+	}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
+	return func(yield func(*model.Record, error) bool) {
+		snap := e.current.Load()
+		if snap != nil {
+			snap.IncRef()
+		}
+		if snap == nil {
+			yield(nil, errors.New("engine closed or not initialized"))
+			return
+		}
+		defer snap.DecRef()
+
+		for pk, loc := range snap.pkIndex.Scan() {
+			if ctx.Err() != nil {
+				yield(nil, ctx.Err())
+				return
+			}
+
+			var rec *model.Record
+
+			if loc.SegmentID == snap.active.ID() {
+				batch, err := snap.active.Fetch(context.Background(), []uint32{uint32(loc.RowID)}, []string{"vector", "metadata", "payload"})
+				if err != nil {
+					if !yield(nil, err) {
+						return
+					}
+					return
+				}
+				rec = &model.Record{
+					PK:       pk,
+					Vector:   batch.Vector(0),
+					Metadata: batch.Metadata(0).ToMap(),
+					Payload:  batch.Payload(0),
+				}
+			} else {
+				seg, ok := snap.segments[loc.SegmentID]
+				if !ok {
+					yield(nil, fmt.Errorf("segment %d not found in snapshot", loc.SegmentID))
+					return
+				}
+				batch, err := seg.Fetch(context.Background(), []uint32{uint32(loc.RowID)}, []string{"vector", "metadata", "payload"})
+				if err != nil {
+					if !yield(nil, err) {
+						return
+					}
+					return
+				}
+				rec = &model.Record{
+					PK:       pk,
+					Vector:   batch.Vector(0),
+					Metadata: batch.Metadata(0).ToMap(),
+					Payload:  batch.Payload(0),
+				}
+			}
+
+			// Ensure PK is set
+			rec.PK = pk
+
+			if cfg.Filter != nil {
+				doc, err := metadata.FromMap(rec.Metadata)
+				if err != nil {
+					if !yield(nil, err) {
+						return
+					}
+					return
+				}
+				if !cfg.Filter.Matches(doc) {
+					continue
+				}
+			}
+
+			if !yield(rec, nil) {
+				return
+			}
+		}
+	}
 }
 
 // SearchThreshold returns all vectors within the given distance threshold.
@@ -1097,14 +1455,17 @@ func (e *Engine) HybridSearch(ctx context.Context, q []float32, textQuery string
 	}
 
 	// 2. Lexical Search
-	lexScores, err := e.lexicalIndex.Search(textQuery)
+	lexResults, err := e.lexicalIndex.Search(textQuery, vectorK)
 	if err != nil {
 		return nil, fmt.Errorf("lexical search failed: %w", err)
 	}
 
 	// 3. RRF Fusion
-	// Map PK -> RRF Score
-	finalScores := make(map[model.PrimaryKey]float32)
+	s := searcher.Get()
+	defer searcher.Put(s)
+
+	finalScores := s.ScratchMap
+	// clear(finalScores) // Reset() calls clear()
 
 	// Process Vector Results
 	for rank, c := range vecResults {
@@ -1113,33 +1474,13 @@ func (e *Engine) HybridSearch(ctx context.Context, q []float32, textQuery string
 	}
 
 	// Process Lexical Results
-	// We need to sort lexical results by score to determine rank
-	type lexResult struct {
-		pk    model.PrimaryKey
-		score float32
-	}
-	lexSorted := make([]lexResult, 0, len(lexScores))
-	for pk, score := range lexScores {
-		lexSorted = append(lexSorted, lexResult{pk: pk, score: score})
-	}
-	slices.SortFunc(lexSorted, func(a, b lexResult) int {
-		// Descending score
-		if a.score > b.score {
-			return -1
-		}
-		if a.score < b.score {
-			return 1
-		}
-		return 0
-	})
-
-	for rank, res := range lexSorted {
+	for rank, c := range lexResults {
 		score := 1.0 / float32(rrfK+rank+1)
-		finalScores[res.pk] += score
+		finalScores[c.PK] += score
 	}
 
 	// 4. Convert to Candidates and Sort
-	candidates := make([]model.Candidate, 0, len(finalScores))
+	candidates := s.Results[:0]
 	for pk, score := range finalScores {
 		candidates = append(candidates, model.Candidate{
 			PK:    pk,
@@ -1163,6 +1504,11 @@ func (e *Engine) HybridSearch(ctx context.Context, q []float32, textQuery string
 		candidates = candidates[:k]
 	}
 
+	// Copy to safe buffer to avoid race conditions when searcher is reused
+	safeCandidates := make([]model.Candidate, len(candidates))
+	copy(safeCandidates, candidates)
+	candidates = safeCandidates
+
 	// Note: The returned candidates have RRF scores, not distance/similarity.
 	// We might want to fetch vectors if needed, but Search returns candidates with PKs.
 	// If the user needs vectors, they can call Get(pk).
@@ -1171,20 +1517,30 @@ func (e *Engine) HybridSearch(ctx context.Context, q []float32, textQuery string
 	// But RRF candidates might come from Lexical only, so we don't know Location easily without lookup.
 	// We can do a lookup in PK Index.
 
-	e.mu.RLock()
-	defer e.mu.RUnlock()
+	// Acquire Snapshot for PK lookup
+	snap := e.current.Load()
+	snap.IncRef()
+	defer snap.DecRef()
 
-	for i := range candidates {
-		if loc, ok := e.pkIndex.Lookup(candidates[i].PK); ok {
-			candidates[i].Loc = loc
+	validCount := 0
+	for _, cand := range candidates {
+		if loc, ok := snap.pkIndex.Lookup(cand.PK); ok {
+			cand.Loc = loc
+			candidates[validCount] = cand
+			validCount++
 		}
 	}
+	candidates = candidates[:validCount]
 
 	return candidates, nil
 }
 
 // Get returns the full record (vector, metadata, payload) for the given primary key.
-func (e *Engine) Get(pk model.PrimaryKey) (*model.Record, error) {
+func (e *Engine) Get(pk model.PK) (rec *model.Record, err error) {
+	start := time.Now()
+	defer func() {
+		e.metrics.OnGet(time.Since(start), err)
+	}()
 	select {
 	case <-e.closeCh:
 		return nil, ErrClosed
@@ -1197,7 +1553,7 @@ func (e *Engine) Get(pk model.PrimaryKey) (*model.Record, error) {
 	defer snap.DecRef()
 
 	// Lookup PK
-	loc, ok := e.pkIndex.Lookup(pk)
+	loc, ok := snap.pkIndex.Lookup(pk)
 	if !ok {
 		return nil, fmt.Errorf("%w: pk %v", ErrInvalidArgument, pk)
 	}
@@ -1236,38 +1592,62 @@ func (e *Engine) Get(pk model.PrimaryKey) (*model.Record, error) {
 }
 
 // Flush flushes the active MemTable to disk.
-func (e *Engine) Flush() error {
+func (e *Engine) Flush() (err error) {
 	start := time.Now()
+	var itemsFlushed int
+	var bytesFlushed uint64
+
+	defer func() {
+		e.metrics.OnFlush(time.Since(start), itemsFlushed, bytesFlushed, err)
+	}()
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	currentLSN := e.lsn.Load()
 	snap := e.current.Load()
 	rowCount := int(snap.active.RowCount())
+	itemsFlushed = rowCount
 
 	if rowCount == 0 {
 		return nil
 	}
 
-	// 1. Create new segment file
+	if e.logger != nil {
+		e.logger.Info("Flush started", "segmentID", snap.active.ID(), "rowCount", rowCount)
+	}
+
+	// 1. Create new segment file (atomic publication)
 	segID := snap.active.ID()
 	filename := fmt.Sprintf("segment_%d.bin", segID)
 	path := filepath.Join(e.dir, filename)
-
-	f, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	// We close explicitly later, but defer for safety
-	defer f.Close()
+	tmpPath := path + ".tmp"
 
 	payloadFilename := fmt.Sprintf("segment_%d.payload", segID)
 	payloadPath := filepath.Join(e.dir, payloadFilename)
-	payloadF, err := os.Create(payloadPath)
+	payloadTmpPath := payloadPath + ".tmp"
+
+	f, err := e.fs.OpenFile(tmpPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
 	if err != nil {
 		return err
 	}
-	defer payloadF.Close()
+	defer func() {
+		if f != nil {
+			f.Close()
+			_ = e.fs.Remove(tmpPath)
+		}
+	}()
+
+	payloadF, err := e.fs.OpenFile(payloadTmpPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if payloadF != nil {
+			payloadF.Close()
+			_ = e.fs.Remove(payloadTmpPath)
+		}
+	}()
 
 	// For Flush (L0 -> L1), we disable partitioning (k=0) to keep it fast.
 	// Partitioning happens during Compaction (L1 -> L2).
@@ -1277,16 +1657,21 @@ func (e *Engine) Flush() error {
 	// 2. Write data
 	var count uint32
 	var updates []struct {
-		pk  model.PrimaryKey
+		pk  model.PK
 		loc model.Location
 	}
 
-	err = snap.active.Iterate(func(_ uint32, pk model.PrimaryKey, vec []float32, md metadata.Document, payload []byte) error {
+	err = snap.active.Iterate(func(rowID uint32, pk model.PK, vec []float32, md metadata.Document, payload []byte) error {
+		// Skip deleted items
+		if ts, ok := snap.tombstones[segID]; ok && ts.Contains(rowID) {
+			return nil
+		}
+
 		if err := w.Add(pk, vec, md, payload); err != nil {
 			return err
 		}
 		updates = append(updates, struct {
-			pk  model.PrimaryKey
+			pk  model.PK
 			loc model.Location
 		}{pk, model.Location{SegmentID: segID, RowID: model.RowID(count)}})
 		count++
@@ -1310,7 +1695,29 @@ func (e *Engine) Flush() error {
 	if err := f.Close(); err != nil {
 		return err
 	}
+	f = nil
 	if err := payloadF.Close(); err != nil {
+		return err
+	}
+	payloadF = nil
+
+	// Publish atomically (rename + dir fsync)
+	if err := e.fs.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	if info, _ := e.fs.Stat(path); info != nil {
+		bytesFlushed += uint64(info.Size())
+	}
+
+	if err := e.fs.Rename(payloadTmpPath, payloadPath); err != nil {
+		_ = e.fs.Remove(path)
+		return err
+	}
+	if info, _ := e.fs.Stat(payloadPath); info != nil {
+		bytesFlushed += uint64(info.Size())
+	}
+
+	if err := syncDir(e.fs, e.dir); err != nil {
 		return err
 	}
 
@@ -1327,20 +1734,22 @@ func (e *Engine) Flush() error {
 
 	newSeg, err := flat.Open(blob, opts...)
 	if err != nil {
+		_ = e.fs.Remove(path)
+		_ = e.fs.Remove(payloadPath)
 		return err
 	}
 
-	if stat, err := os.Stat(path); err == nil {
+	if stat, err := e.fs.Stat(path); err == nil {
 		e.metrics.OnThroughput("flush_write", stat.Size())
 	}
 
 	// 4. Update Snapshot
 	newSnap := snap.Clone()
 	newSnap.segments[segID] = NewRefCountedSegment(newSeg)
-	newSnap.tombstones[segID] = metadata.NewLocalBitmap()
+	newSnap.tombstones[segID] = imetadata.NewLocalBitmap()
 
 	// Persist tombstones before rotating WAL
-	if err := e.persistTombstones(); err != nil {
+	if err := e.persistTombstones(newSnap); err != nil {
 		return err
 	}
 
@@ -1348,13 +1757,16 @@ func (e *Engine) Flush() error {
 	if err := e.wal.Close(); err != nil {
 		return err
 	}
-	// Remove old WAL
-	walPath := filepath.Join(e.dir, "wal.log")
-	if err := os.Remove(walPath); err != nil {
-		return err
+
+	// Prepare new WAL
+	oldWALID := e.manifest.WALID
+	newWALID := oldWALID + 1
+	if newWALID == 0 {
+		newWALID = 1
 	}
-	// Open new WAL
-	newWal, err := wal.Open(walPath, toInternalWALOptions(DefaultWALOptions()))
+
+	newWALPath := e.getWALPath(newWALID)
+	newWal, err := wal.Open(e.fs, newWALPath, toInternalWALOptions(e.walOptions))
 	if err != nil {
 		return err
 	}
@@ -1369,17 +1781,21 @@ func (e *Engine) Flush() error {
 
 	newActiveID := e.manifest.NextSegmentID
 	e.manifest.NextSegmentID++
-	newSnap.active = memtable.New(newActiveID, e.dim, e.metric, e.resourceController)
+	newSnap.active, err = memtable.New(newActiveID, e.dim, e.metric, e.resourceController)
+	if err != nil {
+		newWal.Close()
+		return fmt.Errorf("failed to create new memtable: %w", err)
+	}
+
+	// Update PK Index
+	for _, u := range updates {
+		newSnap.pkIndex = newSnap.pkIndex.Insert(u.pk, u.loc)
+	}
 
 	// Update Engine State
 	newSnap.RebuildSorted()
 	e.current.Store(newSnap)
 	snap.DecRef()
-
-	// Update PK Index
-	for _, u := range updates {
-		e.pkIndex.Upsert(u.pk, u.loc)
-	}
 
 	// 7. Update Manifest
 	e.manifest.Segments = append(e.manifest.Segments, manifest.SegmentInfo{
@@ -1389,11 +1805,20 @@ func (e *Engine) Flush() error {
 		Path:     filename,
 	})
 	e.manifest.MaxLSN = currentLSN
+	e.manifest.WALID = newWALID
 	// NextSegmentID already incremented for new active table
 
-	mStore := manifest.NewStore(e.dir)
+	mStore := manifest.NewStore(e.fs, e.dir)
 	if err := mStore.Save(e.manifest); err != nil {
 		return err
+	}
+
+	// 8. Cleanup Old WAL
+	oldWALPath := e.getWALPath(oldWALID)
+	if err := e.fs.Remove(oldWALPath); err != nil {
+		if e.logger != nil {
+			e.logger.Warn("Failed to remove old WAL", "path", oldWALPath, "error", err)
+		}
 	}
 
 	// Signal compaction
@@ -1402,7 +1827,10 @@ func (e *Engine) Flush() error {
 	default:
 	}
 
-	e.metrics.OnFlush(time.Since(start), rowCount, nil)
+	if e.logger != nil {
+		e.logger.Info("Flush completed", "duration", time.Since(start), "rowCount", rowCount)
+	}
+
 	return nil
 }
 
@@ -1481,22 +1909,55 @@ func (e *Engine) Close() error {
 	}
 
 	// Save Tombstones
-	if err := e.persistTombstones(); err != nil {
+	if err := e.persistTombstones(snap); err != nil {
 		return err
 	}
 
 	// Save PK Index
-	pkPath := filepath.Join(e.dir, "pk_index.bin")
-	f, err := os.Create(pkPath)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	if err := e.pkIndex.Save(f); err != nil {
-		return err
-	}
+	// TODO: Implement persistence for PersistentIndex
+	/*
+		pkPath := filepath.Join(e.dir, "pk_index.bin")
+		f, err := os.Create(pkPath)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		if err := e.pkIndex.Save(f); err != nil {
+			return err
+		}
+	*/
 
 	return nil
+}
+
+// SegmentInfo returns information about all segments in the engine.
+func (e *Engine) SegmentInfo() []manifest.SegmentInfo {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	// Return a copy to avoid races if manifest changes
+	infos := make([]manifest.SegmentInfo, len(e.manifest.Segments))
+	copy(infos, e.manifest.Segments)
+	return infos
+}
+
+// DebugInfo returns a detailed string representation of the engine state.
+func (e *Engine) DebugInfo() string {
+	stats := e.Stats()
+	return fmt.Sprintf(
+		"Engine State:\n"+
+			"  Segments:       %d\n"+
+			"  Rows:           %d\n"+
+			"  Tombstones:     %d\n"+
+			"  WAL Size:       %d bytes\n"+
+			"  MemTable Usage: %d bytes\n"+
+			"  Disk Usage:     %d bytes\n",
+		stats.SegmentCount,
+		stats.RowCount,
+		stats.TombstoneCount,
+		stats.WALSizeBytes,
+		stats.MemoryUsageBytes,
+		stats.DiskUsageBytes,
+	)
 }
 
 func (e *Engine) runFlushLoop() {
@@ -1507,7 +1968,9 @@ func (e *Engine) runFlushLoop() {
 			return
 		case <-e.flushCh:
 			if err := e.Flush(); err != nil {
-				e.logger.Errorf("Background flush failed: %v", err)
+				if e.logger != nil {
+					e.logger.Error("Background flush failed", "error", err)
+				}
 			}
 		}
 	}
@@ -1532,45 +1995,68 @@ func (e *Engine) checkCompaction() {
 	defer snap.DecRef()
 
 	// Gather candidate segments
-	candidates := make([]model.SegmentID, 0, len(snap.segments))
-	for id := range snap.segments {
-		candidates = append(candidates, id)
+	candidates := make([]SegmentStats, 0, len(snap.segments))
+	for id, seg := range snap.segments {
+		candidates = append(candidates, SegmentStats{
+			ID:   id,
+			Size: seg.Size(),
+		})
 	}
 
 	toCompact := e.policy.Pick(candidates)
 	if len(toCompact) > 0 {
+		if e.logger != nil {
+			e.logger.Info("Compaction started", "segments", len(toCompact))
+		}
 		if err := e.Compact(toCompact); err != nil {
 			e.metrics.OnCompaction(0, len(toCompact), 0, err)
+			if e.logger != nil {
+				e.logger.Error("Compaction failed", "error", err)
+			}
+		} else {
+			if e.logger != nil {
+				e.logger.Info("Compaction completed", "segments", len(toCompact))
+			}
 		}
 	}
 }
 
-func (e *Engine) persistTombstones() error {
-	snap := e.current.Load()
+func (e *Engine) persistTombstones(snap *Snapshot) error {
 	for id, ts := range snap.tombstones {
 		if ts.IsEmpty() {
-			continue
+			// Ensure we write empty file if it exists?
+			// Or just delete it?
+			// If we delete it, Open assumes empty.
+			// But if we overwrite an existing non-empty file with empty, we must ensure it's empty.
+			// Let's write empty.
 		}
 		path := filepath.Join(e.dir, fmt.Sprintf("segment_%d.tomb", id))
 		tmpPath := path + ".tmp"
 
-		f, err := os.Create(tmpPath)
+		f, err := e.fs.OpenFile(tmpPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
 		if err != nil {
 			return err
 		}
 		if _, err := ts.WriteTo(f); err != nil {
 			f.Close()
-			os.Remove(tmpPath)
+			e.fs.Remove(tmpPath)
 			return err
 		}
 		if err := f.Close(); err != nil {
-			os.Remove(tmpPath)
+			e.fs.Remove(tmpPath)
 			return err
 		}
-		if err := os.Rename(tmpPath, path); err != nil {
-			os.Remove(tmpPath)
+		if err := e.fs.Rename(tmpPath, path); err != nil {
+			e.fs.Remove(tmpPath)
 			return err
 		}
 	}
 	return nil
+}
+
+func (e *Engine) getWALPath(id uint64) string {
+	if id == 0 {
+		return filepath.Join(e.dir, "wal.log")
+	}
+	return filepath.Join(e.dir, fmt.Sprintf("wal_%d.log", id))
 }

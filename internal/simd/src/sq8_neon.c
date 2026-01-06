@@ -13,7 +13,9 @@ void sq8L2BatchNeon(const float *__restrict__ query, const int8_t *__restrict__ 
         
         float32x4_t v_scale = vdupq_n_f32(scale);
         float32x4_t v_bias = vdupq_n_f32(bias);
-        float32x4_t sum = vdupq_n_f32(0.0f);
+        // Avoid literal-pool constants; keep generator relocation-free.
+        uint32x4_t z = vdupq_n_u32(0);
+        float32x4_t sum = vreinterpretq_f32_u32(z);
         
         int64_t j = 0;
         for (; j <= dim - 8; j += 8) {
@@ -70,7 +72,9 @@ void sq8uL2BatchPerDimensionNeon(const float *__restrict__ query, const uint8_t 
     
     for (int64_t i = 0; i < n; i++) {
         const uint8_t *code = codes + i * dim;
-        float32x4_t sum = vdupq_n_f32(0.0f);
+        // Avoid literal-pool constants; keep generator relocation-free.
+        uint32x4_t z = vdupq_n_u32(0);
+        float32x4_t sum = vreinterpretq_f32_u32(z);
         
         int64_t j = 0;
         for (; j <= dim - 8; j += 8) {

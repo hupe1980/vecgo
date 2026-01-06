@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/crc32"
@@ -14,11 +13,12 @@ import (
 	"github.com/hupe1980/vecgo/blobstore"
 	"github.com/hupe1980/vecgo/cache"
 	"github.com/hupe1980/vecgo/distance"
+	imetadata "github.com/hupe1980/vecgo/internal/metadata"
+	"github.com/hupe1980/vecgo/internal/searcher"
 	"github.com/hupe1980/vecgo/internal/segment"
 	"github.com/hupe1980/vecgo/metadata"
 	"github.com/hupe1980/vecgo/model"
 	"github.com/hupe1980/vecgo/quantization"
-	"github.com/hupe1980/vecgo/searcher"
 )
 
 // Segment implements an immutable DiskANN segment.
@@ -31,14 +31,14 @@ type Segment struct {
 	verifyChecksum bool
 
 	// Data pointers
-	vectors []float32 // Full precision vectors
-	pks     []uint64  // Primary keys
-	graph   []uint32  // Adjacency list (flat)
-	pqCodes []byte    // PQ codes
+	vectors []float32  // Full precision vectors
+	pks     []model.PK // Primary keys
+	graph   []uint32   // Adjacency list (flat)
+	pqCodes []byte     // PQ codes
 
 	// Metadata
 	metadataOffsets []uint64
-	index           *metadata.UnifiedIndex
+	index           *imetadata.UnifiedIndex
 
 	// Payload
 	payloadCount   uint32
@@ -177,12 +177,49 @@ func (s *Segment) load() error {
 	s.vectors = unsafe.Slice((*float32)(unsafe.Pointer(&vectorBytes[0])), int(s.header.RowCount)*int(s.header.Dim))
 
 	// Setup PKs
-	pkSize := uint64(s.header.RowCount) * 8
-	if s.header.PKOffset+pkSize > uint64(len(s.data)) {
-		return errors.New("PK section out of bounds")
+	offsetsSize := uint64(s.header.RowCount) * 4
+	if s.header.PKOffset+offsetsSize > uint64(len(s.data)) {
+		return errors.New("PK offsets section out of bounds")
 	}
-	pkBytes := s.data[s.header.PKOffset : s.header.PKOffset+pkSize]
-	s.pks = unsafe.Slice((*uint64)(unsafe.Pointer(&pkBytes[0])), int(s.header.RowCount))
+	offsetsBytes := s.data[s.header.PKOffset : s.header.PKOffset+offsetsSize]
+	pkOffsets := unsafe.Slice((*uint32)(unsafe.Pointer(&offsetsBytes[0])), int(s.header.RowCount))
+
+	blobStart := s.header.PKOffset + offsetsSize
+	blobEnd := uint64(len(s.data))
+	if s.header.MetadataOffset > 0 {
+		blobEnd = s.header.MetadataOffset
+	}
+	if blobStart > blobEnd {
+		return errors.New("PK blob start after end")
+	}
+	pkBlob := s.data[blobStart:blobEnd]
+
+	s.pks = make([]model.PK, s.header.RowCount)
+	for i := 0; i < int(s.header.RowCount); i++ {
+		offset := pkOffsets[i]
+		if offset >= uint32(len(pkBlob)) {
+			return errors.New("PK offset out of bounds")
+		}
+
+		kind := model.PKKind(pkBlob[offset])
+		if kind == model.PKKindUint64 {
+			if offset+9 > uint32(len(pkBlob)) {
+				return errors.New("PK data out of bounds")
+			}
+			val := binary.LittleEndian.Uint64(pkBlob[offset+1 : offset+9])
+			s.pks[i] = model.PKUint64(val)
+		} else {
+			if offset+5 > uint32(len(pkBlob)) {
+				return errors.New("PK data out of bounds")
+			}
+			l := binary.LittleEndian.Uint32(pkBlob[offset+1 : offset+5])
+			if offset+5+l > uint32(len(pkBlob)) {
+				return errors.New("PK data out of bounds")
+			}
+			str := string(pkBlob[offset+5 : offset+5+l])
+			s.pks[i] = model.PKString(str)
+		}
+	}
 
 	// Setup Metadata
 	if s.header.MetadataOffset > 0 {
@@ -200,7 +237,7 @@ func (s *Segment) load() error {
 			return errors.New("metadata index offset out of bounds")
 		}
 		r := bytes.NewReader(s.data[s.header.MetadataIndexOffset:])
-		s.index = metadata.NewUnifiedIndex()
+		s.index = imetadata.NewUnifiedIndex()
 		if err := s.index.ReadInvertedIndex(r); err != nil {
 			return fmt.Errorf("failed to read metadata index: %w", err)
 		}
@@ -351,17 +388,20 @@ func (s *Segment) searchInternal(query []float32, k int, l int, filter segment.F
 	}
 
 	// Distance function wrapper
-	var distFn func(id uint32) float32
+	var distFn func(id uint32) (float32, error)
 	if s.pq != nil {
 		m := int(s.header.PQSubvectors)
-		distFn = func(id uint32) float32 {
+		distFn = func(id uint32) (float32, error) {
 			code := s.pqCodes[int(id)*m : int(id+1)*m]
 			return s.pq.ComputeAsymmetricDistance(query, code)
 		}
 	} else {
-		distFn = func(id uint32) float32 {
-			vec, _ := s.Get(id)
-			return s.distFunc(query, vec)
+		distFn = func(id uint32) (float32, error) {
+			vec, err := s.Get(id)
+			if err != nil {
+				return 0, err
+			}
+			return s.distFunc(query, vec), nil
 		}
 	}
 
@@ -382,7 +422,10 @@ func (s *Segment) searchInternal(query []float32, k int, l int, filter segment.F
 	startNode := s.header.Entrypoint
 
 	sc.Visited.Visit(model.RowID(startNode))
-	startDist := distFn(startNode)
+	startDist, err := distFn(startNode)
+	if err != nil {
+		return err
+	}
 
 	sc.Candidates.PushItem(searcher.PriorityQueueItem{Node: model.RowID(startNode), Distance: startDist})
 
@@ -457,7 +500,10 @@ func (s *Segment) searchInternal(query []float32, k int, l int, filter segment.F
 			neighborID := model.RowID(neighbor)
 			if !sc.Visited.Visited(neighborID) {
 				sc.Visited.Visit(neighborID)
-				d := distFn(neighbor)
+				d, err := distFn(neighbor)
+				if err != nil {
+					return err
+				}
 
 				// Add to traversal queue
 				sc.Candidates.PushItem(searcher.PriorityQueueItem{Node: neighborID, Distance: d})
@@ -494,12 +540,12 @@ func (s *Segment) readMetadata(rowID uint32) (metadata.Document, error) {
 
 	blob := s.data[dataStart+start : dataStart+end]
 
-	var m map[string]interface{}
-	if err := json.Unmarshal(blob, &m); err != nil {
+	var md metadata.Document
+	if err := md.UnmarshalBinary(blob); err != nil {
 		return nil, err
 	}
 
-	return metadata.FromMap(m)
+	return md, nil
 }
 
 // Fetch resolves RowIDs to payload columns.
@@ -542,7 +588,7 @@ func (s *Segment) Fetch(ctx context.Context, rows []uint32, cols []string) (segm
 		}
 
 		// Fetch PK
-		batch.PKs[i] = model.PrimaryKey(s.pks[rowID])
+		batch.PKs[i] = s.pks[rowID]
 
 		// Fetch Vector
 		if fetchVectors {
@@ -580,11 +626,24 @@ func (s *Segment) Fetch(ctx context.Context, rows []uint32, cols []string) (segm
 	return batch, nil
 }
 
+func (s *Segment) FetchPKs(ctx context.Context, rows []uint32, dst []model.PrimaryKey) error {
+	if len(dst) != len(rows) {
+		return fmt.Errorf("dst length mismatch")
+	}
+	for i, rowID := range rows {
+		if rowID >= s.header.RowCount {
+			return fmt.Errorf("rowID %d out of bounds", rowID)
+		}
+		dst[i] = s.pks[rowID]
+	}
+	return nil
+}
+
 // Iterate iterates over all vectors in the segment.
 func (s *Segment) Iterate(fn func(rowID uint32, pk model.PrimaryKey, vec []float32, md metadata.Document, payload []byte) error) error {
 	dim := int(s.header.Dim)
 	for i := 0; i < int(s.header.RowCount); i++ {
-		pk := model.PrimaryKey(s.pks[i])
+		pk := s.pks[i]
 		vec := s.vectors[i*dim : (i+1)*dim]
 
 		var payload []byte

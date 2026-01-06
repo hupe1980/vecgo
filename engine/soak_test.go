@@ -48,7 +48,7 @@ func TestSoak(t *testing.T) {
 			case <-ctx.Done():
 				return
 			default:
-				pk := model.PrimaryKey(rng.Uint64())
+				pk := model.PKUint64(rng.Uint64())
 				vec := make([]float32, dim)
 				rng.FillUniform(vec)
 				if err := e.Insert(pk, vec, nil, nil); err != nil {
@@ -114,7 +114,16 @@ type testObserver struct {
 	compactions int64
 }
 
-func (o *testObserver) OnFlush(d time.Duration, rows int, err error) {
+func (o *testObserver) OnInsert(time.Duration, error)                   {}
+func (o *testObserver) OnDelete(time.Duration, error)                   {}
+func (o *testObserver) OnWALWrite(time.Duration, int)                   {}
+func (o *testObserver) OnMemTableStatus(int64, float64)                 {}
+func (o *testObserver) OnBackpressure(string)                           {}
+func (o *testObserver) OnSearch(time.Duration, string, int, int, error) {}
+func (o *testObserver) OnGet(time.Duration, error)                      {}
+func (o *testObserver) OnStall(time.Duration, string)                   {}
+
+func (o *testObserver) OnFlush(d time.Duration, rows int, bytes uint64, err error) {
 	atomic.AddInt64(&o.flushes, 1)
 }
 

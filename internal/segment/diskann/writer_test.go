@@ -10,10 +10,10 @@ import (
 
 	"github.com/hupe1980/vecgo/blobstore"
 	"github.com/hupe1980/vecgo/distance"
+	"github.com/hupe1980/vecgo/internal/searcher"
 	"github.com/hupe1980/vecgo/metadata"
 	"github.com/hupe1980/vecgo/model"
 	"github.com/hupe1980/vecgo/resource"
-	"github.com/hupe1980/vecgo/searcher"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -44,7 +44,7 @@ func TestWriter(t *testing.T) {
 	}
 
 	for i, v := range vectors {
-		err := w.Add(uint64(i), v, nil, nil)
+		err := w.Add(model.PKUint64(uint64(i)), v, nil, nil)
 		require.NoError(t, err)
 	}
 
@@ -85,7 +85,7 @@ func TestWriter(t *testing.T) {
 	expectedGraphSize := 5 * 4 * 4
 
 	// Check PKs
-	expectedPKSize := 5 * 8
+	expectedPKSize := 5*4 + 5*9
 
 	// Check Metadata
 	expectedMetadataOffsetsSize := (5 + 1) * 8
@@ -147,7 +147,7 @@ func TestWriter_ResourceLimits(t *testing.T) {
 
 	// Add vectors
 	for i := 0; i < 10; i++ {
-		w.Add(uint64(i), []float32{1, 0, 0, 0}, nil, nil)
+		w.Add(model.PKUint64(uint64(i)), []float32{1, 0, 0, 0}, nil, nil)
 	}
 
 	// Write should fail due to memory limit (timeout)
@@ -190,12 +190,12 @@ func TestMetadataPersistence(t *testing.T) {
 
 	doc1, err := metadata.FromMap(md1)
 	require.NoError(t, err)
-	err = w.Add(0, vectors[0], doc1, nil)
+	err = w.Add(model.PKUint64(0), vectors[0], doc1, nil)
 	require.NoError(t, err)
 
 	doc2, err := metadata.FromMap(md2)
 	require.NoError(t, err)
-	err = w.Add(1, vectors[1], doc2, nil)
+	err = w.Add(model.PKUint64(1), vectors[1], doc2, nil)
 	require.NoError(t, err)
 
 	// Flush
@@ -283,7 +283,7 @@ func TestFilteredSearch(t *testing.T) {
 	for i, v := range vectors {
 		doc, err := metadata.FromMap(mds[i])
 		require.NoError(t, err)
-		err = w.Add(uint64(i), v, doc, nil)
+		err = w.Add(model.PKUint64(uint64(i)), v, doc, nil)
 		require.NoError(t, err)
 	}
 

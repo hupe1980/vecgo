@@ -5,24 +5,28 @@ import (
 	"slices"
 	"sync/atomic"
 
+	imetadata "github.com/hupe1980/vecgo/internal/metadata"
 	"github.com/hupe1980/vecgo/internal/segment"
 	"github.com/hupe1980/vecgo/internal/segment/memtable"
-	"github.com/hupe1980/vecgo/metadata"
 	"github.com/hupe1980/vecgo/model"
+	"github.com/hupe1980/vecgo/pk"
 )
 
 // RefCountedSegment wraps a Segment with a reference count.
 type RefCountedSegment struct {
 	segment.Segment
 	refs    int64
-	onClose func()
+	onClose atomic.Value // stores func()
 }
 
 func NewRefCountedSegment(seg segment.Segment) *RefCountedSegment {
-	return &RefCountedSegment{
+	r := &RefCountedSegment{
 		Segment: seg,
 		refs:    1, // Initial ref
 	}
+	var f func()
+	r.onClose.Store(f)
+	return r
 }
 
 func (r *RefCountedSegment) IncRef() {
@@ -32,8 +36,9 @@ func (r *RefCountedSegment) IncRef() {
 func (r *RefCountedSegment) DecRef() {
 	if atomic.AddInt64(&r.refs, -1) == 0 {
 		_ = r.Segment.Close()
-		if r.onClose != nil {
-			r.onClose()
+		f := r.onClose.Load().(func())
+		if f != nil {
+			f()
 		}
 	}
 }
@@ -41,25 +46,29 @@ func (r *RefCountedSegment) DecRef() {
 // SetOnClose sets a callback function to be executed when the segment is closed.
 // This is typically used to delete the underlying file.
 func (r *RefCountedSegment) SetOnClose(f func()) {
-	r.onClose = f
+	r.onClose.Store(f)
 }
 
 // Snapshot represents a consistent view of the database.
 type Snapshot struct {
-	refs           int64
-	segments       map[model.SegmentID]*RefCountedSegment
-	sortedSegments []*RefCountedSegment // Deterministic iteration order
-	tombstones     map[model.SegmentID]*metadata.LocalBitmap
-	active         *memtable.MemTable
+	refs            int64
+	segments        map[model.SegmentID]*RefCountedSegment
+	sortedSegments  []*RefCountedSegment // Deterministic iteration order
+	tombstones      map[model.SegmentID]*imetadata.LocalBitmap
+	active          *memtable.MemTable
+	activeWatermark uint32 // Limit visibility of active segment rows
+	pkIndex         *pk.PersistentIndex
 }
 
 func NewSnapshot(active *memtable.MemTable) *Snapshot {
 	return &Snapshot{
-		refs:           1,
-		segments:       make(map[model.SegmentID]*RefCountedSegment),
-		sortedSegments: make([]*RefCountedSegment, 0),
-		tombstones:     make(map[model.SegmentID]*metadata.LocalBitmap),
-		active:         active,
+		refs:            1,
+		segments:        make(map[model.SegmentID]*RefCountedSegment),
+		sortedSegments:  make([]*RefCountedSegment, 0),
+		tombstones:      make(map[model.SegmentID]*imetadata.LocalBitmap),
+		active:          active,
+		activeWatermark: active.RowCount(),
+		pkIndex:         pk.NewPersistentIndex(),
 	}
 }
 
@@ -93,10 +102,12 @@ func (s *Snapshot) RebuildSorted() {
 // Note: sortedSegments is NOT cloned; caller must call RebuildSorted() after modifications.
 func (s *Snapshot) Clone() *Snapshot {
 	newSnap := &Snapshot{
-		refs:       1,
-		segments:   make(map[model.SegmentID]*RefCountedSegment, len(s.segments)),
-		tombstones: make(map[model.SegmentID]*metadata.LocalBitmap, len(s.tombstones)),
-		active:     s.active,
+		refs:            1,
+		segments:        make(map[model.SegmentID]*RefCountedSegment, len(s.segments)),
+		tombstones:      make(map[model.SegmentID]*imetadata.LocalBitmap, len(s.tombstones)),
+		active:          s.active,
+		activeWatermark: s.activeWatermark,
+		pkIndex:         s.pkIndex,
 	}
 
 	s.active.IncRef()

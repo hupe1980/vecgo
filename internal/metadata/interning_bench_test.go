@@ -1,10 +1,11 @@
-package metadata_test
+package imetadata_test
 
 import (
 	"fmt"
 	"runtime"
 	"testing"
 
+	imetadata "github.com/hupe1980/vecgo/internal/metadata"
 	"github.com/hupe1980/vecgo/metadata"
 	"github.com/hupe1980/vecgo/model"
 )
@@ -98,7 +99,7 @@ func TestMemoryUsageComparison(t *testing.T) {
 		// This tests the full internal storage (interned keys + interned values)
 		startMem := getHeapUsage()
 
-		idx := metadata.NewUnifiedIndex()
+		idx := imetadata.NewUnifiedIndex()
 		for i := 0; i < numDocs; i++ {
 			doc := make(metadata.Document, fieldsPerDoc)
 			for j := 0; j < fieldsPerDoc; j++ {

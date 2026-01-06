@@ -1,0 +1,12 @@
+//go:build !noasm && arm64
+
+package simd
+
+import "unsafe"
+
+//go:noescape
+func hammingNeon(a unsafe.Pointer, b unsafe.Pointer, n int64) int64
+
+//go:noescape
+func popcountNeon(a unsafe.Pointer, n int64) int64
+

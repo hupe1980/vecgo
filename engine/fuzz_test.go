@@ -49,6 +49,6 @@ func FuzzWALDecode(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
 		r := bytes.NewReader(data)
 		// We expect Decode to either succeed or return an error, but NOT panic.
-		_, _ = wal.Decode(r)
+		_, _, _ = wal.Decode(r)
 	})
 }

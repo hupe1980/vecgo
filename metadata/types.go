@@ -220,7 +220,7 @@ func FromMap(m map[string]interface{}) (Document, error) {
 	}
 	doc := make(Document, len(m))
 	for k, v := range m {
-		val, err := NewValue(v)
+		val, err := FromAny(v)
 		if err != nil {
 			return nil, err
 		}

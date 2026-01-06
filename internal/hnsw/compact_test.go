@@ -16,11 +16,15 @@ func TestCompact(t *testing.T) {
 	deleteCount := 500
 
 	// Create index
+	vs, err := vectorstore.New(dim)
+	if err != nil {
+		t.Fatalf("vectorstore.New: %v", err)
+	}
 	h, err := New(func(o *Options) {
 		o.Dimension = dim
 		o.M = 16
 		o.EF = 200
-		o.Vectors = vectorstore.New(dim)
+		o.Vectors = vs
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)

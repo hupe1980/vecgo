@@ -150,8 +150,14 @@ func (opq *OptimizedProductQuantizer) Train(vectors [][]float32) error {
 			// We can optimize this by just finding the nearest centroid for each subvector
 			// without full encode/decode byte array.
 			// But using Encode/Decode is safer/easier.
-			encoded := opq.pq.Encode(rotatedVectors[i])
-			reconstructed := opq.pq.Decode(encoded) // \hat{Y}
+			encoded, err := opq.pq.Encode(rotatedVectors[i])
+			if err != nil {
+				return err
+			}
+			reconstructed, err := opq.pq.Decode(encoded) // \hat{Y}
+			if err != nil {
+				return err
+			}
 
 			// Accumulate X^T * \hat{Y} for each block
 			for b := 0; b < len(opq.rotations); b++ {
@@ -204,9 +210,9 @@ func (opq *OptimizedProductQuantizer) rotateVector(src, dst []float32) {
 }
 
 // Encode quantizes a vector using OPQ.
-func (opq *OptimizedProductQuantizer) Encode(vec []float32) []byte {
+func (opq *OptimizedProductQuantizer) Encode(vec []float32) ([]byte, error) {
 	if !opq.trained {
-		panic("OptimizedProductQuantizer not trained")
+		return nil, errors.New("OptimizedProductQuantizer not trained")
 	}
 
 	// Get temporary buffer
@@ -219,13 +225,16 @@ func (opq *OptimizedProductQuantizer) Encode(vec []float32) []byte {
 }
 
 // Decode reconstructs a vector.
-func (opq *OptimizedProductQuantizer) Decode(codes []byte) []float32 {
+func (opq *OptimizedProductQuantizer) Decode(codes []byte) ([]float32, error) {
 	if !opq.trained {
-		panic("OptimizedProductQuantizer not trained")
+		return nil, errors.New("OptimizedProductQuantizer not trained")
 	}
 
 	// Decode in rotated space
-	rotated := opq.pq.Decode(codes)
+	rotated, err := opq.pq.Decode(codes)
+	if err != nil {
+		return nil, err
+	}
 
 	// Inverse rotate (R^T)
 	// Since R is block diagonal orthogonal, R^T is just block transpose.
@@ -249,13 +258,13 @@ func (opq *OptimizedProductQuantizer) Decode(codes []byte) []float32 {
 		}
 	}
 
-	return original
+	return original, nil
 }
 
 // ComputeAsymmetricDistance computes distance between a query and OPQ codes.
-func (opq *OptimizedProductQuantizer) ComputeAsymmetricDistance(query []float32, codes []byte) float32 {
+func (opq *OptimizedProductQuantizer) ComputeAsymmetricDistance(query []float32, codes []byte) (float32, error) {
 	if !opq.trained {
-		panic("OptimizedProductQuantizer not trained")
+		return 0, errors.New("OptimizedProductQuantizer not trained")
 	}
 
 	// Rotate query once

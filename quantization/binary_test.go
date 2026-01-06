@@ -19,7 +19,10 @@ func TestBinaryQuantizer_Basic(t *testing.T) {
 		}
 	}
 
-	encoded := bq.EncodeUint64(vec)
+	encoded, err := bq.EncodeUint64(vec)
+	if err != nil {
+		t.Fatalf("EncodeUint64 failed: %v", err)
+	}
 	if len(encoded) != 2 { // 128 bits = 2 uint64
 		t.Errorf("expected 2 uint64 words, got %d", len(encoded))
 	}
@@ -67,7 +70,10 @@ func TestBinaryQuantizer_WithThreshold(t *testing.T) {
 	// Binary (LSB first): bit2=1, bit3=1, bit4=1, bit6=1
 	// = 0b01011100 = 0x5C
 	vec := []float32{0.0, 0.4, 0.5, 0.6, 1.0, -1.0, 0.5, 0.49}
-	encoded := bq.EncodeUint64(vec)
+	encoded, err := bq.EncodeUint64(vec)
+	if err != nil {
+		t.Fatalf("EncodeUint64 failed: %v", err)
+	}
 
 	expected := uint64(0b01011100)
 	if encoded[0] != expected {
@@ -123,8 +129,14 @@ func TestBinaryQuantizer_EncodeDecode_Roundtrip(t *testing.T) {
 	rng := testutil.NewRNG(42)
 	vec := rng.UniformRangeVectors(1, 128)[0]
 
-	encoded := bq.Encode(vec)
-	decoded := bq.Decode(encoded)
+	encoded, err := bq.Encode(vec)
+	if err != nil {
+		t.Fatalf("Encode error: %v", err)
+	}
+	decoded, err := bq.Decode(encoded)
+	if err != nil {
+		t.Fatalf("Decode error: %v", err)
+	}
 
 	// Check that signs are preserved
 	for i := range vec {
@@ -214,7 +226,7 @@ func BenchmarkBinaryEncode_128dim(b *testing.B) {
 
 	b.ResetTimer()
 	for b.Loop() {
-		_ = bq.EncodeUint64(vec)
+		_, _ = bq.EncodeUint64(vec)
 	}
 }
 
@@ -226,6 +238,6 @@ func BenchmarkBinaryEncode_768dim(b *testing.B) {
 
 	b.ResetTimer()
 	for b.Loop() {
-		_ = bq.EncodeUint64(vec)
+		_, _ = bq.EncodeUint64(vec)
 	}
 }

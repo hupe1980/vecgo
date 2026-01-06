@@ -9,8 +9,8 @@ import (
 
 	"github.com/hupe1980/vecgo/blobstore"
 	"github.com/hupe1980/vecgo/distance"
+	"github.com/hupe1980/vecgo/internal/searcher"
 	"github.com/hupe1980/vecgo/model"
-	"github.com/hupe1980/vecgo/searcher"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -35,7 +35,7 @@ func TestPartitionedSegment(t *testing.T) {
 		cluster := i % 4
 		base := float32(cluster * 10)
 		vec := []float32{base + rand.Float32(), base + rand.Float32()}
-		err := w.Add(model.PrimaryKey(i), vec, nil, nil)
+		err := w.Add(model.PKUint64(uint64(i)), vec, nil, nil)
 		require.NoError(t, err)
 	}
 

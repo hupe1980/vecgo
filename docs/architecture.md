@@ -19,7 +19,7 @@ This document provides an in-depth look at Vecgo's internal architecture, helpin
 
 Vecgo is designed around a **Shared-Nothing, LSM-Tree Architecture** to maximize performance, concurrency, and durability.
 
-**Current technical concept (see `REFACTORING.md`):** Vecgo is a single **tiered engine** (`engine`) with an in-memory L0 hot tier and immutable on-disk segments. External identity uses a persistent `PK -> Location(SegmentID, RowID)` index. Payload/content is stored separately from vectors and can be read via a BlobStore abstraction. Payload interchange is an *edge concern* and must not introduce a core hot-path dependency.
+**Current technical concept:** Vecgo is a single **tiered engine** (`engine`) with an in-memory L0 hot tier and immutable on-disk segments. External identity uses a persistent `PK -> Location(SegmentID, RowID)` index. Payload/content is stored separately from vectors and can be read via a BlobStore abstraction. Payload interchange is an *edge concern* and must not introduce a core hot-path dependency.
 
 **Cutover plan:** the tiered engine is the default implementation behind the public `vecgo` facade.
 
@@ -40,7 +40,7 @@ Vecgo is designed around a **Shared-Nothing, LSM-Tree Architecture** to maximize
 
 Note: legacy execution paths have been removed; the tree reflects the current engine-first design.
 
-For the current roadmap and planned work (e.g. FlatBuffers headers), see the phase plan in `REFACTORING.md`.
+For the current roadmap and planned work (e.g. FlatBuffers headers), see the phase plan in `TODO.md`.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -126,15 +126,31 @@ The Engine is the central nervous system of vNext. It manages the lifecycle of d
 
 **Key Components**:
 - `Engine`: The main struct that coordinates everything.
-- `Snapshot`: A point-in-time view of the database (Manifest + Segments).
+- `Snapshot`: A point-in-time view of the database (Segments + Tombstones + Active MemTable).
 - `Compactor`: Background worker that merges segments.
+
+#### Visibility & Versioning (Production Contract)
+
+For production workloads, the system must have an unambiguous “which version is visible?” rule.
+
+Current design principle:
+
+- External identity is `PK`.
+- Physical storage is `Location(SegmentID, RowID)`.
+
+V2 target (breaking changes allowed):
+
+- The published read view becomes a single immutable snapshot object, and includes the PK index view.
+- A candidate is visible iff `pkIndex[PK] == (SegmentID, RowID)` in the same snapshot (and it is not deleted).
+
+This rule prevents duplicate PKs in results and prevents “resurrection” of stale versions after compaction.
 
 ### 3. SIMD Compute Layer (`internal/simd`)
 
 Vecgo centralizes all performance-critical math in a dedicated layer to ensure "best-in-class" speed on modern hardware.
 
 *   **Single Choke Point**: All vector operations (Dot Product, L2 Distance, Quantized Lookup) route through `internal/simd`.
-*   **Runtime Dispatch**: Detects CPU features (AVX-512, AVX2, NEON) at startup and hot-swaps function pointers.
+*   **Runtime Dispatch**: Detects CPU features (AVX-512, AVX, NEON) at startup and hot-swaps function pointers.
 *   **Batch Kernels**:
     *   `SquaredL2Batch`: Computes distance from one query to N vectors in a single call, amortizing function overhead.
     *   `PqAdcLookup`: Optimized lookup table generation for Product Quantization.
@@ -890,3 +906,31 @@ Vecgo's architecture is designed for:
 - **Scalability**: Sharding for multi-core, DiskANN for billions of vectors
 
 For performance tuning, see [docs/tuning.md](tuning.md).
+
+## Observability
+
+Vecgo is designed with production observability as a first-class citizen. It uses a push-based model via the `MetricsObserver` interface, allowing integration with any metrics backend (Prometheus, StatsD, OpenTelemetry, etc.) without creating hard dependencies.
+
+### Metrics Observer
+
+The `MetricsObserver` interface (defined in `engine/metrics.go`) provides hooks for all critical critical operations:
+
+- **Write Path**: `OnInsert`, `OnDelete`, `OnWALWrite`
+- **Read Path**: `OnSearch`
+- **Background**: `OnFlush`, `OnCompaction`
+- **State**: `OnMemTableStatus`
+
+### Zero-Overhead Logging
+
+The Engine accepts an optional `*slog.Logger`. If provided, it logs operational events (flushes, compactions, errors) with structured context. If nil, logging is disabled with zero overhead.
+
+### Usage
+
+To enable observability, inject an implementation of `MetricsObserver` into `engine.Options`:
+
+```go
+opts := engine.Options{
+    Metrics: &MyPrometheusObserver{}, // Your implementation
+    Logger:  slog.Default(),
+}
+```

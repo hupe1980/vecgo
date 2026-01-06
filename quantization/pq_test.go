@@ -37,13 +37,19 @@ func TestProductQuantizer(t *testing.T) {
 
 	// Test encode/decode
 	testVec := rng.UnitVectors(1, dimension)[0]
-	codes := pq.Encode(testVec)
+	codes, err := pq.Encode(testVec)
+	if err != nil {
+		t.Fatalf("Encode failed: %v", err)
+	}
 
 	if len(codes) != numSubvectors {
 		t.Errorf("Expected %d codes, got %d", numSubvectors, len(codes))
 	}
 
-	reconstructed := pq.Decode(codes)
+	reconstructed, err := pq.Decode(codes)
+	if err != nil {
+		t.Fatalf("Decode failed: %v", err)
+	}
 
 	if len(reconstructed) != dimension {
 		t.Errorf("Expected %d dimensions, got %d", dimension, len(reconstructed))
@@ -95,13 +101,22 @@ func TestProductQuantizerAsymmetricDistance(t *testing.T) {
 	query := rng.UnitVectors(1, dimension)[0]
 	testVec := rng.UnitVectors(1, dimension)[0]
 
-	codes := pq.Encode(testVec)
+	codes, err := pq.Encode(testVec)
+	if err != nil {
+		t.Fatalf("Encode failed: %v", err)
+	}
 
 	// Asymmetric distance (fast)
-	adcDist := pq.ComputeAsymmetricDistance(query, codes)
+	adcDist, err := pq.ComputeAsymmetricDistance(query, codes)
+	if err != nil {
+		t.Fatalf("ComputeAsymmetricDistance failed: %v", err)
+	}
 
 	// Full distance (slow - requires decoding)
-	decoded := pq.Decode(codes)
+	decoded, err := pq.Decode(codes)
+	if err != nil {
+		t.Fatalf("Decode failed: %v", err)
+	}
 	fullDist := squaredL2(query, decoded)
 
 	// They should be equal (same computation)
@@ -145,7 +160,7 @@ func BenchmarkProductQuantizerEncode(b *testing.B) {
 
 	b.ResetTimer()
 	for b.Loop() {
-		_ = pq.Encode(testVec)
+		_, _ = pq.Encode(testVec)
 	}
 }
 
@@ -164,11 +179,11 @@ func BenchmarkProductQuantizerAsymmetricDistance(b *testing.B) {
 	pq.Train(trainingVectors)
 
 	query := rng.UnitVectors(1, dimension)[0]
-	codes := pq.Encode(rng.UnitVectors(1, dimension)[0])
+	codes, _ := pq.Encode(rng.UnitVectors(1, dimension)[0])
 
 	b.ResetTimer()
 	for b.Loop() {
-		_ = pq.ComputeAsymmetricDistance(query, codes)
+		_, _ = pq.ComputeAsymmetricDistance(query, codes)
 	}
 }
 

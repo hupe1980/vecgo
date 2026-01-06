@@ -1,0 +1,12 @@
+//go:build !noasm && amd64
+
+package simd
+
+import "unsafe"
+
+//go:noescape
+func dotBatchAvx(query unsafe.Pointer, targets unsafe.Pointer, dim int64, n int64, out unsafe.Pointer)
+
+//go:noescape
+func squaredL2BatchAvx(query unsafe.Pointer, targets unsafe.Pointer, dim int64, n int64, out unsafe.Pointer)
+

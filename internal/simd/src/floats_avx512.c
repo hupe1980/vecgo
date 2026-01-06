@@ -120,15 +120,12 @@ void squaredL2Avx512(float* __restrict vec1, float* __restrict vec2, int64_t n, 
 // codes: M bytes
 // m: number of subvectors
 // result: pointer to float result
-void pqAdcLookupAvx512(float *__restrict table, uint8_t *__restrict codes, int64_t m, float *__restrict result)
+void pqAdcLookupAvx512(float *__restrict table, uint8_t *__restrict codes, int64_t m, float *__restrict result, const __m512i *offsets_ptr)
 {
     __m512 sum_vec = _mm512_setzero_ps();
     
-    // Offsets 0..15 * 256
-    __m512i offsets = _mm512_setr_epi32(
-        0, 256, 512, 768, 1024, 1280, 1536, 1792,
-        2048, 2304, 2560, 2816, 3072, 3328, 3584, 3840
-    );
+    // Load offsets via pointer to avoid .rodata constants (generator requires no relocations).
+    __m512i offsets = _mm512_loadu_si512(offsets_ptr);
     
     int64_t i;
     for (i = 0; i <= m - 16; i += 16)

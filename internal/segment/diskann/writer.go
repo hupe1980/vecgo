@@ -2,9 +2,9 @@ package diskann
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/crc32"
@@ -13,6 +13,7 @@ import (
 	"math/rand"
 
 	"github.com/hupe1980/vecgo/distance"
+	imetadata "github.com/hupe1980/vecgo/internal/metadata"
 	"github.com/hupe1980/vecgo/metadata"
 	"github.com/hupe1980/vecgo/model"
 	"github.com/hupe1980/vecgo/quantization"
@@ -37,7 +38,7 @@ type Writer struct {
 
 	// Data
 	vectors  [][]float32
-	pks      []uint64
+	pks      []model.PK
 	metadata [][]byte
 	payloads [][]byte
 
@@ -48,7 +49,7 @@ type Writer struct {
 	pqCodes    [][]byte
 	bqCodes    [][]uint64
 	distFunc   distance.Func
-	index      *metadata.UnifiedIndex
+	index      *imetadata.UnifiedIndex
 }
 
 // Options for the DiskANN writer.
@@ -89,13 +90,13 @@ func NewWriter(w io.Writer, payloadW io.Writer, segID uint64, dim int, metric di
 		pqSubvectors: opts.PQSubvectors,
 		pqCentroids:  opts.PQCentroids,
 		vectors:      make([][]float32, 0),
-		pks:          make([]uint64, 0),
-		index:        metadata.NewUnifiedIndex(),
+		pks:          make([]model.PK, 0),
+		index:        imetadata.NewUnifiedIndex(),
 	}
 }
 
 // Add adds a vector and its PK to the segment.
-func (w *Writer) Add(pk uint64, vec []float32, md metadata.Document, payload []byte) error {
+func (w *Writer) Add(pk model.PK, vec []float32, md metadata.Document, payload []byte) error {
 	if len(vec) != w.dim {
 		return errors.New("dimension mismatch")
 	}
@@ -108,7 +109,7 @@ func (w *Writer) Add(pk uint64, vec []float32, md metadata.Document, payload []b
 
 	// Serialize metadata
 	if md != nil {
-		b, err := json.Marshal(md.ToMap())
+		b, err := md.MarshalBinary()
 		if err != nil {
 			return err
 		}
@@ -194,7 +195,10 @@ func (w *Writer) trainPQ(ctx context.Context) error {
 
 	w.pqCodes = make([][]byte, len(w.vectors))
 	for i, vec := range w.vectors {
-		w.pqCodes[i] = pq.Encode(vec)
+		w.pqCodes[i], err = pq.Encode(vec)
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -562,12 +566,42 @@ func (w *Writer) Flush() error {
 
 	// Write PKs
 	h.PKOffset = bytesWritten
-	for _, pk := range w.pks {
-		if err := binary.Write(mw, binary.LittleEndian, pk); err != nil {
-			return err
+
+	// Calculate offsets and blob
+	pkOffsets := make([]uint32, len(w.pks))
+	var pkBlob bytes.Buffer
+	currentPKOffset := uint32(0)
+
+	for i, pk := range w.pks {
+		pkOffsets[i] = currentPKOffset
+
+		// Encode PK
+		if pk.Kind() == model.PKKindUint64 {
+			pkBlob.WriteByte(byte(model.PKKindUint64))
+			u64, _ := pk.Uint64()
+			binary.Write(&pkBlob, binary.LittleEndian, u64)
+			currentPKOffset += 9
+		} else {
+			pkBlob.WriteByte(byte(model.PKKindString))
+			s, _ := pk.StringValue()
+			sb := []byte(s)
+			binary.Write(&pkBlob, binary.LittleEndian, uint32(len(sb)))
+			pkBlob.Write(sb)
+			currentPKOffset += 1 + 4 + uint32(len(sb))
 		}
 	}
-	bytesWritten += uint64(len(w.pks) * 8)
+
+	// Write Offsets
+	if err := binary.Write(mw, binary.LittleEndian, pkOffsets); err != nil {
+		return err
+	}
+	bytesWritten += uint64(len(pkOffsets) * 4)
+
+	// Write Blob
+	if _, err := mw.Write(pkBlob.Bytes()); err != nil {
+		return err
+	}
+	bytesWritten += uint64(pkBlob.Len())
 
 	// Write Metadata
 	h.MetadataOffset = bytesWritten

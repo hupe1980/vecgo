@@ -38,7 +38,7 @@ func BenchmarkCompaction_Pressure(b *testing.B) {
 	// Each iteration inserts a vector.
 	// Compaction happens in background.
 	for i := 0; i < b.N; i++ {
-		pk := model.PrimaryKey(i)
+		pk := model.PKUint64(uint64(i))
 		if err := eng.Insert(pk, vec, nil, nil); err != nil {
 			b.Fatal(err)
 		}

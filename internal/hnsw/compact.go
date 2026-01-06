@@ -6,7 +6,7 @@ import (
 	"sync"
 
 	"github.com/hupe1980/vecgo/model"
-	"github.com/hupe1980/vecgo/searcher"
+	"github.com/hupe1980/vecgo/internal/searcher"
 )
 
 // Compact removes deleted nodes from the graph connections and attempts to repair connectivity.
