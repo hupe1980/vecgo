@@ -95,7 +95,7 @@ func (s *Store) Load() (*Manifest, error) {
 	}
 
 	if m.Version != CurrentVersion {
-		return nil, fmt.Errorf("unsupported manifest version: %d (expected %d)", m.Version, CurrentVersion)
+		return nil, fmt.Errorf("%w: %d (expected %d)", ErrIncompatibleVersion, m.Version, CurrentVersion)
 	}
 
 	return &m, nil

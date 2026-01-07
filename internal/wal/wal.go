@@ -2,7 +2,10 @@ package wal
 
 import (
 	"bufio"
+	"encoding/binary"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sync"
 
@@ -19,6 +22,17 @@ const (
 	DurabilitySync
 )
 
+const (
+	walMagic      = "VECGOWAL" // 8 bytes
+	walVersion    = 1          // 4 bytes
+	walHeaderSize = 12
+)
+
+var (
+	ErrIncompatibleVersion = errors.New("incompatible WAL version")
+	ErrInvalidHeader       = errors.New("invalid WAL header")
+)
+
 type Options struct {
 	Durability Durability
 }
@@ -30,6 +44,7 @@ func DefaultOptions() Options {
 // WAL manages the write-ahead log file.
 type WAL struct {
 	mu   sync.Mutex
+	fs   fs.FileSystem
 	file fs.File
 	cw   *countingWriter
 	path string
@@ -76,12 +91,50 @@ func Open(fsys fs.FileSystem, path string, opts Options) (*WAL, error) {
 	}
 	offset := stat.Size()
 
+	// Check/Write Header
+	if offset == 0 {
+		// New file
+		header := make([]byte, walHeaderSize)
+		copy(header[0:8], walMagic)
+		binary.LittleEndian.PutUint32(header[8:12], uint32(walVersion))
+		if _, err := f.Write(header); err != nil {
+			f.Close()
+			return nil, err
+		}
+		if err := f.Sync(); err != nil {
+			f.Close()
+			return nil, err
+		}
+		offset = walHeaderSize
+	} else {
+		// Existing file
+		if offset < walHeaderSize {
+			f.Close()
+			return nil, fmt.Errorf("%w: file too small (%d < %d)", ErrInvalidHeader, offset, walHeaderSize)
+		}
+		header := make([]byte, walHeaderSize)
+		if _, err := f.ReadAt(header, 0); err != nil {
+			f.Close()
+			return nil, err
+		}
+		if string(header[0:8]) != walMagic {
+			f.Close()
+			return nil, fmt.Errorf("%w: invalid magic %q", ErrInvalidHeader, header[0:8])
+		}
+		ver := binary.LittleEndian.Uint32(header[8:12])
+		if ver != walVersion {
+			f.Close()
+			return nil, fmt.Errorf("%w: version %d (expected %d)", ErrIncompatibleVersion, ver, walVersion)
+		}
+	}
+
 	cw := &countingWriter{
 		w: bufio.NewWriter(f),
 		n: offset,
 	}
 
 	w := &WAL{
+		fs:           fsys,
 		file:         f,
 		cw:           cw,
 		path:         path,
@@ -266,16 +319,22 @@ func (w *WAL) Close() error {
 // The caller is responsible for closing the returned file.
 func (w *WAL) Reader() (*Reader, error) {
 	// Open a separate file handle for reading
-	f, err := os.Open(w.path)
+	// Use fs abstraction if possible, but we don't store it yet. Added w.fs
+	f, err := w.fs.OpenFile(w.path, os.O_RDONLY, 0)
 	if err != nil {
 		return nil, err
 	}
-	return &Reader{f: f, r: bufio.NewReader(f)}, nil
+	// Skip header
+	if _, err := f.Seek(walHeaderSize, io.SeekStart); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return &Reader{f: f, r: bufio.NewReader(f), offset: walHeaderSize}, nil
 }
 
 // Reader iterates over WAL records.
 type Reader struct {
-	f      *os.File
+	f      fs.File
 	r      *bufio.Reader
 	offset int64
 }

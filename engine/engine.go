@@ -251,6 +251,9 @@ func Open(dir string, dim int, metric distance.Metric, opts ...Option) (*Engine,
 	mStore := manifest.NewStore(e.fs, dir)
 	m, err := mStore.Load()
 	if err != nil {
+		if errors.Is(err, manifest.ErrIncompatibleVersion) {
+			return nil, fmt.Errorf("%w: %v", ErrIncompatibleFormat, err)
+		}
 		return nil, fmt.Errorf("failed to load manifest: %w", err)
 	}
 
@@ -276,6 +279,25 @@ func Open(dir string, dim int, metric distance.Metric, opts ...Option) (*Engine,
 		}
 	}
 
+	// Clean up orphan WALs (crash recovery)
+	if entries, err := e.fs.ReadDir(dir); err == nil {
+		for _, entry := range entries {
+			name := entry.Name()
+			if strings.HasPrefix(name, "wal_") && strings.HasSuffix(name, ".log") {
+				var id uint64
+				if n, _ := fmt.Sscanf(name, "wal_%d.log", &id); n == 1 {
+					if id != m.WALID {
+						if err := e.fs.Remove(filepath.Join(dir, name)); err == nil {
+							if e.logger != nil {
+								e.logger.Info("Cleaned up orphan WAL", "path", name)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
 	// 2. Open Segments and Tombstones (and Rebuild PK Index)
 	segments := make(map[model.SegmentID]*RefCountedSegment)
 	tombstones := make(map[model.SegmentID]*imetadata.LocalBitmap)
@@ -293,6 +315,9 @@ func Open(dir string, dim int, metric distance.Metric, opts ...Option) (*Engine,
 
 		seg, err := openSegment(e.store, segMeta.Path, e.blockCache, payloadBlob)
 		if err != nil {
+			if errors.Is(err, flat.ErrInvalidVersion) || errors.Is(err, flat.ErrInvalidMagic) {
+				return nil, fmt.Errorf("%w: segment %d: %v", ErrIncompatibleFormat, segMeta.ID, err)
+			}
 			return nil, fmt.Errorf("failed to open segment %d: %w", segMeta.ID, err)
 		}
 		segments[segMeta.ID] = NewRefCountedSegment(seg)

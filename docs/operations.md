@@ -7,10 +7,17 @@ This guide provides runbooks, monitoring thresholds, and capacity planning for r
 ### Disk Full
 **Symptoms**: `Insert` returns `ErrBackpressure` or IO errors; logs show "no space left on device".
 **Action**:
-1. **Stop Writes**: Immediately stop ingestion to prevent WAL corruption (though Vecgo is crash-safe).
+1. **Stop Writes**: The engine may enter a read-only state if WAL sync fails.
 2. **Free Space**: Delete old logs or expand volume.
 3. **Restart**: Vecgo will recover from the WAL.
 4. **Mitigation**: Configure `Compaction` to run more frequently or use larger disks (1.5x data size).
+
+### Incompatible Format
+**Symptoms**: `Open` returns `ErrIncompatibleFormat`.
+**Action**:
+1. **Check Version**: Ensure you are running a version of Vecgo compatible with the data directory.
+2. **Upgrade**: If upgrading, follow migration guides.
+3. **Rebuild**: If downgrading is not supported, export data using the old version and re-import.
 
 ### OOM (Out of Memory)
 **Symptoms**: Process crash (OOM Killer); `ErrBackpressure` on memory limits.

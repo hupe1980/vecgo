@@ -52,5 +52,5 @@ func TestManifestVersioning(t *testing.T) {
 	// 4. Load again - should fail
 	_, err = store.Load()
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "unsupported manifest version")
+	assert.ErrorIs(t, err, ErrIncompatibleVersion)
 }
