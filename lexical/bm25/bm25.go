@@ -17,7 +17,7 @@ const (
 
 type posting struct {
 	docID uint32
-	count int
+	count uint32
 }
 
 // MemoryIndex is a simple in-memory BM25 index.
@@ -127,7 +127,7 @@ func (idx *MemoryIndex) Add(pk model.PK, text string) error {
 	idx.docCount++
 
 	for t, count := range tf {
-		idx.inverted[t] = append(idx.inverted[t], posting{docID: docID, count: count})
+		idx.inverted[t] = append(idx.inverted[t], posting{docID: docID, count: uint32(count)})
 	}
 
 	return nil

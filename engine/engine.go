@@ -61,6 +61,7 @@ type Engine struct {
 
 	resourceController *resource.Controller
 	blockCache         cache.BlockCache
+	blockCacheSize     int64
 
 	compactionConfig CompactionConfig
 	flushConfig      FlushConfig
@@ -204,6 +205,14 @@ func WithBlobStore(st blobstore.BlobStore) Option {
 	}
 }
 
+// WithBlockCacheSize sets the size of the block cache in bytes.
+// If 0, defaults to 256MB.
+func WithBlockCacheSize(size int64) Option {
+	return func(e *Engine) {
+		e.blockCacheSize = size
+	}
+}
+
 // Open opens or creates a new Engine.
 func Open(dir string, dim int, metric distance.Metric, opts ...Option) (*Engine, error) {
 	e := &Engine{
@@ -228,6 +237,11 @@ func Open(dir string, dim int, metric distance.Metric, opts ...Option) (*Engine,
 			MemoryLimitBytes: 1 << 30, // 1GB default
 		})
 	}
+	if e.blockCacheSize == 0 {
+		e.blockCacheSize = 256 << 20 // 256MB default
+	}
+	e.blockCache = cache.NewLRUBlockCache(e.blockCacheSize, e.resourceController)
+	e.store = blobstore.NewCachingStore(e.store, e.blockCache, 4096)
 
 	if e.flushConfig.MaxMemTableSize == 0 {
 		e.flushConfig.MaxMemTableSize = 64 * 1024 * 1024 // 64MB
@@ -235,8 +249,6 @@ func Open(dir string, dim int, metric distance.Metric, opts ...Option) (*Engine,
 	if e.flushConfig.MaxWALSize == 0 {
 		e.flushConfig.MaxWALSize = 1024 * 1024 * 1024 // 1GB
 	}
-
-	e.blockCache = cache.NewLRUBlockCache(256<<20, e.resourceController) // 256MB default
 
 	if e.fs == nil {
 		e.fs = fs.LocalFS{}

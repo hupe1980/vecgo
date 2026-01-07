@@ -4,6 +4,7 @@ import (
 	"container/list"
 	"context"
 	"sync"
+	"sync/atomic"
 
 	"github.com/hupe1980/vecgo/resource"
 )
@@ -16,6 +17,9 @@ type LRUBlockCache struct {
 	items     map[CacheKey]*list.Element
 	evictList *list.List
 	rc        *resource.Controller
+
+	hits   atomic.Int64
+	misses atomic.Int64
 }
 
 type entry struct {
@@ -40,9 +44,11 @@ func (c *LRUBlockCache) Get(ctx context.Context, key CacheKey) ([]byte, bool) {
 	defer c.mu.Unlock()
 
 	if ent, ok := c.items[key]; ok {
+		c.hits.Add(1)
 		c.evictList.MoveToFront(ent)
 		return ent.Value.(*entry).value, true
 	}
+	c.misses.Add(1)
 	return nil, false
 }
 
@@ -118,6 +124,28 @@ func (c *LRUBlockCache) Set(ctx context.Context, key CacheKey, b []byte) {
 	c.size += itemSize
 }
 
+// Invalidate removes entries matching the predicate.
+func (c *LRUBlockCache) Invalidate(predicate func(key CacheKey) bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Capture keys to remove to avoid modifying map while iterating (if map semantics require it)
+	// Go maps are safe to delete during iteration, but modifying list in loop requires care.
+	// However, removeElement modifies the list.
+	// So we should collect elements first.
+	var toRemove []*list.Element
+
+	for key, element := range c.items {
+		if predicate(key) {
+			toRemove = append(toRemove, element)
+		}
+	}
+
+	for _, e := range toRemove {
+		c.removeElement(e)
+	}
+}
+
 func (c *LRUBlockCache) evict() {
 	for c.size > c.capacity {
 		ent := c.evictList.Back()
@@ -144,4 +172,24 @@ func (c *LRUBlockCache) Size() int64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.size
+}
+
+type Stats struct {
+	Hits     int64
+	Misses   int64
+	Size     int64
+	Capacity int64
+	Count    int64
+}
+
+func (c *LRUBlockCache) Stats() Stats {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return Stats{
+		Hits:     c.hits.Load(),
+		Misses:   c.misses.Load(),
+		Size:     c.size,
+		Capacity: c.capacity,
+		Count:    int64(len(c.items)),
+	}
 }

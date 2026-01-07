@@ -25,7 +25,7 @@ func (it *termIterator) doc() uint32 {
 }
 
 // count returns the term frequency in the current document.
-func (it *termIterator) count() int {
+func (it *termIterator) count() uint32 {
 	if it.idx >= len(it.postings) {
 		return 0
 	}

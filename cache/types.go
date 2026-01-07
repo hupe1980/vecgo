@@ -14,6 +14,7 @@ const (
 	CacheKindColumnBlocks           // vector/code/rowid/payload column blocks
 	CacheKindPostings               // filter posting lists / bitmaps
 	CacheKindGraph                  // DiskANN adjacency / node blocks
+	CacheKindBlob                   // Generic blob store blocks
 )
 
 // CacheKey must be stable across processes and snapshot-safe.
@@ -25,6 +26,9 @@ type CacheKey struct {
 	ManifestID uint64
 	// Offset is a logical block identifier (e.g., byte offset / block index / node id).
 	Offset uint64
+	// Path is optional; if provided, it identifies the source (e.g. filename).
+	// Used by generic blob caching when SegmentID is not known or sufficient.
+	Path string
 }
 
 // BlockCache is a byte-oriented cache for immutable blocks.
@@ -34,6 +38,8 @@ type BlockCache interface {
 	Get(ctx context.Context, key CacheKey) (b []byte, ok bool)
 	// Set caches a block. Implementations may copy or retain; caller must treat b as immutable.
 	Set(ctx context.Context, key CacheKey, b []byte)
+	// Invalidate removes entries matching the predicate.
+	Invalidate(predicate func(key CacheKey) bool)
 }
 
 // AdmissionPolicy decides whether a value should be cached.
