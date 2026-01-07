@@ -415,13 +415,13 @@ func (s *ColumnarStore) setDeletedLocked(id model.RowID, deleted bool) {
 // Compact removes deleted vectors and defragments the store.
 // Returns a map from old IDs to new IDs for live vectors.
 // Deleted vectors are not included in the map.
-func (s *ColumnarStore) Compact() map[model.RowID]model.RowID {
+func (s *ColumnarStore) Compact() (map[model.RowID]model.RowID, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.live == s.count {
 		// Nothing to compact
-		return nil
+		return nil, nil
 	}
 
 	dim := int(s.dim)
@@ -434,7 +434,7 @@ func (s *ColumnarStore) Compact() map[model.RowID]model.RowID {
 	for oldID := uint64(0); oldID < s.count; oldID++ {
 		oldIDU32, err := conv.Uint64ToUint32(oldID)
 		if err != nil {
-			panic(fmt.Errorf("columnar: compact failed: %w", err))
+			return nil, fmt.Errorf("columnar: compact failed: %w", err)
 		}
 		localOldID := model.RowID(oldIDU32)
 		if s.isDeletedLocked(localOldID) {
@@ -454,7 +454,7 @@ func (s *ColumnarStore) Compact() map[model.RowID]model.RowID {
 	newDeleted := make([]uint64, (newID+63)/64)
 	s.deleted.Store(&newDeleted)
 
-	return idMap
+	return idMap, nil
 }
 
 // Iterate calls fn for each live vector. Return false from fn to stop iteration.

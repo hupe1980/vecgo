@@ -3,6 +3,7 @@ package quantization
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 
 	"github.com/hupe1980/vecgo/internal/simd"
@@ -181,7 +182,11 @@ func (opq *OptimizedProductQuantizer) Train(vectors [][]float32) error {
 
 		// Solve Procrustes for each block
 		for b := range opq.rotations {
-			opq.rotations[b] = computeProcrustesRotation(mMatrices[b])
+			rot, err := computeProcrustesRotation(mMatrices[b])
+			if err != nil {
+				return fmt.Errorf("procrustes rotation for block %d: %w", b, err)
+			}
+			opq.rotations[b] = rot
 		}
 	}
 

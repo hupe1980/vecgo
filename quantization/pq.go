@@ -3,6 +3,7 @@ package quantization
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"math/rand"
 	"runtime"
@@ -459,9 +460,9 @@ func (pq *ProductQuantizer) SetCodebooks(codebooks []int8, scales, offsets []flo
 // Returns a flattened table of size M * K where table[m*K + k] is the squared distance
 // from query subvector m to centroid k.
 // This enables fast ADC computation using SIMD.
-func (pq *ProductQuantizer) BuildDistanceTable(query []float32) []float32 {
+func (pq *ProductQuantizer) BuildDistanceTable(query []float32) ([]float32, error) {
 	if len(query) != pq.dimension {
-		panic("query dimension mismatch")
+		return nil, fmt.Errorf("query dimension mismatch: expected %d, got %d", pq.dimension, len(query))
 	}
 
 	table := make([]float32, pq.numSubvectors*pq.numCentroids)
@@ -481,7 +482,7 @@ func (pq *ProductQuantizer) BuildDistanceTable(query []float32) []float32 {
 		simd.BuildDistanceTableInt8(querySubvec, codebook, pq.subvectorDim, scale, offset, out)
 	}
 
-	return table
+	return table, nil
 }
 
 // AdcDistance computes the approximate distance between a query (represented by the distance table)

@@ -1,6 +1,7 @@
 package quantization
 
 import (
+	"fmt"
 	"math"
 )
 
@@ -123,9 +124,9 @@ func applyRotation(u, v [][]float32, m, n, i, j int, alpha, beta, gamma float32)
 // This is equivalent to maximizing Tr(R^T * M) where M = A^T * B.
 // The solution is R = U * V^T where M = U * Sigma * V^T.
 // Returns R.
-func computeProcrustesRotation(mMatrix [][]float32) [][]float32 {
+func computeProcrustesRotation(mMatrix [][]float32) ([][]float32, error) {
 	if len(mMatrix) == 0 || len(mMatrix) != len(mMatrix[0]) {
-		panic("Procrustes requires square matrix")
+		return nil, fmt.Errorf("Procrustes requires square matrix")
 	}
 
 	u, sigma, v := svd(mMatrix)
@@ -177,7 +178,7 @@ func computeProcrustesRotation(mMatrix [][]float32) [][]float32 {
 		}
 	}
 
-	return r
+	return r, nil
 }
 
 func determinant(matrix [][]float32) float32 {

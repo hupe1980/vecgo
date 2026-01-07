@@ -446,7 +446,11 @@ func (s *Segment) Search(ctx context.Context, q []float32, k int, filter segment
 	// Precompute PQ table if needed
 	var pqTable []float32
 	if s.pq != nil {
-		pqTable = s.pq.BuildDistanceTable(q)
+		var err error
+		pqTable, err = s.pq.BuildDistanceTable(q)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Scratch buffer for SQ8 batch processing

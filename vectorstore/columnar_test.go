@@ -216,7 +216,10 @@ func TestCompact(t *testing.T) {
 		t.Errorf("LiveCount() = %v, want 2", s.LiveCount())
 	}
 
-	idMap := s.Compact()
+	idMap, err := s.Compact()
+	if err != nil {
+		t.Fatalf("Compact() failed: %v", err)
+	}
 
 	if idMap[0] != 0 {
 		t.Errorf("idMap[0] = %v, want 0", idMap[0])
@@ -263,7 +266,10 @@ func TestCompact_NothingToCompact(t *testing.T) {
 	s.Append([]float32{1.0, 2.0, 3.0})
 	s.Append([]float32{4.0, 5.0, 6.0})
 
-	idMap := s.Compact()
+	idMap, err := s.Compact()
+	if err != nil {
+		t.Fatalf("Compact() failed: %v", err)
+	}
 	if idMap != nil {
 		t.Errorf("Compact() with no deletions should return nil, got %v", idMap)
 	}

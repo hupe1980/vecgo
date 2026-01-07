@@ -2,6 +2,7 @@ package wal
 
 import (
 	"bufio"
+	"fmt"
 	"os"
 	"sync"
 
@@ -39,6 +40,7 @@ type WAL struct {
 	syncCond     *sync.Cond // Signals the syncer that there is data to sync
 	doneCond     *sync.Cond // Signals waiters that a sync completed
 	closed       bool
+	lastErr      error // Terminal error encountered by background syncer
 	wg           sync.WaitGroup
 }
 
@@ -129,8 +131,10 @@ func (w *WAL) runSyncer() {
 		w.mu.Lock()
 
 		if err != nil {
-			// In a real system, handle error. For now, panic to avoid data corruption.
-			panic("wal fsync failed: " + err.Error())
+			w.lastErr = fmt.Errorf("wal sync failed: %w", err)
+			// Wake everyone up so they notice the error
+			w.doneCond.Broadcast()
+			return
 		}
 
 		if target > w.syncedOffset {
@@ -162,6 +166,9 @@ func (w *WAL) AppendAsync(rec *Record) (int64, error) {
 	if w.closed {
 		return 0, os.ErrClosed
 	}
+	if w.lastErr != nil {
+		return 0, w.lastErr
+	}
 
 	if err := rec.Encode(w.cw); err != nil {
 		return 0, err
@@ -183,8 +190,11 @@ func (w *WAL) WaitFor(offset int64) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	for w.syncedOffset < offset && !w.closed {
+	for w.syncedOffset < offset && !w.closed && w.lastErr == nil {
 		w.doneCond.Wait()
+	}
+	if w.lastErr != nil {
+		return w.lastErr
 	}
 	if w.closed && w.syncedOffset < offset {
 		return os.ErrClosed
@@ -199,6 +209,9 @@ func (w *WAL) Sync() error {
 
 	if w.closed {
 		return os.ErrClosed
+	}
+	if w.lastErr != nil {
+		return w.lastErr
 	}
 
 	if err := w.cw.Flush(); err != nil {
@@ -215,8 +228,11 @@ func (w *WAL) Sync() error {
 	// If Sync mode, we use the group commit mechanism
 	target := w.cw.n
 	w.syncCond.Signal()
-	for w.syncedOffset < target && !w.closed {
+	for w.syncedOffset < target && !w.closed && w.lastErr == nil {
 		w.doneCond.Wait()
+	}
+	if w.lastErr != nil {
+		return w.lastErr
 	}
 	return nil
 }
