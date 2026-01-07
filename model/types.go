@@ -89,7 +89,7 @@ type PrimaryKey = PK
 type Record struct {
 	PK       PK
 	Vector   []float32
-	Metadata map[string]interface{}
+	Metadata metadata.Document
 	Payload  []byte
 }
 
@@ -107,7 +107,7 @@ type Candidate struct {
 
 	// Materialized data (optional)
 	Vector   []float32
-	Metadata map[string]interface{}
+	Metadata metadata.Document
 	Payload  []byte
 }
 

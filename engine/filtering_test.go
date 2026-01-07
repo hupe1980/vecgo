@@ -18,21 +18,21 @@ func TestFiltering(t *testing.T) {
 	defer e.Close()
 
 	// Insert with metadata
-	err = e.Insert(model.PKUint64(1), []float32{1.0, 0.0}, map[string]interface{}{
-		"category": "A",
-		"price":    10.0,
+	err = e.Insert(model.PKUint64(1), []float32{1.0, 0.0}, metadata.Document{
+		"category": metadata.String("A"),
+		"price":    metadata.Float(10.0),
 	}, nil)
 	require.NoError(t, err)
 
-	err = e.Insert(model.PKUint64(2), []float32{0.0, 1.0}, map[string]interface{}{
-		"category": "B",
-		"price":    20.0,
+	err = e.Insert(model.PKUint64(2), []float32{0.0, 1.0}, metadata.Document{
+		"category": metadata.String("B"),
+		"price":    metadata.Float(20.0),
 	}, nil)
 	require.NoError(t, err)
 
-	err = e.Insert(model.PKUint64(3), []float32{1.0, 1.0}, map[string]interface{}{
-		"category": "A",
-		"price":    30.0,
+	err = e.Insert(model.PKUint64(3), []float32{1.0, 1.0}, metadata.Document{
+		"category": metadata.String("A"),
+		"price":    metadata.Float(30.0),
 	}, nil)
 	require.NoError(t, err)
 

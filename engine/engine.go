@@ -485,7 +485,7 @@ func Open(dir string, dim int, metric distance.Metric, opts ...Option) (*Engine,
 }
 
 // Insert adds a vector to the engine.
-func (e *Engine) Insert(pk model.PK, vec []float32, md map[string]interface{}, payload []byte) (err error) {
+func (e *Engine) Insert(pk model.PK, vec []float32, md metadata.Document, payload []byte) (err error) {
 	start := time.Now()
 	defer func() {
 		e.metrics.OnInsert(time.Since(start), err)
@@ -556,12 +556,7 @@ func (e *Engine) Insert(pk model.PK, vec []float32, md map[string]interface{}, p
 	}
 
 	// 3. Insert into Active MemTable
-	mdDoc, err := metadata.FromMap(md)
-	if err != nil {
-		e.mu.Unlock()
-		return fmt.Errorf("failed to convert metadata: %w", err)
-	}
-	rowID, err := newSnap.active.InsertWithPayload(pk, vec, mdDoc, payload)
+	rowID, err := newSnap.active.InsertWithPayload(pk, vec, md, payload)
 	if err != nil {
 		e.mu.Unlock()
 		return err
@@ -577,7 +572,7 @@ func (e *Engine) Insert(pk model.PK, vec []float32, md map[string]interface{}, p
 	// 5. Update Lexical Index
 	if e.lexicalIndex != nil && e.lexicalField != "" && md != nil {
 		if val, ok := md[e.lexicalField]; ok {
-			if str, ok := val.(string); ok {
+			if str := val.StringValue(); str != "" {
 				if err := e.lexicalIndex.Add(pk, str); err != nil {
 					if e.logger != nil {
 						e.logger.Error("failed to update lexical index", "pk", pk, "error", err)
@@ -697,12 +692,7 @@ func (e *Engine) BatchInsert(records []model.Record) error {
 		}
 
 		// 3. Insert into Active MemTable
-		mdDoc, err := metadata.FromMap(r.Metadata)
-		if err != nil {
-			e.mu.Unlock()
-			return fmt.Errorf("failed to convert metadata for pk %v: %w", r.PK, err)
-		}
-		rowID, err := newSnap.active.InsertWithPayload(r.PK, r.Vector, mdDoc, r.Payload)
+		rowID, err := newSnap.active.InsertWithPayload(r.PK, r.Vector, r.Metadata, r.Payload)
 		if err != nil {
 			e.mu.Unlock()
 			return err
@@ -717,7 +707,7 @@ func (e *Engine) BatchInsert(records []model.Record) error {
 		// 5. Update Lexical Index
 		if e.lexicalIndex != nil && e.lexicalField != "" && r.Metadata != nil {
 			if val, ok := r.Metadata[e.lexicalField]; ok {
-				if str, ok := val.(string); ok {
+				if str := val.StringValue(); str != "" {
 					if err := e.lexicalIndex.Add(r.PK, str); err != nil {
 						if e.logger != nil {
 							e.logger.Error("failed to update lexical index", "pk", r.PK, "error", err)
@@ -1189,7 +1179,7 @@ func (e *Engine) Search(ctx context.Context, q []float32, k int, opts ...func(*m
 						s.Results[i+k].Vector = batch.Vector(k)
 					}
 					if options.IncludeMetadata {
-						s.Results[i+k].Metadata = batch.Metadata(k).ToMap()
+						s.Results[i+k].Metadata = batch.Metadata(k)
 					}
 					if options.IncludePayload {
 						s.Results[i+k].Payload = batch.Payload(k)
@@ -1367,7 +1357,7 @@ func (e *Engine) Scan(ctx context.Context, opts ...ScanOption) iter.Seq2[*model.
 				rec = &model.Record{
 					PK:       pk,
 					Vector:   batch.Vector(0),
-					Metadata: batch.Metadata(0).ToMap(),
+					Metadata: batch.Metadata(0),
 					Payload:  batch.Payload(0),
 				}
 			} else {
@@ -1386,7 +1376,7 @@ func (e *Engine) Scan(ctx context.Context, opts ...ScanOption) iter.Seq2[*model.
 				rec = &model.Record{
 					PK:       pk,
 					Vector:   batch.Vector(0),
-					Metadata: batch.Metadata(0).ToMap(),
+					Metadata: batch.Metadata(0),
 					Payload:  batch.Payload(0),
 				}
 			}
@@ -1395,14 +1385,7 @@ func (e *Engine) Scan(ctx context.Context, opts ...ScanOption) iter.Seq2[*model.
 			rec.PK = pk
 
 			if cfg.Filter != nil {
-				doc, err := metadata.FromMap(rec.Metadata)
-				if err != nil {
-					if !yield(nil, err) {
-						return
-					}
-					return
-				}
-				if !cfg.Filter.Matches(doc) {
+				if !cfg.Filter.Matches(rec.Metadata) {
 					continue
 				}
 			}
@@ -1599,7 +1582,7 @@ func (e *Engine) Get(pk model.PK) (rec *model.Record, err error) {
 		return &model.Record{
 			PK:       pk,
 			Vector:   batch.Vector(0),
-			Metadata: batch.Metadata(0).ToMap(),
+			Metadata: batch.Metadata(0),
 			Payload:  batch.Payload(0),
 		}, nil
 	}
@@ -1617,7 +1600,7 @@ func (e *Engine) Get(pk model.PK) (rec *model.Record, err error) {
 	return &model.Record{
 		PK:       pk,
 		Vector:   batch.Vector(0),
-		Metadata: batch.Metadata(0).ToMap(),
+		Metadata: batch.Metadata(0),
 		Payload:  batch.Payload(0),
 	}, nil
 }

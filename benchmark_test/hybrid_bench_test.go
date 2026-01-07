@@ -10,6 +10,7 @@ import (
 	"github.com/hupe1980/vecgo/engine"
 	"github.com/hupe1980/vecgo/lexical"
 	"github.com/hupe1980/vecgo/lexical/bm25"
+	"github.com/hupe1980/vecgo/metadata"
 	"github.com/hupe1980/vecgo/model"
 	"github.com/hupe1980/vecgo/testutil"
 )
@@ -35,7 +36,7 @@ func BenchmarkHybridSearch(b *testing.B) {
 		w2 := vocab[rng.Intn(len(vocab))]
 		text := fmt.Sprintf("%s %s", w1, w2)
 
-		e.Insert(model.PKUint64(uint64(i)), vec, map[string]interface{}{"text": text}, nil)
+		e.Insert(model.PKUint64(uint64(i)), vec, metadata.Document{"text": metadata.String(text)}, nil)
 	}
 
 	ctx := context.Background()

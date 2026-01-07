@@ -18,14 +18,14 @@ func TestScan(t *testing.T) {
 
 	// Insert data
 	// 1. MemTable
-	require.NoError(t, e.Insert(model.PKUint64(1), []float32{1.0, 0.0}, map[string]any{"cat": "A"}, nil))
-	require.NoError(t, e.Insert(model.PKUint64(2), []float32{0.0, 1.0}, map[string]any{"cat": "B"}, nil))
+	require.NoError(t, e.Insert(model.PKUint64(1), []float32{1.0, 0.0}, metadata.Document{"cat": metadata.String("A")}, nil))
+	require.NoError(t, e.Insert(model.PKUint64(2), []float32{0.0, 1.0}, metadata.Document{"cat": metadata.String("B")}, nil))
 
 	// 2. Flush to create segment
 	require.NoError(t, e.Flush())
 
 	// 3. Insert more data (MemTable)
-	require.NoError(t, e.Insert(model.PKUint64(3), []float32{1.0, 1.0}, map[string]any{"cat": "A"}, nil))
+	require.NoError(t, e.Insert(model.PKUint64(3), []float32{1.0, 1.0}, metadata.Document{"cat": metadata.String("A")}, nil))
 
 	// 4. Delete one
 	require.NoError(t, e.Delete(model.PKUint64(2)))
@@ -60,7 +60,7 @@ func TestScan(t *testing.T) {
 		require.NoError(t, err)
 		_, ok := rec.PK.Uint64()
 		require.True(t, ok)
-		require.Equal(t, "A", rec.Metadata["cat"])
+		require.Equal(t, "A", rec.Metadata["cat"].StringValue())
 		countA++
 	}
 	require.Equal(t, 2, countA) // 1 and 3 are both "A"

@@ -43,10 +43,10 @@ func main() {
 	err = eng.Insert(
 		vecgo.PKString("prod-1"),
 		[]float32{1.0, 0.0, 0.0, 0.0},
-		map[string]any{
-			"category": "electronics",
-			"price":    99.99,
-			"tags":     []string{"gadget", "sale"},
+		metadata.Document{
+			"category": metadata.String("electronics"),
+			"price":    metadata.Float(99.99),
+			"tags":     metadata.Strings([]string{"gadget", "sale"}),
 		},
 		[]byte(`{"desc": "A cool gadget"}`),
 	)
@@ -57,10 +57,10 @@ func main() {
 	err = eng.Insert(
 		vecgo.PKString("prod-2"),
 		[]float32{0.0, 1.0, 0.0, 0.0},
-		map[string]any{
-			"category": "books",
-			"price":    19.50,
-			"tags":     []string{"fiction"},
+		metadata.Document{
+			"category": metadata.String("books"),
+			"price":    metadata.Float(19.50),
+			"tags":     metadata.Strings([]string{"fiction"}),
 		},
 		nil,
 	)

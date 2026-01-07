@@ -6,6 +6,7 @@ import (
 
 	"github.com/hupe1980/vecgo/distance"
 	"github.com/hupe1980/vecgo/lexical/bm25"
+	"github.com/hupe1980/vecgo/metadata"
 	"github.com/hupe1980/vecgo/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -21,15 +22,15 @@ func TestHybridSearch(t *testing.T) {
 
 	// Insert data
 	// 1. "apple" near origin
-	err = e.Insert(model.PKUint64(1), []float32{0.1, 0.1}, map[string]interface{}{"text": "apple fruit"}, nil)
+	err = e.Insert(model.PKUint64(1), []float32{0.1, 0.1}, metadata.Document{"text": metadata.String("apple fruit")}, nil)
 	require.NoError(t, err)
 
 	// 2. "banana" far from origin
-	err = e.Insert(model.PKUint64(2), []float32{10.0, 10.0}, map[string]interface{}{"text": "banana fruit"}, nil)
+	err = e.Insert(model.PKUint64(2), []float32{10.0, 10.0}, metadata.Document{"text": metadata.String("banana fruit")}, nil)
 	require.NoError(t, err)
 
 	// 3. "apple" far from origin
-	err = e.Insert(model.PKUint64(3), []float32{10.0, 10.1}, map[string]interface{}{"text": "apple pie"}, nil)
+	err = e.Insert(model.PKUint64(3), []float32{10.0, 10.1}, metadata.Document{"text": metadata.String("apple pie")}, nil)
 	require.NoError(t, err)
 
 	ctx := context.Background()

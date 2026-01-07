@@ -29,7 +29,7 @@ func TestFilteringEquivalence(t *testing.T) {
 	type record struct {
 		pk  uint64
 		vec []float32
-		md  map[string]interface{}
+		md  metadata.Document
 	}
 	records := make([]record, n)
 
@@ -42,10 +42,10 @@ func TestFilteringEquivalence(t *testing.T) {
 		}
 		cat := categories[rng.Intn(len(categories))]
 		price := rng.Float64() * 100.0
-		md := map[string]interface{}{
-			"category": cat,
-			"price":    price,
-			"id":       float64(i), // float64 because JSON unmarshals numbers as float64
+		md := metadata.Document{
+			"category": metadata.String(cat),
+			"price":    metadata.Float(price),
+			"id":       metadata.Float(float64(i)),
 		}
 		records[i] = record{
 			pk:  uint64(i),
@@ -112,9 +112,7 @@ func TestFilteringEquivalence(t *testing.T) {
 			var candidates []model.Candidate
 			for _, r := range records {
 				// Check filter
-				doc, err := metadata.FromMap(r.md)
-				require.NoError(t, err)
-				if !tc.filter.Matches(doc) {
+				if !tc.filter.Matches(r.md) {
 					continue
 				}
 				// Calculate distance
@@ -169,9 +167,7 @@ func TestFilteringEquivalence(t *testing.T) {
 				// Find record
 				u64, _ := r.PK.Uint64()
 				rec := records[u64]
-				doc, err := metadata.FromMap(rec.md)
-				require.NoError(t, err)
-				if !tc.filter.Matches(doc) {
+				if !tc.filter.Matches(rec.md) {
 					t.Errorf("Result PK %d does not match filter", u64)
 				}
 			}
@@ -183,9 +179,7 @@ func TestFilteringEquivalence(t *testing.T) {
 			// Let's verify count if total matches < k
 			matches := 0
 			for _, r := range records {
-				doc, err := metadata.FromMap(r.md)
-				require.NoError(t, err)
-				if tc.filter.Matches(doc) {
+				if tc.filter.Matches(r.md) {
 					matches++
 				}
 			}

@@ -39,10 +39,27 @@ func (t FieldType) String() string {
 // Schema defines the expected structure of metadata.
 type Schema map[string]FieldType
 
-// Validate checks if the given metadata map conforms to the schema.
-// It returns an error if a field has an incorrect type.
-// Unknown fields are currently allowed (open schema).
-func (s Schema) Validate(md map[string]any) error {
+// Validate checks if the given metadata document conforms to the schema.
+func (s Schema) Validate(doc Document) error {
+	if s == nil {
+		return nil
+	}
+	for k, v := range doc {
+		expectedType, ok := s[k]
+		if !ok {
+			continue
+		}
+
+		if !checkKind(v.Kind, expectedType) {
+			return fmt.Errorf("field %q has invalid type %s, expected %s", k, v.Kind, expectedType)
+		}
+	}
+	return nil
+}
+
+// ValidateMap checks if the given metadata map conforms to the schema.
+// This is useful for validating untyped input (e.g. from JSON) before conversion.
+func (s Schema) ValidateMap(md map[string]any) error {
 	if s == nil {
 		return nil
 	}
@@ -57,6 +74,27 @@ func (s Schema) Validate(md map[string]any) error {
 		}
 	}
 	return nil
+}
+
+func checkKind(k Kind, expected FieldType) bool {
+	if k == KindNull {
+		return true
+	}
+	switch expected {
+	case FieldTypeAny:
+		return true
+	case FieldTypeInt:
+		return k == KindInt
+	case FieldTypeFloat:
+		return k == KindFloat || k == KindInt // Allow upgrading Int to Float
+	case FieldTypeString:
+		return k == KindString
+	case FieldTypeBool:
+		return k == KindBool
+	case FieldTypeArray:
+		return k == KindArray
+	}
+	return false
 }
 
 func checkType(v any, expected FieldType) bool {

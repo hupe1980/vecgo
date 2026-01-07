@@ -122,8 +122,8 @@ func BenchmarkSearchFiltered(b *testing.B) {
 			pksA = append(pksA, model.PKUint64(uint64(i)))
 		}
 
-		md := map[string]interface{}{
-			"category": cat,
+		md := metadata.Document{
+			"category": metadata.String(cat),
 		}
 
 		if err := eng.Insert(model.PKUint64(uint64(i)), vec, md, nil); err != nil {

@@ -10,6 +10,7 @@ import (
 
 	"github.com/hupe1980/vecgo"
 	"github.com/hupe1980/vecgo/engine"
+	"github.com/hupe1980/vecgo/metadata"
 	"github.com/hupe1980/vecgo/model"
 	"github.com/hupe1980/vecgo/testutil"
 )
@@ -67,8 +68,8 @@ func main() {
 		err := eng.Insert(
 			model.PKUint64(doc.ID),
 			doc.Vector,
-			map[string]any{"source": "wiki-sim"}, // Metadata
-			[]byte(doc.Content),                  // Payload (The text chunk)
+			metadata.Document{"source": metadata.String("wiki-sim")}, // Metadata
+			[]byte(doc.Content), // Payload (The text chunk)
 		)
 		if err != nil {
 			log.Fatalf("Failed to insert doc %d: %v", doc.ID, err)

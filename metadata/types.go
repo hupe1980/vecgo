@@ -29,6 +29,25 @@ const (
 	KindArray
 )
 
+func (k Kind) String() string {
+	switch k {
+	case KindNull:
+		return "Null"
+	case KindInt:
+		return "Int"
+	case KindFloat:
+		return "Float"
+	case KindString:
+		return "String"
+	case KindBool:
+		return "Bool"
+	case KindArray:
+		return "Array"
+	default:
+		return "Invalid"
+	}
+}
+
 // Value is a small typed value used for metadata documents and filters.
 //
 // The representation is designed to make filtering fast and predictable:
@@ -254,6 +273,33 @@ func Bool(v bool) Value { return Value{Kind: KindBool, B: v} }
 
 // Array returns an array Value.
 func Array(v []Value) Value { return Value{Kind: KindArray, A: v} }
+
+// Strings returns an array value from a slice of strings.
+func Strings(v []string) Value {
+	vals := make([]Value, len(v))
+	for i, s := range v {
+		vals[i] = String(s)
+	}
+	return Array(vals)
+}
+
+// Ints returns an array value from a slice of ints.
+func Ints(v []int) Value {
+	vals := make([]Value, len(v))
+	for i, x := range v {
+		vals[i] = Int(int64(x))
+	}
+	return Array(vals)
+}
+
+// Floats returns an array value from a slice of float64s.
+func Floats(v []float64) Value {
+	vals := make([]Value, len(v))
+	for i, x := range v {
+		vals[i] = Float(x)
+	}
+	return Array(vals)
+}
 
 // Document is a typed metadata document.
 type Document map[string]Value
