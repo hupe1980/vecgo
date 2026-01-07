@@ -35,7 +35,7 @@ func TestFlatSegment(t *testing.T) {
 
 	// 2. Read
 	st := blobstore.NewLocalStore(dir)
-	blob, err := st.Open("segment.bin")
+	blob, err := st.Open(context.Background(), "segment.bin")
 	require.NoError(t, err)
 
 	seg, err := Open(blob)

@@ -45,7 +45,7 @@ func TestPartitionedSegment(t *testing.T) {
 
 	// Open
 	st := blobstore.NewLocalStore(dir)
-	blob, err := st.Open("partitioned.bin")
+	blob, err := st.Open(context.Background(), "partitioned.bin")
 	require.NoError(t, err)
 	seg, err := Open(blob)
 	require.NoError(t, err)

@@ -307,13 +307,13 @@ func Open(dir string, dim int, metric distance.Metric, opts ...Option) (*Engine,
 		// Optional payload file.
 		payloadPath := fmt.Sprintf("segment_%d.payload", segMeta.ID)
 		var payloadBlob blobstore.Blob
-		if b, err := e.store.Open(payloadPath); err == nil {
+		if b, err := e.store.Open(context.Background(), payloadPath); err == nil {
 			payloadBlob = b
 		} else if !errors.Is(err, blobstore.ErrNotFound) {
 			return nil, fmt.Errorf("failed to open payload blob for segment %d: %w", segMeta.ID, err)
 		}
 
-		seg, err := openSegment(e.store, segMeta.Path, e.blockCache, payloadBlob)
+		seg, err := openSegment(context.Background(), e.store, segMeta.Path, e.blockCache, payloadBlob)
 		if err != nil {
 			if errors.Is(err, flat.ErrInvalidVersion) || errors.Is(err, flat.ErrInvalidMagic) {
 				return nil, fmt.Errorf("%w: segment %d: %v", ErrIncompatibleFormat, segMeta.ID, err)
@@ -1761,13 +1761,13 @@ func (e *Engine) Flush() (err error) {
 	}
 
 	// 3. Open new segment for reading
-	blob, err := e.store.Open(filename)
+	blob, err := e.store.Open(context.Background(), filename)
 	if err != nil {
 		return err
 	}
 
 	opts := []flat.Option{flat.WithBlockCache(e.blockCache)}
-	if payloadBlob, err := e.store.Open(payloadFilename); err == nil {
+	if payloadBlob, err := e.store.Open(context.Background(), payloadFilename); err == nil {
 		opts = append(opts, flat.WithPayloadBlob(payloadBlob))
 	}
 

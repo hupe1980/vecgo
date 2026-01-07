@@ -27,6 +27,7 @@ Vecgo is designed around a **Shared-Nothing, LSM-Tree Architecture** to maximize
 
 **Code layout (current):**
 - `model`: Shared types (`PrimaryKey`, `SegmentID`, `RowID`, `Location`, `SearchOptions`).
+- `blobstore`: Abstraction for immutable data segments (supports Local/S3).
 - `cache`: Cache primitives/implementations (used where applicable).
 - `engine`: Tiered engine orchestrator (snapshots, WAL replay, flush/compaction scheduling).
 - `internal/segment`: Segment interfaces and implementations (internal-only).

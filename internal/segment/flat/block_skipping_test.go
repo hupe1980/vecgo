@@ -55,7 +55,7 @@ func TestBlockSkipping(t *testing.T) {
 
 	// Open
 	st := blobstore.NewLocalStore(dir)
-	blob, err := st.Open("block_skipping.bin")
+	blob, err := st.Open(context.Background(), "block_skipping.bin")
 	require.NoError(t, err)
 	seg, err := Open(blob)
 	require.NoError(t, err)

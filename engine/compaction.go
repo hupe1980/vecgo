@@ -226,7 +226,7 @@ func (e *Engine) Compact(segmentIDs []model.SegmentID) (err error) {
 
 	// Open the new segment to verify and have it ready
 	var payloadBlob blobstore.Blob
-	if b, err := e.store.Open(payloadFilename); err == nil {
+	if b, err := e.store.Open(context.Background(), payloadFilename); err == nil {
 		payloadBlob = b
 	} else if !errors.Is(err, blobstore.ErrNotFound) {
 		fmt.Printf("Compaction failed: open payload blob: %v\n", err)
@@ -235,7 +235,7 @@ func (e *Engine) Compact(segmentIDs []model.SegmentID) (err error) {
 		return err
 	}
 
-	newSeg, err := openSegment(e.store, filename, e.blockCache, payloadBlob)
+	newSeg, err := openSegment(context.Background(), e.store, filename, e.blockCache, payloadBlob)
 	if err != nil {
 		fmt.Printf("Compaction failed: openSegment: %v\n", err)
 		e.fs.Remove(path)
@@ -264,20 +264,52 @@ func (e *Engine) Compact(segmentIDs []model.SegmentID) (err error) {
 		}
 	}
 
+	// 2. Prepare Manifest Update
+	newSegInfo := manifest.SegmentInfo{
+		ID:       newSegID,
+		Level:    1, // L1 (Compacted)
+		RowCount: count,
+		Path:     filename,
+	}
+
+	newSegments := make([]manifest.SegmentInfo, 0, len(e.manifest.Segments)-len(segmentIDs)+1)
+	compactedSet := make(map[model.SegmentID]bool)
+	for _, id := range segmentIDs {
+		compactedSet[id] = true
+	}
+
+	for _, sm := range e.manifest.Segments {
+		if !compactedSet[sm.ID] {
+			newSegments = append(newSegments, sm)
+		}
+	}
+	newSegments = append(newSegments, newSegInfo)
+
+	tempManifest := *e.manifest
+	tempManifest.Segments = newSegments
+
+	// Save Manifest FIRST
+	if err := manifest.NewStore(e.fs, e.dir).Save(&tempManifest); err != nil {
+		newSeg.Close()
+		e.fs.Remove(path)
+		e.fs.Remove(payloadPath)
+		return fmt.Errorf("failed to save manifest: %w", err)
+	}
+
+	e.manifest.Segments = newSegments
+
 	// 3. Update Engine State (Create New Snapshot)
 	newSnap := currentSnap.Clone()
 
-	// 2. Update PK Index (CAS)
+	// Update PK Index (CAS)
 	for pk, m := range moves {
 		currentLoc, exists := newSnap.pkIndex.Lookup(pk)
 		if exists && currentLoc.SegmentID == m.OldSegID && currentLoc.RowID == model.RowID(m.OldRowID) {
-			// Still pointing to the record we moved. Update it.
 			newSnap.pkIndex = newSnap.pkIndex.Insert(pk, model.Location{
 				SegmentID: newSegID,
 				RowID:     model.RowID(m.NewRowID),
 			})
 		}
-		// Else: Record was updated or deleted concurrently. Do not update index.
 	}
 
 	// Add new segment
@@ -286,16 +318,12 @@ func (e *Engine) Compact(segmentIDs []model.SegmentID) (err error) {
 
 	// Remove old segments
 	for _, id := range segmentIDs {
-		// Since Clone() incremented the ref count for all segments,
-		// and we are removing these segments from newSnap,
-		// we must decrement the ref count to balance it.
 		if seg, ok := newSnap.segments[id]; ok {
 			seg.DecRef()
 		}
 		delete(newSnap.segments, id)
 		delete(newSnap.tombstones, id)
 
-		// Register cleanup callback to delete file when last ref is dropped
 		oldPath := filepath.Join(e.dir, fmt.Sprintf("segment_%d.bin", id))
 		oldPayloadPath := filepath.Join(e.dir, fmt.Sprintf("segment_%d.payload", id))
 		if seg, ok := currentSnap.segments[id]; ok {
@@ -310,42 +338,14 @@ func (e *Engine) Compact(segmentIDs []model.SegmentID) (err error) {
 	e.current.Store(newSnap)
 	currentSnap.DecRef() // Release Engine's reference to old snapshot
 
-	// 4. Update Manifest
-	newSegInfo := manifest.SegmentInfo{
-		ID:       newSegID,
-		Level:    1, // L1 (Compacted)
-		RowCount: count,
-		Path:     filename,
-	}
-
-	// Filter out old segments from manifest list
-	newSegments := make([]manifest.SegmentInfo, 0, len(e.manifest.Segments)-len(segmentIDs)+1)
-	compactedSet := make(map[model.SegmentID]bool)
-	for _, id := range segmentIDs {
-		compactedSet[id] = true
-	}
-
-	for _, sm := range e.manifest.Segments {
-		if !compactedSet[sm.ID] {
-			newSegments = append(newSegments, sm)
-		}
-	}
-	newSegments = append(newSegments, newSegInfo)
-	e.manifest.Segments = newSegments
-
-	// Save Manifest
-	if err := manifest.NewStore(e.fs, e.dir).Save(e.manifest); err != nil {
-		return fmt.Errorf("failed to save manifest: %w", err)
-	}
-
 	dropped = int(totalRows) - int(count)
 	created = 1
 	return nil
 }
 
 // openSegment opens a segment file, detecting its type (Flat or DiskANN) via magic number.
-func openSegment(st blobstore.BlobStore, name string, c cache.BlockCache, payloadBlob blobstore.Blob) (segment.Segment, error) {
-	blob, err := st.Open(name)
+func openSegment(ctx context.Context, st blobstore.BlobStore, name string, c cache.BlockCache, payloadBlob blobstore.Blob) (segment.Segment, error) {
+	blob, err := st.Open(ctx, name)
 	if err != nil {
 		return nil, err
 	}

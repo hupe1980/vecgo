@@ -27,8 +27,19 @@ func (b *bytesBlob) ReadAt(p []byte, off int64) (n int, err error) {
 	return n, nil
 }
 
-func (b *bytesBlob) Close() error           { return nil }
-func (b *bytesBlob) Size() int64            { return int64(len(b.data)) }
+func (b *bytesBlob) Close() error { return nil }
+func (b *bytesBlob) Size() int64  { return int64(len(b.data)) }
+func (b *bytesBlob) ReadRange(off, length int64) (io.ReadCloser, error) {
+	if off < 0 || off >= int64(len(b.data)) {
+		return io.NopCloser(bytes.NewReader(nil)), io.EOF
+	}
+	end := off + length
+	if end > int64(len(b.data)) {
+		end = int64(len(b.data))
+	}
+	// Important: We need to return a reader that reads from the slice
+	return io.NopCloser(bytes.NewReader(b.data[off:end])), nil
+}
 func (b *bytesBlob) Bytes() ([]byte, error) { return b.data, nil }
 
 func FuzzFlatSegmentOpen(f *testing.F) {

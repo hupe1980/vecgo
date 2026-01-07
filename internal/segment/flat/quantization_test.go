@@ -43,7 +43,7 @@ func TestQuantizedSegment(t *testing.T) {
 
 	// Open
 	st := blobstore.NewLocalStore(dir)
-	blob, err := st.Open("quantized.bin")
+	blob, err := st.Open(context.Background(), "quantized.bin")
 	require.NoError(t, err)
 	seg, err := Open(blob)
 	require.NoError(t, err)

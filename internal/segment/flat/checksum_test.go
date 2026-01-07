@@ -1,6 +1,7 @@
 package flat
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -29,7 +30,7 @@ func TestChecksum(t *testing.T) {
 	f.Close()
 
 	// 2. Open with verification (should pass)
-	blob, err := st.Open("checksum.bin")
+	blob, err := st.Open(context.Background(), "checksum.bin")
 	require.NoError(t, err)
 	seg, err := Open(blob, WithVerifyChecksum(true))
 	require.NoError(t, err)
@@ -53,14 +54,14 @@ func TestChecksum(t *testing.T) {
 	require.NoError(t, err)
 
 	// 4. Open with verification (should fail)
-	blob, err = st.Open("checksum.bin")
+	blob, err = st.Open(context.Background(), "checksum.bin")
 	require.NoError(t, err)
 	_, err = Open(blob, WithVerifyChecksum(true))
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "checksum mismatch")
 
 	// 5. Open without verification (should pass, but might have bad data)
-	blob, err = st.Open("checksum.bin")
+	blob, err = st.Open(context.Background(), "checksum.bin")
 	require.NoError(t, err)
 	seg2, err := Open(blob, WithVerifyChecksum(false))
 	require.NoError(t, err)

@@ -100,7 +100,7 @@ func TestWriter(t *testing.T) {
 
 	// Test Reader
 	st := blobstore.NewLocalStore(filepath.Dir(f.Name()))
-	blob, err := st.Open(filepath.Base(f.Name()))
+	blob, err := st.Open(context.Background(), filepath.Base(f.Name()))
 	require.NoError(t, err)
 	s, err := Open(blob)
 	require.NoError(t, err)
@@ -204,7 +204,7 @@ func TestMetadataPersistence(t *testing.T) {
 
 	// Open reader
 	st := blobstore.NewLocalStore(filepath.Dir(f.Name()))
-	blob, err := st.Open(filepath.Base(f.Name()))
+	blob, err := st.Open(context.Background(), filepath.Base(f.Name()))
 	require.NoError(t, err)
 	s, err := Open(blob)
 	require.NoError(t, err)
@@ -293,7 +293,7 @@ func TestFilteredSearch(t *testing.T) {
 
 	// Open reader
 	st := blobstore.NewLocalStore(filepath.Dir(f.Name()))
-	blob, err := st.Open(filepath.Base(f.Name()))
+	blob, err := st.Open(context.Background(), filepath.Base(f.Name()))
 	require.NoError(t, err)
 	s, err := Open(blob)
 	require.NoError(t, err)

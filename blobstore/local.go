@@ -1,8 +1,13 @@
 package blobstore
 
 import (
+	"bytes"
+	"context"
+	"fmt"
 	"io"
+	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/hupe1980/vecgo/internal/mmap"
 )
@@ -18,15 +23,53 @@ func NewLocalStore(root string) *LocalStore {
 }
 
 // Open opens a blob for reading.
-func (s *LocalStore) Open(name string) (Blob, error) {
+func (s *LocalStore) Open(ctx context.Context, name string) (Blob, error) {
 	path := filepath.Join(s.root, name)
 	// We use mmap by default for local files as it's the most efficient
 	// for random access patterns in vector search.
 	m, err := mmap.Open(path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("%w: %v", ErrNotFound, err)
+		}
 		return nil, err
 	}
 	return &localBlob{m: m}, nil
+}
+
+// Create creates a new blob for writing.
+func (s *LocalStore) Create(ctx context.Context, name string) (WritableBlob, error) {
+	path := filepath.Join(s.root, name)
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	if err != nil {
+		return nil, err
+	}
+	return f, nil
+}
+
+// Delete deletes a blob.
+func (s *LocalStore) Delete(ctx context.Context, name string) error {
+	path := filepath.Join(s.root, name)
+	return os.Remove(path)
+}
+
+// List returns all blobs matching the prefix.
+func (s *LocalStore) List(ctx context.Context, prefix string) ([]string, error) {
+	entries, err := os.ReadDir(s.root)
+	if err != nil {
+		return nil, err
+	}
+	var matches []string
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasPrefix(entry.Name(), prefix) {
+			matches = append(matches, entry.Name())
+		}
+	}
+	return matches, nil
 }
 
 type localBlob struct {
@@ -46,6 +89,23 @@ func (b *localBlob) ReadAt(p []byte, off int64) (n int, err error) {
 		return n, io.EOF
 	}
 	return n, nil
+}
+
+func (b *localBlob) ReadRange(off, len int64) (io.ReadCloser, error) {
+	data := b.m.Bytes()
+	if off < 0 || off >= int64(cap(data)) {
+		return io.NopCloser(bytes.NewReader(nil)), io.EOF
+	}
+	end := off + len
+	if end > int64(cap(data)) {
+		end = int64(cap(data))
+	}
+	if end < off {
+		return io.NopCloser(bytes.NewReader(nil)), nil
+	}
+
+	// Create a reader from the slice
+	return io.NopCloser(bytes.NewReader(data[off:end])), nil
 }
 
 func (b *localBlob) Close() error {
