@@ -17,8 +17,9 @@ import (
 	"github.com/hupe1980/vecgo/internal/arena"
 	"github.com/hupe1980/vecgo/internal/bitset"
 	"github.com/hupe1980/vecgo/internal/conv"
-	"github.com/hupe1980/vecgo/model"
 	"github.com/hupe1980/vecgo/internal/searcher"
+	"github.com/hupe1980/vecgo/internal/segment"
+	"github.com/hupe1980/vecgo/model"
 	"github.com/hupe1980/vecgo/vectorstore"
 )
 
@@ -33,10 +34,10 @@ const (
 	minimumM = 2
 
 	// DefaultM is the default number of bidirectional links.
-	DefaultM = 24
+	DefaultM = 32
 
 	// DefaultEF is the default size of the dynamic candidate list.
-	DefaultEF = 200
+	DefaultEF = 300
 
 	// nodeSegmentSize is the size of each node segment (65536).
 	// Using segments avoids copying the entire node array during growth.
@@ -974,7 +975,7 @@ func (h *HNSW) fillUpNeighbors(result []searcher.PriorityQueueItem, candidates [
 	return result
 }
 
-func (h *HNSW) searchLayer(s *searcher.Searcher, g *graph, query []float32, epID model.RowID, epDist float32, level int, ef int, filter func(model.RowID) bool) {
+func (h *HNSW) searchLayer(s *searcher.Searcher, g *graph, query []float32, epID model.RowID, epDist float32, level int, ef int, filter segment.Filter) {
 	h.initializeSearch(s, epID)
 	h.processEntryPoint(s, g, epID, epDist, filter)
 
@@ -1010,18 +1011,18 @@ func (h *HNSW) initializeSearch(s *searcher.Searcher, epID model.RowID) {
 	s.Visited.Visit(epID)
 }
 
-func (h *HNSW) processEntryPoint(s *searcher.Searcher, g *graph, epID model.RowID, epDist float32, filter func(model.RowID) bool) {
+func (h *HNSW) processEntryPoint(s *searcher.Searcher, g *graph, epID model.RowID, epDist float32, filter segment.Filter) {
 	// CRITICAL: Always add entry point to candidates for navigation (even if filtered)
 	// This ensures we have a starting point for graph traversal
 	s.ScratchCandidates.PushItem(searcher.PriorityQueueItem{Node: epID, Distance: epDist})
 
 	// Only add to results if it passes the filter AND is not deleted
-	if (filter == nil || filter(epID)) && !g.tombstones.Test(uint32(epID)) {
+	if (filter == nil || filter.Matches(uint32(epID))) && !g.tombstones.Test(uint32(epID)) {
 		s.Candidates.PushItem(searcher.PriorityQueueItem{Node: epID, Distance: epDist})
 	}
 }
 
-func (h *HNSW) processNeighbor(s *searcher.Searcher, g *graph, query []float32, next Neighbor, ef int, filter func(model.RowID) bool) {
+func (h *HNSW) processNeighbor(s *searcher.Searcher, g *graph, query []float32, next Neighbor, ef int, filter segment.Filter) {
 	nextDist := h.dist(query, next.ID)
 
 	// Classic HNSW pruning: avoid pushing obviously-bad candidates once we already
@@ -1042,7 +1043,7 @@ func (h *HNSW) processNeighbor(s *searcher.Searcher, g *graph, query []float32, 
 		s.ScratchCandidates.PushItem(searcher.PriorityQueueItem{Node: next.ID, Distance: nextDist})
 
 		// Only add to results if it passes the filter AND is not deleted
-		if (filter == nil || filter(next.ID)) && !g.tombstones.Test(uint32(next.ID)) {
+		if (filter == nil || filter.Matches(uint32(next.ID))) && !g.tombstones.Test(uint32(next.ID)) {
 			// Use bounded push for results to avoid heap churn
 			s.Candidates.PushItemBounded(searcher.PriorityQueueItem{Node: next.ID, Distance: nextDist}, ef)
 		}
@@ -1183,7 +1184,7 @@ func (h *HNSW) searchExecute(ctx context.Context, s *searcher.Searcher, q []floa
 	currID, currDist := h.greedySearch(g, q, model.RowID(epID))
 
 	// 2. Search layer 0 with pre-filtering
-	var filter func(model.RowID) bool
+	var filter segment.Filter
 	if opts != nil && opts.Filter != nil {
 		filter = opts.Filter
 	}
@@ -1280,7 +1281,7 @@ func (h *HNSW) KNNSearchStream(ctx context.Context, q []float32, k int, opts *Se
 		currID, currDist := h.greedySearch(g, q, model.RowID(epID))
 
 		// 2. Search layer 0 with pre-filtering
-		var filter func(model.RowID) bool
+		var filter segment.Filter
 		if opts != nil && opts.Filter != nil {
 			filter = opts.Filter
 		}

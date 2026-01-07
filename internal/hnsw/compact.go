@@ -5,8 +5,9 @@ import (
 	"runtime"
 	"sync"
 
-	"github.com/hupe1980/vecgo/model"
 	"github.com/hupe1980/vecgo/internal/searcher"
+	"github.com/hupe1980/vecgo/internal/segment"
+	"github.com/hupe1980/vecgo/model"
 )
 
 // Compact removes deleted nodes from the graph connections and attempts to repair connectivity.
@@ -190,7 +191,7 @@ func (h *HNSW) reconcileNode(ctx context.Context, s *searcher.Searcher, scratch 
 	// Repair specific layers
 	for level := node.Level(g.arena); level >= 0; level-- {
 		// Search for candidates
-		filter := func(x model.RowID) bool { return x != id }
+		filter := &excludeFilter{target: uint32(id)}
 		// searchLayer populates s.Candidates
 		h.searchLayer(s, g, vec, currID, currDist, level, h.opts.EF, filter)
 
@@ -391,4 +392,27 @@ func (h *HNSW) clearNodeConnections(g *graph, id model.RowID) {
 	for l := 0; l <= node.Level(g.arena); l++ {
 		h.setConnections(g, id, l, nil)
 	}
+}
+
+// excludeFilter prevents returning the target node itself.
+type excludeFilter struct {
+	target uint32
+}
+
+func (f *excludeFilter) Matches(id uint32) bool {
+	return id != f.target
+}
+
+func (f *excludeFilter) MatchesBatch(ids []uint32, out []bool) {
+	for i, id := range ids {
+		out[i] = (id != f.target)
+	}
+}
+
+func (f *excludeFilter) AsBitmap() segment.Bitmap {
+	return nil
+}
+
+func (f *excludeFilter) MatchesBlock(stats map[string]segment.FieldStats) bool {
+	return true
 }

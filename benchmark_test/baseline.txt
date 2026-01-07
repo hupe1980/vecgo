@@ -2,21 +2,21 @@ goos: darwin
 goarch: arm64
 pkg: github.com/hupe1980/vecgo/benchmark_test
 cpu: Apple M4 Pro
-BenchmarkBatchInsert/Sequential-14      	     297	   4022147 ns/op	    2000 B/op	      16 allocs/op
-BenchmarkBatchInsert/Batch-14           	     750	   3703863 ns/op	    1729 B/op	      13 allocs/op
-BenchmarkBatchSearch/Sequential-14      	     741	   1386621 ns/op	         1.000 recall@10	   12338 B/op	      30 allocs/op
-BenchmarkBatchSearch/Batch-14           	    4849	    245129 ns/op	         1.000 recall@10	   15454 B/op	      55 allocs/op
-BenchmarkIngest_Async-14                	    2281	   1529775 ns/op	    3356 B/op	      16 allocs/op
-BenchmarkIngest_Sync-14                 	     295	   4096101 ns/op	    2044 B/op	      16 allocs/op
-BenchmarkIngest_Async_Parallel-14       	    1945	   1485349 ns/op	    2568 B/op	      17 allocs/op
-BenchmarkIngest_Sync_Parallel-14        	     693	   3693458 ns/op	    1980 B/op	      16 allocs/op
-BenchmarkSearch_L0-14                   	   27549	     44082 ns/op	         0.9477 recall@10	    1387 B/op	       3 allocs/op
-BenchmarkCompaction_Pressure-14         	      39	  39134416 ns/op	 5928507 B/op	    1212 allocs/op
-BenchmarkHybridSearch/VectorOnly-14     	    2684	    405084 ns/op	         1.000 recall@10	    1343 B/op	       3 allocs/op
-BenchmarkHybridSearch/Hybrid-14         	    2644	    449113 ns/op	         1.000 recall@10	   46531 B/op	      14 allocs/op
-BenchmarkHybridSearch/DAAT-14           	   32628	     36131 ns/op	         1.000 recall@10	    1179 B/op	       2 allocs/op
-BenchmarkBinaryQuantizer_Distance-14    	213053900	         5.704 ns/op	       0 B/op	       0 allocs/op
-BenchmarkSearch_Mixed-14                	  376294	      3128 ns/op	         1.000 recall@10	    1267 B/op	       3 allocs/op
-BenchmarkSearchFiltered-14              	    1106	   1211164 ns/op	         1.000 recall@10	    1442 B/op	       3 allocs/op
+BenchmarkBatchInsert/Sequential-14      	     286	   4019558 ns/op	    2013 B/op	      16 allocs/op
+BenchmarkBatchInsert/Batch-14           	     729	   3782580 ns/op	    1746 B/op	      13 allocs/op
+BenchmarkBatchSearch/Sequential-14      	     738	   1411668 ns/op	         1.000 recall@10	   12104 B/op	      20 allocs/op
+BenchmarkBatchSearch/Batch-14           	    4564	    252040 ns/op	         1.000 recall@10	   15326 B/op	      45 allocs/op
+BenchmarkIngest_Async-14                	    2250	   1525849 ns/op	    3381 B/op	      16 allocs/op
+BenchmarkIngest_Sync-14                 	     283	   4105701 ns/op	    2016 B/op	      16 allocs/op
+BenchmarkIngest_Async_Parallel-14       	    1831	   1667915 ns/op	    2616 B/op	      17 allocs/op
+BenchmarkIngest_Sync_Parallel-14        	     609	   3678157 ns/op	    1917 B/op	      16 allocs/op
+BenchmarkSearch_L0-14                   	   25578	     43076 ns/op	         0.9457 recall@10	    1363 B/op	       2 allocs/op
+BenchmarkCompaction_Pressure-14         	      45	  36812450 ns/op	 5934009 B/op	    1381 allocs/op
+BenchmarkHybridSearch/VectorOnly-14     	    2754	    401892 ns/op	         1.000 recall@10	    1201 B/op	       2 allocs/op
+BenchmarkHybridSearch/Hybrid-14         	    2654	    446180 ns/op	         1.000 recall@10	   46454 B/op	      13 allocs/op
+BenchmarkHybridSearch/DAAT-14           	   34770	     36437 ns/op	         1.000 recall@10	    1178 B/op	       2 allocs/op
+BenchmarkBinaryQuantizer_Distance-14    	208352895	         5.707 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSearch_Mixed-14                	  380168	      3246 ns/op	         1.000 recall@10	    1242 B/op	       2 allocs/op
+BenchmarkSearchFiltered-14              	    1161	   1037398 ns/op	         1.000 recall@10	    1458 B/op	       3 allocs/op
 PASS
-ok  	github.com/hupe1980/vecgo/benchmark_test	307.013s
+ok  	github.com/hupe1980/vecgo/benchmark_test	301.433s

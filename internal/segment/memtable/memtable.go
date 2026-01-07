@@ -187,29 +187,14 @@ func (m *MemTable) Search(ctx context.Context, q []float32, k int, filter segmen
 	}
 
 	// Map segment.Filter to HNSW filter
-	var hnswFilter func(id model.RowID) bool
-	if filter != nil {
-		hnswFilter = func(id model.RowID) bool {
-			return filter.Matches(uint32(id))
-		}
-	}
+	var hnswFilter segment.Filter = filter
 
 	// Handle user metadata filter
 	if opts.Filter != nil {
-		fs := opts.Filter
-		prevFilter := hnswFilter
-		hnswFilter = func(id model.RowID) bool {
-			if prevFilter != nil && !prevFilter(id) {
-				return false
-			}
-			if int(id) >= len(m.metadata) {
-				return false
-			}
-			doc := m.metadata[int(id)]
-			if doc == nil {
-				return false
-			}
-			return fs.MatchesInterned(doc)
+		hnswFilter = &metadataFilterWrapper{
+			parent: filter,
+			meta:   opts.Filter,
+			docs:   m.metadata,
 		}
 	}
 

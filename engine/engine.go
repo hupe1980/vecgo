@@ -74,6 +74,9 @@ type Engine struct {
 
 	fs     fs.FileSystem
 	logger *slog.Logger
+
+	watermarkFilterPool sync.Pool
+	tombstoneFilterPool sync.Pool
 }
 
 // FlushConfig holds configuration for automatic flushing.
@@ -985,12 +988,25 @@ func (e *Engine) Search(ctx context.Context, q []float32, k int, opts ...func(*m
 	}
 
 	// Apply Snapshot Isolation to Active Segment
-	activeFilter = &watermarkFilter{
-		limit: snap.activeWatermark,
-		next:  activeFilter,
+	// Pooling watermarkFilter to avoid allocation
+	wfObj := e.watermarkFilterPool.Get()
+	var wFilter *watermarkFilter
+	if wfObj == nil {
+		wFilter = &watermarkFilter{}
+	} else {
+		wFilter = wfObj.(*watermarkFilter)
 	}
+	wFilter.limit = snap.activeWatermark
+	wFilter.next = activeFilter
+	activeFilter = wFilter
 
-	if err := snap.active.Search(ctx, qExec, searchK, activeFilter, options, s); err != nil {
+	err = snap.active.Search(ctx, qExec, searchK, activeFilter, options, s)
+
+	// Release filter back to pool
+	wFilter.next = nil
+	e.watermarkFilterPool.Put(wFilter)
+
+	if err != nil {
 		return nil, err
 	}
 
@@ -1005,11 +1021,26 @@ func (e *Engine) Search(ctx context.Context, q []float32, k int, opts ...func(*m
 			hasTombstones = false
 		}
 
+		var tsFilter *tombstoneFilter
 		if hasTombstones {
-			filter = &tombstoneFilter{ts: ts}
+			tfObj := e.tombstoneFilterPool.Get()
+			if tfObj == nil {
+				tsFilter = &tombstoneFilter{ts: ts}
+			} else {
+				tsFilter = tfObj.(*tombstoneFilter)
+				tsFilter.ts = ts
+			}
+			filter = tsFilter
 		}
 
-		if err := seg.Search(ctx, qExec, searchK, filter, options, s); err != nil {
+		err := seg.Search(ctx, qExec, searchK, filter, options, s)
+
+		if tsFilter != nil {
+			tsFilter.ts = nil
+			e.tombstoneFilterPool.Put(tsFilter)
+		}
+
+		if err != nil {
 			return nil, err
 		}
 	}

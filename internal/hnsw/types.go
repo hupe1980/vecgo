@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/hupe1980/vecgo/internal/segment"
 	"github.com/hupe1980/vecgo/model"
 )
 
@@ -46,7 +47,7 @@ type SearchResult struct {
 
 type SearchOptions struct {
 	EFSearch int
-	Filter   func(id model.RowID) bool
+	Filter   segment.Filter
 }
 
 type BatchInsertResult struct {

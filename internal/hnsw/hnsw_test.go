@@ -143,7 +143,7 @@ func TestHNSW_DotProduct_DistanceOrdering(t *testing.T) {
 	assert.InDelta(t, -distance.Dot(query, []float32{1, 0, 0}), brute[1].Distance, 1e-6)
 	assert.InDelta(t, -distance.Dot(query, []float32{-1, 0, 0}), brute[2].Distance, 1e-6)
 
-	knn, err := h.KNNSearch(ctx, query, 3, &SearchOptions{EFSearch: 100, Filter: func(id model.RowID) bool { return true }})
+	knn, err := h.KNNSearch(ctx, query, 3, &SearchOptions{EFSearch: 100, Filter: mockFilter(func(id model.RowID) bool { return true })})
 	if !assert.NoError(t, err) {
 		return
 	}
@@ -228,7 +228,7 @@ func runValidateInsertSearchCase(t *testing.T, ctx context.Context, tc TestCases
 	for _, qi := range queryIndices {
 		bestCandidates, err := h.KNNSearch(ctx, vecs[qi], tc.K, &SearchOptions{
 			EFSearch: tc.EF,
-			Filter:   func(id model.RowID) bool { return true },
+			Filter:   mockFilter(func(id model.RowID) bool { return true }),
 		})
 		if err != nil {
 			t.Fatalf("KNNSearch failed: %v", err)
