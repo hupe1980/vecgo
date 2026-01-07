@@ -1,71 +1,62 @@
-# Vecgo Development Guide
+# Vecgo Contributor Guide
 
-This guide outlines the workflows for building, testing, and benchmarking Vecgo.
+Join us in building the best-in-class embeddable vector database for Go.
 
-## Prerequisites
+## Development Environment
 
-- **Go 1.23+** (Check `go.mod` for exact version)
-- **Make** (optional, for convenience scripts)
-- **benchstat** (for benchmark comparison): `go install golang.org/x/perf/cmd/benchstat@latest`
+### Prerequisites
+*   Go 1.23+
+*   Make (optional)
+*   Git
 
-## Build & Test
-
-### Unit Tests
-Run all unit tests with race detection (required for CI):
+### Quick Start
 ```bash
-go test -race ./...
+git clone https://github.com/hupe1980/vecgo.git
+cd vecgo
+go test ./...
 ```
 
-### Fuzz Testing
-Run fuzz tests to ensure robustness against corrupted inputs:
+## Workflows
+
+### 1. Running Tests
+We use strict testing gates.
+*   **Fast**: `go test ./...`
+*   **Race Detection** (Required): `go test -race ./...`
+*   **Benchmarks**: `go test -bench=. ./benchmark_test/...`
+
+### 2. Performance Tracking
+Before submitting a PR, check if you regressed performance.
 ```bash
-go test -fuzz=. -fuzztime=30s ./...
+# Save baseline
+go test -bench=. -count=5 ./benchmark_test > old.txt
+
+# Apply changes...
+
+# Compare
+go test -bench=. -count=5 ./benchmark_test > new.txt
+benchstat old.txt new.txt
 ```
+**Do NOT** submit PRs with significant regression unless justified.
 
-### Linting
-We use `golangci-lint`. Ensure it passes before submitting PRs.
+### 3. Code Style
+*   Standard Go formatting (`gofmt`).
+*   Idiomatic Go 1.23+ (use `iter.Seq2`, `min/max`).
+*   No `panic` in library code. Use `fmt.Errorf`.
 
-## Benchmarking
+## Project Structure
 
-Performance is a P0 feature. Regressions must be justified.
+*   `engine/`: Core logic (WAL, Flush, Compaction, Orchestration).
+*   `internal/segment/`: Immutable segment implementations (Flat, DiskANN, HNSW).
+*   `internal/manifest/`: Metadata management.
+*   `blobstore/`: Storage abstraction (Local, S3).
+*   `cache/`: Block cache.
+*   `lexical/`: BM25/Hybrid search components.
+*   `examples/`: User-facing examples.
 
-### Running Benchmarks
-Run the standard benchmark suite:
-```bash
-go test -bench=. -benchmem ./benchmark_test
-```
+## Pull Request Checklist
 
-### Detecting Regressions
-We use `benchstat` to compare against the baseline.
-
-1. **Run baseline** (if not already present):
-   ```bash
-   git checkout main
-   go test -bench=. -benchmem -count=5 ./benchmark_test > baseline.txt
-   ```
-
-2. **Run your changes**:
-   ```bash
-   git checkout my-feature
-   go test -bench=. -benchmem -count=5 ./benchmark_test > new.txt
-   ```
-
-3. **Compare**:
-   ```bash
-   benchstat baseline.txt new.txt
-   ```
-
-**CI Gate**:
-- Allocations > 10% increase -> **FAIL**
-- Recall > 5% drop -> **FAIL**
-- Latency > 20% increase -> **FAIL**
-
-## Code Style
-
-- **Zero Panics**: Never panic on user input. Return errors.
-- **Zero Allocations (Hot Path)**: Search and Insert paths must minimize heap allocations. Use `iter.Seq2` for iterators.
-- **Concurrency**: Use `go test -race` to verify thread safety.
-
-## Release Process
-
-(To be defined - currently in pre-release phase)
+1.  [ ] Tests pass (`-race`).
+2.  [ ] Benchmarks run (no regression).
+3.  [ ] Documentation updated (godoc + `docs/`).
+4.  [ ] `TODO.md` updated (if completing a task).
+5.  [ ] No new panics introduced.

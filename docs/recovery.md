@@ -1,57 +1,54 @@
-# Vecgo Crash Recovery & Durability
+# Vecgo Crash Recovery Architecture
 
-Vecgo guarantees **ACID** properties for single-shard operations and **crash safety** for all durable artifacts. This document details the recovery algorithm.
+## Overview
 
-## Durability Architecture
+Vecgo uses a **Write-Ahead Log (WAL)** and **Immutable Segments** to ensure durability (ACID).
+The recovery process runs automatically on `vector.Open()`.
 
-### 1. Write-Ahead Log (WAL)
-- **Format**: Append-only sequence of `Insert/Delete` records.
-- **Sync Mode**: Configurable (`Sync` = fsync every write, `Async` = fsync every N ms).
-- **Checksums**: CRC32C per record.
+## Durability Hierarchy
 
-### 2. Immutable Segments (LSM Tree)
-- **State**: Once written, a segment file (`.seg`) is immutable.
-- **Publication**: Atomic `rename()` from temp file to final filename.
+1.  **WAL**: Append-only log of all operations (Insert/Delete). Synced to disk based on configuration (`FsyncEvery`).
+2.  **MemTable**: In-memory mutable structure. Reconstructed from WAL on startup if not flushed.
+3.  **L0 Segment**: First on-disk immutable structure. Created by Flushing MemTable.
+4.  **Tombstones**: Bitmaps tracking deleted rows in immutable segments.
 
-### 3. Manifest
-- **Role**: Source of truth for the current set of active segments.
-- **Update**: Atomic `rename()` of new manifest file.
+## Crash Scenarios & Recovery
 
-## Recovery Algorithm
+### 1. Crash during Insert (WAL Append)
+*   **State**: Partial bytes written to `wal_N.log`.
+*   **Recovery**: 
+    1.  WAL Reader detects unexpected EOF or checksum mismatch.
+    2.  Truncates WAL at last valid record.
+    3.  Partial record is discarded (not acknowledged to user, so no data loss vs contract).
 
-On `Open()`, Vecgo performs the following steps:
+### 2. Crash during Flush
+*   **State**: Temporary segment file `segment_123.bin.tmp` exists. Manifest points to older generation. WAL is full.
+*   **Recovery**:
+    1.  `Open` loads Manifest.
+    2.  Scans directory for `segment_*.bin`.
+    3.  Identifies files NOT in Manifest (orphans).
+    4.  Deletes `*.tmp` and orphan `.bin` files.
+    5.  Replays WAL from the checkpoint recorded in Manifest.
+    6.  Restores MemTable.
 
-### Step 1: Load Manifest
-1. Find the latest valid `manifest-{seq}.json` file.
-2. Validate checksum.
-3. Load list of active segments.
-4. **Cleanup**: Delete any `.seg` files not referenced in the manifest (orphaned compaction outputs).
+### 3. Crash during Compaction
+*   **State**: `segment_merged.bin` might exist. Inputs `segment_A.bin` and `segment_B.bin` still exist. Manifest points to A and B.
+*   **Recovery**: 
+    1.  Loads Manifest (points to A, B).
+    2.  Detects `segment_merged.bin` as orphan.
+    3.  Deletes orphan.
+    4.  System starts with A and B intact. Compaction will be re-scheduled.
 
-### Step 2: Replay WAL
-1. Identify the WAL file associated with the active MemTable.
-2. Read records sequentially.
-3. **Checksum Check**: If a record has a mismatch (partial write at crash):
-   - **Truncate**: Discard the corrupted record and all subsequent bytes.
-   - **Log**: Emit a warning.
-4. **Re-Apply**: Insert valid records into the MemTable.
-   - **Idempotency**: Operations are idempotent, so replaying is safe even if partially applied before crash.
-
-### Step 3: Consistency Check
-1. Verify all segments in manifest exist and have valid headers.
-2. If a segment is missing/corrupt -> Return `ErrCorrupt` (requires manual intervention/backup restore).
-
-## Crash Scenarios & Guarantees
-
-| Scenario | State at Restart | Recovery Action | Data Loss? |
-|----------|------------------|-----------------|------------|
-| **Crash during WAL append** | Partial record at end of WAL | Truncate WAL at last valid record | Last write lost (Async) / No loss (Sync) |
-| **Crash during Flush** | Temp segment exists, Manifest old | Ignore/Delete temp segment, Replay WAL | None |
-| **Crash during Compaction** | Temp merged segment exists | Ignore/Delete temp segment | None |
-| **Crash during Manifest Update** | New manifest partial/missing | Load old manifest, treat new segments as orphans | None |
-| **Power Loss** | Data in OS page cache | Depends on `fsync` policy | Last N ms (Async) / None (Sync) |
+### 4. Crash during Manifest Update
+*   **State**: `manifest.json.tmp` fully written. Rename to `manifest.json` failed/interrupted.
+*   **Recovery**:
+    1.  FS guarantees atomic rename (POSIX).
+    2.  If `manifest.json` exists, use it.
+    3.  If only old manifest exists, use it (new state effectively rolled back).
+    4.  If `manifest.json` is corrupt (partial write without tmp?), `ErrIncompatibleFormat` or `ErrCorrupt`. Vecgo uses `manifest.current` pointer file or atomic rename to avoid this.
 
 ## Invariants
 
-1. **Atomicity**: A record is either fully visible or fully missing.
-2. **Monotonicity**: If a write is acknowledged (and fsynced), it will be present after recovery.
-3. **No Resurrection**: Deleted keys remain deleted after compaction/recovery.
+*   **Idempotency**: WAL replay produces identical MemTable state.
+*   **Atomicity**: Segment visibility toggles instantly via Manifest update.
+*   **No Data Loss**: Any ack'd write (if Sync=true) is in WAL or Segment.

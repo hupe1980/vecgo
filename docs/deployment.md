@@ -1,57 +1,66 @@
 # Vecgo Deployment Guide
 
-Vecgo is an **embedded library**, meaning it runs inside your application process. This guide covers deployment patterns for local and cloud environments.
+Vecgo is an **embedded** library. Deployment means deploying **your application**.
+However, Vecgo's presence introduces stateful requirements.
 
 ## Deployment Models
 
-### 1. Local / Single-Node
-Best for: CLI tools, desktop apps, small-scale servers.
+### 1. Local Disk (Single Node)
+*   **Best for**: Low latency, simpler ops, smaller datasets (<1TB).
+*   **Architecture**: App + NVMe SSD.
+*   **Requirements**:
+    *   **Persistent Volume**: If deploying in K8s/Docker, mount a PVC. Local ephemeral disk means data loss on pod restart!
+    *   **One Process**: Only **one** process can hold the file lock on the Vecgo directory. DO NOT run replicas sharing the same NFS/EFS mount.
 
-- **Storage**: Local filesystem (SSD recommended).
-- **Concurrency**: Single process (Vecgo uses file locks).
-- **Scaling**: Vertical (larger instance).
-
-### 2. Cloud / Stateless Service
-Best for: Microservices, RAG APIs, scalable workers.
-
-- **Architecture**:
-  - **Writer**: Single writer instance (leader) handles ingestion.
-  - **Readers**: Multiple reader instances scale search throughput.
-- **Storage**:
-  - **Object Store (S3/GCS)**: Store immutable segments.
-  - **Local Cache**: Readers cache hot segments on local disk/RAM.
-- **Replication**:
-  - Writer pushes new segments to S3.
-  - Readers poll manifest from S3 and download new segments.
-
-## Cloud Object Storage (S3)
-
-Vecgo supports reading segments directly from object storage via the `BlobStore` interface.
-
-### Configuration
-```go
-store, _ := s3blob.New("my-bucket", "region")
-engine, _ := vecgo.Open(..., vecgo.WithBlobStore(store))
-```
-
-### Performance Considerations
-- **Latency**: S3 TTFB is ~20-50ms.
-- **Caching**: Essential. Use `WithBlockCache(256MB)` to cache index nodes.
-- **Cost**: Minimizes GET requests by reading large blocks (4KB-64KB).
+### 2. Cloud Blob Store (Stateless-ish)
+*   **Best for**: "Bottomless" storage, separation of compute/storage, large datasets.
+*   **Architecture**: App + S3/GCS + Local Cache (SSD/RAM).
+*   **Configuration**:
+    ```go
+    store := s3.NewStore(client, "my-bucket", "prefix")
+    engine.Open(..., engine.WithBlobStore(store), engine.WithBlockCacheSize(4*1024*1024*1024))
+    ```
+*   **Caveat**: WAL, Manifest, and PK Index are currently still **local**. Only immutable segments are offloaded. 
+    *   *Note: Truly stateless shared-storage requires specific coordination not yet fully GA in v1.0.*
 
 ## Resource Sizing
 
 ### CPU
-- **Vector Search**: Heavily uses SIMD.
-- **Recommendation**: ARM64 (Graviton/Apple Silicon) or AVX-512 capable x86.
-- **Ratio**: 1 vCPU per 500-1000 QPS (approx).
+*   **Indexing**: CPU intensive. 1 core per 2k vectors/sec ingest.
+*   **Search**: Latency bound.
+    *   **L0 (HNSW)**: Fast, lower CPU.
+    *   **Quantization (SQ8/PQ)**: SIMD heavy. AVX-512/NEON recommended.
 
 ### Memory
-- **L0 (MemTable)**: Needs RAM.
-- **Segments**: Mmapped. OS manages caching.
-- **Recommendation**: RAM >= 2x Active Dataset Size for low latency.
+*   **Mandatory Overhead**: 
+    *   MemTable (configured limit, default 64MB).
+    *   BlockCache (configured limit, default 256MB).
+*   **Index Overhead**:
+    *   HNSW: ~5-10% of vector size.
+    *   PK Index: ~16 bytes per vector (can be large! 100M vectors = 1.6GB).
 
-### Disk
-- **IOPS**: High write IOPS needed for WAL/Flush.
-- **Throughput**: High read throughput needed for cold searches / compaction.
-- **Type**: NVMe SSD (Local) or EBS gp3 (Cloud).
+### Disk I/O
+*   **IOPS**: Critical for:
+    1.  WAL syncs (latency).
+    2.  Compaction (throughput).
+    3.  Code reads during search (if not in block cache).
+*   **Recommendation**: NVMe or high-IOPS EBS (gp3/io2). Avoid HDD.
+
+## Scaling Patterns
+
+### Vertical Scaling (Scale Up)
+*   Vecgo scales well with cores (concurrent search/index).
+*   Simplest approach.
+
+### Horizontal Sharding
+*   Vecgo is **not distributed**. 
+*   To shard:
+    1.  App Layer partitions data (hash of PK, or by tenant).
+    2.  Each App Instance manages a separate Vecgo directory/DB.
+    3.  Aggregator performs scatter-gather search.
+
+## Backups
+*   **Snapshot**: 
+    1.  Pause writes (optional, but ensures consistent point-in-time).
+    2.  Copy directory (snapshot-isolation means copying `.bin` files is safe, but Manifest+WAL needs care).
+*   **Scan API**: Use `engine.Scan()` to stream all records to JSON/Parquet for logical backup.

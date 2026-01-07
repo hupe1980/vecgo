@@ -2,102 +2,254 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"math/rand"
+	"net/http"
 	"os"
+	"os/signal"
+	"sync"
+	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/hupe1980/vecgo/distance"
 	"github.com/hupe1980/vecgo/engine"
 	"github.com/hupe1980/vecgo/model"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-// SimpleObserver implements engine.MetricsObserver and logs metrics.
-// It embeds NoopMetricsObserver to avoid implementing all methods.
-type SimpleObserver struct {
-	engine.NoopMetricsObserver
+// PrometheusObserver implements engine.MetricsObserver
+type PrometheusObserver struct {
+	opLatency     *prometheus.HistogramVec
+	memTableBytes prometheus.Gauge
+	memTablePct   prometheus.Gauge
+	backpressure  prometheus.Counter
+	queueDepth    *prometheus.GaugeVec
+	compactions   *prometheus.CounterVec
+	flushes       prometheus.Counter
+	writes        *prometheus.CounterVec // To cross-check QPS
 }
 
-func (o *SimpleObserver) OnInsert(duration time.Duration, err error) {
-	if err != nil {
-		log.Printf("[METRIC] Insert: failed in %v: %v", duration, err)
-	} else {
-		// Sample logging to avoid spam
-		if duration > 100*time.Microsecond {
-			log.Printf("[METRIC] Insert: success in %v", duration)
-		}
+func NewPrometheusObserver() *PrometheusObserver {
+	o := &PrometheusObserver{
+		opLatency: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "vecgo_operation_latency_seconds",
+			Help:    "Latency of engine operations",
+			Buckets: prometheus.DefBuckets, // Use default buckets for simplicity
+		}, []string{"op", "status"}),
+		memTableBytes: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "vecgo_memtable_size_bytes",
+			Help: "Current size of memtable in bytes",
+		}),
+		memTablePct: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "vecgo_memtable_usage_ratio",
+			Help: "Current usage of memtable as a ratio (0.0-1.0)",
+		}),
+		backpressure: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "vecgo_backpressure_events_total",
+			Help: "Total count of backpressure events",
+		}),
+		queueDepth: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "vecgo_queue_depth",
+			Help: "Depth of various queues",
+		}, []string{"queue"}),
+		compactions: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "vecgo_compactions_total",
+			Help: "Total compactions completed",
+		}, []string{"status"}),
+		flushes: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "vecgo_flushes_total",
+			Help: "Total flushes completed",
+		}),
+		writes: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "vecgo_writes_total",
+			Help: "Total writes processed",
+		}, []string{"type"}),
 	}
+
+	prometheus.MustRegister(o.opLatency)
+	prometheus.MustRegister(o.memTableBytes)
+	prometheus.MustRegister(o.memTablePct)
+	prometheus.MustRegister(o.backpressure)
+	prometheus.MustRegister(o.queueDepth)
+	prometheus.MustRegister(o.compactions)
+	prometheus.MustRegister(o.flushes)
+	prometheus.MustRegister(o.writes)
+	return o
 }
 
-func (o *SimpleObserver) OnSearch(duration time.Duration, segmentType string, k int, results int, err error) {
-	log.Printf("[METRIC] Search (%s): k=%d found=%d in %v", segmentType, k, results, duration)
+func (o *PrometheusObserver) OnInsert(d time.Duration, err error) {
+	status := "success"
+	if err != nil {
+		status = "error"
+	}
+	o.opLatency.WithLabelValues("insert", status).Observe(d.Seconds())
+	o.writes.WithLabelValues("insert").Inc()
 }
 
-func (o *SimpleObserver) OnFlush(duration time.Duration, items int, bytes uint64, err error) {
-	log.Printf("[METRIC] Flush: %d items (%d bytes) in %v", items, bytes, duration)
+func (o *PrometheusObserver) OnDelete(d time.Duration, err error) {
+	status := "success"
+	if err != nil {
+		status = "error"
+	}
+	o.opLatency.WithLabelValues("delete", status).Observe(d.Seconds())
+	o.writes.WithLabelValues("delete").Inc()
 }
 
-func (o *SimpleObserver) OnCompaction(duration time.Duration, dropped int, newSegments int, err error) {
-	log.Printf("[METRIC] Compaction: dropped %d items, created %d segments in %v", dropped, newSegments, duration)
+func (o *PrometheusObserver) OnSearch(d time.Duration, segType string, k int, n int, err error) {
+	status := "success"
+	if err != nil {
+		status = "error"
+	}
+	// segType might be useful, but let's keep cardinality low for opLatency
+	o.opLatency.WithLabelValues("search", status).Observe(d.Seconds())
 }
+
+func (o *PrometheusObserver) OnMemTableStatus(bytes int64, pct float64) {
+	o.memTableBytes.Set(float64(bytes))
+	o.memTablePct.Set(pct)
+}
+
+func (o *PrometheusObserver) OnBackpressure(reason string) {
+	o.backpressure.Inc()
+}
+
+func (o *PrometheusObserver) OnQueueDepth(name string, depth int) {
+	o.queueDepth.WithLabelValues(name).Set(float64(depth))
+}
+
+func (o *PrometheusObserver) OnCompaction(d time.Duration, dropped, created int, err error) {
+	status := "success"
+	if err != nil {
+		status = "error"
+	}
+	o.compactions.WithLabelValues(status).Inc()
+}
+
+func (o *PrometheusObserver) OnFlush(d time.Duration, r int, b uint64, err error) {
+	o.flushes.Inc()
+}
+
+// No-ops for now to keep example simple
+func (o *PrometheusObserver) OnWALWrite(d time.Duration, b int)            {}
+func (o *PrometheusObserver) OnGet(d time.Duration, err error)             {}
+func (o *PrometheusObserver) OnBuild(d time.Duration, t string, err error) {}
+func (o *PrometheusObserver) OnStall(d time.Duration, r string)            {}
+func (o *PrometheusObserver) OnThroughput(n string, b int64)               {}
+
+var (
+	targetQPS = flag.Int("qps", 1000, "Target QPS for writes")
+	duration  = flag.Duration("duration", 30*time.Second, "Test duration")
+)
 
 func main() {
-	// dedicated directory for the example
-	dir := "./observability_data"
-	_ = os.RemoveAll(dir) // Start fresh
-	defer os.RemoveAll(dir)
+	flag.Parse()
 
-	// Create engine with our observer
-	eng, err := engine.Open(dir, 128, distance.MetricL2, engine.WithMetricsObserver(&SimpleObserver{}))
+	// 1. Start Prometheus Exporter
+	go func() {
+		http.Handle("/metrics", promhttp.Handler())
+		fmt.Println("Prometheus metrics available at http://localhost:2112/metrics")
+		if err := http.ListenAndServe(":2112", nil); err != nil {
+			log.Printf("Metrics server error: %v", err)
+		}
+	}()
+
+	// 2. Initialize Engine
+	dir, err := os.MkdirTemp("", "vecgo-obs-*")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	fmt.Printf("Database dir: %s\n", dir)
+
+	obs := NewPrometheusObserver()
+	eng, err := engine.Open(dir, 128, distance.MetricL2,
+		engine.WithMetricsObserver(obs),
+		engine.WithFlushConfig(engine.FlushConfig{
+			MaxMemTableSize: 4 * 1024 * 1024,
+		}),
+	)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer eng.Close()
 
-	log.Println("Engine started with observability...")
+	// 3. Generate Load
+	ctx, cancel := context.WithTimeout(context.Background(), *duration)
+	defer cancel()
 
-	// Perform some inserts
-	dim := 128
-	count := 1000
-	log.Printf("Inserting %d vectors...", count)
+	var wg sync.WaitGroup
+	wg.Add(2) // Writer + Reader
 
-	for i := 0; i < count; i++ {
-		pk := model.PKUint64(uint64(i))
+	fmt.Printf("Starting load test: %d QPS for %v\n", *targetQPS, *duration)
+
+	// Writer Loop
+	go func() {
+		defer wg.Done()
+		ticker := time.NewTicker(time.Second / time.Duration(*targetQPS))
+		defer ticker.Stop()
+
+		var idCounter uint64
+		dim := 128
 		vec := make([]float32, dim)
-		for j := 0; j < dim; j++ {
-			vec[j] = rand.Float32()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				// Random vector
+				for i := 0; i < dim; i++ {
+					vec[i] = rand.Float32()
+				}
+				pk := model.PKUint64(atomic.AddUint64(&idCounter, 1))
+
+				if err := eng.Insert(pk, vec, nil, nil); err != nil {
+					log.Printf("Insert error: %v", err)
+				}
+			}
 		}
+	}()
 
-		if err := eng.Insert(pk, vec, nil, nil); err != nil {
-			log.Printf("Insert error: %v", err)
+	// Reader Loop (Search)
+	go func() {
+		defer wg.Done()
+		// Search runs as fast as possible but sleeps a tiny bit
+		dim := 128
+		query := make([]float32, dim)
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				for i := range dim {
+					query[i] = rand.Float32()
+				}
+				_, err := eng.Search(ctx, query, 10)
+				if err != nil {
+					// Ignore "empty" errors early on
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
 		}
-	}
+	}()
 
-	// Wait a bit or trigger interaction
-	time.Sleep(100 * time.Millisecond)
+	// Wait for completion
+	go func() {
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+		<-sig
+		cancel()
+	}()
 
-	// Perform search
-	log.Println("Performing search...")
-	query := make([]float32, dim)
-	// fills with random
-	for j := 0; j < dim; j++ {
-		query[j] = rand.Float32()
-	}
+	wg.Wait()
+	fmt.Println("\nLoad test complete. Creating final snapshot...")
 
-	res, err := eng.Search(context.Background(), query, 10)
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Printf("Search found %d results\n", len(res))
-
-	// Get Stats
+	// Final metrics check
 	stats := eng.Stats()
-	fmt.Printf("Engine Stats: %+v\n", stats)
-
-	// Trigger flush manually to see metrics
-	log.Println("Triggering Flush...")
-	if err := eng.Flush(); err != nil {
-		log.Fatal(err)
-	}
+	fmt.Printf("Final Stats: %+v\n", stats)
 }
