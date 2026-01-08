@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"unsafe"
 
+	"github.com/hupe1980/vecgo/distance"
 	"github.com/hupe1980/vecgo/internal/conv"
 	"github.com/hupe1980/vecgo/internal/mem"
 	"github.com/hupe1980/vecgo/model"
@@ -159,6 +160,42 @@ func (s *ColumnarStore) GetVector(id model.RowID) ([]float32, bool) {
 	}
 
 	return (*data)[start:end:end], true
+}
+
+// ComputeDistance computes the distance between the query and the vector at ID.
+// This avoids allocating a slice header for the vector and allows internal optimization.
+func (s *ColumnarStore) ComputeDistance(id model.RowID, query []float32, metric distance.Metric) (float32, bool) {
+	data := s.data.Load()
+	if data == nil {
+		return 0, false
+	}
+
+	dim := int(s.dim)
+	idInt := int(id)
+	start := idInt * dim
+	end := start + dim
+
+	if end > len(*data) {
+		return 0, false
+	}
+
+	// Check deletion bitmap
+	if s.isDeleted(id) {
+		return 0, false
+	}
+
+	vec := (*data)[start:end]
+
+	switch metric {
+	case distance.MetricL2:
+		return distance.SquaredL2(query, vec), true
+	case distance.MetricDot:
+		return -distance.Dot(query, vec), true
+	case distance.MetricCosine:
+		return 0.5 * distance.SquaredL2(query, vec), true
+	default:
+		return distance.SquaredL2(query, vec), true
+	}
 }
 
 // RawData returns the underlying contiguous float32 slice and the dimension.

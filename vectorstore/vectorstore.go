@@ -7,6 +7,7 @@ package vectorstore
 import (
 	"errors"
 
+	"github.com/hupe1980/vecgo/distance"
 	"github.com/hupe1980/vecgo/model"
 )
 
@@ -23,6 +24,7 @@ var (
 type VectorStore interface {
 	Dimension() int
 	GetVector(id model.RowID) ([]float32, bool)
+	ComputeDistance(id model.RowID, query []float32, metric distance.Metric) (float32, bool)
 	SetVector(id model.RowID, v []float32) error
 	DeleteVector(id model.RowID) error
 }

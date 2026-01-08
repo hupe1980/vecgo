@@ -393,9 +393,9 @@ func (h *HNSW) visitConnections(g *graph, id model.RowID, layer int, callback fu
 		return
 	}
 
-	count := node.GetCount(g.arena, layer, h.maxConnectionsPerLayer, h.maxConnectionsLayer0)
-	for i := 0; i < count; i++ {
-		n := node.GetConnection(g.arena, layer, i, h.maxConnectionsPerLayer, h.maxConnectionsLayer0)
+	raw := node.GetConnectionsRaw(g.arena, layer, h.maxConnectionsPerLayer, h.maxConnectionsLayer0)
+	for _, v := range raw {
+		n := NeighborFromUint64(v)
 		if !callback(n) {
 			return
 		}
@@ -1021,13 +1021,40 @@ func (h *HNSW) searchLayer(s *searcher.Searcher, g *graph, query []float32, epID
 			}
 		}
 
-		h.visitConnections(g, curr.Node, level, func(next Neighbor) bool {
-			if !visited.Visited(next.ID) {
-				visited.Visit(next.ID)
-				h.processNeighbor(s, g, query, next, ef, filter)
+		// Optimization: Inline visitConnections and processNeighbor logic to avoid closure overhead
+		node := h.getNode(g, curr.Node)
+		if node != nil {
+			raw := node.GetConnectionsRaw(g.arena, level, h.maxConnectionsPerLayer, h.maxConnectionsLayer0)
+			for _, v := range raw {
+				next := NeighborFromUint64(v)
+				if !visited.Visited(next.ID) {
+					visited.Visit(next.ID)
+
+					// Inline processNeighbor logic
+					nextDist := h.dist(query, next.ID)
+
+					// Classic HNSW pruning: avoid pushing obviously-bad candidates once we already
+					// have ef results. This substantially reduces heap churn.
+					shouldExplore := true
+					if results.Len() >= ef {
+						worst, _ := results.TopItem()
+						if nextDist > worst.Distance {
+							shouldExplore = false
+						}
+					}
+
+					if shouldExplore {
+						candidates.PushItem(searcher.PriorityQueueItem{Node: next.ID, Distance: nextDist})
+
+						// Only add to results if it passes the filter AND is not deleted
+						if (filter == nil || filter.Matches(uint32(next.ID))) && !g.tombstones.Test(uint32(next.ID)) {
+							// Use bounded push for results to avoid heap churn
+							results.PushItemBounded(searcher.PriorityQueueItem{Node: next.ID, Distance: nextDist}, ef)
+						}
+					}
+				}
 			}
-			return true
-		})
+		}
 	}
 }
 
@@ -1079,11 +1106,11 @@ func (h *HNSW) processNeighbor(s *searcher.Searcher, g *graph, query []float32, 
 
 // dist computes distance between vector and node ID.
 func (h *HNSW) dist(v []float32, id model.RowID) float32 {
-	vec, ok := h.vectors.GetVector(id)
+	d, ok := h.vectors.ComputeDistance(id, v, h.opts.DistanceType)
 	if !ok {
 		return math.MaxFloat32
 	}
-	return h.distanceFunc(v, vec)
+	return d
 }
 
 // Delete marks a node as deleted (logical delete).
@@ -1263,15 +1290,19 @@ func (h *HNSW) greedySearch(g *graph, q []float32, epID model.RowID) (model.RowI
 		changed := true
 		for changed {
 			changed = false
-			h.visitConnections(g, currID, level, func(next Neighbor) bool {
-				nextDist := h.dist(q, next.ID)
-				if nextDist < currDist {
-					currID = next.ID
-					currDist = nextDist
-					changed = true
+			node := h.getNode(g, currID)
+			if node != nil {
+				raw := node.GetConnectionsRaw(g.arena, level, h.maxConnectionsPerLayer, h.maxConnectionsLayer0)
+				for _, v := range raw {
+					next := NeighborFromUint64(v)
+					nextDist := h.dist(q, next.ID)
+					if nextDist < currDist {
+						currID = next.ID
+						currDist = nextDist
+						changed = true
+					}
 				}
-				return true
-			})
+			}
 		}
 	}
 	return currID, currDist

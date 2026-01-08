@@ -34,6 +34,30 @@ func (f *Filter) Matches(doc Document) bool {
 	}
 }
 
+// MatchesValue checks if the provided value matches this filter.
+func (f *Filter) MatchesValue(value Value) bool {
+	switch f.Operator {
+	case OpEqual:
+		return compareEqual(value, f.Value)
+	case OpNotEqual:
+		return !compareEqual(value, f.Value)
+	case OpGreaterThan:
+		return compareGreater(value, f.Value)
+	case OpGreaterEqual:
+		return compareGreater(value, f.Value) || compareEqual(value, f.Value)
+	case OpLessThan:
+		return compareLess(value, f.Value)
+	case OpLessEqual:
+		return compareLess(value, f.Value) || compareEqual(value, f.Value)
+	case OpIn:
+		return compareIn(value, f.Value)
+	case OpContains:
+		return compareContains(value, f.Value)
+	default:
+		return false
+	}
+}
+
 // MatchesInterned checks if the provided interned metadata matches this filter.
 func (f *Filter) MatchesInterned(doc InternedDocument) bool {
 	value, exists := doc[unique.Make(f.Key)]

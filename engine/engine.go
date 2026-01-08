@@ -8,6 +8,7 @@ import (
 	"io"
 	"iter"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -522,14 +523,26 @@ func Open(dir string, dim int, metric distance.Metric, opts ...Option) (*Engine,
 }
 
 // Insert adds a vector to the engine.
+func (e *Engine) validateVector(vec []float32) error {
+	if len(vec) != e.dim {
+		return fmt.Errorf("%w: dimension mismatch: expected %d, got %d", ErrInvalidArgument, e.dim, len(vec))
+	}
+	for i, v := range vec {
+		if math.IsNaN(float64(v)) || math.IsInf(float64(v), 0) {
+			return fmt.Errorf("%w: vector contains NaN or Inf at index %d", ErrInvalidArgument, i)
+		}
+	}
+	return nil
+}
+
 func (e *Engine) Insert(pk model.PK, vec []float32, md metadata.Document, payload []byte) (err error) {
 	start := time.Now()
 	defer func() {
 		e.metrics.OnInsert(time.Since(start), err)
 	}()
 
-	if len(vec) != e.dim {
-		return fmt.Errorf("%w: expected %d, got %d", ErrInvalidArgument, e.dim, len(vec))
+	if err := e.validateVector(vec); err != nil {
+		return err
 	}
 
 	if e.schema != nil {
@@ -957,8 +970,8 @@ func (e *Engine) Search(ctx context.Context, q []float32, k int, opts ...func(*m
 	default:
 	}
 
-	if len(q) != e.dim {
-		return nil, fmt.Errorf("%w: expected %d, got %d", ErrInvalidArgument, e.dim, len(q))
+	if err := e.validateVector(q); err != nil {
+		return nil, err
 	}
 	if k <= 0 {
 		return nil, fmt.Errorf("%w: k must be > 0", ErrInvalidArgument)

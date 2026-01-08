@@ -28,6 +28,7 @@ type MemTable struct {
 	pks      []model.PK
 	metadata []metadata.InternedDocument
 	payloads [][]byte
+	columns  map[string]Column
 }
 
 // New creates a new MemTable.
@@ -65,6 +66,7 @@ func New(id model.SegmentID, dim int, metric distance.Metric, acquirer arena.Mem
 		vectors:  store,
 		pks:      make([]model.PK, 0, 1024),
 		metadata: make([]metadata.InternedDocument, 0, 1024),
+		columns:  make(map[string]Column),
 	}, nil
 }
 
@@ -140,6 +142,48 @@ func (m *MemTable) InsertWithPayload(pk model.PK, vec []float32, md metadata.Doc
 		m.payloads[id] = payload
 	}
 
+	// Sync columnar metadata
+	targetLen := len(m.pks)
+	idInt := int(id)
+
+	// 1. Sync existing columns
+	for key, col := range m.columns {
+		val, hasVal := md[key]
+		// Determine valid value to set/append
+		var v metadata.Value
+		if hasVal {
+			v = val
+		}
+
+		// Ensure column catches up to targetLen - 1 (backfill if needed)
+		for col.Len() < targetLen-1 {
+			col.Append(metadata.Value{}) // Append nulls
+		}
+
+		if col.Len() == targetLen {
+			// Row exists in column, update it
+			// If !hasVal, v is Null, Set will mark invalid
+			col.Set(idInt, v)
+		} else {
+			// Append new row
+			col.Append(v)
+		}
+	}
+
+	// 2. Handle new columns
+	for key, val := range md {
+		if _, exists := m.columns[key]; !exists {
+			col, err := createColumn(val.Kind, cap(m.pks))
+			if err == nil {
+				// Grow to full size (all nulls)
+				col.Grow(targetLen)
+				// Set the specific value for this ID
+				col.Set(idInt, val)
+				m.columns[key] = col
+			}
+		}
+	}
+
 	return model.RowID(id), nil
 }
 
@@ -191,11 +235,7 @@ func (m *MemTable) Search(ctx context.Context, q []float32, k int, filter segmen
 
 	// Handle user metadata filter
 	if opts.Filter != nil {
-		hnswFilter = &metadataFilterWrapper{
-			parent: filter,
-			meta:   opts.Filter,
-			docs:   m.metadata,
-		}
+		hnswFilter = newColumnarFilterWrapper(filter, opts.Filter, m.columns)
 	}
 
 	hnswOpts := &idxhnsw.SearchOptions{

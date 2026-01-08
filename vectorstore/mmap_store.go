@@ -7,6 +7,7 @@ import (
 	"io"
 	"unsafe"
 
+	"github.com/hupe1980/vecgo/distance"
 	"github.com/hupe1980/vecgo/internal/conv"
 	"github.com/hupe1980/vecgo/internal/mmap"
 	"github.com/hupe1980/vecgo/model"
@@ -201,6 +202,44 @@ func (s *MmapStore) GetVector(id model.RowID) ([]float32, bool) {
 	}
 
 	return s.data[start:end:end], true
+}
+
+// ComputeDistance computes the distance between the query and the vector at ID.
+// This avoids allocating a slice header for the vector and allows internal optimization.
+func (s *MmapStore) ComputeDistance(id model.RowID, query []float32, metric distance.Metric) (float32, bool) {
+	if uint64(id) >= s.count {
+		return 0, false
+	}
+
+	// Check deletion bitmap
+	if s.isDeleted(id) {
+		return 0, false
+	}
+
+	dim := int(s.dim)
+	idInt, err := conv.Uint32ToInt(uint32(id))
+	if err != nil {
+		return 0, false
+	}
+	start := idInt * dim
+	end := start + dim
+
+	if end > len(s.data) {
+		return 0, false
+	}
+
+	vec := s.data[start:end]
+
+	switch metric {
+	case distance.MetricL2:
+		return distance.SquaredL2(query, vec), true
+	case distance.MetricDot:
+		return -distance.Dot(query, vec), true
+	case distance.MetricCosine:
+		return 0.5 * distance.SquaredL2(query, vec), true
+	default:
+		return distance.SquaredL2(query, vec), true
+	}
 }
 
 // GetVectorUnsafe returns the vector without checking deletion status.
