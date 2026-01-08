@@ -168,13 +168,17 @@ func (s *Segment) load() error {
 	// Unsafe cast to []float32
 	// Note: This assumes little-endian architecture matching file format
 	vectorBytes := s.data[s.header.VectorOffset : s.header.VectorOffset+uint64(s.header.RowCount)*uint64(s.header.Dim)*4]
-	header := (*unsafe.Pointer)(unsafe.Pointer(&s.vectors))
-	*header = unsafe.Pointer(&vectorBytes[0])
-	// We need to set length/cap manually for the slice header?
-	// Go slice header: Data, Len, Cap.
-	// But we can't easily modify slice header portably without reflect or unsafe.Slice (Go 1.17+).
-	// Go 1.24 is used, so unsafe.Slice is available.
-	s.vectors = unsafe.Slice((*float32)(unsafe.Pointer(&vectorBytes[0])), int(s.header.RowCount)*int(s.header.Dim))
+	if len(vectorBytes) > 0 {
+		header := (*unsafe.Pointer)(unsafe.Pointer(&s.vectors))
+		*header = unsafe.Pointer(&vectorBytes[0])
+		// We need to set length/cap manually for the slice header?
+		// Go slice header: Data, Len, Cap.
+		// But we can't easily modify slice header portably without reflect or unsafe.Slice (Go 1.17+).
+		// Go 1.24 is used, so unsafe.Slice is available.
+		s.vectors = unsafe.Slice((*float32)(unsafe.Pointer(&vectorBytes[0])), int(s.header.RowCount)*int(s.header.Dim))
+	} else {
+		s.vectors = make([]float32, 0)
+	}
 
 	// Setup PKs
 	offsetsSize := uint64(s.header.RowCount) * 4
@@ -182,7 +186,12 @@ func (s *Segment) load() error {
 		return errors.New("PK offsets section out of bounds")
 	}
 	offsetsBytes := s.data[s.header.PKOffset : s.header.PKOffset+offsetsSize]
-	pkOffsets := unsafe.Slice((*uint32)(unsafe.Pointer(&offsetsBytes[0])), int(s.header.RowCount))
+	var pkOffsets []uint32
+	if len(offsetsBytes) > 0 {
+		pkOffsets = unsafe.Slice((*uint32)(unsafe.Pointer(&offsetsBytes[0])), int(s.header.RowCount))
+	} else {
+		pkOffsets = make([]uint32, 0)
+	}
 
 	blobStart := s.header.PKOffset + offsetsSize
 	blobEnd := uint64(len(s.data))
@@ -256,7 +265,11 @@ func (s *Segment) load() error {
 		return errors.New("graph section out of bounds")
 	}
 	graphBytes := s.data[s.header.GraphOffset : s.header.GraphOffset+graphSize]
-	s.graph = unsafe.Slice((*uint32)(unsafe.Pointer(&graphBytes[0])), int(s.header.RowCount)*int(s.header.MaxDegree))
+	if len(graphBytes) > 0 {
+		s.graph = unsafe.Slice((*uint32)(unsafe.Pointer(&graphBytes[0])), int(s.header.RowCount)*int(s.header.MaxDegree))
+	} else {
+		s.graph = make([]uint32, 0)
+	}
 
 	// Setup PQ if enabled
 	if s.header.QuantizationType == 2 { // PQ

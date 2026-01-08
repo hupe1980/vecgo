@@ -645,6 +645,11 @@ func (h *HNSW) insert(ctx context.Context, g *graph, v []float32, id model.RowID
 
 	id = h.allocateOrValidateID(g, id, useProvidedID)
 
+	if useProvidedID {
+		// Ensure any previous tombstone is cleared (e.g. during Update or WAL replay)
+		g.tombstones.Unset(uint32(id))
+	}
+
 	layer = h.determineLayer(id, layer, useProvidedID)
 
 	node, err := h.newNode(ctx, g, layer)
@@ -653,6 +658,28 @@ func (h *HNSW) insert(ctx context.Context, g *graph, v []float32, id model.RowID
 			h.releaseID(g, id)
 		}
 		return 0, err
+	}
+
+	// If updating an existing node, preserve its connections to maintain graph connectivity
+	// during the update. The new node will start with the old connections, which effectively
+	// serves as finding the "entry point" for the insertion search from the node's previous location.
+	if useProvidedID {
+		if oldNode := h.getNode(g, id); oldNode != nil {
+			oldLevel := oldNode.Level(g.arena)
+			minLevel := layer
+			if oldLevel < minLevel {
+				minLevel = oldLevel
+			}
+
+			// Copy connections from old node to new node
+			for l := 0; l <= minLevel; l++ {
+				conns := h.getConnections(g, id, l)
+				node.SetCount(g.arena, l, len(conns), h.maxConnectionsPerLayer, h.maxConnectionsLayer0)
+				for i, c := range conns {
+					node.SetConnection(g.arena, l, i, c, h.maxConnectionsPerLayer, h.maxConnectionsLayer0)
+				}
+			}
+		}
 	}
 
 	if err := h.vectors.SetVector(id, vec); err != nil {

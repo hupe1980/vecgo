@@ -18,14 +18,14 @@ import (
 
 // Store implements blobstore.BlobStore for S3.
 type Store struct {
-	client *s3.Client
+	client Client
 	bucket string
 	prefix string
 }
 
 // NewStore creates a new S3 blob store.
 // rootPrefix is prepended to all keys (e.g. "my-db/").
-func NewStore(client *s3.Client, bucket, rootPrefix string) *Store {
+func NewStore(client Client, bucket, rootPrefix string) *Store {
 	return &Store{
 		client: client,
 		bucket: bucket,
@@ -132,7 +132,7 @@ func (s *Store) List(ctx context.Context, prefix string) ([]string, error) {
 
 // s3Blob implements blobstore.Blob
 type s3Blob struct {
-	client *s3.Client
+	client Client
 	bucket string
 	key    string
 	size   int64

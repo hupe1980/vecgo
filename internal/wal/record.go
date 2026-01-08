@@ -339,9 +339,6 @@ func parseDelete(payload []byte, r *Record) error {
 
 // Helper to avoid math import if possible, or just use math
 
-func toBits(f float32) uint32 {
-	return math.Float32bits(f)
-}
 
 func fromBits(b uint32) float32 {
 	return math.Float32frombits(b)

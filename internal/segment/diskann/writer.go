@@ -74,9 +74,20 @@ func DefaultOptions() Options {
 
 // NewWriter creates a new DiskANN segment writer.
 func NewWriter(w io.Writer, payloadW io.Writer, segID uint64, dim int, metric distance.Metric, opts Options) *Writer {
+	defaults := DefaultOptions()
 	if opts.R == 0 {
-		opts = DefaultOptions()
+		opts.R = defaults.R
 	}
+	if opts.L == 0 {
+		opts.L = defaults.L
+	}
+	if opts.Alpha == 0 {
+		opts.Alpha = defaults.Alpha
+	}
+	if opts.PQCentroids == 0 {
+		opts.PQCentroids = defaults.PQCentroids
+	}
+
 	return &Writer{
 		w:            w,
 		payloadW:     payloadW,

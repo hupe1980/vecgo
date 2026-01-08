@@ -2,21 +2,24 @@ goos: darwin
 goarch: arm64
 pkg: github.com/hupe1980/vecgo/benchmark_test
 cpu: Apple M4 Pro
-BenchmarkBatchInsert/Sequential-14      	     297	   4146005 ns/op	    2043 B/op	      16 allocs/op
-BenchmarkBatchInsert/Batch-14           	     723	   3681826 ns/op	    1809 B/op	      13 allocs/op
-BenchmarkBatchSearch/Sequential-14      	     774	   1421880 ns/op	         1.000 recall@10	   12099 B/op	      20 allocs/op
-BenchmarkBatchSearch/Batch-14           	    4681	    246410 ns/op	         1.000 recall@10	   15192 B/op	      45 allocs/op
-BenchmarkIngest_Async-14                	    2205	   1541807 ns/op	    3412 B/op	      16 allocs/op
-BenchmarkIngest_Sync-14                 	     295	   4035972 ns/op	    2002 B/op	      16 allocs/op
-BenchmarkIngest_Async_Parallel-14       	    1920	   1743855 ns/op	    2601 B/op	      17 allocs/op
-BenchmarkIngest_Sync_Parallel-14        	     681	   3679367 ns/op	    1926 B/op	      16 allocs/op
-BenchmarkSearch_L0-14                   	   23718	     48708 ns/op	         0.9504 recall@10	    1363 B/op	       2 allocs/op
-BenchmarkCompaction_Pressure-14         	      44	  35909555 ns/op	 5926137 B/op	    1124 allocs/op
-BenchmarkHybridSearch/VectorOnly-14     	    2566	    415771 ns/op	         1.000 recall@10	    1326 B/op	       2 allocs/op
-BenchmarkHybridSearch/Hybrid-14         	    2558	    460495 ns/op	         1.000 recall@10	   46458 B/op	      13 allocs/op
-BenchmarkHybridSearch/DAAT-14           	   36354	     34030 ns/op	         1.000 recall@10	    1178 B/op	       2 allocs/op
-BenchmarkBinaryQuantizer_Distance-14    	209055453	         5.701 ns/op	       0 B/op	       0 allocs/op
-BenchmarkSearch_Mixed-14                	  375078	      3249 ns/op	         1.000 recall@10	    1242 B/op	       2 allocs/op
-BenchmarkSearchFiltered-14              	    1141	   1061655 ns/op	         1.000 recall@10	    1462 B/op	       3 allocs/op
+BenchmarkBatchInsert/Sequential-14      	     288	   4054587 ns/op	    2012 B/op	      16 allocs/op
+BenchmarkBatchInsert/Batch-14           	     729	   3694961 ns/op	    1704 B/op	      13 allocs/op
+BenchmarkBatchSearch/Sequential-14      	     799	   1385408 ns/op	         1.000 recall@10	   12096 B/op	      20 allocs/op
+BenchmarkBatchSearch/Batch-14           	    4683	    242918 ns/op	         1.000 recall@10	   15373 B/op	      45 allocs/op
+BenchmarkIngest_Async-14                	    2331	   1516355 ns/op	    3384 B/op	      16 allocs/op
+BenchmarkIngest_Sync-14                 	     297	   4079236 ns/op	    1998 B/op	      16 allocs/op
+BenchmarkIngest_Async_Parallel-14       	    1758	   1413206 ns/op	    2631 B/op	      17 allocs/op
+BenchmarkIngest_Sync_Parallel-14        	     678	   3676629 ns/op	    1869 B/op	      16 allocs/op
+BenchmarkSearch_L0-14                   	   27560	     43420 ns/op	         0.9430 recall@10	    1351 B/op	       2 allocs/op
+BenchmarkCompaction_Pressure-14         	      36	  42770609 ns/op	 5948219 B/op	    1263 allocs/op
+BenchmarkHybridSearch/VectorOnly-14     	    2677	    393665 ns/op	         1.000 recall@10	    1320 B/op	       2 allocs/op
+BenchmarkHybridSearch/Hybrid-14         	    2706	    435736 ns/op	         1.000 recall@10	   46339 B/op	      13 allocs/op
+BenchmarkHybridSearch/DAAT-14           	   35509	     34478 ns/op	         1.000 recall@10	    1176 B/op	       2 allocs/op
+BenchmarkBinaryQuantizer_Distance-14    	209003568	         5.625 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSearch_Mixed-14                	  396278	      3004 ns/op	         1.000 recall@10	    1246 B/op	       2 allocs/op
+BenchmarkSearchFiltered-14              	    1168	   1028989 ns/op	         1.000 recall@10	    1457 B/op	       3 allocs/op
+BenchmarkStorage_ReadRandom/Local_NVMe-14         	81563756	        14.83 ns/op	       0 B/op	       0 allocs/op
+BenchmarkStorage_ReadRandom/Simulated_S3_Direct-14         	      38	  30881246 ns/op	       0 B/op	       0 allocs/op
+BenchmarkStorage_ReadRandom/Cached_S3_Warm-14              	18312560	        65.57 ns/op	       0 B/op	       0 allocs/op
 PASS
-ok  	github.com/hupe1980/vecgo/benchmark_test	307.562s
+ok  	github.com/hupe1980/vecgo/benchmark_test	311.368s

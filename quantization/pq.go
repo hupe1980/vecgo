@@ -35,10 +35,16 @@ type ProductQuantizer struct {
 //   - numSubvectors: Number of subvectors to split into (M, typically 8, 16, or 32)
 //   - numCentroids: Number of centroids per subspace (K, typically 256 for uint8 codes)
 func NewProductQuantizer(dimension, numSubvectors, numCentroids int) (*ProductQuantizer, error) {
+	if dimension <= 0 || numSubvectors <= 0 {
+		return nil, errors.New("dimension and numSubvectors must be positive")
+	}
 	if dimension%numSubvectors != 0 {
 		return nil, errors.New("dimension must be divisible by numSubvectors")
 	}
 
+	if numCentroids <= 0 {
+		return nil, errors.New("numCentroids must be positive")
+	}
 	if numCentroids > 256 {
 		return nil, errors.New("numCentroids must be <= 256 for uint8 encoding")
 	}

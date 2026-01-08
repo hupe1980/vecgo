@@ -82,3 +82,32 @@ func TestMemoryIndex_TypeOverflow(t *testing.T) {
 	assert.Len(t, res, 1)
 	assert.True(t, res[0].Score > 0)
 }
+
+func TestMemoryIndex_DAAT(t *testing.T) {
+	idx := New()
+	idx.Add(model.PKUint64(1), "hello world")
+	idx.Add(model.PKUint64(2), "hello go")
+	idx.Add(model.PKUint64(3), "world")
+
+	res, err := idx.SearchDAAT("hello", 10) // Should match doc 1 and 2
+	assert.NoError(t, err)
+	assert.Len(t, res, 2)
+}
+
+func TestMemoryIndex_Close(t *testing.T) {
+	idx := New()
+	assert.NoError(t, idx.Close())
+}
+
+func TestHeap_Logic(t *testing.T) {
+	// Indirectly test heap via Search with k smaller than results
+	idx := New()
+	for i := 0; i < 20; i++ {
+		idx.Add(model.PKUint64(uint64(i)), "term")
+	}
+
+	// k=5, matches 20 docs. Heap will be full and pop/push will happen repeatedly.
+	res, err := idx.Search("term", 5)
+	assert.NoError(t, err)
+	assert.Len(t, res, 5)
+}

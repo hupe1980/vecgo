@@ -77,3 +77,54 @@ func TestPersistentIndex(t *testing.T) {
 	}
 	assert.Equal(t, 0, curr.Len())
 }
+
+func TestPersistentIndex_Scan(t *testing.T) {
+	idx := NewPersistentIndex()
+
+	data := []struct {
+		k model.PK
+		l model.Location
+	}{
+		{model.PKUint64(1), model.Location{SegmentID: 1, RowID: 1}},
+		{model.PKString("two"), model.Location{SegmentID: 2, RowID: 2}},
+		{model.PKUint64(3), model.Location{SegmentID: 3, RowID: 3}},
+	}
+
+	for _, d := range data {
+		idx = idx.Insert(d.k, d.l)
+	}
+
+	count := 0
+	found := make(map[model.PK]bool)
+	for k, v := range idx.Scan() {
+		count++
+		found[k] = true
+		// Verify value matches what we expect for this key
+		switch {
+		case k == data[0].k:
+			assert.Equal(t, data[0].l, v)
+		case k == data[1].k:
+			assert.Equal(t, data[1].l, v)
+		case k == data[2].k:
+			assert.Equal(t, data[2].l, v)
+		}
+	}
+	assert.Equal(t, 3, count)
+	assert.Len(t, found, 3)
+}
+
+func TestPersistentIndex_Scan_EarlyExit(t *testing.T) {
+	idx := NewPersistentIndex()
+	for i := 0; i < 10; i++ {
+		idx = idx.Insert(model.PKUint64(uint64(i)), model.Location{SegmentID: 1, RowID: 1})
+	}
+
+	count := 0
+	for range idx.Scan() {
+		count++
+		if count == 5 {
+			break
+		}
+	}
+	assert.Equal(t, 5, count)
+}
