@@ -114,6 +114,7 @@ type HNSW struct {
 	dimensionAtomic atomic.Int32
 	distanceFunc    distance.Func
 	vectors         vectorstore.VectorStore
+	distOp          func(model.RowID, []float32) float32 // Optimized distance calc
 	rng             *rand.Rand
 	rngMu           sync.Mutex
 
@@ -226,6 +227,24 @@ func New(optFns ...func(o *Options)) (*HNSW, error) {
 		h.vectors, err = vectorstore.New(opts.Dimension)
 		if err != nil {
 			return nil, err
+		}
+	}
+
+	// Optimize distance calculation
+	if cs, ok := h.vectors.(interface {
+		OptimizedDistanceComputer(distance.Metric) (func(model.RowID, []float32) float32, bool)
+	}); ok {
+		if fn, ok := cs.OptimizedDistanceComputer(opts.DistanceType); ok {
+			h.distOp = fn
+		}
+	}
+	if h.distOp == nil {
+		h.distOp = func(id model.RowID, q []float32) float32 {
+			d, ok := h.vectors.ComputeDistance(id, q, opts.DistanceType)
+			if !ok {
+				return math.MaxFloat32
+			}
+			return d
 		}
 	}
 
@@ -394,7 +413,8 @@ func (h *HNSW) visitConnections(g *graph, id model.RowID, layer int, callback fu
 	}
 
 	raw := node.GetConnectionsRaw(g.arena, layer, h.maxConnectionsPerLayer, h.maxConnectionsLayer0)
-	for _, v := range raw {
+	for i := 0; i < len(raw); i++ {
+		v := atomic.LoadUint64(&raw[i])
 		n := NeighborFromUint64(v)
 		if !callback(n) {
 			return
@@ -1025,7 +1045,8 @@ func (h *HNSW) searchLayer(s *searcher.Searcher, g *graph, query []float32, epID
 		node := h.getNode(g, curr.Node)
 		if node != nil {
 			raw := node.GetConnectionsRaw(g.arena, level, h.maxConnectionsPerLayer, h.maxConnectionsLayer0)
-			for _, v := range raw {
+			for i := 0; i < len(raw); i++ {
+				v := atomic.LoadUint64(&raw[i])
 				next := NeighborFromUint64(v)
 				if !visited.Visited(next.ID) {
 					visited.Visit(next.ID)
@@ -1293,7 +1314,8 @@ func (h *HNSW) greedySearch(g *graph, q []float32, epID model.RowID) (model.RowI
 			node := h.getNode(g, currID)
 			if node != nil {
 				raw := node.GetConnectionsRaw(g.arena, level, h.maxConnectionsPerLayer, h.maxConnectionsLayer0)
-				for _, v := range raw {
+				for i := 0; i < len(raw); i++ {
+					v := atomic.LoadUint64(&raw[i])
 					next := NeighborFromUint64(v)
 					nextDist := h.dist(q, next.ID)
 					if nextDist < currDist {

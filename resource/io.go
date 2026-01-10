@@ -2,6 +2,7 @@ package resource
 
 import (
 	"context"
+	"errors"
 	"io"
 )
 
@@ -26,6 +27,14 @@ func (w *RateLimitedWriter) Write(p []byte) (n int, err error) {
 		return 0, err
 	}
 	return w.w.Write(p)
+}
+
+// Seek implements io.Seeker.
+func (w *RateLimitedWriter) Seek(offset int64, whence int) (int64, error) {
+	if seeker, ok := w.w.(io.Seeker); ok {
+		return seeker.Seek(offset, whence)
+	}
+	return 0, errors.New("underlying writer is not a seeker")
 }
 
 // RateLimitedReader wraps an io.Reader with rate limiting.

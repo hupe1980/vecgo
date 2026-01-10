@@ -15,6 +15,62 @@ import (
 	"github.com/hupe1980/vecgo/model"
 )
 
+// OptimizedDistanceComputer returns a function that computes distance without interface overhead.
+// The returned function is safe for concurrent use.
+func (s *ColumnarStore) OptimizedDistanceComputer(metric distance.Metric) (func(model.RowID, []float32) float32, bool) {
+	dim := int(s.dim)
+
+	// fast path for L2
+	if metric == distance.MetricL2 {
+		return func(id model.RowID, q []float32) float32 {
+			dataPtr := s.data.Load()
+			if dataPtr == nil {
+				return 3.402823466e+38 // math.MaxFloat32
+			}
+			data := *dataPtr
+			idx := int(id) * dim
+			if idx < 0 || idx+dim > len(data) {
+				return 3.402823466e+38 // math.MaxFloat32
+			}
+			return distance.SquaredL2(data[idx:idx+dim], q)
+		}, true
+	}
+
+	// fast path for Dot/Cosine
+	if metric == distance.MetricDot || metric == distance.MetricCosine {
+		return func(id model.RowID, q []float32) float32 {
+			dataPtr := s.data.Load()
+			if dataPtr == nil {
+				return 3.402823466e+38 // math.MaxFloat32
+			}
+			data := *dataPtr
+			idx := int(id) * dim
+			if idx < 0 || idx+dim > len(data) {
+				return 3.402823466e+38 // math.MaxFloat32
+			}
+			return distance.Dot(data[idx:idx+dim], q)
+		}, true
+	}
+
+	distFn, err := distance.Provider(metric)
+	if err != nil {
+		return nil, false
+	}
+
+	return func(id model.RowID, q []float32) float32 {
+		dataPtr := s.data.Load()
+		if dataPtr == nil {
+			return 3.402823466e+38 // math.MaxFloat32
+		}
+		data := *dataPtr
+		idx := int(id) * dim
+		if idx < 0 || idx+dim > len(data) {
+			return 3.402823466e+38 // math.MaxFloat32
+		}
+		return distFn(data[idx:idx+dim], q)
+	}, true
+}
+
 // ColumnarStore is a high-performance columnar vector store.
 //
 // Vectors are stored contiguously in a single []float32 slice, providing

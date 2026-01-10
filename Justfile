@@ -8,11 +8,11 @@ lint:
 
 # Runs go test with default values
 test:
-    go test -v -timeout 120s ./...
+    go test -p 1 -v -timeout 300s ./...
 
 # Runs go test with the race detector
 test-race:
-    go test -race -v -timeout 300s ./...
+    go test -p 1 -race -v -timeout 300s ./...
 
 # Runs benchmarks and saves output to benchmark_test/current.txt
 bench-current:

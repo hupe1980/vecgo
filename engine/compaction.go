@@ -36,8 +36,10 @@ func (e *Engine) Compact(segmentIDs []model.SegmentID) (err error) {
 
 	// --- Phase 1: Snapshot State ---
 	// We need a snapshot to read from.
-	snap := e.current.Load()
-	snap.IncRef()
+	snap, err := e.loadSnapshot()
+	if err != nil {
+		return err
+	}
 	defer snap.DecRef()
 
 	// Validate segments and snapshot tombstones
@@ -237,7 +239,6 @@ func (e *Engine) Compact(segmentIDs []model.SegmentID) (err error) {
 
 	newSeg, err := openSegment(context.Background(), e.store, filename, e.blockCache, payloadBlob)
 	if err != nil {
-		fmt.Printf("Compaction failed: openSegment: %v\n", err)
 		e.fs.Remove(path)
 		e.fs.Remove(payloadPath)
 		return err

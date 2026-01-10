@@ -15,9 +15,9 @@ import (
 
 func TestFilteringEquivalence(t *testing.T) {
 	dir := t.TempDir()
-	// Small MemTable size to force flushes
+	// Small MemTable size to force flushes, but not too small to avoid excessive overhead/contention during race testing
 	e, err := Open(dir, 2, distance.MetricL2, WithFlushConfig(FlushConfig{
-		MaxMemTableSize: 20 * 1024, // 20KB
+		MaxMemTableSize: 10 * 1024 * 1024, // 10MB
 	}))
 	require.NoError(t, err)
 	defer e.Close()

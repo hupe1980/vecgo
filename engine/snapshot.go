@@ -76,6 +76,20 @@ func (s *Snapshot) IncRef() {
 	atomic.AddInt64(&s.refs, 1)
 }
 
+// TryIncRef attempts to increment the reference count.
+// Returns true if successful, false if the snapshot is already destroyed (refs == 0).
+func (s *Snapshot) TryIncRef() bool {
+	for {
+		refs := atomic.LoadInt64(&s.refs)
+		if refs <= 0 {
+			return false
+		}
+		if atomic.CompareAndSwapInt64(&s.refs, refs, refs+1) {
+			return true
+		}
+	}
+}
+
 func (s *Snapshot) DecRef() {
 	if atomic.AddInt64(&s.refs, -1) == 0 {
 		for _, seg := range s.segments {
@@ -116,6 +130,42 @@ func (s *Snapshot) Clone() *Snapshot {
 		seg.IncRef()
 		newSnap.segments[id] = seg
 	}
+	for id, ts := range s.tombstones {
+		newSnap.tombstones[id] = ts
+	}
+	return newSnap
+}
+
+// CloneShared creates a new Snapshot sharing the same segments (inc refs) and active memtable.
+// Tombstones are shallow copied (map copy).
+// Unlike Clone, this shares the segments map and sortedSegments slice, assuming they will NOT be modified.
+// This is an optimization for operations like Insert/Delete that do not add/remove segments.
+func (s *Snapshot) CloneShared() *Snapshot {
+	newSnap := &Snapshot{
+		refs:            1,
+		segments:        s.segments,       // Shared map
+		sortedSegments:  s.sortedSegments, // Shared slice
+		tombstones:      make(map[model.SegmentID]*imetadata.LocalBitmap, len(s.tombstones)),
+		active:          s.active,
+		activeWatermark: s.activeWatermark,
+		pkIndex:         s.pkIndex,
+	}
+
+	s.active.IncRef()
+
+	// Increment refs for shared segments
+	// Prefer iterating sortedSegments if available as it is faster (slice vs map)
+	// If sortedSegments is not in sync (e.g. not built), fall back to map.
+	if len(s.sortedSegments) == len(s.segments) {
+		for _, seg := range s.sortedSegments {
+			seg.IncRef()
+		}
+	} else {
+		for _, seg := range s.segments {
+			seg.IncRef()
+		}
+	}
+
 	for id, ts := range s.tombstones {
 		newSnap.tombstones[id] = ts
 	}

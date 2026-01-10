@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -67,7 +69,7 @@ type Engine struct {
 	compactionConfig CompactionConfig
 	flushConfig      FlushConfig
 	flushCh          chan struct{}
-	closed           bool
+	closed           atomic.Bool
 
 	lexicalIndex lexical.Index
 	lexicalField string
@@ -535,6 +537,34 @@ func (e *Engine) validateVector(vec []float32) error {
 	return nil
 }
 
+// loadSnapshot safely loads the current snapshot with an incremented reference count.
+// It handles race conditions where the snapshot might be destroyed during load.
+func (e *Engine) loadSnapshot() (*Snapshot, error) {
+	for {
+		// Fast path check if closed
+		if e.closed.Load() {
+			return nil, ErrClosed
+		}
+
+		snap := e.current.Load()
+		if snap == nil {
+			// Should only happen if not initialized, but check closed again
+			if e.closed.Load() {
+				return nil, ErrClosed
+			}
+			return nil, errors.New("engine not initialized")
+		}
+
+		if snap.TryIncRef() {
+			return snap, nil
+		}
+
+		// Snapshot was concurrently destroyed (refs reached 0).
+		// Wait for the writer to install the new snapshot (which must happen before destruction).
+		runtime.Gosched()
+	}
+}
+
 func (e *Engine) Insert(pk model.PK, vec []float32, md metadata.Document, payload []byte) (err error) {
 	start := time.Now()
 	defer func() {
@@ -552,7 +582,7 @@ func (e *Engine) Insert(pk model.PK, vec []float32, md metadata.Document, payloa
 	}
 
 	e.mu.Lock()
-	if e.closed {
+	if e.closed.Load() {
 		e.mu.Unlock()
 		return ErrClosed
 	}
@@ -560,8 +590,8 @@ func (e *Engine) Insert(pk model.PK, vec []float32, md metadata.Document, payloa
 	snap := e.current.Load()
 
 	// Always clone snapshot because we update pkIndex
-	newSnap := snap.Clone()
-	newSnap.RebuildSorted()
+	// Use CloneShared to avoid copying the segments map and resorting sortedSegments.
+	newSnap := snap.CloneShared()
 
 	// 1. Check PK Index
 	if oldLoc, exists := newSnap.pkIndex.Lookup(pk); exists {
@@ -680,7 +710,7 @@ func (e *Engine) BatchInsert(records []model.Record) error {
 	}
 
 	e.mu.Lock()
-	if e.closed {
+	if e.closed.Load() {
 		e.mu.Unlock()
 		return ErrClosed
 	}
@@ -803,7 +833,7 @@ func (e *Engine) Delete(pk model.PK) (err error) {
 	}()
 
 	e.mu.Lock()
-	if e.closed {
+	if e.closed.Load() {
 		e.mu.Unlock()
 		return ErrClosed
 	}
@@ -872,7 +902,7 @@ func (e *Engine) Delete(pk model.PK) (err error) {
 // It is atomic and more efficient than calling Delete in a loop.
 func (e *Engine) BatchDelete(pks []model.PK) error {
 	e.mu.Lock()
-	if e.closed {
+	if e.closed.Load() {
 		e.mu.Unlock()
 		return ErrClosed
 	}
@@ -987,8 +1017,10 @@ func (e *Engine) Search(ctx context.Context, q []float32, k int, opts ...func(*m
 	}
 
 	// Acquire Snapshot
-	snap := e.current.Load()
-	snap.IncRef()
+	snap, err := e.loadSnapshot()
+	if err != nil {
+		return nil, err
+	}
 	defer snap.DecRef()
 
 	// Acquire Searcher
@@ -1378,12 +1410,9 @@ func (e *Engine) Scan(ctx context.Context, opts ...ScanOption) iter.Seq2[*model.
 	}
 
 	return func(yield func(*model.Record, error) bool) {
-		snap := e.current.Load()
-		if snap != nil {
-			snap.IncRef()
-		}
-		if snap == nil {
-			yield(nil, errors.New("engine closed or not initialized"))
+		snap, err := e.loadSnapshot()
+		if err != nil {
+			yield(nil, err)
 			return
 		}
 		defer snap.DecRef()
@@ -1582,8 +1611,10 @@ func (e *Engine) HybridSearch(ctx context.Context, q []float32, textQuery string
 	// We can do a lookup in PK Index.
 
 	// Acquire Snapshot for PK lookup
-	snap := e.current.Load()
-	snap.IncRef()
+	snap, err := e.loadSnapshot()
+	if err != nil {
+		return nil, err
+	}
 	defer snap.DecRef()
 
 	validCount := 0
@@ -1612,8 +1643,10 @@ func (e *Engine) Get(pk model.PK) (rec *model.Record, err error) {
 	}
 
 	// Acquire Snapshot
-	snap := e.current.Load()
-	snap.IncRef()
+	snap, err := e.loadSnapshot()
+	if err != nil {
+		return nil, err
+	}
 	defer snap.DecRef()
 
 	// Lookup PK
@@ -1665,29 +1698,98 @@ func (e *Engine) Flush() (err error) {
 		e.metrics.OnFlush(time.Since(start), itemsFlushed, bytesFlushed, err)
 	}()
 
+	// --- Phase 1: Rotate (Holding Lock) ---
 	e.mu.Lock()
-	defer e.mu.Unlock()
 
 	currentLSN := e.lsn.Load()
 	snap := e.current.Load()
-	rowCount := int(snap.active.RowCount())
-	itemsFlushed = rowCount
-
-	if rowCount == 0 {
+	if snap.active.RowCount() == 0 {
+		e.mu.Unlock()
 		return nil
 	}
 
+	active := snap.active
+	rowCount := int(active.RowCount())
+	itemsFlushed = rowCount
+	activeID := active.ID()
+
 	if e.logger != nil {
-		e.logger.Info("Flush started", "segmentID", snap.active.ID(), "rowCount", rowCount)
+		e.logger.Info("Flush started", "segmentID", activeID, "rowCount", rowCount)
 	}
 
-	// 1. Create new segment file (atomic publication)
-	segID := snap.active.ID()
-	filename := fmt.Sprintf("segment_%d.bin", segID)
+	// Rotate WAL
+	if err := e.wal.Close(); err != nil {
+		e.mu.Unlock()
+		return err
+	}
+
+	oldWALID := e.manifest.WALID
+	newWALID := oldWALID + 1
+	if newWALID == 0 {
+		newWALID = 1
+	}
+
+	newWALPath := e.getWALPath(newWALID)
+	newWal, err := wal.Open(e.fs, newWALPath, toInternalWALOptions(e.walOptions))
+	if err != nil {
+		e.mu.Unlock()
+		return err
+	}
+	e.wal = newWal
+
+	// Create New Snapshot
+	newSnap := snap.Clone()
+
+	// Move active to "frozen" (segments map)
+	// Wrap active in RefCountedSegment
+	frozenSeg := NewRefCountedSegment(active)
+	// Ensure we handle concurrent access correctly:
+	// The frozen MemTable is now effectively read-only for Inserts (since active is new),
+	// but it is valid for Search/Fetch via the segments map.
+	newSnap.segments[activeID] = frozenSeg
+
+	// Update sorted segments
+	newSnap.sortedSegments = append(newSnap.sortedSegments, frozenSeg)
+	slices.SortFunc(newSnap.sortedSegments, func(a, b *RefCountedSegment) int {
+		return cmp.Compare(a.ID(), b.ID())
+	})
+
+	// Create New Active MemTable
+	newActiveID := e.manifest.NextSegmentID
+	e.manifest.NextSegmentID++
+	newSnap.active, err = memtable.New(newActiveID, e.dim, e.metric, e.resourceController)
+	if err != nil {
+		e.mu.Unlock()
+		// Try to restore old WAL? Very bad state.
+		return fmt.Errorf("failed to create new memtable: %w", err)
+	}
+	newSnap.activeWatermark = 0
+
+	// Persist tombstones to ensure durability of deletes covered by the old WAL.
+	if err := e.persistTombstones(newSnap); err != nil {
+		e.mu.Unlock()
+		return err
+	}
+
+	// Publish Rotation
+	newSnap.RebuildSorted() // Ensure consistent state
+	e.current.Store(newSnap)
+	snap.DecRef()
+
+	// Update Manifest state locally (not saved yet, will save in Commit)
+	e.manifest.WALID = newWALID
+	e.manifest.MaxLSN = currentLSN
+
+	e.mu.Unlock()
+	// --- End of Phase 1 (Inserts can proceed) ---
+
+	// --- Phase 2: Write (No Lock) ---
+	// Data Paths
+	filename := fmt.Sprintf("segment_%d.bin", activeID)
 	path := filepath.Join(e.dir, filename)
 	tmpPath := path + ".tmp"
 
-	payloadFilename := fmt.Sprintf("segment_%d.payload", segID)
+	payloadFilename := fmt.Sprintf("segment_%d.payload", activeID)
 	payloadPath := filepath.Join(e.dir, payloadFilename)
 	payloadTmpPath := payloadPath + ".tmp"
 
@@ -1713,32 +1815,16 @@ func (e *Engine) Flush() (err error) {
 		}
 	}()
 
-	// For Flush (L0 -> L1), we disable partitioning (k=0) to keep it fast.
-	// Partitioning happens during Compaction (L1 -> L2).
-	// We also disable quantization for L1 (keep it exact/fast).
-	w := flat.NewWriter(f, payloadF, segID, e.dim, e.metric, 0, flat.QuantizationNone)
+	w := flat.NewWriter(f, payloadF, activeID, e.dim, e.metric, 0, flat.QuantizationNone)
 
-	// 2. Write data
-	var count uint32
-	var updates []struct {
-		pk  model.PK
-		loc model.Location
-	}
-
-	err = snap.active.Iterate(func(rowID uint32, pk model.PK, vec []float32, md metadata.Document, payload []byte) error {
-		// Skip deleted items
-		if ts, ok := snap.tombstones[segID]; ok && ts.Contains(rowID) {
-			return nil
-		}
-
+	// Write data
+	// IMPORTANT: We write ALL rows (including deleted ones) to preserve RowIDs.
+	// This ensures that the existing pkIndex remains valid.
+	// Compaction will garbage collect deleted rows later.
+	err = active.Iterate(func(rowID uint32, pk model.PK, vec []float32, md metadata.Document, payload []byte) error {
 		if err := w.Add(pk, vec, md, payload); err != nil {
 			return err
 		}
-		updates = append(updates, struct {
-			pk  model.PK
-			loc model.Location
-		}{pk, model.Location{SegmentID: segID, RowID: model.RowID(count)}})
-		count++
 		return nil
 	})
 	if err != nil {
@@ -1755,7 +1841,6 @@ func (e *Engine) Flush() (err error) {
 	if err := payloadF.Sync(); err != nil {
 		return err
 	}
-	// Explicit close to ensure flush to disk
 	if err := f.Close(); err != nil {
 		return err
 	}
@@ -1765,7 +1850,7 @@ func (e *Engine) Flush() (err error) {
 	}
 	payloadF = nil
 
-	// Publish atomically (rename + dir fsync)
+	// Publish atomically
 	if err := e.fs.Rename(tmpPath, path); err != nil {
 		return err
 	}
@@ -1785,7 +1870,11 @@ func (e *Engine) Flush() (err error) {
 		return err
 	}
 
-	// 3. Open new segment for reading
+	// --- Phase 3: Commit (Holding Lock) ---
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	// Open new segment for reading
 	blob, err := e.store.Open(context.Background(), filename)
 	if err != nil {
 		return err
@@ -1807,77 +1896,36 @@ func (e *Engine) Flush() (err error) {
 		e.metrics.OnThroughput("flush_write", stat.Size())
 	}
 
-	// 4. Update Snapshot
-	newSnap := snap.Clone()
-	newSnap.segments[segID] = NewRefCountedSegment(newSeg)
-	newSnap.tombstones[segID] = imetadata.NewLocalBitmap()
+	// Update Snapshot
+	snap = e.current.Load()
+	newSnap = snap.Clone()
 
-	// Persist tombstones before rotating WAL
-	if err := e.persistTombstones(newSnap); err != nil {
-		return err
-	}
+	// Replace MemTable segment with Disk segment
+	newSnap.segments[activeID] = NewRefCountedSegment(newSeg)
+	// Note: We keep existing tombstones in newSnap.tombstones[activeID].
+	// They apply to the new disk segment because RowIDs are preserved.
 
-	// 5. Rotate WAL
-	if err := e.wal.Close(); err != nil {
-		return err
-	}
-
-	// Prepare new WAL
-	oldWALID := e.manifest.WALID
-	newWALID := oldWALID + 1
-	if newWALID == 0 {
-		newWALID = 1
-	}
-
-	newWALPath := e.getWALPath(newWALID)
-	newWal, err := wal.Open(e.fs, newWALPath, toInternalWALOptions(e.walOptions))
-	if err != nil {
-		return err
-	}
-	e.wal = newWal
-
-	// 6. Create New Snapshot
-	// newSnap is already created in step 4
-
-	// Release the ref to the old active memtable that Clone() added,
-	// because we are about to replace it with a new one.
-	newSnap.active.DecRef()
-
-	newActiveID := e.manifest.NextSegmentID
-	e.manifest.NextSegmentID++
-	newSnap.active, err = memtable.New(newActiveID, e.dim, e.metric, e.resourceController)
-	if err != nil {
-		newWal.Close()
-		return fmt.Errorf("failed to create new memtable: %w", err)
-	}
-
-	// Update PK Index
-	for _, u := range updates {
-		newSnap.pkIndex = newSnap.pkIndex.Insert(u.pk, u.loc)
-	}
-
-	// Update Engine State
+	// Refresh sorted list
 	newSnap.RebuildSorted()
+
 	e.current.Store(newSnap)
 	snap.DecRef()
 
-	// 7. Update Manifest
+	// Update Manifest
 	e.manifest.Segments = append(e.manifest.Segments, manifest.SegmentInfo{
-		ID:       segID,
+		ID:       activeID,
 		Level:    0, // L0
-		RowCount: count,
+		RowCount: uint32(rowCount),
 		Path:     filename,
 	})
-	e.manifest.MaxLSN = currentLSN
-	e.manifest.WALID = newWALID
-	// NextSegmentID already incremented for new active table
+	// WALID and MaxLSN updated in Rotation Phase
 
 	mStore := manifest.NewStore(e.fs, e.dir)
 	if err := mStore.Save(e.manifest); err != nil {
 		return err
 	}
 
-	// 8. Cleanup Old WAL
+	// Remove Old WAL
 	oldWALPath := e.getWALPath(oldWALID)
 	if err := e.fs.Remove(oldWALPath); err != nil {
 		if e.logger != nil {
@@ -1915,7 +1963,12 @@ func (e *Engine) Stats() EngineStats {
 	// - e.wal.Size() is thread-safe
 	// - segment/memtable methods are thread-safe
 
-	snap := e.current.Load()
+	snap, err := e.loadSnapshot()
+	if err != nil {
+		return EngineStats{}
+	}
+	defer snap.DecRef()
+
 	stats := EngineStats{
 		SegmentCount:     len(snap.segments),
 		RowCount:         int(snap.active.RowCount()),
@@ -1939,11 +1992,11 @@ func (e *Engine) Stats() EngineStats {
 // Close closes the engine.
 func (e *Engine) Close() error {
 	e.mu.Lock()
-	if e.closed {
+	if e.closed.Load() {
 		e.mu.Unlock()
 		return ErrClosed
 	}
-	e.closed = true
+	e.closed.Store(true)
 	e.mu.Unlock()
 
 	select {
@@ -2054,13 +2107,27 @@ func (e *Engine) runCompactionLoop() {
 }
 
 func (e *Engine) checkCompaction() {
-	snap := e.current.Load()
-	snap.IncRef()
+	snap, err := e.loadSnapshot()
+	if err != nil {
+		return
+	}
 	defer snap.DecRef()
+
+	// Get valid IDs from manifest to avoid compacting segments that are being flushed (frozen memtables)
+	e.mu.Lock()
+	validIDs := make(map[model.SegmentID]struct{}, len(e.manifest.Segments))
+	for _, seg := range e.manifest.Segments {
+		validIDs[seg.ID] = struct{}{}
+	}
+	e.mu.Unlock()
 
 	// Gather candidate segments
 	candidates := make([]SegmentStats, 0, len(snap.segments))
 	for id, seg := range snap.segments {
+		// Skip segments not in manifest (e.g. frozen memtables)
+		if _, ok := validIDs[id]; !ok {
+			continue
+		}
 		candidates = append(candidates, SegmentStats{
 			ID:   id,
 			Size: seg.Size(),
