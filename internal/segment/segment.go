@@ -23,7 +23,7 @@ const (
 // RecordBatch represents a batch of columnar data fetched from a segment.
 type RecordBatch interface {
 	RowCount() int
-	PK(i int) model.PK
+	ID(i int) model.ID
 	Vector(i int) []float32
 	Metadata(i int) metadata.Document
 	Payload(i int) []byte
@@ -31,18 +31,18 @@ type RecordBatch interface {
 
 // SimpleRecordBatch is a basic implementation of RecordBatch.
 type SimpleRecordBatch struct {
-	PKs       []model.PK
+	IDs       []model.ID
 	Vectors   [][]float32
 	Metadatas []metadata.Document
 	Payloads  [][]byte
 }
 
 func (b *SimpleRecordBatch) RowCount() int {
-	return len(b.PKs)
+	return len(b.IDs)
 }
 
-func (b *SimpleRecordBatch) PK(i int) model.PK {
-	return b.PKs[i]
+func (b *SimpleRecordBatch) ID(i int) model.ID {
+	return b.IDs[i]
 }
 
 func (b *SimpleRecordBatch) Vector(i int) []float32 {
@@ -78,6 +78,9 @@ type Segment interface {
 	// Results are added to s.Heap.
 	Search(ctx context.Context, q []float32, k int, filter Filter, opts model.SearchOptions, s *searcher.Searcher) error
 
+	// GetID returns the external ID for a given internal row ID.
+	GetID(rowID uint32) (model.ID, bool)
+
 	// Rerank computes exact distances for a candidate set.
 	// Implementations MUST optimize for zero-copy access (e.g. unsafe.Pointer to mmap).
 	// Results are appended to dst.
@@ -86,12 +89,17 @@ type Segment interface {
 	// Fetch resolves RowIDs to payload columns.
 	Fetch(ctx context.Context, rows []uint32, cols []string) (RecordBatch, error)
 
-	// FetchPKs resolves RowIDs to PrimaryKeys.
+	// FetchIDs resolves RowIDs to IDs.
 	// Results are written to dst.
-	FetchPKs(ctx context.Context, rows []uint32, dst []model.PK) error
+	FetchIDs(ctx context.Context, rows []uint32, dst []model.ID) error
 
 	// Iterate iterates over all vectors in the segment.
-	Iterate(fn func(rowID uint32, pk model.PK, vec []float32, md metadata.Document, payload []byte) error) error
+	Iterate(fn func(rowID uint32, id model.ID, vec []float32, md metadata.Document, payload []byte) error) error
+
+	// EvaluateFilter returns a bitmap of rows matching the filter.
+	// Returns (nil, nil) if the filter matches all rows (empty filter).
+	// Returns error if the filter cannot be evaluated solely by the segment (e.g. missing index).
+	EvaluateFilter(ctx context.Context, filter *metadata.FilterSet) (Bitmap, error)
 
 	// Advise hints the kernel about access patterns.
 	Advise(pattern AccessPattern) error
@@ -109,6 +117,9 @@ type Segment interface {
 type Bitmap interface {
 	// Contains reports whether id is present in the set.
 	Contains(id uint32) bool
+
+	// Cardinality returns the number of elements in the set.
+	Cardinality() uint64
 
 	// ForEach calls fn for each id in the set (ascending order if available).
 	// Stop early if fn returns false.

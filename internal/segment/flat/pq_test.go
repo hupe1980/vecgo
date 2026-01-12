@@ -54,7 +54,7 @@ func TestPQSegment(t *testing.T) {
 	// Actually I already added it.
 
 	for i, vec := range vectors {
-		err := w.Add(model.PKUint64(uint64(i)), vec, nil, nil)
+		err := w.Add(model.ID(i), vec, nil, nil)
 		require.NoError(t, err)
 	}
 
@@ -86,7 +86,7 @@ func TestPQSegment(t *testing.T) {
 	// Heap pops worst to best.
 	var last model.Candidate
 	for s.Heap.Len() > 0 {
-		last = s.Heap.Pop()
+		last = s.Heap.Pop().ToModel()
 	}
 	assert.Equal(t, model.RowID(0), last.Loc.RowID)
 	assert.Less(t, last.Score, float32(0.1)) // Should be very close to 0

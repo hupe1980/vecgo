@@ -6,9 +6,6 @@ package f16
 
 import (
 	"math"
-	"unsafe"
-
-	"github.com/hupe1980/vecgo/internal/simd"
 )
 
 // Bits is the raw IEEE-754 binary16 bit-pattern.
@@ -154,16 +151,4 @@ func Encode(dst []Bits, src []float32) {
 	for i := range src {
 		dst[i] = FromFloat32(src[i])
 	}
-}
-
-// BatchToFloat32 converts a slice of binary16 to float32 using SIMD acceleration if available.
-// out must have length >= len(in).
-func BatchToFloat32(in []Bits, out []float32) {
-	if len(in) == 0 {
-		return
-	}
-	// unsafe cast []Bits -> []uint16
-	// This is safe because Bits is defined as uint16
-	inUint16 := unsafe.Slice((*uint16)(unsafe.Pointer(&in[0])), len(in))
-	simd.F16ToF32(inUint16, out)
 }

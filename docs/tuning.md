@@ -2,7 +2,7 @@
 
 This guide describes tuning for the **current public API** in this repo:
 
-- Public entry point: `vecgo.Open(dir, dim, metric, ...opts)`.
+- Public entry point: `vecgo.Open(source, ...opts)` where source is a local path or remote BlobStore.
 - Storage engine: a tiered engine with an in-memory L0 MemTable and immutable on-disk segments.
 - Segment types currently integrated: Flat (exact, mmap) and DiskANN (built by compaction above a size threshold).
 
@@ -13,7 +13,8 @@ If you’re looking for builder-style APIs (e.g. `vecgo.HNSW[T]().Build()`), tho
 ## Quick Start (Current API)
 
 ```go
-db, err := vecgo.Open("./data", 128, vecgo.MetricL2)
+// Create a new index
+db, err := vecgo.Open("./data", vecgo.Create(128, vecgo.MetricL2))
 if err != nil {
 	panic(err)
 }
@@ -32,7 +33,9 @@ results, _ := db.Search(ctx, make([]float32, 128), 10)
 _ = results
 ```
 
-Operational note: the engine supports **automatic flush triggers** via `engine.FlushConfig` (MemTable size / WAL size), and applies backpressure via `resource.Controller` when configured budgets are reached. You can still call `Flush()` explicitly (e.g. at batch boundaries).
+Operational note: the engine supports **automatic flush triggers** via `engine.FlushConfig` (MemTable size). The trigger signal is best-effort (buffered size 1; can coalesce and be dropped if one is already pending), so you should still call `Commit()` explicitly at batch boundaries when you need deterministic persistence.
+
+Backpressure/admission control is enforced via `resource.Controller` budgets; when limits are exceeded, operations can return `ErrBackpressure`.
 
 See `TODO.md` for the current technical concept and roadmap.
 
@@ -116,9 +119,31 @@ Practical guidance:
 
 ---
 
-## Durability (WAL)
+## Durability (Commit-Oriented)
 
-The engine exposes WAL durability via `vecgo.WithWALOptions(...)` (or `engine.WithWALOptions(...)`):
+Vecgo uses a **commit-oriented durability model** — there is no Write-Ahead Log (WAL).
 
-- `vecgo.DurabilityAsync`: highest throughput, weakest durability.
-- `vecgo.DurabilitySync`: strongest durability; uses GroupCommit to batch fsync.
+**How it works:**
+1. `Insert()`/`Delete()` operations accumulate in the in-memory MemTable
+2. `Commit()` (or `Flush()`) atomically writes the MemTable to an immutable segment
+3. The manifest is updated with the new segment reference (atomic rename)
+
+**Why no WAL?** Vector workloads are inherently batch-oriented:
+- RAG pipelines: Batch embed → insert → commit
+- ML training: Checkpoint after epoch
+- Semantic search: Build offline → serve queries
+
+**Durability guarantees:**
+- Data is durable after `Commit()` returns
+- Uncommitted data is lost on crash (by design)
+- For durability, call `Commit()` after each batch of inserts
+
+```go
+// Pattern: Batch insert with explicit commit
+for _, batch := range batches {
+    for _, item := range batch {
+        db.Insert(item.Vector, item.Metadata, item.Payload)
+    }
+    db.Commit() // Data is now durable
+}
+```

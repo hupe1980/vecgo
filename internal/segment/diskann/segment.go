@@ -7,18 +7,19 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
+	"io"
 	"math"
 	"unsafe"
 
 	"github.com/hupe1980/vecgo/blobstore"
-	"github.com/hupe1980/vecgo/cache"
 	"github.com/hupe1980/vecgo/distance"
+	"github.com/hupe1980/vecgo/internal/cache"
 	imetadata "github.com/hupe1980/vecgo/internal/metadata"
+	"github.com/hupe1980/vecgo/internal/quantization"
 	"github.com/hupe1980/vecgo/internal/searcher"
 	"github.com/hupe1980/vecgo/internal/segment"
 	"github.com/hupe1980/vecgo/metadata"
 	"github.com/hupe1980/vecgo/model"
-	"github.com/hupe1980/vecgo/quantization"
 )
 
 // Segment implements an immutable DiskANN segment.
@@ -32,7 +33,7 @@ type Segment struct {
 
 	// Data pointers
 	vectors []float32  // Full precision vectors
-	pks     []model.PK // Primary keys
+	ids     []model.ID // Primary keys
 	graph   []uint32   // Adjacency list (flat)
 	pqCodes []byte     // PQ codes
 
@@ -45,8 +46,22 @@ type Segment struct {
 	payloadOffsets []uint64
 
 	// Helpers
-	pq       *quantization.ProductQuantizer
-	distFunc distance.Func
+	pq          *quantization.ProductQuantizer
+	rq          *quantization.RaBitQuantizer
+	iq          *quantization.Int4Quantizer
+	raBitQBytes int
+	distFunc    distance.Func
+}
+
+// GetID returns the external ID for a given internal row ID.
+func (s *Segment) GetID(rowID uint32) (model.ID, bool) {
+	if int(rowID) >= int(s.header.RowCount) {
+		return 0, false
+	}
+	if s.ids != nil {
+		return s.ids[rowID], true
+	}
+	return s.readID(rowID)
 }
 
 // Option configures a Segment.
@@ -76,20 +91,16 @@ func WithPayloadBlob(blob blobstore.Blob) Option {
 // Open opens a DiskANN segment from a blob.
 func Open(blob blobstore.Blob, opts ...Option) (*Segment, error) {
 	var data []byte
+	// Prefer MMap for local files
 	if m, ok := blob.(blobstore.Mappable); ok {
 		var err error
 		data, err = m.Bytes()
 		if err != nil {
 			return nil, err
 		}
-	} else {
-		// Fallback: read fully into memory
-		size := blob.Size()
-		data = make([]byte, size)
-		if _, err := blob.ReadAt(data, 0); err != nil {
-			return nil, err
-		}
 	}
+	// If not mappable, we default to Lazy Loading (data = nil).
+	// We no longer read the entire file into memory.
 
 	s := &Segment{
 		blob: blob,
@@ -109,12 +120,20 @@ func Open(blob blobstore.Blob, opts ...Option) (*Segment, error) {
 }
 
 func (s *Segment) load() error {
-	if len(s.data) < HeaderSize {
-		return errors.New("file too small")
-	}
-
 	var err error
-	s.header, err = DecodeHeader(s.data)
+	if s.data != nil {
+		if len(s.data) < HeaderSize {
+			return errors.New("file too small")
+		}
+		s.header, err = DecodeHeader(s.data)
+	} else {
+		// Lazy load: read only header
+		headerBytes := make([]byte, HeaderSize)
+		if _, err := s.blob.ReadAt(headerBytes, 0); err != nil {
+			return fmt.Errorf("failed to read header: %w", err)
+		}
+		s.header, err = DecodeHeader(headerBytes)
+	}
 	if err != nil {
 		return err
 	}
@@ -145,7 +164,8 @@ func (s *Segment) load() error {
 
 	if s.verifyChecksum && s.header.Checksum != 0 {
 		// Verify checksum (CRC32C of body)
-		if len(s.data) > HeaderSize {
+		// Only verify if we have data in memory or if explicitly requested (TODO: streaming check)
+		if s.data != nil && len(s.data) > HeaderSize {
 			body := s.data[HeaderSize:]
 			sum := crc32.Checksum(body, crc32.MakeTable(crc32.Castagnoli))
 			if sum != s.header.Checksum {
@@ -154,99 +174,86 @@ func (s *Segment) load() error {
 		}
 	}
 
-	// Validate size
-	// We relax this check because we might have appended metadata or other sections
-	minSize := s.header.PKOffset + uint64(s.header.RowCount)*8
-	if uint64(len(s.data)) < minSize {
-		return fmt.Errorf("file size too small: expected at least %d, got %d", minSize, len(s.data))
-	}
-
-	// Setup vectors pointer
-	if s.header.VectorOffset+uint64(s.header.RowCount)*uint64(s.header.Dim)*4 > uint64(len(s.data)) {
-		return errors.New("vector section out of bounds")
-	}
-	// Unsafe cast to []float32
-	// Note: This assumes little-endian architecture matching file format
-	vectorBytes := s.data[s.header.VectorOffset : s.header.VectorOffset+uint64(s.header.RowCount)*uint64(s.header.Dim)*4]
-	if len(vectorBytes) > 0 {
-		header := (*unsafe.Pointer)(unsafe.Pointer(&s.vectors))
-		*header = unsafe.Pointer(&vectorBytes[0])
-		// We need to set length/cap manually for the slice header?
-		// Go slice header: Data, Len, Cap.
-		// But we can't easily modify slice header portably without reflect or unsafe.Slice (Go 1.17+).
-		// Go 1.24 is used, so unsafe.Slice is available.
-		s.vectors = unsafe.Slice((*float32)(unsafe.Pointer(&vectorBytes[0])), int(s.header.RowCount)*int(s.header.Dim))
-	} else {
-		s.vectors = make([]float32, 0)
-	}
-
-	// Setup PKs
-	offsetsSize := uint64(s.header.RowCount) * 4
-	if s.header.PKOffset+offsetsSize > uint64(len(s.data)) {
-		return errors.New("PK offsets section out of bounds")
-	}
-	offsetsBytes := s.data[s.header.PKOffset : s.header.PKOffset+offsetsSize]
-	var pkOffsets []uint32
-	if len(offsetsBytes) > 0 {
-		pkOffsets = unsafe.Slice((*uint32)(unsafe.Pointer(&offsetsBytes[0])), int(s.header.RowCount))
-	} else {
-		pkOffsets = make([]uint32, 0)
-	}
-
-	blobStart := s.header.PKOffset + offsetsSize
-	blobEnd := uint64(len(s.data))
-	if s.header.MetadataOffset > 0 {
-		blobEnd = s.header.MetadataOffset
-	}
-	if blobStart > blobEnd {
-		return errors.New("PK blob start after end")
-	}
-	pkBlob := s.data[blobStart:blobEnd]
-
-	s.pks = make([]model.PK, s.header.RowCount)
-	for i := 0; i < int(s.header.RowCount); i++ {
-		offset := pkOffsets[i]
-		if offset >= uint32(len(pkBlob)) {
-			return errors.New("PK offset out of bounds")
+	// Validate size if data is loaded
+	if s.data != nil {
+		minSize := s.header.PKOffset + uint64(s.header.RowCount)*8
+		if uint64(len(s.data)) < minSize {
+			return fmt.Errorf("file size too small: expected at least %d, got %d", minSize, len(s.data))
 		}
+	}
 
-		kind := model.PKKind(pkBlob[offset])
-		if kind == model.PKKindUint64 {
-			if offset+9 > uint32(len(pkBlob)) {
-				return errors.New("PK data out of bounds")
-			}
-			val := binary.LittleEndian.Uint64(pkBlob[offset+1 : offset+9])
-			s.pks[i] = model.PKUint64(val)
+	// Setup vectors pointer if data is loaded
+	if s.data != nil {
+		if s.header.VectorOffset+uint64(s.header.RowCount)*uint64(s.header.Dim)*4 > uint64(len(s.data)) {
+			return errors.New("vector section out of bounds")
+		}
+		// Unsafe cast to []float32
+		// Note: This assumes little-endian architecture matching file format
+		vectorBytes := s.data[s.header.VectorOffset : s.header.VectorOffset+uint64(s.header.RowCount)*uint64(s.header.Dim)*4]
+		if len(vectorBytes) > 0 {
+			// s.vectors = unsafe.Slice((*float32)(unsafe.Pointer(&vectorBytes[0])), int(s.header.RowCount)*int(s.header.Dim))
+			// Use reflect-less unsafe cast for older Go versions compatibility if needed, but unsafe.Slice is best
+			s.vectors = unsafe.Slice((*float32)(unsafe.Pointer(&vectorBytes[0])), int(s.header.RowCount)*int(s.header.Dim))
 		} else {
-			if offset+5 > uint32(len(pkBlob)) {
-				return errors.New("PK data out of bounds")
+			s.vectors = make([]float32, 0)
+		}
+	}
+
+	// Setup IDs if data is loaded
+	if s.data != nil {
+		idSize := uint64(s.header.RowCount) * 8
+		if s.header.PKOffset+idSize > uint64(len(s.data)) {
+			return errors.New("ID section out of bounds")
+		}
+		idBytes := s.data[s.header.PKOffset : s.header.PKOffset+idSize]
+		if len(idBytes) > 0 {
+			rawIDs := unsafe.Slice((*uint64)(unsafe.Pointer(&idBytes[0])), int(s.header.RowCount))
+			s.ids = make([]model.ID, s.header.RowCount)
+			for i, val := range rawIDs {
+				s.ids[i] = model.ID(val)
 			}
-			l := binary.LittleEndian.Uint32(pkBlob[offset+1 : offset+5])
-			if offset+5+l > uint32(len(pkBlob)) {
-				return errors.New("PK data out of bounds")
-			}
-			str := string(pkBlob[offset+5 : offset+5+l])
-			s.pks[i] = model.PKString(str)
+		} else {
+			s.ids = make([]model.ID, 0)
 		}
 	}
 
 	// Setup Metadata
 	if s.header.MetadataOffset > 0 {
 		offsetsSize := uint64(s.header.RowCount+1) * 8
-		if s.header.MetadataOffset+offsetsSize > uint64(len(s.data)) {
-			return errors.New("metadata offsets section out of bounds")
+		if s.data != nil {
+			if s.header.MetadataOffset+offsetsSize > uint64(len(s.data)) {
+				return errors.New("metadata offsets section out of bounds")
+			}
+			offsetsBytes := s.data[s.header.MetadataOffset : s.header.MetadataOffset+offsetsSize]
+			s.metadataOffsets = unsafe.Slice((*uint64)(unsafe.Pointer(&offsetsBytes[0])), int(s.header.RowCount)+1)
 		}
-		offsetsBytes := s.data[s.header.MetadataOffset : s.header.MetadataOffset+offsetsSize]
-		s.metadataOffsets = unsafe.Slice((*uint64)(unsafe.Pointer(&offsetsBytes[0])), int(s.header.RowCount)+1)
 	}
 
 	// Setup Metadata Index
 	if s.header.MetadataIndexOffset > 0 {
-		if s.header.MetadataIndexOffset > uint64(len(s.data)) {
-			return errors.New("metadata index offset out of bounds")
+		var r io.Reader
+		if s.data != nil {
+			if s.header.MetadataIndexOffset > uint64(len(s.data)) {
+				return errors.New("metadata index offset out of bounds")
+			}
+			r = bytes.NewReader(s.data[s.header.MetadataIndexOffset:])
+		} else {
+			// Calculate size of metadata index section
+			// It starts at MetadataIndexOffset and goes until... ends or Graph?
+			// The layout is usually header -> vectors -> IDs -> Metadata Offsets -> Metadata Index -> Graph -> PQ
+			// Let's assume it ends at GraphOffset.
+			end := s.header.GraphOffset
+			if end == 0 {
+				// If no graph (unlikely for diskann), then check PQ?
+				// Worst case use file size.
+				end = uint64(s.blob.Size())
+			}
+			size := int64(end - s.header.MetadataIndexOffset)
+			r = io.NewSectionReader(s.blob, int64(s.header.MetadataIndexOffset), size)
 		}
-		r := bytes.NewReader(s.data[s.header.MetadataIndexOffset:])
+
 		s.index = imetadata.NewUnifiedIndex()
+		// ReadInvertedIndex might need a ByteReader or similar, io.Reader should be fine
 		if err := s.index.ReadInvertedIndex(r); err != nil {
 			return fmt.Errorf("failed to read metadata index: %w", err)
 		}
@@ -261,19 +268,30 @@ func (s *Segment) load() error {
 
 	// Setup graph pointer
 	graphSize := uint64(s.header.RowCount) * uint64(s.header.MaxDegree) * 4
-	if s.header.GraphOffset+graphSize > uint64(len(s.data)) {
-		return errors.New("graph section out of bounds")
-	}
-	graphBytes := s.data[s.header.GraphOffset : s.header.GraphOffset+graphSize]
-	if len(graphBytes) > 0 {
-		s.graph = unsafe.Slice((*uint32)(unsafe.Pointer(&graphBytes[0])), int(s.header.RowCount)*int(s.header.MaxDegree))
-	} else {
-		s.graph = make([]uint32, 0)
+	if s.data != nil {
+		if s.header.GraphOffset+graphSize > uint64(len(s.data)) {
+			return errors.New("graph section out of bounds")
+		}
+		graphBytes := s.data[s.header.GraphOffset : s.header.GraphOffset+graphSize]
+		if len(graphBytes) > 0 {
+			s.graph = unsafe.Slice((*uint32)(unsafe.Pointer(&graphBytes[0])), int(s.header.RowCount)*int(s.header.MaxDegree))
+		} else {
+			s.graph = make([]uint32, 0)
+		}
 	}
 
-	// Setup PQ if enabled
-	if s.header.QuantizationType == 2 { // PQ
+	// Setup Quantization
+	switch quantization.Type(s.header.QuantizationType) {
+	case quantization.TypePQ:
 		if err := s.loadPQ(); err != nil {
+			return err
+		}
+	case quantization.TypeRaBitQ:
+		if err := s.loadRaBitQ(); err != nil {
+			return err
+		}
+	case quantization.TypeINT4:
+		if err := s.loadINT4(); err != nil {
 			return err
 		}
 	}
@@ -295,45 +313,64 @@ func (s *Segment) loadPQ() error {
 
 	// PQ Codes
 	pqCodesSize := uint64(s.header.RowCount) * uint64(m)
-	if s.header.PQCodesOffset+pqCodesSize > uint64(len(s.data)) {
-		return errors.New("PQ codes section out of bounds")
+	if s.data != nil {
+		if s.header.PQCodesOffset+pqCodesSize > uint64(len(s.data)) {
+			return errors.New("PQ codes section out of bounds")
+		}
+		s.pqCodes = s.data[s.header.PQCodesOffset : s.header.PQCodesOffset+pqCodesSize]
 	}
-	s.pqCodes = s.data[s.header.PQCodesOffset : s.header.PQCodesOffset+pqCodesSize]
 
 	// PQ Codebooks
 	offset := s.header.PQCodebookOffset
 
+	// Helper to read bytes
+	readBytes := func(off uint64, size uint64) ([]byte, error) {
+		if s.data != nil {
+			if off+size > uint64(len(s.data)) {
+				return nil, errors.New("out of bounds")
+			}
+			return s.data[off : off+size], nil
+		}
+		buf := make([]byte, size)
+		if _, err := s.blob.ReadAt(buf, int64(off)); err != nil {
+			return nil, err
+		}
+		return buf, nil
+	}
+
 	// Scales (M * 4 bytes)
 	scalesSize := uint64(m * 4)
-	if offset+scalesSize > uint64(len(s.data)) {
-		return errors.New("PQ scales out of bounds")
+	scalesBytes, err := readBytes(offset, scalesSize)
+	if err != nil {
+		return fmt.Errorf("failed to read PQ scales: %w", err)
 	}
 	scales := make([]float32, m)
 	for i := 0; i < m; i++ {
-		bits := binary.LittleEndian.Uint32(s.data[offset+uint64(i*4):])
+		bits := binary.LittleEndian.Uint32(scalesBytes[i*4:])
 		scales[i] = math.Float32frombits(bits)
 	}
 	offset += scalesSize
 
 	// Offsets (M * 4 bytes)
 	offsetsSize := uint64(m * 4)
-	if offset+offsetsSize > uint64(len(s.data)) {
-		return errors.New("PQ offsets out of bounds")
+	offsetsBytes, err := readBytes(offset, offsetsSize)
+	if err != nil {
+		return fmt.Errorf("failed to read PQ offsets: %w", err)
 	}
 	offsets := make([]float32, m)
 	for i := 0; i < m; i++ {
-		bits := binary.LittleEndian.Uint32(s.data[offset+uint64(i*4):])
+		bits := binary.LittleEndian.Uint32(offsetsBytes[i*4:])
 		offsets[i] = math.Float32frombits(bits)
 	}
 	offset += offsetsSize
 
 	// Codebooks (M * K * SubDim * 1 byte)
 	codebooksSize := uint64(m * k * subDim)
-	if offset+codebooksSize > uint64(len(s.data)) {
-		return errors.New("PQ codebooks out of bounds")
+	cbBytes, err := readBytes(offset, codebooksSize)
+	if err != nil {
+		return fmt.Errorf("failed to read PQ codebooks: %w", err)
 	}
 	codebooks := make([]int8, m*k*subDim)
-	cbBytes := s.data[offset : offset+codebooksSize]
 	for i, b := range cbBytes {
 		codebooks[i] = int8(b)
 	}
@@ -345,6 +382,67 @@ func (s *Segment) loadPQ() error {
 	pq.SetCodebooks(codebooks, scales, offsets)
 	s.pq = pq
 
+	return nil
+}
+
+func (s *Segment) loadINT4() error {
+	// Read Params (CodebookOffset)
+	if s.header.PQCodebookOffset == 0 {
+		return errors.New("missing INT4 params")
+	}
+
+	size := int64(s.header.PKOffset - s.header.PQCodebookOffset)
+	if size <= 0 {
+		return errors.New("invalid INT4 params size")
+	}
+
+	params := make([]byte, size)
+	if s.data != nil {
+		if s.header.PQCodebookOffset+uint64(size) > uint64(len(s.data)) {
+			return errors.New("INT4 params out of bounds")
+		}
+		copy(params, s.data[s.header.PQCodebookOffset:][:size])
+	} else {
+		if _, err := s.blob.ReadAt(params, int64(s.header.PQCodebookOffset)); err != nil {
+			return err
+		}
+	}
+
+	s.iq = quantization.NewInt4Quantizer(int(s.header.Dim))
+	if err := s.iq.UnmarshalBinary(params); err != nil {
+		return err
+	}
+
+	// Codes
+	if s.header.PQCodesOffset == 0 {
+		return errors.New("missing INT4 codes")
+	}
+
+	codeSize := (uint64(s.header.Dim) + 1) / 2
+	totalCodesSize := codeSize * uint64(s.header.RowCount)
+
+	if s.data != nil {
+		if s.header.PQCodesOffset+totalCodesSize > uint64(len(s.data)) {
+			return errors.New("INT4 codes out of bounds")
+		}
+		s.pqCodes = s.data[s.header.PQCodesOffset : s.header.PQCodesOffset+totalCodesSize]
+	}
+	return nil
+}
+
+func (s *Segment) readINT4Code(rowID uint32, out []byte) error {
+	dim := uint64(s.header.Dim)
+	codeSize := (dim + 1) / 2
+	if uint64(len(out)) != codeSize {
+		return errors.New("buffer size mismatch for INT4 code")
+	}
+	offset := int64(s.header.PQCodesOffset) + int64(rowID)*int64(codeSize)
+
+	buf, err := s.readBlock(offset, int(codeSize), cache.CacheKindColumnBlocks)
+	if err != nil {
+		return err
+	}
+	copy(out, buf)
 	return nil
 }
 
@@ -369,19 +467,31 @@ func (s *Segment) Get(id uint32) ([]float32, error) {
 		return nil, errors.New("id out of bounds")
 	}
 	dim := int(s.header.Dim)
-	start := int(id) * dim
-	return s.vectors[start : start+dim], nil
+
+	if s.vectors != nil {
+		start := int(id) * dim
+		return s.vectors[start : start+dim], nil
+	}
+
+	vec := make([]float32, dim)
+	if err := s.readVector(id, vec); err != nil {
+		return nil, err
+	}
+	return vec, nil
 }
 
 // Search performs an approximate nearest neighbor search.
 func (s *Segment) Search(ctx context.Context, q []float32, k int, filter segment.Filter, opts model.SearchOptions, searcherCtx *searcher.Searcher) error {
-	// Use RefineFactor as a proxy for search breadth.
+	// DiskANN search list size (L) should be larger than k for proper graph exploration.
+	// Default: L = k + 100, ensures reasonable recall even for small k.
+	// If RefineFactor > 1.0, use it as a multiplier (allows caller to increase search breadth).
 	l := k + 100
-	if opts.RefineFactor > 0 {
+	if opts.RefineFactor > 1.0 {
 		l = int(float32(k) * opts.RefineFactor)
-		if l < k {
-			l = k
-		}
+	}
+	// Ensure minimum search breadth
+	if l < k+50 {
+		l = k + 50
 	}
 
 	return s.searchInternal(q, k, l, filter, opts.Filter, searcherCtx)
@@ -402,11 +512,55 @@ func (s *Segment) searchInternal(query []float32, k int, l int, filter segment.F
 
 	// Distance function wrapper
 	var distFn func(id uint32) (float32, error)
-	if s.pq != nil {
+	if s.rq != nil {
+		bytesPerVec := int(((s.header.Dim+63)/64)*8 + 4)
+		if s.pqCodes != nil {
+			distFn = func(id uint32) (float32, error) {
+				start := int(id) * bytesPerVec
+				code := s.pqCodes[start : start+bytesPerVec]
+				return s.rq.Distance(query, code)
+			}
+		} else {
+			distFn = func(id uint32) (float32, error) {
+				code := make([]byte, bytesPerVec)
+				if err := s.readRaBitQCode(id, code); err != nil {
+					return 0, err
+				}
+				return s.rq.Distance(query, code)
+			}
+		}
+	} else if s.pq != nil {
 		m := int(s.header.PQSubvectors)
-		distFn = func(id uint32) (float32, error) {
-			code := s.pqCodes[int(id)*m : int(id+1)*m]
-			return s.pq.ComputeAsymmetricDistance(query, code)
+		if s.pqCodes != nil {
+			distFn = func(id uint32) (float32, error) {
+				code := s.pqCodes[int(id)*m : int(id+1)*m]
+				return s.pq.ComputeAsymmetricDistance(query, code)
+			}
+		} else {
+			distFn = func(id uint32) (float32, error) {
+				code := make([]byte, m)
+				if err := s.readPQCode(id, code); err != nil {
+					return 0, err
+				}
+				return s.pq.ComputeAsymmetricDistance(query, code)
+			}
+		}
+	} else if s.iq != nil {
+		bytesPerVec := (int(s.header.Dim) + 1) / 2
+		if s.pqCodes != nil {
+			distFn = func(id uint32) (float32, error) {
+				start := int(id) * bytesPerVec
+				code := s.pqCodes[start : start+bytesPerVec]
+				return s.iq.L2Distance(query, code)
+			}
+		} else {
+			distFn = func(id uint32) (float32, error) {
+				code := make([]byte, bytesPerVec)
+				if err := s.readINT4Code(id, code); err != nil {
+					return 0, err
+				}
+				return s.iq.L2Distance(query, code)
+			}
 		}
 	} else {
 		distFn = func(id uint32) (float32, error) {
@@ -428,7 +582,7 @@ func (s *Segment) searchInternal(query []float32, k int, l int, filter segment.F
 	}
 
 	sc.Visited.Reset()
-	sc.Candidates.Reset() // MinHeap for traversal
+	sc.ScratchCandidates.Reset() // MinHeap for traversal (explore closest first)
 	// sc.Heap is already initialized by caller (engine) or above
 
 	// Greedy search
@@ -440,7 +594,7 @@ func (s *Segment) searchInternal(query []float32, k int, l int, filter segment.F
 		return err
 	}
 
-	sc.Candidates.PushItem(searcher.PriorityQueueItem{Node: model.RowID(startNode), Distance: startDist})
+	sc.ScratchCandidates.PushItem(searcher.PriorityQueueItem{Node: model.RowID(startNode), Distance: startDist})
 
 	// Helper to push to heap
 	pushToHeap := func(id uint32, dist float32) {
@@ -451,12 +605,12 @@ func (s *Segment) searchInternal(query []float32, k int, l int, filter segment.F
 			return
 		}
 
-		c := model.Candidate{Loc: model.Location{SegmentID: s.ID(), RowID: model.RowID(id)}, Score: dist, Approx: true}
+		c := searcher.InternalCandidate{SegmentID: uint32(s.ID()), RowID: id, Score: dist, Approx: true}
 		if sc.Heap.Len() < k {
 			sc.Heap.Push(c)
 		} else {
 			top := sc.Heap.Candidates[0]
-			if searcher.CandidateBetter(c, top, sc.Heap.Descending()) {
+			if searcher.InternalCandidateBetter(c, top, sc.Heap.Descending()) {
 				sc.Heap.ReplaceTop(c)
 			}
 		}
@@ -466,25 +620,15 @@ func (s *Segment) searchInternal(query []float32, k int, l int, filter segment.F
 	// No, if we created it locally, we reset it.
 	// If passed from engine, it accumulates.
 
-	// But wait, DiskANN uses a beam search (L) which is larger than K.
-	// And it maintains a set of candidates.
-	// The `sc.Heap` is the GLOBAL top-K.
-	// DiskANN needs a LOCAL top-L to guide the search?
-	// The original code used `candidates` slice as a pool.
-
-	// Current implementation uses `sc.Candidates` (PriorityQueue) for traversal.
-	// And `sc.Heap` for results.
-
-	// Let's stick to the previous logic but push to `sc.Heap` instead of returning.
-
-	// Re-add start node correctly
-	// Clear heap if local? No, we want to accumulate.
+	// DiskANN search uses greedy beam search:
+	// - sc.ScratchCandidates (MinHeap): traversal queue, explore closest candidates first
+	// - sc.Heap (MaxHeap): result set, keep top-K smallest distances
 
 	pushToHeap(startNode, startDist)
 
-	for sc.Candidates.Len() > 0 {
-		// Pop closest unexpanded
-		curr, _ := sc.Candidates.PopItem()
+	for sc.ScratchCandidates.Len() > 0 {
+		// Pop closest unexpanded (MinHeap returns smallest distance first)
+		curr, _ := sc.ScratchCandidates.PopItem()
 
 		// Pruning
 		if sc.Heap.Len() >= k { // Use K or capacity?
@@ -501,9 +645,18 @@ func (s *Segment) searchInternal(query []float32, k int, l int, filter segment.F
 		}
 
 		// Neighbors
-		r := int(s.header.MaxDegree)
-		start := int(curr.Node) * r
-		neighbors := s.graph[start : start+r]
+		var neighbors []uint32
+		if s.graph != nil {
+			r := int(s.header.MaxDegree)
+			start := int(curr.Node) * r
+			neighbors = s.graph[start : start+r]
+		} else {
+			var err error
+			neighbors, err = s.readGraphNode(uint32(curr.Node))
+			if err != nil {
+				return err
+			}
+		}
 
 		for _, neighbor := range neighbors {
 			if neighbor == 0xFFFFFFFF {
@@ -518,8 +671,8 @@ func (s *Segment) searchInternal(query []float32, k int, l int, filter segment.F
 					return err
 				}
 
-				// Add to traversal queue
-				sc.Candidates.PushItem(searcher.PriorityQueueItem{Node: neighborID, Distance: d})
+				// Add to traversal queue (MinHeap)
+				sc.ScratchCandidates.PushItem(searcher.PriorityQueueItem{Node: neighborID, Distance: d})
 
 				// Add to result set
 				pushToHeap(neighbor, d)
@@ -531,15 +684,28 @@ func (s *Segment) searchInternal(query []float32, k int, l int, filter segment.F
 }
 
 func (s *Segment) readMetadata(rowID uint32) (metadata.Document, error) {
-	if s.metadataOffsets == nil {
+	if s.header.MetadataOffset == 0 {
 		return nil, nil
 	}
 	if rowID >= s.header.RowCount {
 		return nil, errors.New("rowID out of bounds")
 	}
 
-	start := s.metadataOffsets[rowID]
-	end := s.metadataOffsets[rowID+1]
+	var start, end uint64
+	if s.metadataOffsets != nil {
+		start = s.metadataOffsets[rowID]
+		end = s.metadataOffsets[rowID+1]
+	} else {
+		// Read offsets from blob
+		offsetPos := int64(s.header.MetadataOffset) + int64(rowID)*8
+		buf := make([]byte, 16)
+		if _, err := s.blob.ReadAt(buf, offsetPos); err != nil {
+			return nil, err
+		}
+		start = binary.LittleEndian.Uint64(buf[0:8])
+		end = binary.LittleEndian.Uint64(buf[8:16])
+	}
+
 	if start == end {
 		return nil, nil
 	}
@@ -547,17 +713,23 @@ func (s *Segment) readMetadata(rowID uint32) (metadata.Document, error) {
 	offsetsSize := uint64(s.header.RowCount+1) * 8
 	dataStart := s.header.MetadataOffset + offsetsSize
 
-	if dataStart+end > uint64(len(s.data)) {
-		return nil, errors.New("metadata blob out of bounds")
+	var blob []byte
+	if s.data != nil {
+		if dataStart+end > uint64(len(s.data)) {
+			return nil, errors.New("metadata blob out of bounds")
+		}
+		blob = s.data[dataStart+start : dataStart+end]
+	} else {
+		blob = make([]byte, end-start)
+		if _, err := s.blob.ReadAt(blob, int64(dataStart+start)); err != nil {
+			return nil, err
+		}
 	}
-
-	blob := s.data[dataStart+start : dataStart+end]
 
 	var md metadata.Document
 	if err := md.UnmarshalBinary(blob); err != nil {
 		return nil, err
 	}
-
 	return md, nil
 }
 
@@ -582,7 +754,7 @@ func (s *Segment) Fetch(ctx context.Context, rows []uint32, cols []string) (segm
 	}
 
 	batch := &segment.SimpleRecordBatch{
-		PKs: make([]model.PrimaryKey, len(rows)),
+		IDs: make([]model.ID, len(rows)),
 	}
 	if fetchVectors {
 		batch.Vectors = make([][]float32, len(rows))
@@ -594,21 +766,35 @@ func (s *Segment) Fetch(ctx context.Context, rows []uint32, cols []string) (segm
 		batch.Payloads = make([][]byte, len(rows))
 	}
 
+	// Optimization: Allocate single backing array for vectors to reduce GC pressure
+	var vectorBacking []float32
 	dim := int(s.header.Dim)
+	if fetchVectors {
+		vectorBacking = make([]float32, len(rows)*dim)
+	}
+
 	for i, rowID := range rows {
 		if rowID >= s.header.RowCount {
 			return nil, fmt.Errorf("rowID %d out of bounds", rowID)
 		}
 
-		// Fetch PK
-		batch.PKs[i] = s.pks[rowID]
+		// Fetch ID
+		if id, ok := s.GetID(rowID); ok {
+			batch.IDs[i] = id
+		} else {
+			return nil, fmt.Errorf("failed to get ID for row %d", rowID)
+		}
 
 		// Fetch Vector
 		if fetchVectors {
-			vec := s.vectors[int(rowID)*dim : (int(rowID)+1)*dim]
-			v := make([]float32, dim)
-			copy(v, vec)
-			batch.Vectors[i] = v
+			vec, err := s.Get(rowID)
+			if err != nil {
+				return nil, err
+			}
+			// Copy into backing array
+			dst := vectorBacking[i*dim : (i+1)*dim]
+			copy(dst, vec)
+			batch.Vectors[i] = dst
 		}
 
 		// Fetch Metadata
@@ -639,7 +825,7 @@ func (s *Segment) Fetch(ctx context.Context, rows []uint32, cols []string) (segm
 	return batch, nil
 }
 
-func (s *Segment) FetchPKs(ctx context.Context, rows []uint32, dst []model.PrimaryKey) error {
+func (s *Segment) FetchIDs(ctx context.Context, rows []uint32, dst []model.ID) error {
 	if len(dst) != len(rows) {
 		return fmt.Errorf("dst length mismatch")
 	}
@@ -647,17 +833,26 @@ func (s *Segment) FetchPKs(ctx context.Context, rows []uint32, dst []model.Prima
 		if rowID >= s.header.RowCount {
 			return fmt.Errorf("rowID %d out of bounds", rowID)
 		}
-		dst[i] = s.pks[rowID]
+		if id, ok := s.GetID(rowID); ok {
+			dst[i] = id
+		} else {
+			return fmt.Errorf("failed to get ID for row %d", rowID)
+		}
 	}
 	return nil
 }
 
 // Iterate iterates over all vectors in the segment.
-func (s *Segment) Iterate(fn func(rowID uint32, pk model.PrimaryKey, vec []float32, md metadata.Document, payload []byte) error) error {
-	dim := int(s.header.Dim)
+func (s *Segment) Iterate(fn func(rowID uint32, id model.ID, vec []float32, md metadata.Document, payload []byte) error) error {
 	for i := 0; i < int(s.header.RowCount); i++ {
-		pk := s.pks[i]
-		vec := s.vectors[i*dim : (i+1)*dim]
+		id, ok := s.GetID(uint32(i))
+		if !ok {
+			return fmt.Errorf("failed to get ID for row %d", i)
+		}
+		vec, err := s.Get(uint32(i))
+		if err != nil {
+			return err
+		}
 
 		var payload []byte
 		if s.payloadBlob != nil && i < int(s.payloadCount) {
@@ -681,7 +876,7 @@ func (s *Segment) Iterate(fn func(rowID uint32, pk model.PrimaryKey, vec []float
 			return err
 		}
 
-		if err := fn(uint32(i), pk, vec, md, payload); err != nil {
+		if err := fn(uint32(i), id, vec, md, payload); err != nil {
 			return err
 		}
 	}
@@ -706,7 +901,10 @@ func (s *Segment) Rerank(ctx context.Context, q []float32, cands []model.Candida
 
 // Size returns the size of the segment in bytes.
 func (s *Segment) Size() int64 {
-	return int64(len(s.data))
+	if s.data != nil {
+		return int64(len(s.data))
+	}
+	return s.blob.Size()
 }
 
 // Close closes the segment.
@@ -723,5 +921,194 @@ func (s *Segment) Advise(pattern segment.AccessPattern) error {
 	// For now, we can check if blob is mappable or has Advise method.
 	// But blobstore.Blob doesn't have Advise.
 	// We can skip it for now or add it to Blob interface.
+	return nil
+}
+
+// readBlock reads a aligned block-based chunk from the blob using the cache.
+func (s *Segment) readBlock(offset int64, size int, kind cache.CacheKind) ([]byte, error) {
+	if s.cache == nil {
+		buf := make([]byte, size)
+		if _, err := s.blob.ReadAt(buf, offset); err != nil {
+			return nil, err
+		}
+		return buf, nil
+	}
+
+	const pageSize = 4096
+	startPage := offset / pageSize
+	endPage := (offset + int64(size) - 1) / pageSize
+
+	totalBuf := make([]byte, size)
+
+	for page := startPage; page <= endPage; page++ {
+		key := cache.CacheKey{
+			Kind:      kind,
+			SegmentID: s.ID(),
+			Offset:    uint64(page),
+		}
+
+		var pageData []byte
+		var ok bool
+
+		pageData, ok = s.cache.Get(context.Background(), key)
+		if !ok {
+			// Read aligned page
+			pageStart := page * pageSize
+			readBuf := make([]byte, pageSize)
+			n, err := s.blob.ReadAt(readBuf, int64(pageStart))
+			if err != nil && err != io.EOF {
+				return nil, err
+			}
+			if n == 0 {
+				return nil, io.EOF
+			}
+			if n < pageSize {
+				readBuf = readBuf[:n]
+			}
+			pageData = readBuf
+			s.cache.Set(context.Background(), key, pageData)
+		}
+
+		// Calculate overlap
+		pageStart := int64(page * pageSize)
+
+		// Intersection of [offset, offset+size) and [pageStart, pageStart+len(pageData))
+
+		// Start index in pageData
+		srcStart := offset - pageStart
+		if srcStart < 0 {
+			srcStart = 0
+		}
+
+		// End index in pageData
+		srcEnd := (offset + int64(size)) - pageStart
+		if srcEnd > int64(len(pageData)) {
+			srcEnd = int64(len(pageData))
+		}
+
+		if srcStart < srcEnd {
+			// Start index in totalBuf
+			dstStart := (pageStart + srcStart) - offset
+			copy(totalBuf[dstStart:], pageData[srcStart:srcEnd])
+		}
+	}
+
+	return totalBuf, nil
+}
+
+// EvaluateFilter returns a bitmap of rows matching the filter.
+func (s *Segment) EvaluateFilter(ctx context.Context, filter *metadata.FilterSet) (segment.Bitmap, error) {
+	if s.index == nil {
+		// If no index, we can't efficiently evaluate.
+		// Fallback should be handled by caller (full scan or error).
+		// For L1 segments, we expect an index.
+		return nil, errors.New("metadata index not available")
+	}
+	return s.index.Query(filter)
+}
+
+// readID reads the ID for the given row from the blob.
+func (s *Segment) readID(rowID uint32) (model.ID, bool) {
+	if s.header.PKOffset == 0 {
+		return 0, false
+	}
+	offset := int64(s.header.PKOffset) + int64(rowID)*8
+
+	buf, err := s.readBlock(offset, 8, cache.CacheKindColumnBlocks)
+	if err != nil {
+		return 0, false
+	}
+	return model.ID(binary.LittleEndian.Uint64(buf)), true
+}
+
+// readVector reads the vector for the given row from the blob.
+func (s *Segment) readVector(rowID uint32, out []float32) error {
+	dim := int(s.header.Dim)
+	if len(out) != dim {
+		return errors.New("output buffer size mismatch")
+	}
+	offset := int64(s.header.VectorOffset) + int64(rowID)*int64(dim)*4
+
+	buf, err := s.readBlock(offset, dim*4, cache.CacheKindColumnBlocks)
+	if err != nil {
+		return err
+	}
+
+	// Convert to float32
+	// Use unsafe/fast conversion? Or keep it safe for now.
+	// Since we are reading small chunks (dim=128 ~ 512 bytes), binary.LittleEndian is fine.
+	// But unsafe.Slice might be faster if we want "Best-in-Class".
+	// However, `readBlock` returns a copy (totalBuf), so we are safe to cast.
+	// BUT, strict alignment is not guaranteed by `make([]byte)`.
+	// Go's allocator usually aligns to 8 bytes. float32 needs 4. So it's safe.
+	for i := 0; i < dim; i++ {
+		out[i] = math.Float32frombits(binary.LittleEndian.Uint32(buf[i*4:]))
+	}
+	return nil
+}
+
+// readPQCode reads the PQ code for the given row.
+func (s *Segment) readPQCode(rowID uint32, out []byte) error {
+	m := int(s.header.PQSubvectors)
+	if len(out) != m {
+		return errors.New("output buffer size mismatch")
+	}
+	offset := int64(s.header.PQCodesOffset) + int64(rowID)*int64(m)
+
+	buf, err := s.readBlock(offset, m, cache.CacheKindColumnBlocks)
+	if err != nil {
+		return err
+	}
+	copy(out, buf)
+	return nil
+}
+
+// readGraphNode reads the neighbors for the given row.
+func (s *Segment) readGraphNode(rowID uint32) ([]uint32, error) {
+	maxDegree := int(s.header.MaxDegree)
+	offset := int64(s.header.GraphOffset) + int64(rowID)*int64(maxDegree)*4
+
+	buf, err := s.readBlock(offset, maxDegree*4, cache.CacheKindGraph)
+	if err != nil {
+		return nil, err
+	}
+
+	neighbors := make([]uint32, maxDegree)
+	for i := 0; i < maxDegree; i++ {
+		neighbors[i] = binary.LittleEndian.Uint32(buf[i*4:])
+	}
+	return neighbors, nil
+}
+
+func (s *Segment) loadRaBitQ() error {
+	s.rq = quantization.NewRaBitQuantizer(int(s.header.Dim))
+
+	// Calculate size: (Dim/64)*8 + 4 bytes per vector
+	bytesPerVec := uint64(((int(s.header.Dim)+63)/64)*8 + 4)
+	size := uint64(s.header.RowCount) * bytesPerVec
+	offset := s.header.BQCodesOffset
+
+	if s.data != nil {
+		if offset+size > uint64(len(s.data)) {
+			return errors.New("RaBitQ codes section out of bounds")
+		}
+		s.pqCodes = s.data[offset : offset+size]
+	}
+	return nil
+}
+
+// readRaBitQCode reads the RaBitQ code for the given row.
+func (s *Segment) readRaBitQCode(rowID uint32, out []byte) error {
+	size := int(((s.header.Dim+63)/64)*8 + 4)
+	if len(out) != size {
+		return errors.New("output buffer size mismatch for RaBitQ")
+	}
+	offset := int64(s.header.BQCodesOffset) + int64(rowID)*int64(size)
+
+	buf, err := s.readBlock(offset, size, cache.CacheKindColumnBlocks)
+	if err != nil {
+		return err
+	}
+	copy(out, buf)
 	return nil
 }

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/hupe1980/vecgo/distance"
+	"github.com/hupe1980/vecgo/internal/quantization"
 	"github.com/hupe1980/vecgo/internal/searcher"
 	"github.com/hupe1980/vecgo/metadata"
 	"github.com/hupe1980/vecgo/model"
@@ -176,8 +177,8 @@ func TestNonMappable_Integration(t *testing.T) {
 
 	opts := Options{R: 4, L: 10}
 	w := NewWriter(f, nil, 123, 2, distance.MetricL2, opts)
-	require.NoError(t, w.Add(model.PKUint64(1), []float32{1.0, 0.0}, nil, nil))
-	require.NoError(t, w.Add(model.PKUint64(2), []float32{0.0, 1.0}, nil, nil))
+	require.NoError(t, w.Add(model.ID(1), []float32{1.0, 0.0}, nil, nil))
+	require.NoError(t, w.Add(model.ID(2), []float32{0.0, 1.0}, nil, nil))
 	require.NoError(t, w.Write(context.Background()))
 	f.Close()
 
@@ -211,8 +212,8 @@ func TestExtras_Integration(t *testing.T) {
 	w := NewWriter(f, nil, 123, 2, distance.MetricL2, opts)
 
 	md := metadata.Document{"key": metadata.String("value")}
-	require.NoError(t, w.Add(model.PKUint64(1), []float32{1.0, 0.0}, md, nil))
-	require.NoError(t, w.Add(model.PKUint64(2), []float32{0.0, 1.0}, nil, nil))
+	require.NoError(t, w.Add(model.ID(1), []float32{1.0, 0.0}, md, nil))
+	require.NoError(t, w.Add(model.ID(2), []float32{0.0, 1.0}, nil, nil))
 	require.NoError(t, w.Write(context.Background()))
 	f.Close()
 
@@ -225,7 +226,7 @@ func TestExtras_Integration(t *testing.T) {
 	defer s.Close()
 
 	count := 0
-	err = s.Iterate(func(rowID uint32, pk model.PrimaryKey, vec []float32, md metadata.Document, p []byte) error {
+	err = s.Iterate(func(rowID uint32, id model.ID, vec []float32, md metadata.Document, p []byte) error {
 		count++
 		if rowID == 0 {
 			assert.Equal(t, float32(1.0), vec[0])
@@ -240,11 +241,10 @@ func TestExtras_Integration(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 2, count)
 
-	pks := make([]model.PrimaryKey, 2)
-	err = s.FetchPKs(context.Background(), []uint32{0, 1}, pks)
+	ids := make([]model.ID, 2)
+	err = s.FetchIDs(context.Background(), []uint32{0, 1}, ids)
 	require.NoError(t, err)
-	u64, _ := pks[0].Uint64()
-	assert.Equal(t, uint64(1), u64)
+	assert.Equal(t, model.ID(1), ids[0])
 
 	batch, err := s.Fetch(context.Background(), []uint32{0}, nil)
 	require.NoError(t, err)
@@ -266,7 +266,43 @@ func TestPQ_Integration(t *testing.T) {
 
 	for i := 0; i < 256; i++ {
 		vec := []float32{float32(i), float32(i), float32(i), float32(i)}
-		require.NoError(t, w.Add(model.PKUint64(uint64(i)), vec, nil, nil))
+		require.NoError(t, w.Add(model.ID(uint64(i)), vec, nil, nil))
+	}
+	require.NoError(t, w.Write(context.Background()))
+	f.Close()
+
+	content, err := os.ReadFile(f.Name())
+	require.NoError(t, err)
+
+	blob := &memoryBlob{data: content}
+	s, err := Open(blob)
+	require.NoError(t, err)
+	defer s.Close()
+
+	sc := searcher.Get()
+	defer searcher.Put(sc)
+	sc.Heap.Reset(false)
+
+	err = s.Search(context.Background(), []float32{0, 0, 0, 0}, 2, nil, model.SearchOptions{}, sc)
+	require.NoError(t, err)
+	assert.Greater(t, sc.Heap.Len(), 0)
+}
+
+func TestRaBitQ_Integration(t *testing.T) {
+	f, err := os.CreateTemp("", "diskann_rabitq")
+	require.NoError(t, err)
+	defer os.Remove(f.Name())
+
+	opts := Options{
+		R:                4,
+		L:                10,
+		QuantizationType: quantization.TypeRaBitQ,
+	}
+	w := NewWriter(f, nil, 123, 4, distance.MetricL2, opts)
+
+	for i := 0; i < 256; i++ {
+		vec := []float32{float32(i), float32(i), float32(i), float32(i)}
+		require.NoError(t, w.Add(model.ID(uint64(i)), vec, nil, nil))
 	}
 	require.NoError(t, w.Write(context.Background()))
 	f.Close()

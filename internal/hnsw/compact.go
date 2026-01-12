@@ -70,7 +70,7 @@ func (h *HNSW) repairActiveNodes(ctx context.Context, g *graph) error {
 		if ctx.Err() != nil {
 			break
 		}
-		if h.getNode(g, id).Offset != 0 {
+		if !h.getNode(g, id).IsZero() {
 			jobs <- id
 		}
 	}
@@ -99,7 +99,9 @@ func (h *HNSW) pruneActiveNodes(ctx context.Context, g *graph) error {
 				continue
 			}
 			// Remove tombstones from connections
-			h.pruneNodeConnections(g, id)
+			if err := h.pruneNodeConnections(ctx, g, id); err != nil {
+				return
+			}
 		}
 	}
 
@@ -112,7 +114,7 @@ func (h *HNSW) pruneActiveNodes(ctx context.Context, g *graph) error {
 		if ctx.Err() != nil {
 			break
 		}
-		if h.getNode(g, id).Offset != 0 {
+		if !h.getNode(g, id).IsZero() {
 			jobs <- id
 		}
 	}
@@ -141,7 +143,9 @@ func (h *HNSW) clearDeletedNodes(ctx context.Context, g *graph) error {
 				continue
 			}
 			// Clear connections of deleted nodes
-			h.clearNodeConnections(g, id)
+			if err := h.clearNodeConnections(ctx, g, id); err != nil {
+				return
+			}
 		}
 	}
 
@@ -154,7 +158,7 @@ func (h *HNSW) clearDeletedNodes(ctx context.Context, g *graph) error {
 		if ctx.Err() != nil {
 			break
 		}
-		if h.getNode(g, id).Offset != 0 {
+		if !h.getNode(g, id).IsZero() {
 			jobs <- id
 		}
 	}
@@ -181,19 +185,30 @@ func (h *HNSW) reconcileNode(ctx context.Context, s *searcher.Searcher, scratch 
 	}
 
 	node := h.getNode(g, id)
-	if node == nil || node.Offset == 0 {
+	if node.IsZero() {
 		return
 	}
 
+	// Create distFunc
+	// We use standard distance calculation here because we are not in a tight search loop
+	// and we have the raw vector available.
+	distFunc := func(nid model.RowID) float32 {
+		d, ok := h.vectors.ComputeDistance(nid, vec, h.opts.DistanceType)
+		if !ok {
+			return 3.402823466e+38 // math.MaxFloat32
+		}
+		return d
+	}
+
 	// Greedy descent to node.Level
-	currID, currDist := h.greedyDescent(g, vec, node.Level(g.arena))
+	currID, currDist := h.greedyDescent(g, vec, node.Level(g.arena), distFunc)
 
 	// Repair specific layers
 	for level := node.Level(g.arena); level >= 0; level-- {
 		// Search for candidates
 		filter := &excludeFilter{target: uint32(id)}
 		// searchLayer populates s.Candidates
-		h.searchLayer(s, g, vec, currID, currDist, level, h.opts.EF, filter)
+		h.searchLayer(s, g, vec, currID, currDist, level, h.opts.EF, filter, distFunc)
 
 		// Use s.Candidates
 		candidates := s.Candidates
@@ -203,7 +218,9 @@ func (h *HNSW) reconcileNode(ctx context.Context, s *searcher.Searcher, scratch 
 
 		// If this layer needs repair, update connections
 		if layersToRepair[level] {
-			h.updateConnectionsForRepair(g, id, level, candidates, scratch)
+			if err := h.updateConnectionsForRepair(ctx, g, id, level, candidates, scratch); err != nil {
+				return
+			}
 		}
 
 		// Update entry point for next layer
@@ -215,11 +232,11 @@ func (h *HNSW) reconcileNode(ctx context.Context, s *searcher.Searcher, scratch 
 	}
 }
 
-func (h *HNSW) greedyDescent(g *graph, vec []float32, targetLevel int) (model.RowID, float32) {
+func (h *HNSW) greedyDescent(g *graph, vec []float32, targetLevel int, distFunc DistFunc) (model.RowID, float32) {
 	epID := g.entryPointAtomic.Load()
 	maxLevel := int(g.maxLevelAtomic.Load())
 	currID := model.RowID(epID)
-	currDist := h.dist(vec, currID)
+	currDist := distFunc(currID)
 
 	for level := maxLevel; level > targetLevel; level-- {
 		changed := true
@@ -227,7 +244,7 @@ func (h *HNSW) greedyDescent(g *graph, vec []float32, targetLevel int) (model.Ro
 			changed = false
 			h.visitConnections(g, currID, level, func(neighbor Neighbor) bool {
 				nextID := neighbor.ID
-				d := h.dist(vec, nextID)
+				d := distFunc(nextID)
 				if d < currDist {
 					currDist = d
 					currID = nextID
@@ -269,10 +286,11 @@ func (h *HNSW) mergeCandidatesWithActiveNeighbors(g *graph, id model.RowID, leve
 	}
 }
 
-func (h *HNSW) updateConnectionsForRepair(g *graph, id model.RowID, level int, candidates *searcher.PriorityQueue, scratch *scratch) {
+func (h *HNSW) updateConnectionsForRepair(ctx context.Context, g *graph, id model.RowID, level int, candidates *searcher.PriorityQueue, scratch *scratch) error {
 	// Re-read current connections to identify tombstones
 	// We must re-read because we need the exact objects to preserve them
 	g.shardedLocks[uint64(id)%uint64(len(g.shardedLocks))].Lock()
+	defer g.shardedLocks[uint64(id)%uint64(len(g.shardedLocks))].Unlock()
 
 	var tombstonesToKeep []Neighbor
 	conns := h.getConnections(g, id, level)
@@ -302,9 +320,11 @@ func (h *HNSW) updateConnectionsForRepair(g *graph, id model.RowID, level int, c
 			finalNeighbors = append(finalNeighbors, Neighbor{ID: n.Node, Dist: n.Distance})
 		}
 
-		h.setConnections(g, id, level, finalNeighbors)
+		if err := h.setConnections(ctx, g, id, level, finalNeighbors); err != nil {
+			return err
+		}
 	}
-	g.shardedLocks[uint64(id)%uint64(len(g.shardedLocks))].Unlock()
+	return nil
 }
 
 // checkRepairNeeded checks if a node needs repair.
@@ -314,7 +334,7 @@ func (h *HNSW) checkRepairNeeded(g *graph, id model.RowID) (bool, map[int]bool) 
 	defer g.shardedLocks[uint64(id)%uint64(len(g.shardedLocks))].RUnlock()
 
 	node := h.getNode(g, id)
-	if node.Offset == 0 {
+	if node.IsZero() {
 		return false, nil
 	}
 
@@ -347,13 +367,13 @@ func (h *HNSW) checkRepairNeeded(g *graph, id model.RowID) (bool, map[int]bool) 
 }
 
 // pruneNodeConnections removes deleted neighbors from an active node.
-func (h *HNSW) pruneNodeConnections(g *graph, id model.RowID) {
+func (h *HNSW) pruneNodeConnections(ctx context.Context, g *graph, id model.RowID) error {
 	g.shardedLocks[uint64(id)%uint64(len(g.shardedLocks))].Lock()
 	defer g.shardedLocks[uint64(id)%uint64(len(g.shardedLocks))].Unlock()
 
 	node := h.getNode(g, id)
-	if node.Offset == 0 {
-		return
+	if node.IsZero() {
+		return nil
 	}
 
 	tombstones := g.tombstones
@@ -372,26 +392,32 @@ func (h *HNSW) pruneNodeConnections(g *graph, id model.RowID) {
 		}
 
 		if hasTombstones {
-			h.setConnections(g, id, l, activeConns)
+			if err := h.setConnections(ctx, g, id, l, activeConns); err != nil {
+				return err
+			}
 		}
 	}
+	return nil
 }
 
 // clearNodeConnections releases memory for a deleted node's connections.
-func (h *HNSW) clearNodeConnections(g *graph, id model.RowID) {
+func (h *HNSW) clearNodeConnections(ctx context.Context, g *graph, id model.RowID) error {
 	g.shardedLocks[uint64(id)%uint64(len(g.shardedLocks))].Lock()
 	defer g.shardedLocks[uint64(id)%uint64(len(g.shardedLocks))].Unlock()
 
 	node := h.getNode(g, id)
-	if node.Offset == 0 {
-		return
+	if node.IsZero() {
+		return nil
 	}
 
 	// We can't easily free the node struct itself without re-layout,
 	// but we can release the connection slices.
 	for l := 0; l <= node.Level(g.arena); l++ {
-		h.setConnections(g, id, l, nil)
+		if err := h.setConnections(ctx, g, id, l, nil); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 // excludeFilter prevents returning the target node itself.

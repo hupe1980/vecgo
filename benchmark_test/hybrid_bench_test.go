@@ -6,8 +6,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/hupe1980/vecgo/distance"
-	"github.com/hupe1980/vecgo/engine"
+	"github.com/hupe1980/vecgo"
 	"github.com/hupe1980/vecgo/lexical"
 	"github.com/hupe1980/vecgo/lexical/bm25"
 	"github.com/hupe1980/vecgo/metadata"
@@ -22,11 +21,12 @@ func BenchmarkHybridSearch(b *testing.B) {
 
 	dir := b.TempDir()
 	lexIdx := bm25.New()
-	e, _ := engine.Open(dir, dim, distance.MetricL2, engine.WithLexicalIndex(lexIdx, "text"))
+	e, _ := vecgo.Open(dir, vecgo.Create(dim, vecgo.MetricL2), vecgo.WithLexicalIndex(lexIdx, "text"))
 	defer e.Close()
 
 	rng := testutil.NewRNG(1)
 	data := make([][]float32, numVecs)
+	pks := make([]model.ID, numVecs)
 	for i := 0; i < numVecs; i++ {
 		vec := make([]float32, dim)
 		rng.FillUniform(vec)
@@ -36,7 +36,8 @@ func BenchmarkHybridSearch(b *testing.B) {
 		w2 := vocab[rng.Intn(len(vocab))]
 		text := fmt.Sprintf("%s %s", w1, w2)
 
-		e.Insert(model.PKUint64(uint64(i)), vec, metadata.Document{"text": metadata.String(text)}, nil)
+		id, _ := e.Insert(vec, metadata.Document{"text": metadata.String(text)}, nil)
+		pks[i] = id
 	}
 
 	ctx := context.Background()
@@ -51,7 +52,7 @@ func BenchmarkHybridSearch(b *testing.B) {
 			e.Search(ctx, qVec, 10)
 		}
 		b.StopTimer()
-		truth := exactTopK_L2(data, qVec, 10)
+		truth := exactTopK_L2_WithIDs(data, pks, qVec, 10)
 		res, _ := e.Search(ctx, qVec, 10)
 		b.ReportMetric(recallAtK(res, truth), "recall@10")
 	})
@@ -61,7 +62,7 @@ func BenchmarkHybridSearch(b *testing.B) {
 			e.HybridSearch(ctx, qVec, qText, 10, 60)
 		}
 		b.StopTimer()
-		truth := naiveHybridSearch(data, lexIdx, qVec, qText, 10, 60)
+		truth := naiveHybridSearch(data, pks, lexIdx, qVec, qText, 10, 60)
 		res, _ := e.HybridSearch(ctx, qVec, qText, 10, 60)
 		b.ReportMetric(recallAtK(res, truth), "recall@10")
 	})
@@ -69,9 +70,9 @@ func BenchmarkHybridSearch(b *testing.B) {
 	b.Run("DAAT", func(b *testing.B) {
 		// Truth (TAAT)
 		truthCands, _ := lexIdx.Search(qText, 10)
-		truth := make([]model.PrimaryKey, len(truthCands))
+		truth := make([]model.ID, len(truthCands))
 		for i, c := range truthCands {
-			truth[i] = c.PK
+			truth[i] = c.ID
 		}
 
 		for i := 0; i < b.N; i++ {
@@ -84,20 +85,20 @@ func BenchmarkHybridSearch(b *testing.B) {
 	})
 }
 
-func naiveHybridSearch(data [][]float32, lexIdx lexical.Index, qVec []float32, qText string, k int, rrfK int) []model.PrimaryKey {
+func naiveHybridSearch(data [][]float32, pks []model.ID, lexIdx lexical.Index, qVec []float32, qText string, k int, rrfK int) []model.ID {
 	// 1. Exact Vector Search
 	vectorK := k * 2
 	if vectorK < 50 {
 		vectorK = 50
 	}
 	// exactTopK_L2 returns PKs sorted by distance (best first)
-	vecPKs := exactTopK_L2(data, qVec, vectorK)
+	vecPKs := exactTopK_L2_WithIDs(data, pks, qVec, vectorK)
 
 	// 2. Lexical Search
 	lexResults, _ := lexIdx.Search(qText, vectorK)
 
 	// 3. RRF Fusion
-	finalScores := make(map[model.PrimaryKey]float32)
+	finalScores := make(map[model.ID]float32)
 
 	// Vector Ranks
 	for rank, pk := range vecPKs {
@@ -108,12 +109,12 @@ func naiveHybridSearch(data [][]float32, lexIdx lexical.Index, qVec []float32, q
 	// Lexical Ranks
 	for rank, c := range lexResults {
 		score := 1.0 / float32(rrfK+rank+1)
-		finalScores[c.PK] += score
+		finalScores[c.ID] += score
 	}
 
 	// 4. Sort Final
 	type candidate struct {
-		pk    model.PrimaryKey
+		pk    model.ID
 		score float32
 	}
 	candidates := make([]candidate, 0, len(finalScores))
@@ -125,7 +126,7 @@ func naiveHybridSearch(data [][]float32, lexIdx lexical.Index, qVec []float32, q
 	})
 
 	// Top K
-	out := make([]model.PrimaryKey, 0, k)
+	out := make([]model.ID, 0, k)
 	for i := 0; i < k && i < len(candidates); i++ {
 		out = append(out, candidates[i].pk)
 	}

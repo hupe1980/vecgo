@@ -58,7 +58,7 @@ func TestColumnarFilterWrapper(t *testing.T) {
 		}
 		fs1 := metadata.NewFilterSet(f1)
 
-		w := newColumnarFilterWrapper(nil, fs1, columns)
+		w := newColumnarFilterWrapper(nil, fs1, columns, 4)
 
 		assert.False(t, w.Matches(0))
 		assert.True(t, w.Matches(1))
@@ -74,7 +74,7 @@ func TestColumnarFilterWrapper(t *testing.T) {
 			Value:    metadata.String("blue"),
 		}
 		fs1 := metadata.NewFilterSet(f1)
-		w := newColumnarFilterWrapper(nil, fs1, columns)
+		w := newColumnarFilterWrapper(nil, fs1, columns, 4)
 
 		ids := []uint32{0, 1, 2, 3, 99}
 		out := make([]bool, len(ids))
@@ -93,7 +93,7 @@ func TestColumnarFilterWrapper(t *testing.T) {
 		}
 		fs1 := metadata.NewFilterSet(f1)
 
-		w := newColumnarFilterWrapper(parent, fs1, columns)
+		w := newColumnarFilterWrapper(parent, fs1, columns, 4)
 
 		// id=0: Parent True, Meta False ("red" != "blue") -> False
 		assert.False(t, w.Matches(0))
@@ -114,7 +114,7 @@ func TestColumnarFilterWrapper(t *testing.T) {
 			Value:    metadata.Int(15),
 		}
 		fs := metadata.NewFilterSet(f)
-		w := newColumnarFilterWrapper(nil, fs, columns)
+		w := newColumnarFilterWrapper(nil, fs, columns, 4)
 
 		assert.False(t, w.Matches(0)) // 10
 		assert.True(t, w.Matches(1))  // 20
@@ -129,7 +129,7 @@ func TestColumnarFilterWrapper(t *testing.T) {
 			Value:    metadata.String("foo"),
 		}
 		fs := metadata.NewFilterSet(f)
-		w := newColumnarFilterWrapper(nil, fs, columns)
+		w := newColumnarFilterWrapper(nil, fs, columns, 4)
 
 		// Always false if column missing
 		assert.False(t, w.Matches(0))

@@ -2,6 +2,7 @@ package hnsw
 
 import (
 	"context"
+	"errors"
 	"math"
 	"sync/atomic"
 	"unsafe"
@@ -13,6 +14,44 @@ import (
 
 // NodeOffsetSegment is a fixed-size array of node offsets.
 type NodeOffsetSegment [nodeSegmentSize]atomic.Uint64
+
+// nodeRef represents a packed reference to a node (Generation + Offset).
+// Optimizes memory by avoiding pointer chasing and heap allocations for node headers.
+//
+// Bit Layout:
+// [0:40] Offset (40 bits) -> Max 1TB arena size
+// [40:64] Gen (24 bits)   -> Max 16M generations
+type nodeRef uint64
+
+const (
+	offsetBits = 40
+	offsetMask = (1 << offsetBits) - 1
+	genBits    = 64 - offsetBits
+)
+
+func packNodeRef(offset uint64, gen uint32) nodeRef {
+	// Ensure bounds (panic in debug/dev, strict check)
+	if offset > offsetMask {
+		panic("node offset exceeds 40 bits")
+	}
+	return nodeRef(offset | (uint64(gen) << offsetBits))
+}
+
+func (n nodeRef) unpack() (offset uint64, gen uint32) {
+	offset = uint64(n) & offsetMask
+	gen = uint32(uint64(n) >> offsetBits)
+	return
+}
+
+func (n nodeRef) isValid() bool {
+	return n != 0
+}
+
+// Node is a view over the arena data.
+// It uses a value receiver over the packed reference to avoid heap allocations.
+type Node struct {
+	ref nodeRef
+}
 
 // Neighbor represents a connection to another node with its distance.
 type Neighbor struct {
@@ -26,33 +65,24 @@ func (n Neighbor) AsUint64() uint64 {
 }
 
 // NeighborFromUint64 converts uint64 back to Neighbor.
+// This is a hot-path function - uses direct casts for maximum performance
+// since the data comes from AsUint64 and is guaranteed valid.
 func NeighborFromUint64(v uint64) Neighbor {
-	idU32, _ := conv.Uint64ToUint32(v >> 32)
-	distU32, _ := conv.Uint64ToUint32(v & 0xFFFFFFFF)
 	return Neighbor{
-		ID:   model.RowID(idU32),
-		Dist: math.Float32frombits(distU32),
+		ID:   model.RowID(uint32(v >> 32)),
+		Dist: math.Float32frombits(uint32(v)),
 	}
 }
 
-// Node is a view over the arena data.
-// It does not store data itself, but provides methods to access data in the arena.
-type Node struct {
-	Offset uint64
-	Gen    uint32
+// IsZero returns true if the node is empty/invalid.
+func (n Node) IsZero() bool {
+	return !n.ref.isValid()
 }
-
-// Layout:
-// [0:4] Level (uint32)
-// [4:...] Connections
-
-// Connection Block Layout:
-// [0:4] Count (uint32)
-// [4:...] Neighbors (uint64 array)
 
 // Level returns the level of the node.
 func (n Node) Level(a *arena.Arena) int {
-	ptr := a.GetSafe(arena.Ref{Gen: n.Gen, Offset: n.Offset})
+	offset, gen := n.ref.unpack()
+	ptr := a.GetSafe(arena.Ref{Gen: gen, Offset: offset})
 	if ptr == nil {
 		// Stale reference or invalid offset
 		return -1
@@ -65,7 +95,8 @@ func (n Node) Level(a *arena.Arena) int {
 }
 
 func (n Node) setLevel(a *arena.Arena, level int) {
-	ptr := a.GetSafe(arena.Ref{Gen: n.Gen, Offset: n.Offset})
+	offset, gen := n.ref.unpack()
+	ptr := a.GetSafe(arena.Ref{Gen: gen, Offset: offset})
 	if ptr == nil {
 		return
 	}
@@ -76,47 +107,54 @@ func (n Node) setLevel(a *arena.Arena, level int) {
 	*(*uint32)(ptr) = lvlU32
 }
 
-// connectionBlockOffset calculates the offset of the connection block for the given layer.
-func (n Node) connectionBlockOffset(layer int, m, m0 int) uint64 {
-	// Base offset after Level
-	offset := n.Offset + 4
+// GetConnectionListPtr returns the offset to the connection list for the given layer.
+func (n Node) GetConnectionListPtr(a *arena.Arena, layer int) uint64 {
+	// Node at n.Offset
+	// Level at +0
+	// Padding at +4
+	// Ptr L0 at +8
+	// Ptr L1 at +16
+	// ...
+	// Ptr Li at +8 + i*8
 
-	if layer == 0 {
-		return offset
+	offset, gen := n.ref.unpack()
+	ptrOffset := offset + 8 + uint64(layer)*8
+	ptr := a.GetSafe(arena.Ref{Gen: gen, Offset: ptrOffset})
+	if ptr == nil {
+		return 0
 	}
+	return atomic.LoadUint64((*uint64)(ptr))
+}
 
-	// Skip layer 0
-	// Layer 0 size: 4 (count) + m0 * 8 (neighbors)
-	m0U64, _ := conv.IntToUint64(m0)
-	offset += 4 + m0U64*8
-
-	// Skip layers 1 to layer-1
-	// Each layer size: 4 (padding) + 4 (count) + m * 8 (neighbors)
-	if layer > 1 {
-		layerMinus1U64, _ := conv.IntToUint64(layer - 1)
-		mU64, _ := conv.IntToUint64(m)
-		offset += layerMinus1U64 * (4 + 4 + mU64*8)
+// SetConnectionListPtr sets the offset to the connection list for the given layer.
+func (n Node) SetConnectionListPtr(a *arena.Arena, layer int, listOffset uint64) {
+	offset, gen := n.ref.unpack()
+	ptrOffset := offset + 8 + uint64(layer)*8
+	ptr := a.GetSafe(arena.Ref{Gen: gen, Offset: ptrOffset})
+	if ptr == nil {
+		return
 	}
-
-	// Add padding for current layer to align neighbors to 8 bytes
-	offset += 4
-
-	return offset
+	atomic.StoreUint64((*uint64)(ptr), listOffset)
 }
 
 // GetConnectionsRaw returns the neighbors for the given layer as raw uint64s.
 // It returns a slice backed by the arena memory.
 // WARNING: The slice is valid only until the arena is reset/freed.
-// Concurrent access: Safe for concurrent reads if updates are atomic.
+// Concurrent access: Safe for concurrent reads if updates are atomic (COW).
 func (n Node) GetConnectionsRaw(a *arena.Arena, layer int, m, m0 int) []uint64 {
-	blockOffset := n.connectionBlockOffset(layer, m, m0)
-	ptr := a.GetSafe(arena.Ref{Gen: n.Gen, Offset: blockOffset})
+	listOffset := n.GetConnectionListPtr(a, layer)
+	if listOffset == 0 {
+		return nil
+	}
+
+	_, gen := n.ref.unpack()
+	ptr := a.GetSafe(arena.Ref{Gen: gen, Offset: listOffset})
 	if ptr == nil {
 		return nil
 	}
 
 	count := atomic.LoadUint32((*uint32)(ptr))
-	neighborsPtr := unsafe.Pointer(uintptr(ptr) + 4) //nolint:gosec // unsafe is required for performance
+	neighborsPtr := unsafe.Pointer(uintptr(ptr) + 8) //nolint:gosec // unsafe is required for performance
 
 	countInt, err := conv.Uint32ToInt(count)
 	if err != nil {
@@ -127,11 +165,17 @@ func (n Node) GetConnectionsRaw(a *arena.Arena, layer int, m, m0 int) []uint64 {
 
 // GetConnection returns the neighbor at the given index for the given layer.
 func (n Node) GetConnection(a *arena.Arena, layer int, index int, m, m0 int) Neighbor {
-	blockOffset := n.connectionBlockOffset(layer, m, m0)
-	indexU64, _ := conv.IntToUint64(index)
-	neighborOffset := blockOffset + 4 + indexU64*8
+	listOffset := n.GetConnectionListPtr(a, layer)
+	if listOffset == 0 {
+		return Neighbor{}
+	}
 
-	ptr := a.GetSafe(arena.Ref{Gen: n.Gen, Offset: neighborOffset})
+	_, gen := n.ref.unpack()
+	// List layout: [Count u32][Padding u32][Neighbor0 u64][Neighbor1 u64]...
+	indexU64, _ := conv.IntToUint64(index)
+	neighborOffset := listOffset + 8 + indexU64*8
+
+	ptr := a.GetSafe(arena.Ref{Gen: gen, Offset: neighborOffset})
 	if ptr == nil {
 		return Neighbor{}
 	}
@@ -140,13 +184,17 @@ func (n Node) GetConnection(a *arena.Arena, layer int, index int, m, m0 int) Nei
 
 // SetConnection sets the neighbor at the given index for the given layer.
 func (n Node) SetConnection(a *arena.Arena, layer int, index int, neighbor Neighbor, m, m0 int) {
-	blockOffset := n.connectionBlockOffset(layer, m, m0)
-	// Neighbors start at offset + 4
-	// Index * 8
-	indexU64, _ := conv.IntToUint64(index)
-	neighborOffset := blockOffset + 4 + indexU64*8
+	listOffset := n.GetConnectionListPtr(a, layer)
+	if listOffset == 0 {
+		// Should not happen if initialized correctly
+		return
+	}
 
-	ptr := a.GetSafe(arena.Ref{Gen: n.Gen, Offset: neighborOffset})
+	_, gen := n.ref.unpack()
+	indexU64, _ := conv.IntToUint64(index)
+	neighborOffset := listOffset + 8 + indexU64*8
+
+	ptr := a.GetSafe(arena.Ref{Gen: gen, Offset: neighborOffset})
 	if ptr == nil {
 		return
 	}
@@ -155,8 +203,13 @@ func (n Node) SetConnection(a *arena.Arena, layer int, index int, neighbor Neigh
 
 // SetCount sets the number of connections for the given layer.
 func (n Node) SetCount(a *arena.Arena, layer int, count int, m, m0 int) {
-	blockOffset := n.connectionBlockOffset(layer, m, m0)
-	ptr := a.GetSafe(arena.Ref{Gen: n.Gen, Offset: blockOffset})
+	listOffset := n.GetConnectionListPtr(a, layer)
+	if listOffset == 0 {
+		return
+	}
+
+	_, gen := n.ref.unpack()
+	ptr := a.GetSafe(arena.Ref{Gen: gen, Offset: listOffset})
 	if ptr == nil {
 		return
 	}
@@ -169,8 +222,13 @@ func (n Node) SetCount(a *arena.Arena, layer int, count int, m, m0 int) {
 
 // GetCount returns the number of connections for the given layer.
 func (n Node) GetCount(a *arena.Arena, layer int, m, m0 int) int {
-	blockOffset := n.connectionBlockOffset(layer, m, m0)
-	ptr := a.GetSafe(arena.Ref{Gen: n.Gen, Offset: blockOffset})
+	listOffset := n.GetConnectionListPtr(a, layer)
+	if listOffset == 0 {
+		return 0
+	}
+
+	_, gen := n.ref.unpack()
+	ptr := a.GetSafe(arena.Ref{Gen: gen, Offset: listOffset})
 	if ptr == nil {
 		return 0
 	}
@@ -181,39 +239,129 @@ func (n Node) GetCount(a *arena.Arena, layer int, m, m0 int) int {
 	return count
 }
 
-// Init initializes the node in the arena.
-func (n Node) Init(a *arena.Arena, level int, m, m0 int) {
-	n.setLevel(a, level)
-	// Counts are 0 by default (arena is zeroed? No, arena is not zeroed if reused!)
-	// Arena `Alloc` returns zeroed memory?
-	// `make([]byte)` returns zeroed memory.
-	// If we reuse arena (Reset), we don't zero it.
-	// So we MUST initialize counts to 0.
-
-	for i := 0; i <= level; i++ {
-		n.SetCount(a, i, 0, m, m0)
+// ReplaceConnections replaces the connection list for the given layer with a new list (COW).
+// This ensures atomic visibility of the new list to concurrent readers.
+func (n Node) ReplaceConnections(ctx context.Context, a *arena.Arena, layer int, neighbors []Neighbor, m, m0 int) error {
+	cap := m
+	if layer == 0 {
+		cap = m0
 	}
+	if len(neighbors) > cap {
+		neighbors = neighbors[:cap]
+	}
+
+	// Alloc new list
+	size := 8 + cap*8
+	offset, _, err := a.AllocContext(ctx, size)
+	if err != nil {
+		return err
+	}
+
+	_, gen := n.ref.unpack()
+	ptr := a.GetSafe(arena.Ref{Gen: gen, Offset: offset})
+	if ptr == nil {
+		return errors.New("invalid offset")
+	}
+
+	// 1. Write Count
+	*(*uint32)(ptr) = uint32(len(neighbors))
+
+	// 2. Write Neighbors
+	neighborsPtr := unsafe.Pointer(uintptr(ptr) + 8)
+
+	target := unsafe.Slice((*uint64)(neighborsPtr), len(neighbors))
+	for i, neighbor := range neighbors {
+		target[i] = neighbor.AsUint64()
+	}
+
+	// 3. Atomic Swap
+	n.SetConnectionListPtr(a, layer, offset)
+	return nil
 }
 
-// AllocNode allocates a new node in the arena and returns it.
+// AppendConnection appends a neighbor to the existing list if capacity allows.
+// This is safe for concurrent readers because we write the element first, then increment the count.
+func (n Node) AppendConnection(a *arena.Arena, layer int, neighbor Neighbor, m, m0 int) bool {
+	listOffset := n.GetConnectionListPtr(a, layer)
+	if listOffset == 0 {
+		return false
+	}
+
+	_, gen := n.ref.unpack()
+	ptr := a.GetSafe(arena.Ref{Gen: gen, Offset: listOffset})
+	if ptr == nil {
+		return false
+	}
+
+	// Read current count
+	countPtr := (*uint32)(ptr)
+	count := atomic.LoadUint32(countPtr)
+
+	cap := m
+	if layer == 0 {
+		cap = m0
+	}
+
+	if int(count) >= cap {
+		return false // List full
+	}
+
+	// Write neighbor at index 'count'
+	neighborOffset := 8 + uint64(count)*8
+	elemPtr := unsafe.Pointer(uintptr(ptr) + uintptr(neighborOffset))
+
+	atomic.StoreUint64((*uint64)(elemPtr), neighbor.AsUint64())
+	atomic.StoreUint32(countPtr, count+1)
+	return true
+}
+
+// Init initializes the node in the arena.
+func (n Node) Init(ctx context.Context, a *arena.Arena, level int, m, m0 int) error {
+	n.setLevel(a, level)
+
+	// Create initial empty lists
+	for i := 0; i <= level; i++ {
+		cap := m
+		if i == 0 {
+			cap = m0
+		}
+
+		// Alloc list: 8 + cap*8 (to ensure 8-byte alignment for neighbors)
+		size := 8 + cap*8
+		offset, _, err := a.AllocContext(ctx, size)
+		if err != nil {
+			return err
+		}
+
+		// Initialize count to 0 (implicit if memory reused? No, must set)
+		_, gen := n.ref.unpack()
+		ptr := a.GetSafe(arena.Ref{Gen: gen, Offset: offset})
+		if ptr != nil {
+			*(*uint32)(ptr) = 0
+		}
+
+		n.SetConnectionListPtr(a, i, offset)
+	}
+	return nil
+}
+
+// AllocNode allocates a new node in the arena with pointer-based connection lists.
 func AllocNode(ctx context.Context, a *arena.Arena, level int, m, m0 int) (Node, error) {
-	// Calculate size
-	// Header: 4
-	// Level 0: 4 + m0 * 8
-	// Level > 0: 4 (padding) + 4 (count) + m * 8
+	// Calculate size for Node struct:
+	// Header(8) + (Level+1)*8 (Pointers)
+	nodeSize := 8 + (level+1)*8
 
-	size := 4 + (4 + m0*8) + level*(4+4+m*8)
-
-	// Optimization: Alloc returns a pointer to the start of the allocation.
-	// We can use this to initialize the node without calling GetSafe repeatedly.
-	// But Alloc returns offset, not pointer.
-	// We can use GetSafe once.
-
-	offset, _, err := a.AllocContext(ctx, size)
+	offset, _, err := a.AllocContext(ctx, nodeSize)
 	if err != nil {
 		return Node{}, err
 	}
-	node := Node{Offset: offset, Gen: a.Generation()}
-	node.Init(a, level, m, m0)
+
+	// Pack offset and generation into reference
+	ref := packNodeRef(offset, a.Generation())
+	node := Node{ref: ref}
+
+	if err := node.Init(ctx, a, level, m, m0); err != nil {
+		return Node{}, err
+	}
 	return node, nil
 }

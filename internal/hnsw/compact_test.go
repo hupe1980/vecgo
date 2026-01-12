@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/hupe1980/vecgo/model"
-	"github.com/hupe1980/vecgo/vectorstore"
+	"github.com/hupe1980/vecgo/internal/vectorstore"
 )
 
 func TestCompact(t *testing.T) {
@@ -16,7 +16,7 @@ func TestCompact(t *testing.T) {
 	deleteCount := 500
 
 	// Create index
-	vs, err := vectorstore.New(dim)
+	vs, err := vectorstore.New(dim, nil)
 	if err != nil {
 		t.Fatalf("vectorstore.New: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestCompact(t *testing.T) {
 
 	for id := model.RowID(0); id < model.RowID(count); id++ {
 		node := h.getNode(g, id)
-		if node.Offset == 0 {
+		if node.IsZero() {
 			continue
 		}
 

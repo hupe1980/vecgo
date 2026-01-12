@@ -22,13 +22,16 @@ func main() {
 
 	// 2. Define Schema
 	schema := metadata.Schema{
+		"id":       metadata.FieldTypeString,
 		"category": metadata.FieldTypeString,
 		"price":    metadata.FieldTypeFloat,
 		"tags":     metadata.FieldTypeArray,
 	}
 
 	// 3. Open Engine with Modern Options
-	eng, err := vecgo.Open(dir, 4, vecgo.MetricL2,
+	// New unified API: Open(source, opts...)
+	eng, err := vecgo.Open(dir,
+		vecgo.Create(4, vecgo.MetricL2),
 		vecgo.WithLogger(logger),
 		vecgo.WithSchema(schema),
 	)
@@ -40,10 +43,10 @@ func main() {
 
 	// 4. Insert Data (Generic PKs + Typed Metadata)
 	logger.Info("Inserting data...")
-	err = eng.Insert(
-		vecgo.PKString("prod-1"),
+	_, err = eng.Insert(
 		[]float32{1.0, 0.0, 0.0, 0.0},
 		metadata.Document{
+			"id":       metadata.String("prod-1"),
 			"category": metadata.String("electronics"),
 			"price":    metadata.Float(99.99),
 			"tags":     metadata.Strings([]string{"gadget", "sale"}),
@@ -54,10 +57,10 @@ func main() {
 		logger.Error("Insert failed", "error", err)
 	}
 
-	err = eng.Insert(
-		vecgo.PKString("prod-2"),
+	_, err = eng.Insert(
 		[]float32{0.0, 1.0, 0.0, 0.0},
 		metadata.Document{
+			"id":       metadata.String("prod-2"),
 			"category": metadata.String("books"),
 			"price":    metadata.Float(19.50),
 			"tags":     metadata.Strings([]string{"fiction"}),
@@ -75,7 +78,7 @@ func main() {
 			logger.Error("Scan error", "error", err)
 			break
 		}
-		fmt.Printf("Record: PK=%v, Vector=%v, Meta=%v\n", record.PK, record.Vector, record.Metadata)
+		fmt.Printf("Record: ID=%v, Vector=%v, Meta=%v\n", record.ID, record.Vector, record.Metadata)
 	}
 
 	// 6. Search
@@ -87,6 +90,6 @@ func main() {
 	}
 
 	for _, res := range results {
-		fmt.Printf("Match: PK=%v Score=%f\n", res.PK, res.Score)
+		fmt.Printf("Match: ID=%v Score=%f\n", res.ID, res.Score)
 	}
 }

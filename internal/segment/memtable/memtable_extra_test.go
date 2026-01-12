@@ -17,15 +17,17 @@ func TestMemTable_InsertWithPayload_Coverage(t *testing.T) {
 	defer m.DecRef()
 
 	// 1. Normal Append
-	pk1 := model.PKUint64(1)
+	id1In := model.ID(1)
 	vec1 := []float32{1.0, 1.0}
 	payload1 := []byte("payload1")
-	id1, err := m.InsertWithPayload(pk1, vec1, nil, payload1)
+	rowID1, err := m.InsertWithPayload(id1In, vec1, nil, payload1)
 	require.NoError(t, err)
-	assert.Equal(t, model.RowID(0), id1)
+	// Shard 1 (1 mod 16 = 1) -> RowID starts with 1<<28
+	expectedRowID := model.RowID(1) << 28
+	assert.Equal(t, expectedRowID, rowID1)
 
 	// Verify payload
-	batch, err := m.Fetch(context.Background(), []uint32{uint32(id1)}, []string{"payload"})
+	batch, err := m.Fetch(context.Background(), []uint32{uint32(rowID1)}, []string{"payload"})
 	require.NoError(t, err)
 	require.Equal(t, 1, batch.RowCount())
 	assert.Equal(t, payload1, batch.Payload(0))
@@ -42,12 +44,12 @@ func TestMemTable_EdgeCases(t *testing.T) {
 	require.NoError(t, err)
 	m.DecRef() // Close it
 
-	_, err = m.Insert(model.PKUint64(1), []float32{1, 1})
+	_, err = m.Insert(model.ID(1), []float32{1, 1})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "memtable is closed")
 
 	// InsertWithPayload on closed
-	_, err = m.InsertWithPayload(model.PKUint64(1), []float32{1, 1}, nil, nil)
+	_, err = m.InsertWithPayload(model.ID(1), []float32{1, 1}, nil, nil)
 	assert.Error(t, err)
 }
 
@@ -63,7 +65,7 @@ func TestMemTable_Growth(t *testing.T) {
 
 	count := 2000 // > 1024
 	for i := 0; i < count; i++ {
-		_, err := m.Insert(model.PKUint64(uint64(i)), []float32{0.1, 0.1})
+		_, err := m.Insert(model.ID(uint64(i)), []float32{0.1, 0.1})
 		require.NoError(t, err)
 	}
 	assert.Equal(t, uint32(count), m.RowCount())

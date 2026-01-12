@@ -16,9 +16,9 @@ func TestSearcher_Lifecycle(t *testing.T) {
 	s.Candidates.PushItem(PriorityQueueItem{Distance: 1.0, Node: 100})
 	s.ScratchCandidates.PushItem(PriorityQueueItem{Distance: 2.0, Node: 200})
 
-	s.Heap.Push(model.Candidate{Score: 0.5, Loc: model.Location{RowID: 5}})
+	s.Heap.Push(InternalCandidate{Score: 0.5, RowID: 5})
 
-	s.ScratchMap[model.PKUint64(123)] = 0.99
+	s.ScratchMap[model.ID(123)] = 0.99
 	s.OpsPerformed = 50
 
 	// Add something to ScratchResults manually to test clearing

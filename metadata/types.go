@@ -268,6 +268,19 @@ func Float(v float64) Value { return Value{Kind: KindFloat, F64: v} }
 // String returns a string Value.
 func String(v string) Value { return Value{Kind: KindString, s: unique.Make(v)} }
 
+// StringFromHandle creates a Value from a unique string handle.
+func StringFromHandle(h unique.Handle[string]) Value {
+	return Value{Kind: KindString, s: h}
+}
+
+// StringHandle returns the unique string handle if Kind is KindString.
+func (v Value) StringHandle() (unique.Handle[string], bool) {
+	if v.Kind != KindString {
+		return unique.Handle[string]{}, false
+	}
+	return v.s, true
+}
+
 // Bool returns a boolean Value.
 func Bool(v bool) Value { return Value{Kind: KindBool, B: v} }
 

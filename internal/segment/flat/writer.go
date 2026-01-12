@@ -13,7 +13,7 @@ import (
 	"github.com/hupe1980/vecgo/internal/segment"
 	"github.com/hupe1980/vecgo/metadata"
 	"github.com/hupe1980/vecgo/model"
-	"github.com/hupe1980/vecgo/quantization"
+	"github.com/hupe1980/vecgo/internal/quantization"
 )
 
 // Writer builds a flat segment.
@@ -24,7 +24,7 @@ type Writer struct {
 	dim       int
 	metric    distance.Metric
 	vectors   []float32
-	pks       []model.PK
+	ids       []model.ID
 	metadata  [][]byte // Serialized metadata
 	payloads  [][]byte // Raw payload
 	k         int      // Number of partitions
@@ -54,13 +54,13 @@ func (w *Writer) SetPQConfig(m int) {
 	w.pqM = m
 }
 
-// Add adds a vector and its PK to the segment.
-func (w *Writer) Add(pk model.PK, vec []float32, md metadata.Document, payload []byte) error {
+// Add adds a vector and its ID to the segment.
+func (w *Writer) Add(id model.ID, vec []float32, md metadata.Document, payload []byte) error {
 	if len(vec) != w.dim {
 		return errors.New("dimension mismatch")
 	}
 	w.vectors = append(w.vectors, vec...)
-	w.pks = append(w.pks, pk)
+	w.ids = append(w.ids, id)
 	w.payloads = append(w.payloads, payload)
 
 	// Serialize metadata
@@ -78,7 +78,7 @@ func (w *Writer) Add(pk model.PK, vec []float32, md metadata.Document, payload [
 
 // Flush writes the segment to the underlying writer.
 func (w *Writer) Flush() error {
-	rowCount := uint32(len(w.pks))
+	rowCount := uint32(len(w.ids))
 	var centroids []float32
 	var partitionOffsets []uint32
 
@@ -105,9 +105,9 @@ func (w *Writer) Flush() error {
 			partitionCounts[p]++
 		}
 
-		// 3. Reorder vectors and PKs
+		// 3. Reorder vectors and IDs
 		newVectors := make([]float32, len(w.vectors))
-		newPKs := make([]model.PrimaryKey, len(w.pks))
+		newIDs := make([]model.ID, len(w.ids))
 		newMetadata := make([][]byte, len(w.metadata))
 
 		// Calculate start offsets for each partition
@@ -127,14 +127,14 @@ func (w *Writer) Flush() error {
 			idx := currentOffsets[p]
 
 			copy(newVectors[idx*w.dim:(idx+1)*w.dim], w.vectors[i*w.dim:(i+1)*w.dim])
-			newPKs[idx] = w.pks[i]
+			newIDs[idx] = w.ids[i]
 			newMetadata[idx] = w.metadata[i]
 
 			currentOffsets[p]++
 		}
 
 		w.vectors = newVectors
-		w.pks = newPKs
+		w.ids = newIDs
 		w.metadata = newMetadata
 
 		// 4. Prepare partition offsets (start indices)
@@ -304,33 +304,13 @@ func (w *Writer) Flush() error {
 
 	codesSize := uint64(len(codes))
 
-	// Calculate PK Blob
-	var pkOffsets []uint32
+	// Calculate ID Blob
 	var pkBlob []byte
 	if rowCount > 0 {
-		pkOffsets = make([]uint32, rowCount+1)
-		currentPKOffset := uint32(0)
-		for i, pk := range w.pks {
-			pkOffsets[i] = currentPKOffset
-
-			// Serialize PK to blob
-			// Kind
-			pkBlob = append(pkBlob, byte(pk.Kind()))
-			currentPKOffset++
-
-			if pk.Kind() == model.PKKindUint64 {
-				u64, _ := pk.Uint64()
-				pkBlob = binary.LittleEndian.AppendUint64(pkBlob, u64)
-				currentPKOffset += 8
-			} else {
-				s, _ := pk.StringValue()
-				strBytes := []byte(s)
-				pkBlob = binary.LittleEndian.AppendUint32(pkBlob, uint32(len(strBytes)))
-				pkBlob = append(pkBlob, strBytes...)
-				currentPKOffset += 4 + uint32(len(strBytes))
-			}
+		pkBlob = make([]byte, 0, rowCount*8)
+		for _, id := range w.ids {
+			pkBlob = binary.LittleEndian.AppendUint64(pkBlob, uint64(id))
 		}
-		pkOffsets[rowCount] = currentPKOffset
 	}
 
 	centroidOffset := uint64(HeaderSize)
@@ -340,7 +320,7 @@ func (w *Writer) Flush() error {
 	vectorOffset := codesOffset + codesSize
 	vectorSize := uint64(len(w.vectors)) * 4
 	pkOffset := vectorOffset + vectorSize
-	pkSize := uint64(len(pkOffsets)*4 + len(pkBlob))
+	pkSize := uint64(len(pkBlob))
 	metadataOffset := pkOffset + pkSize
 	metadataSize := uint64(len(metadataOffsets)*4 + len(metadataBlob))
 	blockStatsOffset := metadataOffset + metadataSize
@@ -443,12 +423,7 @@ func (w *Writer) Flush() error {
 		}
 	}
 
-	// 7. Write PKs
-	for _, o := range pkOffsets {
-		if err := binary.Write(mw, binary.LittleEndian, o); err != nil {
-			return err
-		}
-	}
+	// 7. Write IDs
 	if len(pkBlob) > 0 {
 		if _, err := mw.Write(pkBlob); err != nil {
 			return err

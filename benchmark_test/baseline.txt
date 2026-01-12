@@ -2,24 +2,20 @@ goos: darwin
 goarch: arm64
 pkg: github.com/hupe1980/vecgo/benchmark_test
 cpu: Apple M4 Pro
-BenchmarkBatchInsert/Sequential-14      	     296	   4032278 ns/op	    1954 B/op	      15 allocs/op
-BenchmarkBatchInsert/Batch-14           	     759	   3695044 ns/op	    1699 B/op	      13 allocs/op
-BenchmarkBatchSearch/Sequential-14      	    1569	    743917 ns/op	         1.000 recall@10	   12040 B/op	      20 allocs/op
-BenchmarkBatchSearch/Batch-14           	    7297	    159777 ns/op	         1.000 recall@10	   14828 B/op	      45 allocs/op
-BenchmarkIngest_Async-14                	    2298	   1445350 ns/op	    3325 B/op	      15 allocs/op
-BenchmarkIngest_Sync-14                 	     292	   4076524 ns/op	    1960 B/op	      15 allocs/op
-BenchmarkIngest_Async_Parallel-14       	    1921	   1268168 ns/op	    2530 B/op	      16 allocs/op
-BenchmarkIngest_Sync_Parallel-14        	     679	   3691464 ns/op	    1927 B/op	      15 allocs/op
-BenchmarkSearch_L0-14                   	   49890	     24120 ns/op	         0.9469 recall@10	    1239 B/op	       2 allocs/op
-BenchmarkCompaction_Pressure-14         	      70	  14626807 ns/op	 1641850 B/op	     885 allocs/op
-BenchmarkHybridSearch/VectorOnly-14     	    6126	    193810 ns/op	         1.000 recall@10	    1225 B/op	       2 allocs/op
-BenchmarkHybridSearch/Hybrid-14         	    5013	    237978 ns/op	         1.000 recall@10	   46447 B/op	      13 allocs/op
-BenchmarkHybridSearch/DAAT-14           	   36381	     33277 ns/op	         1.000 recall@10	    1178 B/op	       2 allocs/op
-BenchmarkBinaryQuantizer_Distance-14    	216508030	         5.789 ns/op	       0 B/op	       0 allocs/op
-BenchmarkSearch_Mixed-14                	  364626	      3328 ns/op	         1.000 recall@10	    1252 B/op	       2 allocs/op
-BenchmarkSearchFiltered-14              	    3207	    366063 ns/op	         1.000 recall@10	    1363 B/op	       4 allocs/op
-BenchmarkStorage_ReadRandom/Local_NVMe-14         	78913622	        15.19 ns/op	       0 B/op	       0 allocs/op
-BenchmarkStorage_ReadRandom/Simulated_S3_Direct-14         	      38	  30846226 ns/op	       0 B/op	       0 allocs/op
-BenchmarkStorage_ReadRandom/Cached_S3_Warm-14              	17651835	        67.30 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBatchInsert/Sequential-14      	    4214	    580119 ns/op	   47132 B/op	     119 allocs/op
+BenchmarkBatchInsert/Batch-14           	   14661	     83355 ns/op	   39761 B/op	     192 allocs/op
+BenchmarkBatchSearch/Sequential-14      	     932	   1240164 ns/op	         1.000 recall@10	    9448 B/op	      20 allocs/op
+BenchmarkBatchSearch/Batch-14           	    5206	    208452 ns/op	         1.000 recall@10	   32121 B/op	      85 allocs/op
+BenchmarkBulkLoad/Standard-14           	   12757	    101355 ns/op	   27767 B/op	     135 allocs/op
+BenchmarkBulkLoad/Deferred-14           	 5516574	      4012 ns/op	    8450 B/op	     132 allocs/op
+BenchmarkCompaction_Pressure-14         	   26782	   1434933 ns/op	  336138 B/op	     890 allocs/op
+BenchmarkHybridSearch/VectorOnly-14     	    5311	    211066 ns/op	         1.000 recall@10	    1441 B/op	       9 allocs/op
+BenchmarkHybridSearch/Hybrid-14         	    4455	    258328 ns/op	         1.000 recall@10	   23543 B/op	      19 allocs/op
+BenchmarkHybridSearch/DAAT-14           	   34138	     34396 ns/op	         1.000 recall@10	     920 B/op	       2 allocs/op
+BenchmarkInsertMicro/Deferred-14        	 5227273	       250.4 ns/op	    2149 B/op	       2 allocs/op
+BenchmarkBinaryQuantizer_Distance-14    	201019292	         6.111 ns/op	       0 B/op	       0 allocs/op
+BenchmarkStorage_ReadRandom/Local_NVMe-14         	76922874	        15.27 ns/op	       0 B/op	       0 allocs/op
+BenchmarkStorage_ReadRandom/Simulated_S3_Direct-14         	      38	  30915171 ns/op	       0 B/op	       0 allocs/op
+BenchmarkStorage_ReadRandom/Cached_S3_Warm-14              	 4757004	       233.9 ns/op	     272 B/op	       4 allocs/op
 PASS
-ok  	github.com/hupe1980/vecgo/benchmark_test	351.834s
+ok  	github.com/hupe1980/vecgo/benchmark_test	83.034s

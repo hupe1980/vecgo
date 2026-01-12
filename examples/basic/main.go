@@ -16,28 +16,26 @@ func main() {
 	defer os.RemoveAll(dir)
 
 	// 1. Open the engine
-	// Dimension 4, L2 distance
-	eng, err := vecgo.Open(dir, 4, vecgo.MetricL2)
+	// New unified API: Open(source, opts...)
+	// Use Create(dim, metric) when creating a new index
+	eng, err := vecgo.Open(dir, vecgo.Create(4, vecgo.MetricL2))
 	if err != nil {
 		log.Fatalf("Failed to open engine: %v", err)
 	}
 	defer eng.Close()
 
 	// 2. Insert vectors
-	vectors := []struct {
-		id  uint64
-		vec []float32
-	}{
-		{1, []float32{1.0, 0.0, 0.0, 0.0}},
-		{2, []float32{0.0, 1.0, 0.0, 0.0}},
-		{3, []float32{0.0, 0.0, 1.0, 0.0}},
-		{4, []float32{0.0, 0.0, 0.0, 1.0}},
-		{5, []float32{0.5, 0.5, 0.0, 0.0}},
+	vectors := [][]float32{
+		{1.0, 0.0, 0.0, 0.0},
+		{0.0, 1.0, 0.0, 0.0},
+		{0.0, 0.0, 1.0, 0.0},
+		{0.0, 0.0, 0.0, 1.0},
+		{0.5, 0.5, 0.0, 0.0},
 	}
 
 	fmt.Println("Inserting vectors...")
 	for _, v := range vectors {
-		if err := eng.Insert(vecgo.PKUint64(v.id), v.vec, nil, nil); err != nil {
+		if _, err := eng.Insert(v, nil, nil); err != nil {
 			log.Fatalf("Insert failed: %v", err)
 		}
 	}
@@ -56,7 +54,7 @@ func main() {
 	}
 
 	for i, res := range results {
-		fmt.Printf("%d. PK: %v, Score: %.4f\n", i+1, res.PK, res.Score)
+		fmt.Printf("%d. ID: %v, Score: %.4f\n", i+1, res.ID, res.Score)
 	}
 
 	// 4. Flush (force persistence)

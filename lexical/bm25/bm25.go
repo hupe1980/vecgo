@@ -25,8 +25,8 @@ type MemoryIndex struct {
 	mu sync.RWMutex
 
 	// Mappings
-	pkToDocID map[model.PK]uint32
-	docIDToPK []model.PK
+	pkToDocID map[model.ID]uint32
+	docIDToPK []model.ID
 	freeIDs   []uint32 // Reusable IDs from deleted docs
 
 	// Dense Data
@@ -46,8 +46,8 @@ type MemoryIndex struct {
 // New creates a new MemoryIndex.
 func New() *MemoryIndex {
 	return &MemoryIndex{
-		pkToDocID:  make(map[model.PK]uint32),
-		docIDToPK:  make([]model.PK, 0),
+		pkToDocID:  make(map[model.ID]uint32),
+		docIDToPK:  make([]model.ID, 0),
 		docLengths: make([]uint32, 0),
 		inverted:   make(map[string][]posting),
 		scorePool: sync.Pool{
@@ -91,13 +91,13 @@ func (idx *MemoryIndex) forEachToken(text string, fn func(token string)) {
 	}
 }
 
-func (idx *MemoryIndex) Add(pk model.PK, text string) error {
+func (idx *MemoryIndex) Add(id model.ID, text string) error {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
 	// If exists, delete first
-	if _, ok := idx.pkToDocID[pk]; ok {
-		idx.deleteLocked(pk)
+	if _, ok := idx.pkToDocID[id]; ok {
+		idx.deleteLocked(id)
 	}
 
 	// Allocate DocID
@@ -106,12 +106,12 @@ func (idx *MemoryIndex) Add(pk model.PK, text string) error {
 		docID = idx.freeIDs[len(idx.freeIDs)-1]
 		idx.freeIDs = idx.freeIDs[:len(idx.freeIDs)-1]
 		// Update mappings
-		idx.pkToDocID[pk] = docID
-		idx.docIDToPK[docID] = pk
+		idx.pkToDocID[id] = docID
+		idx.docIDToPK[docID] = id
 	} else {
 		docID = uint32(len(idx.docIDToPK))
-		idx.pkToDocID[pk] = docID
-		idx.docIDToPK = append(idx.docIDToPK, pk)
+		idx.pkToDocID[id] = docID
+		idx.docIDToPK = append(idx.docIDToPK, id)
 		idx.docLengths = append(idx.docLengths, 0)
 	}
 
@@ -133,14 +133,14 @@ func (idx *MemoryIndex) Add(pk model.PK, text string) error {
 	return nil
 }
 
-func (idx *MemoryIndex) Delete(pk model.PK) error {
+func (idx *MemoryIndex) Delete(id model.ID) error {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
-	return idx.deleteLocked(pk)
+	return idx.deleteLocked(id)
 }
 
-func (idx *MemoryIndex) deleteLocked(pk model.PK) error {
-	docID, ok := idx.pkToDocID[pk]
+func (idx *MemoryIndex) deleteLocked(id model.ID) error {
+	docID, ok := idx.pkToDocID[id]
 	if !ok {
 		return nil
 	}
@@ -165,10 +165,10 @@ func (idx *MemoryIndex) deleteLocked(pk model.PK) error {
 
 	// Clear dense data
 	idx.docLengths[docID] = 0
-	idx.docIDToPK[docID] = model.PK{} // Sentinel for deleted
+	idx.docIDToPK[docID] = 0 // Sentinel for deleted
 
 	// Remove mapping
-	delete(idx.pkToDocID, pk)
+	delete(idx.pkToDocID, id)
 
 	// Add to free list
 	idx.freeIDs = append(idx.freeIDs, docID)
@@ -238,15 +238,15 @@ func (idx *MemoryIndex) Search(text string, k int) ([]model.Candidate, error) {
 			continue
 		}
 
-		pk := idx.docIDToPK[docID]
+		id := idx.docIDToPK[docID]
 		// Check if deleted (pk == 0 check if 0 is invalid PK, but 0 is valid PK)
 		// However, if we deleted it, we removed it from inverted index, so score should be 0!
 		// So score > 0 implies valid docID.
 
 		if len(*h) < k {
-			h.push(model.Candidate{PK: pk, Score: score})
+			h.push(model.Candidate{ID: id, Score: score})
 		} else if score > (*h)[0].Score {
-			(*h)[0] = model.Candidate{PK: pk, Score: score}
+			(*h)[0] = model.Candidate{ID: id, Score: score}
 			h.down(0, len(*h))
 		}
 	}

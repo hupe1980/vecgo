@@ -6,7 +6,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/hupe1980/vecgo/cache"
+	"github.com/hupe1980/vecgo/internal/cache"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -48,8 +48,15 @@ func (m *mockStore) Open(ctx context.Context, name string) (Blob, error) {
 	return nil, ErrNotFound
 }
 func (m *mockStore) Create(ctx context.Context, name string) (WritableBlob, error) { return nil, nil }
-func (m *mockStore) Delete(ctx context.Context, name string) error                 { return nil }
-func (m *mockStore) List(ctx context.Context, prefix string) ([]string, error)     { return nil, nil }
+func (m *mockStore) Put(ctx context.Context, name string, data []byte) error {
+	if m.blobs == nil {
+		m.blobs = make(map[string]*mockBlob)
+	}
+	m.blobs[name] = &mockBlob{data: data}
+	return nil
+}
+func (m *mockStore) Delete(ctx context.Context, name string) error             { return nil }
+func (m *mockStore) List(ctx context.Context, prefix string) ([]string, error) { return nil, nil }
 
 func TestCachingStore_ReadAt(t *testing.T) {
 	// Setup

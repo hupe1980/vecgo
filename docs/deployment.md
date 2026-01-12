@@ -20,7 +20,8 @@ However, Vecgo's presence introduces stateful requirements.
     store := s3.NewStore(client, "my-bucket", "prefix")
     engine.Open(..., engine.WithBlobStore(store), engine.WithBlockCacheSize(4*1024*1024*1024))
     ```
-*   **Caveat**: WAL, Manifest, and PK Index are currently still **local**. Only immutable segments are offloaded. 
+*   **Caveat**: WAL and Manifest are currently still **local**. Only immutable segments are offloaded.
+    *   The PK index is held in memory and is rebuilt at startup by scanning segment PK columns (rather than being persisted as a separate artifact).
     *   *Note: Truly stateless shared-storage requires specific coordination not yet fully GA in v1.0.*
 
 ## Resource Sizing

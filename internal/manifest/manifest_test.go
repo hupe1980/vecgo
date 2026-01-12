@@ -1,12 +1,14 @@
 package manifest
 
 import (
-	"encoding/json"
+	"context"
+	"encoding/binary"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/hupe1980/vecgo/internal/fs"
+	"github.com/hupe1980/vecgo/blobstore"
 	"github.com/hupe1980/vecgo/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -14,7 +16,7 @@ import (
 
 func TestManifestVersioning(t *testing.T) {
 	dir := t.TempDir()
-	store := NewStore(nil, dir)
+	store := NewStore(blobstore.NewLocalStore(dir))
 
 	// 1. Save a manifest
 	m := &Manifest{
@@ -34,42 +36,41 @@ func TestManifestVersioning(t *testing.T) {
 	require.NoError(t, err)
 	manifestPath := filepath.Join(dir, string(currentContent))
 
-	// Read JSON
+	// Read Binary
 	data, err := os.ReadFile(manifestPath)
 	require.NoError(t, err)
 
-	var raw map[string]interface{}
-	err = json.Unmarshal(data, &raw)
-	require.NoError(t, err)
+	// Verify it's binary by checking magic
+	require.Greater(t, len(data), 4)
+	magic := binary.LittleEndian.Uint32(data[0:4])
+	require.Equal(t, uint32(binaryMagic), magic)
 
-	// Modify version
-	raw["version"] = 999
-	newData, err := json.Marshal(raw)
-	require.NoError(t, err)
+	// Modify version (bytes 4-8) - Assuming header structure
+	// Magic(4) + Version(4)
+	binary.LittleEndian.PutUint32(data[4:8], 999)
 
 	// Write back
-	err = os.WriteFile(manifestPath, newData, 0644)
+	err = os.WriteFile(manifestPath, data, 0644)
 	require.NoError(t, err)
 
 	// 4. Load again - should fail
 	_, err = store.Load()
 	assert.Error(t, err)
-	assert.ErrorIs(t, err, ErrIncompatibleVersion)
+	// Error comes from ReadBinary validation
+	assert.Contains(t, err.Error(), "unsupported version")
 }
 
 func TestStore(t *testing.T) {
 	dir := t.TempDir()
 
-	fsys := fs.LocalFS{}
-	store := NewStore(fsys, dir)
+	store := NewStore(blobstore.NewLocalStore(dir))
 
-	// 1. Load on empty -> default manifest
-	m, err := store.Load()
-	require.NoError(t, err)
-	assert.Equal(t, uint64(0), m.ID)
-	assert.Equal(t, CurrentVersion, m.Version)
+	// 1. Load on empty -> ErrNotFound (no CURRENT file)
+	_, err := store.Load()
+	require.ErrorIs(t, err, ErrNotFound)
 
-	// 2. Save (increments ID)
+	// 2. Create and Save a manifest
+	m := New(128, "L2")
 	m.NextSegmentID = 100
 	err = store.Save(m)
 	require.NoError(t, err)
@@ -89,7 +90,7 @@ func TestStore(t *testing.T) {
 	err = store.Save(m)
 	require.NoError(t, err)
 	assert.Equal(t, uint64(2), m.ID)
-	
+
 	m3, err := store.Load()
 	require.NoError(t, err)
 	assert.Equal(t, uint64(2), m3.ID)
@@ -97,8 +98,7 @@ func TestStore(t *testing.T) {
 
 func TestStore_LoadErrors(t *testing.T) {
 	dir := t.TempDir()
-	fsys := fs.LocalFS{}
-	store := NewStore(fsys, dir)
+	store := NewStore(blobstore.NewLocalStore(dir))
 
 	// Create a corrupted CURRENT file
 	currentPath := filepath.Join(dir, "CURRENT")
@@ -109,52 +109,38 @@ func TestStore_LoadErrors(t *testing.T) {
 	assert.Error(t, err) // Should fail to read the manifest file
 }
 
-type MockFS struct {
-	fs.LocalFS
-	FailOpenFile bool
-	FailRename   bool
+type MockBlobStore struct {
+	PutFunc func(ctx context.Context, name string, data []byte) error
+	blobstore.BlobStore
 }
 
-func (m MockFS) OpenFile(name string, flag int, perm os.FileMode) (fs.File, error) {
-	if m.FailOpenFile {
-		return nil, assert.AnError
+func (m MockBlobStore) Put(ctx context.Context, name string, data []byte) error {
+	if m.PutFunc != nil {
+		return m.PutFunc(ctx, name, data)
 	}
-	return m.LocalFS.OpenFile(name, flag, perm)
+	return nil
 }
 
-func (m MockFS) Rename(oldpath, newpath string) error {
-	if m.FailRename {
-		return assert.AnError
-	}
-	return m.LocalFS.Rename(oldpath, newpath)
+func (m MockBlobStore) Open(ctx context.Context, name string) (blobstore.Blob, error) {
+	return nil, blobstore.ErrNotFound
 }
+
+func (m MockBlobStore) Create(ctx context.Context, name string) (blobstore.WritableBlob, error) {
+	return nil, nil
+}
+func (m MockBlobStore) Delete(ctx context.Context, name string) error             { return nil }
+func (m MockBlobStore) List(ctx context.Context, prefix string) ([]string, error) { return nil, nil }
 
 func TestStore_SaveErrors(t *testing.T) {
-	dir := t.TempDir()
-	
-	t.Run("OpenFile Error", func(t *testing.T) {
-		fsys := MockFS{FailOpenFile: true}
-		store := NewStore(fsys, dir)
-		err := store.Save(&Manifest{})
-		assert.Error(t, err)
-	})
+	// Test failure during Put
+	mockStore := MockBlobStore{
+		PutFunc: func(ctx context.Context, name string, data []byte) error {
+			return errors.New("simulated put error")
+		},
+	}
 
-	t.Run("Rename Error", func(t *testing.T) {
-		fsys := MockFS{FailRename: true}
-		store := NewStore(fsys, dir)
-		err := store.Save(&Manifest{})
-		assert.Error(t, err)
-	})
-}
-
-func TestStore_SaveErrors_Write(t *testing.T) {
-	dir := t.TempDir()
-	
-	// Use FaultyFS to fail writes
-	fsys := fs.NewFaultyFS(fs.LocalFS{})
-	fsys.SetLimit(10) // Small limit to fail early
-	
-	store := NewStore(fsys, dir)
-	err := store.Save(&Manifest{ID: 1})
+	store := NewStore(mockStore)
+	err := store.Save(&Manifest{})
 	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "simulated put error")
 }

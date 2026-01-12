@@ -1,54 +1,85 @@
-# Vecgo Crash Recovery Architecture
+# Vecgo Durability Architecture
 
 ## Overview
 
-Vecgo uses a **Write-Ahead Log (WAL)** and **Immutable Segments** to ensure durability (ACID).
-The recovery process runs automatically on `vector.Open()`.
+Vecgo uses a **Commit-Oriented** architecture with **Immutable Segments** to ensure durability.
+This is the same pattern used by LanceDB and Git — append-only versioned commits with atomic manifest updates. Unlike WAL-based databases (PostgreSQL, DuckDB), no write-ahead log is required.
 
-## Durability Hierarchy
+## Durability Model
 
-1.  **WAL**: Append-only log of all operations (Insert/Delete). Synced to disk based on configuration (`FsyncEvery`).
-2.  **MemTable**: In-memory mutable structure. Reconstructed from WAL on startup if not flushed.
-3.  **L0 Segment**: First on-disk immutable structure. Created by Flushing MemTable.
-4.  **Tombstones**: Bitmaps tracking deleted rows in immutable segments.
+**Key Principle:** Data is durable only after an explicit `Commit()` (or `Flush()`) call.
+
+| State | Survives Crash? | Description |
+|-------|-----------------|-------------|
+| Before `Insert()` | N/A | - |
+| After `Insert()`, before `Commit()` | ❌ No | Data is buffered in MemTable (memory only) |
+| After `Commit()` | ✅ Yes | Data is written to immutable segment |
+| After `Close()` | ✅ Yes | `Close()` auto-commits pending data |
+
+This is the same contract as SQLite's explicit transaction mode or Git commits.
+
+## Storage Hierarchy
+
+1.  **MemTable**: In-memory mutable structure (HNSW index). **Not durable until committed.**
+2.  **Immutable Segments**: On-disk segments created by `Commit()`. Source of truth.
+3.  **Tombstones**: Per-segment deletion markers (persisted on close).
+4.  **PK Index Checkpoint**: Snapshot of the Primary Key Index (speeds up restart).
+5.  **Manifest**: Atomic pointer to current database state (segments, PK index path).
 
 ## Crash Scenarios & Recovery
 
-### 1. Crash during Insert (WAL Append)
-*   **State**: Partial bytes written to `wal_N.log`.
-*   **Recovery**: 
-    1.  WAL Reader detects unexpected EOF or checksum mismatch.
-    2.  Truncates WAL at last valid record.
-    3.  Partial record is discarded (not acknowledged to user, so no data loss vs contract).
+### 1. Crash Before Commit
+*   **State**: Data exists only in MemTable (memory).
+*   **Recovery**: On restart, only committed segments are visible. Uncommitted data is lost (by design).
+*   **User Expectation**: Users know uncommitted data is at-risk, same as any database transaction.
 
-### 2. Crash during Flush
-*   **State**: Temporary segment file `segment_123.bin.tmp` exists. Manifest points to older generation. WAL is full.
+### 2. Crash During Commit (Segment Write)
+*   **State**: Temporary segment file `segment_123.bin.tmp` exists. Manifest points to previous generation.
 *   **Recovery**:
-    1.  `Open` loads Manifest.
-    2.  Scans directory for `segment_*.bin`.
+    1.  `Open` loads Manifest (Source of Truth).
+    2.  Scans directory for `segment_*` files.
     3.  Identifies files NOT in Manifest (orphans).
-    4.  Deletes `*.tmp` and orphan `.bin` files.
-    5.  Replays WAL from the checkpoint recorded in Manifest.
-    6.  Restores MemTable.
+    4.  Deletes orphan files to reclaim space.
+    5.  System starts with consistent state from last successful commit.
 
-### 3. Crash during Compaction
+### 3. Crash During Compaction
 *   **State**: `segment_merged.bin` might exist. Inputs `segment_A.bin` and `segment_B.bin` still exist. Manifest points to A and B.
 *   **Recovery**: 
     1.  Loads Manifest (points to A, B).
-    2.  Detects `segment_merged.bin` as orphan.
+    2.  Detects `segment_merged.bin` as orphan (ID not in manifest).
     3.  Deletes orphan.
     4.  System starts with A and B intact. Compaction will be re-scheduled.
 
-### 4. Crash during Manifest Update
-*   **State**: `manifest.json.tmp` fully written. Rename to `manifest.json` failed/interrupted.
+### 4. Crash During Manifest Update
+*   **State**: `MANIFEST-NNNNNN.bin` fully written. `CURRENT` file update failed.
 *   **Recovery**:
-    1.  FS guarantees atomic rename (POSIX).
-    2.  If `manifest.json` exists, use it.
-    3.  If only old manifest exists, use it (new state effectively rolled back).
-    4.  If `manifest.json` is corrupt (partial write without tmp?), `ErrIncompatibleFormat` or `ErrCorrupt`. Vecgo uses `manifest.current` pointer file or atomic rename to avoid this.
+    1.  `CURRENT` file points to the last successfully committed manifest.
+    2.  Orphan manifest files are safe to ignore (or clean up).
+    3.  System starts from last known good state.
 
 ## Invariants
 
-*   **Idempotency**: WAL replay produces identical MemTable state.
 *   **Atomicity**: Segment visibility toggles instantly via Manifest update.
-*   **No Data Loss**: Any ack'd write (if Sync=true) is in WAL or Segment.
+*   **Consistency**: Only committed data is visible after restart.
+*   **Durability**: Committed data survives any crash.
+*   **Simplicity**: No WAL replay, no recovery logs, instant startup.
+
+## Why No WAL?
+
+Traditional databases use Write-Ahead Logging (WAL) for single-row transaction durability.
+Vector databases have different workload characteristics:
+
+| Workload | Pattern | Needs WAL? |
+|----------|---------|------------|
+| **RAG pipelines** | Batch embed → batch insert → commit | ❌ No |
+| **Semantic search** | Build index offline → deploy → query | ❌ No |
+| **Recommendations** | Periodic batch updates → serve queries | ❌ No |
+| **ML embeddings** | Checkpoint after training epoch | ❌ No |
+
+The commit-oriented model eliminates:
+- WAL rotation complexity
+- Crash recovery replay time
+- Checkpointing overhead
+- ~500+ lines of recovery code
+
+This is the same approach used by LanceDB (Databricks) and Git — append-only versioned commits without WAL.

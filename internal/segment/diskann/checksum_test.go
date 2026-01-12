@@ -24,7 +24,7 @@ func TestChecksum(t *testing.T) {
 
 	opts := DefaultOptions()
 	w := NewWriter(f, nil, 1, 2, distance.MetricL2, opts)
-	err = w.Add(model.PKUint64(1), []float32{1.0, 0.0}, nil, nil)
+	err = w.Add(model.ID(1), []float32{1.0, 0.0}, nil, nil)
 	require.NoError(t, err)
 
 	// We don't need to build the graph for this test, just flush vectors.

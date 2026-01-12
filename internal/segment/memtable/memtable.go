@@ -8,350 +8,281 @@ import (
 
 	"github.com/hupe1980/vecgo/distance"
 	"github.com/hupe1980/vecgo/internal/arena"
-	idxhnsw "github.com/hupe1980/vecgo/internal/hnsw"
+	imetadata "github.com/hupe1980/vecgo/internal/metadata"
 	"github.com/hupe1980/vecgo/internal/searcher"
 	"github.com/hupe1980/vecgo/internal/segment"
 	"github.com/hupe1980/vecgo/metadata"
 	"github.com/hupe1980/vecgo/model"
-	"github.com/hupe1980/vecgo/vectorstore"
 )
 
-// MemTable is a mutable in-memory segment backed by HNSW.
-type MemTable struct {
-	mu       sync.RWMutex
-	refs     int64
-	id       model.SegmentID
-	dim      int
-	metric   distance.Metric
-	idx      *idxhnsw.HNSW
-	vectors  vectorstore.VectorStore
-	pks      []model.PK
-	metadata []metadata.InternedDocument
-	payloads [][]byte
-	columns  map[string]Column
+const (
+	shardBits  = 4
+	shardCount = 1 << shardBits // 16
+	shardMask  = shardCount - 1
+	rowIdMask  = (1 << (32 - shardBits)) - 1 // 28 bits
+)
+
+// Pool for rerank shard dispatch slices to reduce allocations in hot path
+var rerankByShardPool = sync.Pool{
+	New: func() any {
+		// Pre-allocate slice of slices
+		s := make([][]model.Candidate, shardCount)
+		return &s
+	},
 }
 
-// New creates a new MemTable.
+// fetchIDReq is a request for FetchIDs dispatch
+type fetchIDReq struct {
+	origIdx int
+	rowID   uint32
+}
+
+// Pool for FetchIDs shard dispatch
+var fetchIDReqsPool = sync.Pool{
+	New: func() any {
+		s := make([][]fetchIDReq, shardCount)
+		return &s
+	},
+}
+
+type MemTable struct {
+	id     model.SegmentID // This L0 segment ID
+	shards []*shard
+	refs   int64
+}
+
+// Close releases resources held by the memtable.
+func (m *MemTable) Close() error {
+	var errs []error
+	for _, s := range m.shards {
+		if err := s.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("memtable close errors: %v", errs)
+	}
+	return nil
+}
+
 func New(id model.SegmentID, dim int, metric distance.Metric, acquirer arena.MemoryAcquirer) (*MemTable, error) {
-	store, err := vectorstore.New(dim)
-	if err != nil {
-		return nil, err
+	shards := make([]*shard, shardCount)
+	for i := 0; i < shardCount; i++ {
+		s, err := newShard(id, uint8(i), dim, metric, acquirer)
+		if err != nil {
+			// Cleanup already created shards
+			for j := 0; j < i; j++ {
+				shards[j].Close()
+			}
+			return nil, err
+		}
+		shards[i] = s
 	}
-
-	// Configure HNSW for L0:
-	// - M=32, EF=300 (tuned for higher recall)
-	// - Use the shared vector store
-	opts := idxhnsw.DefaultOptions
-	opts.M = 32
-	opts.EF = 300
-	opts.Dimension = dim
-	opts.DistanceType = metric
-	opts.Vectors = store
-	opts.MemoryAcquirer = acquirer
-	opts.InitialArenaSize = 4 * 1024 * 1024 // 4MB initial chunk size
-
-	h, err := idxhnsw.New(func(o *idxhnsw.Options) {
-		*o = opts
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create memtable hnsw: %w", err)
-	}
-
 	return &MemTable{
-		refs:     1,
-		id:       id,
-		dim:      dim,
-		metric:   metric,
-		idx:      h,
-		vectors:  store,
-		pks:      make([]model.PK, 0, 1024),
-		metadata: make([]metadata.InternedDocument, 0, 1024),
-		columns:  make(map[string]Column),
+		id:     id,
+		shards: shards,
+		refs:   1,
 	}, nil
 }
 
-// IncRef increments the reference count.
 func (m *MemTable) IncRef() {
 	atomic.AddInt64(&m.refs, 1)
 }
 
-// DecRef decrements the reference count and closes the memtable if it reaches zero.
 func (m *MemTable) DecRef() {
 	if atomic.AddInt64(&m.refs, -1) == 0 {
-		m.closeInternal()
+		m.Close()
 	}
 }
-
-// Insert adds a vector to the memtable.
-// Returns the assigned RowID.
-func (m *MemTable) Insert(pk model.PK, vec []float32) (model.RowID, error) {
-	return m.InsertWithPayload(pk, vec, nil, nil)
-}
-
-// InsertWithPayload adds a vector and metadata to the memtable.
-func (m *MemTable) InsertWithPayload(pk model.PK, vec []float32, md metadata.Document, payload []byte) (model.RowID, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if m.idx == nil {
-		return 0, fmt.Errorf("memtable is closed")
-	}
-
-	// Insert into HNSW (this also adds to the vector store via the interface)
-	id, err := m.idx.Insert(context.Background(), vec)
-	if err != nil {
-		return 0, err
-	}
-
-	// Intern metadata
-	var interned metadata.InternedDocument
-	if md != nil {
-		interned = metadata.Intern(md)
-	}
-
-	// Track PK, Metadata, and Payload
-	if int(id) == len(m.pks) {
-		m.pks = append(m.pks, pk)
-		m.metadata = append(m.metadata, interned)
-		m.payloads = append(m.payloads, payload)
-	} else if int(id) < len(m.pks) {
-		m.pks[id] = pk
-		m.metadata[id] = interned
-		m.payloads[id] = payload
-	} else {
-		// Resize if needed
-		if int(id) >= cap(m.pks) {
-			newPks := make([]model.PK, int(id)+1, int(id)*2)
-			copy(newPks, m.pks)
-			m.pks = newPks
-
-			newMd := make([]metadata.InternedDocument, int(id)+1, int(id)*2)
-			copy(newMd, m.metadata)
-			m.metadata = newMd
-
-			newPayloads := make([][]byte, int(id)+1, int(id)*2)
-			copy(newPayloads, m.payloads)
-			m.payloads = newPayloads
-		} else {
-			m.pks = m.pks[:int(id)+1]
-			m.metadata = m.metadata[:int(id)+1]
-			m.payloads = m.payloads[:int(id)+1]
-		}
-		m.pks[id] = pk
-		m.metadata[id] = interned
-		m.payloads[id] = payload
-	}
-
-	// Sync columnar metadata
-	targetLen := len(m.pks)
-	idInt := int(id)
-
-	// 1. Sync existing columns
-	for key, col := range m.columns {
-		val, hasVal := md[key]
-		// Determine valid value to set/append
-		var v metadata.Value
-		if hasVal {
-			v = val
-		}
-
-		// Ensure column catches up to targetLen - 1 (backfill if needed)
-		for col.Len() < targetLen-1 {
-			col.Append(metadata.Value{}) // Append nulls
-		}
-
-		if col.Len() == targetLen {
-			// Row exists in column, update it
-			// If !hasVal, v is Null, Set will mark invalid
-			col.Set(idInt, v)
-		} else {
-			// Append new row
-			col.Append(v)
-		}
-	}
-
-	// 2. Handle new columns
-	for key, val := range md {
-		if _, exists := m.columns[key]; !exists {
-			col, err := createColumn(val.Kind, cap(m.pks))
-			if err == nil {
-				// Grow to full size (all nulls)
-				col.Grow(targetLen)
-				// Set the specific value for this ID
-				col.Set(idInt, val)
-				m.columns[key] = col
-			}
-		}
-	}
-
-	return model.RowID(id), nil
-}
-
-// Delete marks a RowID as deleted.
-func (m *MemTable) Delete(rowID model.RowID) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if m.idx == nil {
-		return
-	}
-
-	// HNSW handles tombstones
-	// We assume internal/hnsw has a Delete method.
-	// If not, we need to check.
-	// Checking... internal/hnsw/hnsw.go has Delete(id).
-	_ = m.idx.Delete(context.Background(), rowID)
-}
-
-// Segment Interface Implementation
 
 func (m *MemTable) ID() model.SegmentID {
 	return m.id
 }
 
 func (m *MemTable) RowCount() uint32 {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if m.idx == nil {
-		return 0
+	var count uint32
+	for _, s := range m.shards {
+		count += s.RowCount()
 	}
-	return uint32(m.idx.VectorCount())
+	return count
 }
 
 func (m *MemTable) Metric() distance.Metric {
-	return m.metric
+	if len(m.shards) > 0 {
+		return m.shards[0].Metric()
+	}
+	return distance.MetricL2
+}
+
+func (m *MemTable) Size() int64 {
+	var size int64
+	for _, s := range m.shards {
+		size += s.Size()
+	}
+	return size
+}
+
+// Advise is a no-op
+func (m *MemTable) Advise(pattern segment.AccessPattern) error {
+	return nil
+}
+
+// Write/Update Ops
+
+func (m *MemTable) Insert(id model.ID, vec []float32) (model.RowID, error) {
+	return m.InsertWithPayload(id, vec, nil, nil)
+}
+
+func (m *MemTable) InsertWithPayload(id model.ID, vec []float32, md metadata.Document, payload []byte) (model.RowID, error) {
+	shardIdx := int(id & shardMask) // e.g. id % 16
+	s := m.shards[shardIdx]
+
+	localRowID, err := s.InsertWithPayload(id, vec, md, payload)
+	if err != nil {
+		return 0, err
+	}
+
+	// Encode Global RowID
+	if localRowID > rowIdMask {
+		return 0, fmt.Errorf("local rowID overflow")
+	}
+
+	return (model.RowID(shardIdx) << 28) | localRowID, nil
+}
+
+func (m *MemTable) InsertDeferred(id model.ID, vec []float32, md metadata.Document, payload []byte) (model.RowID, error) {
+	shardIdx := int(id & shardMask)
+	s := m.shards[shardIdx]
+
+	localRowID, err := s.InsertDeferred(id, vec, md, payload)
+	if err != nil {
+		return 0, err
+	}
+
+	if localRowID > rowIdMask {
+		return 0, fmt.Errorf("local rowID overflow")
+	}
+
+	return (model.RowID(shardIdx) << 28) | localRowID, nil
+}
+
+func (m *MemTable) Delete(rowID model.RowID) {
+	shardIdx := int(rowID >> 28)
+	localRowID := rowID & rowIdMask
+
+	if shardIdx < len(m.shards) {
+		m.shards[shardIdx].Delete(localRowID)
+	}
+}
+
+// Read Ops
+
+func (m *MemTable) GetID(rowID uint32) (model.ID, bool) {
+	shardIdx := int(rowID >> 28)
+	localRowID := rowID & rowIdMask
+
+	if shardIdx < len(m.shards) {
+		return m.shards[shardIdx].GetID(localRowID)
+	}
+	return 0, false
 }
 
 func (m *MemTable) Search(ctx context.Context, q []float32, k int, filter segment.Filter, opts model.SearchOptions, searcherCtx *searcher.Searcher) error {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	// Search all shards
+	// Sequential loop is fine as it avoids overhead of goroutines for MemTable (usually small latency)
+	// And allows re-using the same searcher/heap without mutex.
+	// Actually, wait. The Heap is global. `shard.Search` pushes to `searcherCtx.Heap`.
+	// Correct.
 
-	if m.idx == nil {
-		return fmt.Errorf("memtable is closed")
-	}
-
-	// Map segment.Filter to HNSW filter
-	var hnswFilter segment.Filter = filter
-
-	// Handle user metadata filter
-	if opts.Filter != nil {
-		hnswFilter = newColumnarFilterWrapper(filter, opts.Filter, m.columns)
-	}
-
-	hnswOpts := &idxhnsw.SearchOptions{
-		EFSearch: opts.NProbes,
-		Filter:   hnswFilter,
-	}
-	if hnswOpts.EFSearch == 0 {
-		// Default EFSearch logic:
-		// Ensure at least 200 for good recall, but scale with k.
-		hnswOpts.EFSearch = k + 100
-		if hnswOpts.EFSearch < 200 {
-			hnswOpts.EFSearch = 200
+	for _, s := range m.shards {
+		if err := s.Search(ctx, q, k, filter, opts, searcherCtx); err != nil {
+			return err
 		}
 	}
-
-	var s *searcher.Searcher
-	if searcherCtx != nil {
-		s = searcherCtx
-	} else {
-		s = searcher.Get()
-		defer searcher.Put(s)
-		// If we created a local searcher, we need to init the heap
-		s.Heap.Reset(m.metric != distance.MetricL2)
-	}
-
-	if err := m.idx.KNNSearchWithContext(ctx, s, q, k, hnswOpts); err != nil {
-		return err
-	}
-
-	// Extract results from s.Candidates (HNSW results) and push to s.Heap (Global results)
-	// s.Candidates is a MaxHeap (worst at top) of size EF.
-	// We want to take the best K from it and push to s.Heap.
-	// Actually, s.Candidates contains the best EF candidates found.
-	// We should push ALL of them (or at least the best K) to s.Heap.
-	// s.Heap will handle the global top-K logic.
-
-	results := s.Candidates
-	// Pop everything from results
-	for results.Len() > 0 {
-		item, _ := results.PopItem()
-		cand := model.Candidate{
-			Loc: model.Location{
-				SegmentID: m.id,
-				RowID:     model.RowID(item.Node),
-			},
-			Score:  item.Distance,
-			Approx: true,
-		}
-
-		if s.Heap.Len() < k {
-			s.Heap.Push(cand)
-		} else {
-			top := s.Heap.Candidates[0]
-			if searcher.CandidateBetter(cand, top, s.Heap.Descending()) {
-				s.Heap.ReplaceTop(cand)
-			}
-		}
-	}
-
 	return nil
 }
 
 func (m *MemTable) Rerank(ctx context.Context, q []float32, cands []model.Candidate, dst []model.Candidate) ([]model.Candidate, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	// We need to route candidates to shards
+	// But `shard.Rerank` expects a slice of candidates.
+	// We could split the slice OR just iterate shards and let them filter by `c.Loc.RowID`.
+	// But `shard.Rerank` filters by `c.Loc.SegmentID`.
+	// Both checks pass (same SegmentID).
+	// We need check by `RowID` shard index.
+	// `shard.Rerank` doesn't check shard index currently.
+	// It assumes it owns the SegmentID.
+	// Check `shard.Rerank`:
+	// if c.Loc.SegmentID != m.id { continue }
+	// rowID := uint32(c.Loc.RowID)
+	// vec, ok := m.vectors.GetVector(model.RowID(rowID))
 
-	if m.idx == nil {
-		return nil, fmt.Errorf("memtable is closed")
-	}
+	// If we pass a RowID belonging to Shard 1 to Shard 0:
+	// Shard 0: localRowID = RowID (if we don't mask).
+	// But global RowID has high bits set for Shard 1.
+	// Shard 0 will try to access vector at very high index (overflow or out of bounds).
+	// So we MUST dispatch correctly or update `shard.Rerank` to mask.
 
-	distFunc, err := distance.Provider(m.metric)
-	if err != nil {
-		return nil, err
+	// Update `shard.Rerank`?
+	// `shard.Rerank` uses `m.vectors.GetVector`.
+	// `VectorStore` assumes 0-based indexing.
+	// So we should group candidates by shard here.
+
+	// Get pooled slice of slices
+	byShardPtr := rerankByShardPool.Get().(*[][]model.Candidate)
+	byShard := *byShardPtr
+
+	// Clear previous contents
+	for i := range byShard {
+		byShard[i] = byShard[i][:0]
 	}
 
 	for _, c := range cands {
-		if c.Loc.SegmentID != m.id {
-			continue
+		shardIdx := int(c.Loc.RowID >> 28)
+		if shardIdx < shardCount {
+			localC := c
+			localC.Loc.RowID = c.Loc.RowID & rowIdMask
+			byShard[shardIdx] = append(byShard[shardIdx], localC)
 		}
-
-		rowID := uint32(c.Loc.RowID)
-		vec, ok := m.vectors.GetVector(model.RowID(rowID))
-		if !ok {
-			continue
-		}
-
-		// Check if deleted in HNSW?
-		// HNSW Delete marks tombstone but vector remains in store?
-		// We should check if HNSW considers it deleted.
-		// idx.ContainsID checks existence, but maybe not tombstone status?
-		// Actually, if it was returned by Search, it's not deleted.
-		// But Rerank might be called on candidates from other sources (if we had them).
-		// For MemTable, candidates come from Search.
-
-		dist := distFunc(q, vec)
-
-		c.Score = dist
-		c.Approx = false
-		dst = append(dst, c)
 	}
 
+	startIdx := len(dst)
+	for i, s := range m.shards {
+		if len(byShard[i]) > 0 {
+			var err error
+			dst, err = s.Rerank(ctx, q, byShard[i], dst)
+			if err != nil {
+				rerankByShardPool.Put(byShardPtr)
+				return nil, err
+			}
+			// Fixup the newly added candidates
+			for k := startIdx; k < len(dst); k++ {
+				// dst[k] has Local RowID.
+				// Restore Global.
+				dst[k].Loc.RowID = (model.RowID(i) << 28) | dst[k].Loc.RowID
+			}
+			startIdx = len(dst)
+		}
+	}
+
+	rerankByShardPool.Put(byShardPtr)
 	return dst, nil
 }
 
 func (m *MemTable) Fetch(ctx context.Context, rows []uint32, cols []string) (segment.RecordBatch, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	total := len(rows)
 
-	if m.idx == nil {
-		return nil, fmt.Errorf("memtable is closed")
+	// We need to hold partial results until merge.
+	// But `segment.RecordBatch` is interface.
+	// `memtable` uses `SimpleRecordBatch`.
+	// We can construct a combined batch.
+
+	resBatch := &segment.SimpleRecordBatch{
+		IDs: make([]model.ID, total),
 	}
-
+	// Detect columns
 	fetchVectors := cols == nil
 	fetchMetadata := cols == nil
 	fetchPayload := cols == nil
-
 	if cols != nil {
 		fetchVectors = false
 		for _, c := range cols {
@@ -365,165 +296,156 @@ func (m *MemTable) Fetch(ctx context.Context, rows []uint32, cols []string) (seg
 			}
 		}
 	}
-
-	batch := &segment.SimpleRecordBatch{
-		PKs: make([]model.PK, len(rows)),
-	}
 	if fetchVectors {
-		batch.Vectors = make([][]float32, len(rows))
+		resBatch.Vectors = make([][]float32, total)
 	}
 	if fetchMetadata {
-		batch.Metadatas = make([]metadata.Document, len(rows))
+		resBatch.Metadatas = make([]metadata.Document, total)
 	}
 	if fetchPayload {
-		batch.Payloads = make([][]byte, len(rows))
+		resBatch.Payloads = make([][]byte, total)
 	}
 
-	for i, rowID := range rows {
-		if int(rowID) >= len(m.pks) {
-			return nil, fmt.Errorf("rowID %d out of bounds", rowID)
+	type req struct {
+		origIdx int
+		rowID   uint32
+	}
+	shardReqs := make([][]req, shardCount)
+	for i, r := range rows {
+		sIdx := r >> 28
+		if int(sIdx) >= shardCount {
+			return nil, fmt.Errorf("invalid rowID %d", r)
+		}
+		shardReqs[sIdx] = append(shardReqs[sIdx], req{i, r & uint32(rowIdMask)})
+	}
+
+	for sIdx, reqs := range shardReqs {
+		if len(reqs) == 0 {
+			continue
 		}
 
-		batch.PKs[i] = m.pks[rowID]
+		rowIDs := make([]uint32, len(reqs))
+		for k, r := range reqs {
+			rowIDs[k] = r.rowID
+		}
 
-		if fetchVectors {
-			vec, ok := m.vectors.GetVector(model.RowID(rowID))
-			if !ok {
-				return nil, fmt.Errorf("vector not found for rowID %d", rowID)
+		subBatch, err := m.shards[sIdx].Fetch(ctx, rowIDs, cols)
+		if err != nil {
+			return nil, err
+		}
+
+		// Copy back
+		simple, ok := subBatch.(*segment.SimpleRecordBatch)
+		if !ok {
+			return nil, fmt.Errorf("unexpected batch type")
+		}
+
+		for k, r := range reqs {
+			resBatch.IDs[r.origIdx] = simple.IDs[k]
+			if fetchVectors {
+				resBatch.Vectors[r.origIdx] = simple.Vectors[k]
 			}
-
-			// Copy vector to avoid aliasing issues if store reuses memory (columnar usually doesn't but safe is better)
-			v := make([]float32, len(vec))
-			copy(v, vec)
-			batch.Vectors[i] = v
-		}
-
-		if fetchMetadata {
-			batch.Metadatas[i] = metadata.Unintern(m.metadata[rowID])
-		}
-
-		if fetchPayload {
-			batch.Payloads[i] = m.payloads[rowID]
+			if fetchMetadata {
+				resBatch.Metadatas[r.origIdx] = simple.Metadatas[k]
+			}
+			if fetchPayload {
+				resBatch.Payloads[r.origIdx] = simple.Payloads[k]
+			}
 		}
 	}
 
-	return batch, nil
+	return resBatch, nil
 }
 
-func (m *MemTable) FetchPKs(ctx context.Context, rows []uint32, dst []model.PK) error {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	if m.idx == nil {
-		return fmt.Errorf("memtable is closed")
-	}
-
+func (m *MemTable) FetchIDs(ctx context.Context, rows []uint32, dst []model.ID) error {
 	if len(dst) != len(rows) {
-		return fmt.Errorf("dst length mismatch")
+		return fmt.Errorf("dst length must match rows length")
 	}
 
-	for i, rowID := range rows {
-		if int(rowID) >= len(m.pks) {
-			return fmt.Errorf("rowID out of bounds")
-		}
-		dst[i] = m.pks[rowID]
+	// Get pooled slice of slices
+	shardReqsPtr := fetchIDReqsPool.Get().(*[][]fetchIDReq)
+	shardReqs := *shardReqsPtr
+
+	// Clear previous contents
+	for i := range shardReqs {
+		shardReqs[i] = shardReqs[i][:0]
 	}
+
+	for i, r := range rows {
+		sIdx := r >> 28
+		if int(sIdx) >= shardCount {
+			fetchIDReqsPool.Put(shardReqsPtr)
+			return fmt.Errorf("invalid rowID")
+		}
+		shardReqs[sIdx] = append(shardReqs[sIdx], fetchIDReq{i, r & uint32(rowIdMask)})
+	}
+
+	for sIdx, reqs := range shardReqs {
+		if len(reqs) == 0 {
+			continue
+		}
+
+		rowIDs := make([]uint32, len(reqs))
+		for k, r := range reqs {
+			rowIDs[k] = r.rowID
+		}
+
+		// Temp dst for this shard
+		tempDst := make([]model.ID, len(reqs))
+		if err := m.shards[sIdx].FetchIDs(ctx, rowIDs, tempDst); err != nil {
+			fetchIDReqsPool.Put(shardReqsPtr)
+			return err
+		}
+
+		for k, r := range reqs {
+			dst[r.origIdx] = tempDst[k]
+		}
+	}
+	fetchIDReqsPool.Put(shardReqsPtr)
 	return nil
 }
 
-// Iterate iterates over all valid (non-deleted) vectors in the memtable.
-func (m *MemTable) Iterate(fn func(rowID uint32, pk model.PK, vec []float32, md metadata.Document, payload []byte) error) error {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	if m.idx == nil {
-		return fmt.Errorf("memtable is closed")
+// EvaluateFilter returns a bitmap of rows matching the filter.
+func (m *MemTable) EvaluateFilter(ctx context.Context, filter *metadata.FilterSet) (segment.Bitmap, error) {
+	if filter == nil || len(filter.Filters) == 0 {
+		return nil, nil // All matches
 	}
 
-	// Iterate 0..NextID
-	// We can use pks length as upper bound
-	for i := 0; i < len(m.pks); i++ {
-		rowID := uint32(i)
-		// Check if deleted in HNSW
-		// idx.ContainsID might be useful
-		if !m.idx.ContainsID(uint64(rowID)) {
-			continue
+	result := imetadata.NewLocalBitmap()
+
+	for i, s := range m.shards {
+		shardBitmap, err := s.EvaluateFilter(ctx, filter)
+		if err != nil {
+			return nil, err
 		}
 
-		vec, ok := m.vectors.GetVector(model.RowID(rowID))
-		if !ok {
-			continue
-		}
+		if shardBitmap != nil {
+			// Shard-local offsets need to be shifted
+			shardOffset := uint32(i) << 28
 
-		var md metadata.Document
-		if i < len(m.metadata) {
-			interned := m.metadata[i]
-			if interned != nil {
-				md = make(metadata.Document, len(interned))
-				for k, v := range interned {
-					md[k.Value()] = v
-				}
-			}
+			shardBitmap.ForEach(func(id uint32) bool {
+				result.Add(id | shardOffset)
+				return true
+			})
 		}
+	}
+	return result, nil
+}
 
-		var payload []byte
-		if i < len(m.payloads) {
-			payload = m.payloads[i]
-		}
+func (m *MemTable) Iterate(fn func(rowID uint32, id model.ID, vec []float32, md metadata.Document, payload []byte) error) error {
+	// Iterate all shards
+	for sIdx, s := range m.shards {
+		// We need to yield Global RowIDs
+		// shard.Iterate yields Local RowIds.
+		base := uint32(sIdx) << 28
 
-		if err := fn(rowID, m.pks[i], vec, md, payload); err != nil {
+		err := s.Iterate(func(rid uint32, id model.ID, v []float32, md metadata.Document, p []byte) error {
+			globalRID := base | rid
+			return fn(globalRID, id, v, md, p)
+		})
+		if err != nil {
 			return err
 		}
 	}
-	return nil
-}
-
-// Size returns the estimated memory usage in bytes.
-func (m *MemTable) Size() int64 {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	if m.idx == nil {
-		return 0
-	}
-
-	size := int64(0)
-	// HNSW size
-	size += m.idx.Size()
-
-	// Vectors size
-	if s, ok := m.vectors.(interface{ Size() int64 }); ok {
-		size += s.Size()
-	}
-
-	// PKs size
-	// model.PK is struct { Kind uint8; U64 uint64; S string }
-	// Size is roughly 1 + 8 + 16 = 25 bytes + padding -> 32 bytes.
-	// Plus string content if any.
-	size += int64(cap(m.pks)) * 32
-
-	return size
-}
-
-func (m *MemTable) Close() error {
-	m.DecRef()
-	return nil
-}
-
-func (m *MemTable) closeInternal() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if m.idx != nil {
-		_ = m.idx.Close()
-	}
-
-	m.idx = nil
-	m.vectors = nil
-	m.pks = nil
-}
-
-// Advise is a no-op for MemTable.
-func (m *MemTable) Advise(pattern segment.AccessPattern) error {
 	return nil
 }

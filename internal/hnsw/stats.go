@@ -66,7 +66,7 @@ func (h *HNSW) countNodes(nodes *[]*NodeSegment) (active, deleted int) {
 			continue
 		}
 		for j := range seg {
-			if seg[j].Load() == nil {
+			if seg[j].Load() == 0 {
 				deleted++
 			} else {
 				active++
@@ -90,12 +90,12 @@ func (h *HNSW) collectLevelStats(g *graph, nodes *[]*NodeSegment, maxLevel int) 
 			continue
 		}
 		for j := range seg {
-			nodePtr := seg[j].Load()
-			if nodePtr == nil {
+			refPacked := seg[j].Load()
+			if refPacked == 0 {
 				continue
 			}
 
-			node := *nodePtr
+			node := Node{ref: nodeRef(refPacked)}
 			level := node.Level(g.arena)
 			if level < len(levelStats) {
 				levelStats[level]++

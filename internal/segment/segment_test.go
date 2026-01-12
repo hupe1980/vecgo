@@ -10,8 +10,8 @@ import (
 
 func TestSimpleRecordBatch(t *testing.T) {
 	// Create sample data
-	pk1 := model.PKString("doc1")
-	pk2 := model.PKString("doc2")
+	id1 := model.ID(1)
+	id2 := model.ID(2)
 	vec1 := []float32{1, 2}
 	vec2 := []float32{3, 4}
 	meta1 := metadata.Document{"k1": metadata.String("v1")}
@@ -20,7 +20,7 @@ func TestSimpleRecordBatch(t *testing.T) {
 	pay2 := []byte("p2")
 
 	batch := &SimpleRecordBatch{}
-	batch.PKs = []model.PK{pk1, pk2}
+	batch.IDs = []model.ID{id1, id2}
 	batch.Vectors = [][]float32{vec1, vec2}
 	batch.Metadatas = []metadata.Document{meta1, meta2}
 	batch.Payloads = [][]byte{pay1, pay2}
@@ -28,8 +28,8 @@ func TestSimpleRecordBatch(t *testing.T) {
 	assert.Equal(t, 2, batch.RowCount())
 
 	// Test Accessors
-	assert.Equal(t, pk1, batch.PK(0))
-	assert.Equal(t, pk2, batch.PK(1))
+	assert.Equal(t, id1, batch.ID(0))
+	assert.Equal(t, id2, batch.ID(1))
 
 	assert.Equal(t, vec1, batch.Vector(0))
 	assert.Equal(t, vec2, batch.Vector(1))
@@ -44,11 +44,11 @@ func TestSimpleRecordBatch(t *testing.T) {
 func TestSimpleRecordBatch_Partial(t *testing.T) {
 	// Only PKs
 	batch := &SimpleRecordBatch{
-		PKs: []model.PK{model.PKString("doc1")},
+		IDs: []model.ID{model.ID(1)},
 	}
 
 	assert.Equal(t, 1, batch.RowCount())
-	assert.Equal(t, model.PKString("doc1"), batch.PK(0))
+	assert.Equal(t, model.ID(1), batch.ID(0))
 
 	// Other fields nil
 	assert.Nil(t, batch.Vector(0))

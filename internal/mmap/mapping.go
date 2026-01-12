@@ -55,6 +55,27 @@ func Open(path string) (*Mapping, error) {
 	return m, nil
 }
 
+// MapAnon creates an anonymous memory mapping.
+// This is useful for allocating large chunks of memory outside the Go heap.
+func MapAnon(size int) (*Mapping, error) {
+	if size <= 0 {
+		return nil, ErrInvalidSize
+	}
+
+	data, unmapFunc, err := osMapAnon(size)
+	if err != nil {
+		return nil, err
+	}
+
+	m := &Mapping{
+		data:  data,
+		size:  size,
+		unmap: unmapFunc,
+	}
+
+	return m, nil
+}
+
 // Close unmaps the memory. It is idempotent.
 func (m *Mapping) Close() error {
 	if m.closed.Swap(true) {

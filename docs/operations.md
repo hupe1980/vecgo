@@ -4,13 +4,13 @@ This guide covers operational procedures for managing Vecgo in production.
 
 ## Monitoring
 
-Key metrics to alert on (via Prometheus/MetricsObserver):
+Key metrics to alert on (via a Prometheus `engine.MetricsObserver` implementation; see `examples/observability`):
 
 | Metric | Threshold | Investigation |
 |--------|-----------|---------------|
 | `vecgo_backpressure_events_total` | > 10 / min | System is overloaded. Increase memory limits or shard writes. |
-| `vecgo_compaction_queue_depth` | > 10 | Disk I/O bottleneck. Check disk IOPS or tune compaction policy. |
-| `vecgo_operation_latency_seconds{op="search", type="l0"}` | p99 > 100ms | CPU contention or unoptimized HNSW params. |
+| `vecgo_queue_depth{queue="compaction_queue"}` | > 0 (sustained) | Compaction is pending frequently. Check disk IOPS or tune compaction policy. |
+| `vecgo_operation_latency_seconds{op="search", status="success"}` | p99 > 100ms | CPU contention or slow filtered search / segment fanout. |
 | `vecgo_memtable_size_bytes` | > 90% of Limit | High write pressure. Check flush configuration. |
 
 ## Failure Scenarios
@@ -38,7 +38,7 @@ Key metrics to alert on (via Prometheus/MetricsObserver):
 - `ErrBackpressure` returned if `ResourceController` is effective.
 
 **Resolution**:
-1. Check `vecgo_memtable_size_bytes` and `vecgo_cache_size_bytes`.
+1. Check `vecgo_memtable_size_bytes`.
 2. Tune `WithResourceController` limits to be lower than container limit.
 3. Reduce `WithBlockCacheSize` (default 256MB).
 
@@ -49,7 +49,7 @@ Key metrics to alert on (via Prometheus/MetricsObserver):
 - Logs indicate "checksum mismatch" or "invalid magic".
 
 **Resolution**:
-1. **WAL Corruption**: Vecgo truncates corrupted tail entries automatically (if configured). Othwerise, manual truncation may be needed.
+1. **WAL Corruption**: Vecgo truncates corrupted tail entries automatically. Otherwise, manual truncation may be needed.
 2. **Segment Corruption**: Delete the corrupted `.bin` file. Vecgo will load remaining segments (might lose data in that segment).
 3. **Restore**: If manifest is corrupt, wipe directory and restore from backup.
 

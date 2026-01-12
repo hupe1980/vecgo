@@ -35,7 +35,7 @@ func TestPartitionedSegment(t *testing.T) {
 		cluster := i % 4
 		base := float32(cluster * 10)
 		vec := []float32{base + rand.Float32(), base + rand.Float32()}
-		err := w.Add(model.PKUint64(uint64(i)), vec, nil, nil)
+		err := w.Add(model.ID(i), vec, nil, nil)
 		require.NoError(t, err)
 	}
 

@@ -3,30 +3,29 @@ package fs
 import (
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 )
 
-// FaultyFS is a FileSystem wrapper that can inject errors.
-type FaultyFS struct {
-	FS             FileSystem
-	FailAfterBytes int64 // Fail writes after writing this many bytes
-	written        int64
-	mu             sync.Mutex
+// Fault defines specific failure behavior.
+type Fault struct {
+	FailAfterBytes int64 // Fail writes after this many bytes written TO THIS FILE. -1 to disable.
+	FailOnSync     bool
+	FailOnClose    bool
 	Err            error
 }
 
-// GetWritten returns the total bytes written so far.
-func (f *FaultyFS) GetWritten() int64 {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.written
-}
+// FaultyFS is a FileSystem wrapper that can inject errors.
+type FaultyFS struct {
+	FS      FileSystem
+	mu      sync.Mutex
+	rules   map[string]Fault // Filename pattern -> Fault
+	Default Fault            // Fallback
 
-// SetLimit sets the byte limit.
-func (f *FaultyFS) SetLimit(limit int64) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.FailAfterBytes = limit
+	// Compatibility fields (kept for existing tests)
+	Err         error
+	written     int64
+	globalLimit int64
 }
 
 // NewFaultyFS creates a new FaultyFS wrapping the provided FS (or Default if nil).
@@ -35,9 +34,35 @@ func NewFaultyFS(fs FileSystem) *FaultyFS {
 		fs = Default
 	}
 	return &FaultyFS{
-		FS:  fs,
-		Err: fmt.Errorf("injected fault error"),
+		FS:    fs,
+		rules: make(map[string]Fault),
+		Default: Fault{
+			FailAfterBytes: -1, // No limit
+		},
+		Err:         fmt.Errorf("injected fault error"),
+		globalLimit: -1,
 	}
+}
+
+// GetWritten returns the total bytes written so far (compatibility).
+func (f *FaultyFS) GetWritten() int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.written
+}
+
+// SetLimit sets the byte limit (compatibility targeting Global limit).
+func (f *FaultyFS) SetLimit(limit int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.globalLimit = limit
+}
+
+// AddRule adds a fault injection rule for a specific file pattern.
+func (f *FaultyFS) AddRule(pattern string, fault Fault) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rules[pattern] = fault
 }
 
 func (f *FaultyFS) OpenFile(name string, flag int, perm os.FileMode) (File, error) {
@@ -45,8 +70,22 @@ func (f *FaultyFS) OpenFile(name string, flag int, perm os.FileMode) (File, erro
 	if err != nil {
 		return nil, err
 	}
-	// Wrap file to intercept writes
-	return &faultyFile{File: file, fs: f}, nil
+
+	f.mu.Lock()
+	var fault Fault = f.Default
+	// Match pattern (last winning match)
+	for pattern, rule := range f.rules {
+		if strings.Contains(name, pattern) {
+			fault = rule // Overwrite simple
+		}
+	}
+	// Propagate compatibility Err if not set in rule
+	if fault.Err == nil {
+		fault.Err = f.Err
+	}
+	f.mu.Unlock()
+
+	return &faultyFile{File: file, fs: f, fault: fault}, nil
 }
 
 func (f *FaultyFS) Remove(name string) error {
@@ -73,26 +112,69 @@ func (f *FaultyFS) Truncate(name string, size int64) error {
 	return f.FS.Truncate(name, size)
 }
 
-func (f *FaultyFS) checkWrite(n int) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	if f.FailAfterBytes > 0 && f.written+int64(n) > f.FailAfterBytes {
-		return f.Err
-	}
-	f.written += int64(n)
-	return nil
-}
-
 type faultyFile struct {
 	File
-	fs *FaultyFS
+	fs      *FaultyFS
+	fault   Fault
+	written int64
 }
 
 func (ff *faultyFile) Write(p []byte) (n int, err error) {
-	if err := ff.fs.checkWrite(len(p)); err != nil {
-		// Simulate partial write? For now just fail.
+	// Check per-file limit FIRST before updating global counter
+	if ff.fault.FailAfterBytes >= 0 {
+		if ff.written+int64(len(p)) > ff.fault.FailAfterBytes {
+			err = ff.fault.Err
+			if err == nil {
+				err = ff.fs.Err
+			}
+			if err == nil {
+				err = fmt.Errorf("injected fault error")
+			}
+			return 0, err
+		}
+	}
+
+	ff.fs.mu.Lock()
+	globalExceeded := ff.fs.globalLimit >= 0 && ff.fs.written+int64(len(p)) > ff.fs.globalLimit
+	if !globalExceeded {
+		ff.fs.written += int64(len(p))
+	}
+	ff.fs.mu.Unlock()
+
+	if globalExceeded {
+		err = ff.fs.Err
+		if err == nil {
+			err = fmt.Errorf("injected fault error")
+		}
 		return 0, err
 	}
-	return ff.File.Write(p)
+
+	n, err = ff.File.Write(p)
+	if n > 0 {
+		ff.written += int64(n)
+	}
+	return n, err
+}
+
+func (ff *faultyFile) Sync() error {
+	if ff.fault.FailOnSync {
+		err := ff.fault.Err
+		if err == nil {
+			err = fmt.Errorf("injected sync error")
+		}
+		return err
+	}
+	return ff.File.Sync()
+}
+
+func (ff *faultyFile) Close() error {
+	if ff.fault.FailOnClose {
+		err := ff.fault.Err
+		if err == nil {
+			err = fmt.Errorf("injected close error")
+		}
+		ff.File.Close()
+		return err
+	}
+	return ff.File.Close()
 }

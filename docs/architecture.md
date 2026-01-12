@@ -8,7 +8,7 @@ This document provides an in-depth look at Vecgo's internal architecture, helpin
 2. [Core Components](#core-components)
 3. [Index Types](#index-types)
 4. [Storage Layer](#storage-layer)
-5. [Write-Ahead Log (WAL)](#write-ahead-log-wal)
+5. [Durability Model](#durability-model)
 6. [Metadata System](#metadata-system)
 7. [Concurrency Model](#concurrency-model)
 8. [Data Flow](#data-flow)
@@ -29,14 +29,13 @@ Vecgo is designed around a **Shared-Nothing, LSM-Tree Architecture** to maximize
 - `model`: Shared types (`PrimaryKey`, `SegmentID`, `RowID`, `Location`, `SearchOptions`).
 - `blobstore`: Abstraction for immutable data segments (supports Local/S3).
 - `cache`: Cache primitives/implementations (used where applicable).
-- `engine`: Tiered engine orchestrator (snapshots, WAL replay, flush/compaction scheduling).
+- `engine`: Tiered engine orchestrator (snapshots, commit/flush, compaction scheduling).
 - `internal/segment`: Segment interfaces and implementations (internal-only).
     - Engine-integrated segment types: `memtable` (L0), `flat` (L1), `diskann` (larger compactions).
 - `blobstore`: Blob IO abstraction used by segments/payload readers (local mmap implementation provided).
 - `vectorstore`: Internal vector storage interface + columnar implementation (including mmap-backed load).
 - `manifest`: Manifest schema and atomic publication.
 - `pk`: Persistent Primary Key index.
-- `internal/wal`: Write-Ahead Log (internal-only).
 - `resource`: ResourceController.
 
 Note: legacy execution paths have been removed; the tree reflects the current engine-first design.
@@ -53,9 +52,9 @@ For the current roadmap and planned work (e.g. FlatBuffers headers), see the pha
                             │
 ┌─────────────────────────────────────────────────────────────┐
 │                   Engine Layer                              │
-│   - Write-Ahead Log (WAL)                                   │
 │   - MemTable (Mutable, L0)                                  │
 │   - Immutable Segments (L1..Ln)                             │
+│   - Commit-Oriented Durability                              │
 │   - Compaction & Merging                                    │
 │   - Snapshot Isolation                                      │
 └─────────────────────────────────────────────────────────────┘
@@ -78,24 +77,26 @@ For the current roadmap and planned work (e.g. FlatBuffers headers), see the pha
 
 ## Core Components
 
-### 1. Identity & Addressing (vNext Model)
+### 1. Identity & Addressing (Auto-Increment Model)
 
-Vecgo separates **External Identity** from **Internal Execution** to optimize for cache density and performance.
+Vecgo uses a high-performance **Auto-Increment Primary Key** system to maximize insert throughput and cache locality.
 
-1.  **User Primary Key (PK)**:
-    -   Stable, user-provided identifier (e.g., `uint64` or `string`).
-    -   Never changes for the lifetime of a record.
-    -   Used in all public APIs (Insert, Delete, Search results).
+1.  **Internal ID (`uint64`)**:
+    -   **Primary Key**: A globally unique, monotonically increasing 64-bit integer assigned by Vecgo.
+    -   **Persistence**: The strict ordering allows the primary key index to be a **Paged MVCC Array**, eliminating hashing overhead and providing O(1) access.
+    -   **Validation**: The index supports Multi-Version Concurrency Control (MVCC) with time-travel queries (Snapshots).
+    -   **Lifecycle**: Durable for the lifetime of the record.
+    -   **Usage**: All internal references (graph edges, bitmaps) and public APIs (Search results, Deletes) use this ID.
 
-2.  **Internal RowID (`uint32`)**:
-    -   Dense, transient, internal index used for **all** hot-path structures (graph adjacency, bitmaps).
-    -   **Scope**: Local to a segment.
-    -   **Lifecycle**: RowIDs may change during compaction (e.g., when merging segments).
-    -   **Benefit**: Reduces graph edge size by 50% (4 bytes vs 8 bytes) and doubles cache density compared to 64-bit IDs.
+2.  **External ID Mapping (Optional layer equivalent)**:
+    -   If users require external IDs (e.g., UUIDs), they should store them in the `Metadata` blob.
+    -   Lookups by external ID use the standard inverted index (metadata filter).
 
-3.  **Translation Layer**:
-    -   **PK Index**: A persistent, crash-safe index (LSM or B-Tree) maps `PK -> Location(SegmentID, RowID)`.
-    -   **Reverse Mapping**: Within a segment, store a `RowID -> PK` column for result reconstruction (the `SegmentID` selects the segment; the `RowID` is segment-local).
+3.  **Physical Addressing (`Location`)**:
+    -   The system maintains a lightweight in-memory `ID -> Location(SegmentID, RowID)` mapping with version history.
+    -   **SegmentID**: Identifies the immutable segment (or MemTable).
+    -   **RowID**: The offset within that segment.
+    -   **Optimization**: Because IDs are sequential, this mapping is highly compressible and cache-friendly. The Paged Array structure ensures no re-hashing or massive copy overhead during growth.
 
 ### 1.1 Segment Publication (Manifest)
 
@@ -103,7 +104,7 @@ Segmented persistence relies on an atomic publish protocol:
 
 *   **Manifest**: a small file describing live segments + schema/codec/quantizer metadata.
 *   **Atomic publish**: write new segment(s) + updated manifest to temporary paths, then `rename()` into place.
-*   **Recovery**: load last valid manifest; replay committed WAL entries; ignore orphan temp files.
+*   **Recovery**: load last valid manifest; ignore orphan temp files. No WAL replay needed.
 
 ### 2. Vecgo API (`vecgo.go`)
 
@@ -123,7 +124,7 @@ The Engine is the central nervous system of vNext. It manages the lifecycle of d
 - **Segment Management**: Manages immutable segments (L1..Ln) on disk.
 - **Compaction**: Background merging of segments to reclaim space and optimize search.
 - **Snapshot Isolation**: Provides consistent views for readers.
-- **WAL**: Ensures durability of writes.
+- **Commit-Oriented Durability**: `Commit()` writes immutable segments atomically.
 
 **Key Components**:
 - `Engine`: The main struct that coordinates everything.
@@ -160,7 +161,7 @@ Vecgo centralizes all performance-critical math in a dedicated layer to ensure "
     *   **Validation**: Callers (Segments) must validate lengths before calling kernels.
     *   **Fallback**: Pure Go implementations provided for `noasm` builds or unsupported architectures.
 
-Float16 note: vNext treats float16 as a *storage* dtype. A spec-based binary16 codec exists in `internal/f16` to decode to float32 for indexing/reranking; any SIMD/batch acceleration should layer on top of that.
+Float16 note: vNext will treat float16 as a *storage* dtype. SIMD batch conversion (`F16ToF32`) exists in `internal/simd` for fast float16→float32 decoding on AVX2/AVX-512/NEON. Storage integration is planned for a future release.
 
 ## Searcher Context (Internal Optimization)
 
@@ -293,7 +294,8 @@ To minimize Garbage Collection (GC) pauses, Vecgo uses custom memory management 
 To ensure stability under load, Vecgo uses a **ResourceController** to manage global limits:
 
 *   **Memory Budget**: Tracks estimated usage of L0 arenas, caches, and mmap overhead.
-    *   Current implementation (Jan 2026): a hard limit only (`MemoryLimitBytes`) enforced via a weighted semaphore; there is no distinct `SoftLimit` signal and no automatic flush/backpressure policy wired into the engine.
+    *   Current implementation: a hard limit (`MemoryLimitBytes`) enforced via a weighted semaphore. The controller is wired into the MemTable allocator and the block cache.
+    *   Note: the engine has automatic flush triggers (MemTable/WAL thresholds), but the flush signal is best-effort (buffered size 1, dropped when already pending). This is not a complete admission-control or backpressure policy.
 *   **Concurrency Budget**: Limits the number of active goroutines for background tasks (compaction, build) using a weighted semaphore.
 *   **IO Budget**: (Optional) Token bucket for disk IOPS to prevent compaction from starving search.
 
@@ -464,8 +466,9 @@ Vecgo persists state via a small set of purpose-built components:
 
 - `manifest/`: atomic publication of the durable checkpoint (including `MaxLSN`) and the set of immutable segments.
 - `pk/`: persistent PK index (`PK -> Location(SegmentID, RowID)`).
-- `internal/wal/`: WAL append + replay for crash recovery.
 - `internal/segment/*`: immutable segment files produced by flush/compaction.
+
+> **Note**: WAL has been removed. Vecgo uses commit-oriented durability with append-only versioned commits (like LanceDB/Git).
 
 ### Atomic File Operations
 
@@ -514,62 +517,132 @@ func (b *Builder) writeIndexFiles() error {
 
 ---
 
-## Write-Ahead Log (WAL)
+## Durability Model
 
-The WAL ensures durability and crash recovery.
+Vecgo uses a **Commit-Oriented** architecture for durability — the same pattern used by LanceDB and Git (append-only versioned commits, not WAL-based).
 
-### Architecture (vNext)
+### Architecture
 
 ```
 ┌────────────────────────────────────────────────────┐
 │  Engine                                            │
-│   - Appends operations to WAL                      │
-│   - Applies to active MemTable                     │
-│   - GroupCommit (fsync batching)                   │
+│   - Buffers operations in MemTable (memory)        │
+│   - Commit() writes immutable segment to disk      │
+│   - Manifest tracks committed segments             │
 └────────────────────────────────────────────────────┘
            │
-           ▼
+           ▼ Commit()
 ┌────────────────────────────────────────────────────┐
-│  WAL Segment Writer                                │
-│   - Binary format: [Header|Entry|Entry|...]       │
+│  Immutable Segment                                 │
+│   - Atomic file write (temp + rename)             │
+│   - Binary format: [Header|Vectors|Index|Meta]    │
 │   - Checksums for corruption detection            │
-│   - Durability modes: Async / Sync                │
 └────────────────────────────────────────────────────┘
            │
            ▼
 ┌────────────────────────────────────────────────────┐
-│  Disk (fsync)                                      │
-│   - segment-000001.wal                            │
-│   - segment-000002.wal                            │
+│  Manifest Update                                   │
+│   - Atomic PUT of new manifest                    │
+│   - CURRENT pointer updated atomically            │
 └────────────────────────────────────────────────────┘
 ```
 
-### Correctness & Ordering
+### Durability Contract
 
-To guarantee consistency, Vecgo enforces strict ordering between the WAL and the Index:
+| State | Survives Crash? | Description |
+|-------|-----------------|-------------|
+| Before `Insert()` | N/A | - |
+| After `Insert()`, before `Commit()` | ❌ No | Data buffered in MemTable |
+| After `Commit()` | ✅ Yes | Data written to immutable segment |
+| After `Close()` | ✅ Yes | `Close()` auto-commits pending data |
 
-1.  **WAL First**: `WAL.Append()` is called *before* any modification to the in-memory index.
-2.  **Index Second**: `Index.Apply()` is called only after the WAL entry is successfully written (and fsync'd, depending on durability mode).
-3.  **Failure Handling**: If the WAL write fails, the operation returns an error, and the index remains untouched. If the process crashes after the WAL write but before the index update, the Replay mechanism restores the state.
+This is the same contract as SQLite's explicit transaction mode or Git commits.
 
-### Replay Mechanism (vNext)
+### Why No WAL?
 
-On startup, the system performs a crash recovery:
-1.  **Load Snapshot**: The latest valid snapshot is loaded into memory.
-2.  **Replay WAL**: The WAL is replayed from the point of the last snapshot.
-3.  **Idempotency**: Operations are applied to the MemTable/segments to restore the state to the moment of the crash.
+Traditional databases use Write-Ahead Logging for single-row transaction durability.
+Vector databases have different workload characteristics:
 
-### Storage Abstraction (BlobStore)
+| Workload | Pattern | Needs WAL? |
+|----------|---------|------------|
+| **RAG pipelines** | Batch embed → batch insert → commit | ❌ No |
+| **Semantic search** | Build index offline → deploy → query | ❌ No |
+| **Recommendations** | Periodic batch updates → serve queries | ❌ No |
+| **ML embeddings** | Checkpoint after training epoch | ❌ No |
 
-To support future cloud-native deployments (S3/GCS) without rewriting the engine, vNext may access segment files via a `BlobStore` abstraction.
+The commit-oriented model eliminates:
+- WAL rotation complexity
+- Crash recovery replay time  
+- Checkpointing overhead
+- ~500+ lines of recovery code
 
-Current implementation (Jan 2026): there is no `BlobStore` abstraction in code yet; segments open local files directly (mmap + `os.File`). Treat `BlobStore` as a design target / TODO.
+### Storage Abstraction (Cloud-Native Backend)
 
-*   **Reader**: Returns a reader for a specific blob/file. For local disk, this supports mmap. For cloud, it might buffer.
-*   **Writer**: Returns a writer for a specific blob/file.
-*   **Delete**: Deletes a blob/file.
+To enable serverless and cloud-native deployments, Vecgo uses a **Pluggable Storage Backend** that abstracts the file system.
 
-While vNext is "disk-first" (local SSD), defining this interface early prevents "local file path" assumptions from leaking into the Segment logic.
+**Interface Definition**:
+
+```go
+type StorageBackend interface {
+    // Core Object Storage
+    Get(ctx context.Context, key string) ([]byte, error)
+    Put(ctx context.Context, key string, data []byte) error
+    Delete(ctx context.Context, key string) error
+    List(ctx context.Context, prefix string) ([]string, error)
+
+    // Atomic Primitives (Critical for concurrency)
+    // CompareAndSwap is required for manifest updates to ensure linearizable history.
+    CompareAndSwap(ctx context.Context, key string, oldData, newData []byte) (bool, error)
+
+    // Streaming (Optimization)
+    GetReader(ctx context.Context, key string) (io.ReadCloser, error)
+    PutWriter(ctx context.Context, key string) (io.WriteCloser, error)
+}
+```
+
+**Implementations**:
+1.  **LocalFS**: Default for embedded/local use. Uses `rename()` for atomicity and `os.File` for streaming.
+2.  **S3/GCS/Azure**: Uses object storage with conditional writes (If-Match) to implement CAS.
+3.  **InMemory**: For testing and ephemeral workloads.
+
+**Caching Strategy**:
+Cloud backends are high-latency. Vecgo implements a **Segment Block Cache**:
+- **Immutable Segments**: Cached locally (LRU) or memory-mapped if using a specialized FUSE/Mount adapter.
+- **Manifest**: Always fetched fresh (with CAS) to ensure strong consistency.
+- **WAL**: Buffered in memory and flushed transactionally (segmented upload).
+
+**Cloud-Native mmap Approximation (LanceDB Pattern)**:
+
+Object stores (S3/GCS) don't support mmap, but Vecgo approximates mmap semantics via:
+
+1. **Columnar Layout**: Segments are offset-addressable with fixed-size blocks
+2. **HTTP Range Reads**: S3 blob uses `Range: bytes=start-end` header (see `blobstore/s3/s3_store.go`)
+3. **Lazy Loading**: Headers + offsets are resident (~8KB); vector blocks fetched on-demand
+4. **Block Cache**: Shared LRU cache across segments (`blobstore/caching_store.go`)
+5. **Index-Constrained Access**: Block skipping via `MatchesBlock()` avoids full scans
+
+```
+Cloud Segment Access Pattern:
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│  Open()     │ →   │ Range GET   │ →   │ Header +    │  (8KB resident)
+│  segment    │     │ bytes=0-256 │     │ Offsets     │
+└─────────────┘     └─────────────┘     └─────────────┘
+                                              │
+┌─────────────┐     ┌─────────────┐     ┌─────▼───────┐
+│  Search()   │ →   │ BlockCache  │ ←→  │ Lazy Block  │  (256KB per block)
+│  k vectors  │     │ Hit/Miss    │     │ Range GETs  │
+└─────────────┘     └─────────────┘     └─────────────┘
+```
+
+**Memory Impact** (1GB segment on S3):
+- Full download (old): 1GB resident
+- Lazy + cache (new): 8KB + 100MB cache = ~100MB resident (10x reduction)
+
+**Persistence Model**:
+- **Segments**: Immutable blobs (e.g., `seg/001-c8f2.data`).
+- **Manifest**: Single mutable object (`MANIFEST-NNNNNN.bin`) updated atomically.
+- **CURRENT**: Pointer file to the active manifest.
+
 
 ---
 
@@ -583,10 +656,10 @@ For high-throughput writes (especially in DiskANN), Vecgo uses an LSM-tree inspi
     *   Concurrent reads allowed; single writer.
 
 2.  **Flushing (Immutable Queue)**:
-    *   When the Hot MemTable fills up, it is rotated and appended to an immutable flush queue.
-    *   A background worker consumes the queue and flushes tables to the main index (or disk segment).
-    *   This decouples ingestion from flushing, preventing write stalls and deadlocks.
-    *   Backpressure is applied if the queue grows too large.
+    *   When the Hot MemTable crosses configured thresholds, a flush is triggered via a buffered channel.
+    *   The background loop calls `Flush()` when signaled.
+    *   There is no explicit flush queue today; multiple triggers can coalesce, and signals can be dropped if one is already pending.
+    *   Admission control/backpressure comes from the ResourceController (hard limits), not from a flush-queue growth policy.
 
 3.  **Cold (On-Disk)**:
     *   Data is now persisted in a disk segment (e.g., SSTable or DiskANN segment).
@@ -598,26 +671,27 @@ For high-throughput writes (especially in DiskANN), Vecgo uses an LSM-tree inspi
     *   Tombstones (deleted items) are purged.
     *   Ensures read performance doesn't degrade over time.
 
-### Durability Modes
+### Durability
 
-| Mode | fsync Frequency | Performance | Durability |
-|------|-----------------|-------------|------------|
-| **Async** | Never (OS decides) | Fastest | Weak (may lose seconds of data) |
-| **Sync** | Every operation | Slowest | Strongest (no loss) |
+Vecgo uses **commit-oriented durability**:
 
-Configuration note (Jan 2026): `engine.WALOptions` supports Async/Sync. `engine.Open` uses Sync by default, but can be configured via `WithWALOptions` (or `vecgo.WithWALOptions`).
+| Operation | Durable? | Description |
+|-----------|----------|-------------|
+| `Insert()` | ❌ No | Buffered in MemTable (memory) |
+| `Commit()` / `Flush()` | ✅ Yes | Writes segment + updates manifest |
+| `Close()` | ✅ Yes | Auto-commits pending data |
 
-GroupCommit (batch fsync) is implemented to improve throughput in Sync mode.
+This model matches LanceDB (Databricks) and Git — optimized for batch vector workloads. Unlike WAL-based databases, committed segments are immutable and self-describing.
 
-### Recovery Process (vNext)
+### Recovery Process
 
-On startup, the engine performs recovery roughly as:
+On startup, the engine performs recovery:
 
 1. Load the manifest (published segments).
 2. Open segment files.
-3. Replay WAL records after the last durable point into the active MemTable.
+3. Rebuild PK index from segments (or load checkpoint).
 
-See `engine/engine.go` and the recovery notes in `REFACTORING.md` for the up-to-date behavior.
+No WAL replay needed — committed segments are the source of truth.
 
 ---
 
@@ -714,7 +788,31 @@ All indexes support **concurrent reads**:
 
 **HNSW**: Lock-free graph traversal using atomic operations  
 **Flat**: Read-only access to vectors (no locks needed)  
-**DiskANN**: mmap allows concurrent reads from OS page cache
+**DiskANN**: mmap allows concurrent reads from OS page cache  
+**PK Index**: Wait-free O(1) reads via atomic pointer chains
+
+### Global MVCC & Lock-Free Search
+
+As of Jan 2026, Vecgo uses a **Global MVCC** architecture optimized for high-throughput search workloads.
+
+1.  **Lock-Free Primary Key Index**:
+    -   Address mapping (`ID -> Location`) uses **Paged MVCC** with per-entry atomic pointer linked-lists.
+    -   **Wait-Free Reads**: `Get()` uses `atomic.Load()` to traverse the version chain—no locks acquired.
+    -   **Lock-Free Writes**: `Upsert()`/`Delete()` use CAS loops with exponential backoff for contention.
+    -   **Version Pooling**: `sync.Pool` reduces allocation overhead for version nodes.
+    -   **Memory Safety**: Atomic operations ensure safe concurrent access without data races (verified with `-race`).
+
+2.  **Lock-Free Versioned Tombstones**:
+    -   **Problem**: Standard deletion maps require locks or O(N) copy-on-write overhead.
+    -   **Solution**: `VersionedTombstones` uses a **Paged/Chunked Copy-On-Write** structure accessed via an `atomic.Pointer`.
+    -   **Reads (IsDeleted)**: Wait-free O(1) atomic load.
+    -   **Writes (MarkDeleted)**: Optimistic Copy-On-Write of a single 4KB chunk. Write complexity is O(ChunkSize) rather than O(TotalRows), eliminating memory bandwidth saturation during heavy deletes.
+
+3.  **Non-Blocking Search**:
+    -   The hot `Search` path acquires no long-held locks.
+    -   It uses light-weight Reference Counting (`TryIncRef`) to secure the current snapshot structure.
+    -   It uses atomic loads for Tombstone filtering.
+    -   Result: Linearly scalable search throughput with core count.
 
 ### HNSW Concurrency
 
@@ -730,6 +828,7 @@ The HNSW implementation uses fine-grained locking and atomic operations to suppo
     - Completely lock-free traversal (except for `visited` set pooling).
     - Safe against concurrent deletions (tombstones are checked atomically).
     - Uses `sync.Pool` for scratch buffers to avoid allocation.
+    - **Dynamic EF (ACORN-lite)**: Automatically expands search breadth based on filter selectivity.
 
 ### Write Concurrency
 
@@ -771,29 +870,27 @@ func (wp *WorkerPool[T]) Submit(ctx context.Context, req WorkRequest[T]) error {
 }
 ```
 
-**Performance Benefits**:
-- **Zero goroutines created** per search (constant pool size)
-- **80-90% less GC pressure** (no stack allocations per request)
-- **50-60% lower P99 latency** under high load
-- **Backpressure**: Buffered channel prevents resource exhaustion
+**Design Notes**:
+- This worker-pool sketch is a vNext idea; it is not currently implemented in the engine.
+- A bounded queue can apply backpressure to callers (submit blocks / respects context) but does not, by itself, prevent memory exhaustion.
 ```
 
 ---
 
 ## Data Flow
 
-### Insert Operation (vNext)
+### Insert Operation
 
 ```
 User API
    │
     ├─> Engine.Insert(ctx, pk, vector)
     │     │
-    │     ├─> 1. WAL.Append(Upsert)
-    │     ├─> 2. Apply to active MemTable (L0)
-    │     └─> 3. Update PK -> Location
+    │     ├─> 1. Apply to active MemTable (L0) — NOT durable yet
+    │     ├─> 2. Update PK -> Location
+    │     └─> 3. Commit() writes immutable segment — DURABLE
     │
-    └─> Return PK (and/or Location) to user
+    └─> Return PK to user
 ```
 
 ### Search Operation (vNext)
@@ -812,7 +909,10 @@ User API
    └─> Return results to user
 ```
 
-**Key Improvements (Dec 2024)**:
+**Key Improvements (Jan 2026)**:
+- ✅ **Lock-Free PK Index**: MVCC implemented with atomic pointer linked-lists (CAS) for wait-free reads and lock-free writes.
+- ✅ **Dynamic EF (ACORN-lite)**: HNSW search automatically adapts expansion factor (`ef`) based on filter selectivity to maintain recall.
+- ✅ **Zero-Overhead Distance**: Mmap store uses direct function pointers, bypassing interface overhead for L2/Cosine/Dot.
 - ✅ **Pre-filtering**: Filter applied during graph traversal (100% recall vs ~50% post-filtering)
 - ✅ **Vectorized predicate evaluation (vNext)**: Prefer batch checks (e.g., `MatchesBatch`) to reduce branchy per-row overhead
 - ✅ **Error propagation**: All shard errors surfaced with indices
@@ -825,10 +925,10 @@ User API
    │
     ├─> Engine.Delete(ctx, pk)
    │     │
-    │     ├─> 1. WAL.Append(Delete)
-    │     ├─> 2. Update PK index (remove mapping)
-    │     ├─> 3. Mark tombstone (memtable or immutable segment bitmap)
-    │     └─> 4. Background flush/compaction materializes deletes
+    │     ├─> 1. Update PK index (remove mapping)
+    │     ├─> 2. Mark tombstone (memtable or immutable segment bitmap)
+    │     ├─> 3. Commit() persists tombstones — DURABLE
+    │     └─> 4. Background compaction materializes deletes
    │
    └─> Return to user
 ```
@@ -860,8 +960,7 @@ High-level rule: segments are immutable once published; the engine owns lifecycl
 | **DiskANN** | Insert | O(R log N) | Vamana graph update |
 | **DiskANN** | Search | O(L × beam) | Beam search with disk I/O |
 | **Metadata** | Filter compile | O(# fields) | Roaring bitmap merge |
-| **WAL** | Append | O(1) | Sequential write |
-| **WAL** | Replay | O(# entries) | Sequential read |
+| **Commit** | Segment write | O(N) | Atomic file write |
 
 ---
 
@@ -903,7 +1002,7 @@ To maintain high performance, Vecgo adheres to strict design principles.
 Vecgo's architecture is designed for:
 - **Performance**: SIMD, zero-allocation, sharded writes
 - **Flexibility**: Multiple index types, pluggable storage
-- **Durability**: WAL (Async/Sync) + snapshots; GroupCommit is a TODO
+- **Durability**: Commit-oriented (like LanceDB/Git) — append-only versioned commits, no WAL
 - **Scalability**: Sharding for multi-core, DiskANN for billions of vectors
 
 For performance tuning, see [docs/tuning.md](tuning.md).
@@ -916,7 +1015,7 @@ Vecgo is designed with production observability as a first-class citizen. It use
 
 The `MetricsObserver` interface (defined in `engine/metrics.go`) provides hooks for all critical critical operations:
 
-- **Write Path**: `OnInsert`, `OnDelete`, `OnWALWrite`
+- **Write Path**: `OnInsert`, `OnDelete`, `OnCommit`
 - **Read Path**: `OnSearch`
 - **Background**: `OnFlush`, `OnCompaction`
 - **State**: `OnMemTableStatus`

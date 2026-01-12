@@ -22,18 +22,19 @@ func TestFullLifecycle(t *testing.T) {
 	}
 
 	opts := []vecgo.Option{
+		vecgo.Create(2, vecgo.MetricL2),
 		vecgo.WithSchema(schema),
 	}
 
 	// 1. Open
-	e, err := vecgo.Open(dir, 2, vecgo.MetricL2, opts...)
+	e, err := vecgo.Open(dir, opts...)
 	require.NoError(t, err)
 
 	// Context for operations
 	ctx := context.Background()
 
 	// Data preparation
-	pk1 := vecgo.PKUint64(1)
+	// Auto-ID: id1 := vecgo.ID(1) if fresh? But we capture it.
 	vec1 := []float32{1.0, 0.0}
 	meta1 := metadata.Document{
 		"tag":     metadata.String("v1"),
@@ -42,13 +43,13 @@ func TestFullLifecycle(t *testing.T) {
 	payload1 := []byte("payload-v1")
 
 	// 2. Insert
-	err = e.Insert(pk1, vec1, meta1, payload1)
+	id1, err := e.Insert(vec1, meta1, payload1)
 	require.NoError(t, err)
 
 	// 3. Get (Verify Insert)
-	rec, err := e.Get(pk1)
+	rec, err := e.Get(id1)
 	require.NoError(t, err)
-	assert.Equal(t, pk1, rec.PK)
+	assert.Equal(t, id1, rec.ID)
 	assert.InDeltaSlice(t, vec1, rec.Vector, 1e-6)
 	assert.Equal(t, "v1", rec.Metadata["tag"].StringValue())
 	assert.Equal(t, int64(1), rec.Metadata["version"].I64)
@@ -65,10 +66,15 @@ func TestFullLifecycle(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Len(t, res, 1)
-	assert.Equal(t, pk1, res[0].PK)
+	assert.Equal(t, id1, res[0].ID)
 	assert.InDeltaSlice(t, vec1, res[0].Vector, 1e-6)
 
-	// 5. Update (Upsert) - Change Vector, Metadata, Payload
+	// 5. Update (Upsert Simulation: Delete + Insert)
+	// Since IDs are immutable/auto-increment, we cannot update in-place with strict ID retention unless engine supports it.
+	// We simulate update by Delete old + Insert new.
+	err = e.Delete(id1)
+	require.NoError(t, err)
+
 	vec2 := []float32{0.0, 1.0}
 	meta2 := metadata.Document{
 		"tag":     metadata.String("v2"),
@@ -76,11 +82,11 @@ func TestFullLifecycle(t *testing.T) {
 	}
 	payload2 := []byte("payload-v2")
 
-	err = e.Insert(pk1, vec2, meta2, payload2)
+	id2, err := e.Insert(vec2, meta2, payload2)
 	require.NoError(t, err)
 
-	// 6. Get (Verify Update)
-	rec, err = e.Get(pk1)
+	// 6. Get (Verify Update - New ID)
+	rec, err = e.Get(id2)
 	require.NoError(t, err)
 	assert.InDeltaSlice(t, vec2, rec.Vector, 1e-6) // Use InDeltaSlice for floats
 	assert.Equal(t, "v2", rec.Metadata["tag"].StringValue())
@@ -94,7 +100,7 @@ func TestFullLifecycle(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Len(t, res, 1)
-	assert.Equal(t, pk1, res[0].PK)
+	assert.Equal(t, id2, res[0].ID)
 	assert.InDeltaSlice(t, vec2, res[0].Vector, 1e-6)
 
 	// 8. Filtered Search (Metadata)
@@ -123,11 +129,11 @@ func TestFullLifecycle(t *testing.T) {
 	assert.Len(t, res, 0)
 
 	// 9. Delete
-	err = e.Delete(pk1)
+	err = e.Delete(id2)
 	require.NoError(t, err)
 
 	// 10. Get (Verify Delete)
-	_, err = e.Get(pk1)
+	_, err = e.Get(id2)
 	assert.Error(t, err)
 	// Currently engine returns ErrInvalidArgument for missing PK
 	assert.True(t, strings.Contains(err.Error(), "invalid argument") || strings.Contains(err.Error(), "not found"),
@@ -142,12 +148,12 @@ func TestFullLifecycle(t *testing.T) {
 	err = e.Close()
 	require.NoError(t, err)
 
-	e, err = vecgo.Open(dir, 2, vecgo.MetricL2, opts...)
+	e, err = vecgo.Open(dir, opts...)
 	require.NoError(t, err)
 	defer e.Close()
 
 	// Verify still deleted
-	_, err = e.Get(pk1)
+	_, err = e.Get(id2)
 	assert.Error(t, err)
 
 	res, err = e.Search(ctx, vec2, 1)
@@ -157,7 +163,7 @@ func TestFullLifecycle(t *testing.T) {
 
 func TestBatchCRUD(t *testing.T) {
 	dir := t.TempDir()
-	e, err := vecgo.Open(dir, 4, vecgo.MetricL2)
+	e, err := vecgo.Open(dir, vecgo.Create(4, vecgo.MetricL2))
 	require.NoError(t, err)
 	defer e.Close()
 
@@ -165,44 +171,41 @@ func TestBatchCRUD(t *testing.T) {
 
 	// 1. Batch Insert
 	count := 10
-	records := make([]vecgo.Record, count)
+	var vectors [][]float32
 	for i := 0; i < count; i++ {
-		records[i] = vecgo.Record{
-			PK:     vecgo.PKUint64(uint64(i)),
-			Vector: []float32{float32(i), 0, 0, 0},
-			// Metadata/Payload optional
-		}
+		vectors = append(vectors, []float32{float32(i), 0, 0, 0})
 	}
 
-	err = e.BatchInsert(records)
+	ids, err := e.BatchInsert(vectors, nil, nil)
 	require.NoError(t, err)
+	require.Len(t, ids, count)
 
 	// Verify all present
 	for i := 0; i < count; i++ {
-		rec, err := e.Get(vecgo.PKUint64(uint64(i)))
+		rec, err := e.Get(ids[i])
 		require.NoError(t, err)
 		assert.Equal(t, float32(i), rec.Vector[0])
 	}
 
 	// 2. Batch Delete (Evens)
-	pksToDelete := []vecgo.PrimaryKey{}
+	var idsToDelete []vecgo.ID
 	for i := 0; i < count; i += 2 {
-		pksToDelete = append(pksToDelete, vecgo.PKUint64(uint64(i)))
+		idsToDelete = append(idsToDelete, ids[i])
 	}
 
-	err = e.BatchDelete(pksToDelete)
+	err = e.BatchDelete(idsToDelete)
 	require.NoError(t, err)
 
 	// Verify
 	for i := 0; i < count; i++ {
-		pk := vecgo.PKUint64(uint64(i))
-		rec, err := e.Get(pk)
+		id := ids[i]
+		rec, err := e.Get(id)
 		if i%2 == 0 {
 			// Deleted
-			assert.Error(t, err, "PK %d should be deleted", i)
+			assert.Error(t, err, "ID %d should be deleted", id)
 		} else {
 			// Present
-			require.NoError(t, err, "PK %d should exist", i)
+			require.NoError(t, err, "ID %d should exist", id)
 			assert.Equal(t, float32(i), rec.Vector[0])
 		}
 	}
@@ -212,10 +215,12 @@ func TestBatchCRUD(t *testing.T) {
 	res, err := e.Search(ctx, []float32{0, 0, 0, 0}, 5)
 	require.NoError(t, err)
 
+	deletedIDs := make(map[vecgo.ID]bool)
+	for _, id := range idsToDelete {
+		deletedIDs[id] = true
+	}
+
 	for _, cand := range res {
-		u, ok := cand.PK.Uint64()
-		require.True(t, ok)
-		assert.NotEqual(t, uint64(0), u, "Deleted PK 0 should not be returned")
-		assert.True(t, u%2 != 0, "Only odd PKs should be returned, got %d", u)
+		assert.False(t, deletedIDs[cand.ID], "Deleted ID %d should not be returned", cand.ID)
 	}
 }

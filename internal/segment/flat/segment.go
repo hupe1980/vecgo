@@ -9,14 +9,15 @@ import (
 	"unsafe"
 
 	"github.com/hupe1980/vecgo/blobstore"
-	"github.com/hupe1980/vecgo/cache"
+	"github.com/hupe1980/vecgo/internal/cache"
 	"github.com/hupe1980/vecgo/distance"
 	"github.com/hupe1980/vecgo/internal/kmeans"
+	imetadata "github.com/hupe1980/vecgo/internal/metadata"
 	"github.com/hupe1980/vecgo/internal/searcher"
 	"github.com/hupe1980/vecgo/internal/segment"
 	"github.com/hupe1980/vecgo/metadata"
 	"github.com/hupe1980/vecgo/model"
-	"github.com/hupe1980/vecgo/quantization"
+	"github.com/hupe1980/vecgo/internal/quantization"
 )
 
 // Segment implements an immutable flat segment.
@@ -27,7 +28,7 @@ type Segment struct {
 
 	// Pointers to data sections
 	vectors []float32
-	pks     []model.PK
+	ids     []model.ID
 
 	// Partitioning
 	centroids        []float32
@@ -53,6 +54,14 @@ type Segment struct {
 
 	cache          cache.BlockCache
 	verifyChecksum bool
+}
+
+// GetID returns the external ID for a given internal row ID.
+func (s *Segment) GetID(rowID uint32) (model.ID, bool) {
+	if int(rowID) >= len(s.ids) {
+		return 0, false
+	}
+	return s.ids[rowID], true
 }
 
 // Option defines a configuration option for the Segment.
@@ -275,61 +284,27 @@ func Open(blob blobstore.Blob, opts ...Option) (*Segment, error) {
 	}
 
 	// PKs
+	// IDs
 	pkStart := header.PKOffset
 	pkSize := header.MetadataOffset - header.PKOffset
 	if uint64(len(data)) < pkStart+pkSize {
 		blob.Close()
-		return nil, errors.New("file too short for PKs")
+		return nil, errors.New("file too short for IDs")
 	}
 
 	if header.RowCount > 0 {
-		// Read Offsets
-		offsetBytes := uint64(header.RowCount+1) * 4
-		if pkSize < offsetBytes {
+		expectedSize := uint64(header.RowCount) * 8
+		if pkSize < expectedSize {
 			blob.Close()
-			return nil, errors.New("pk section too small for offsets")
+			return nil, errors.New("id section too small")
 		}
-		offsetData := data[pkStart : pkStart+offsetBytes]
-		pkOffsets := unsafe.Slice((*uint32)(unsafe.Pointer(&offsetData[0])), len(offsetData)/4)
 
-		// Read Blob
-		blobData := data[pkStart+offsetBytes : pkStart+pkSize]
+		idData := data[pkStart : pkStart+expectedSize]
+		rawIDs := unsafe.Slice((*uint64)(unsafe.Pointer(&idData[0])), header.RowCount)
 
-		s.pks = make([]model.PK, header.RowCount)
+		s.ids = make([]model.ID, header.RowCount)
 		for i := 0; i < int(header.RowCount); i++ {
-			start := pkOffsets[i]
-			end := pkOffsets[i+1]
-			if start > end || int(end) > len(blobData) {
-				blob.Close()
-				return nil, fmt.Errorf("invalid pk offset for row %d", i)
-			}
-
-			chunk := blobData[start:end]
-			if len(chunk) < 1 {
-				blob.Close()
-				return nil, fmt.Errorf("empty pk chunk for row %d", i)
-			}
-			kind := model.PKKind(chunk[0])
-			if kind == model.PKKindUint64 {
-				if len(chunk) < 9 {
-					blob.Close()
-					return nil, fmt.Errorf("invalid uint64 pk for row %d", i)
-				}
-				val := binary.LittleEndian.Uint64(chunk[1:])
-				s.pks[i] = model.PKUint64(val)
-			} else {
-				if len(chunk) < 5 {
-					blob.Close()
-					return nil, fmt.Errorf("invalid string pk header for row %d", i)
-				}
-				strLen := binary.LittleEndian.Uint32(chunk[1:])
-				if len(chunk) < 5+int(strLen) {
-					blob.Close()
-					return nil, fmt.Errorf("invalid string pk body for row %d", i)
-				}
-				str := string(chunk[5 : 5+int(strLen)])
-				s.pks[i] = model.PKString(str)
-			}
+			s.ids[i] = model.ID(rawIDs[i])
 		}
 	}
 
@@ -511,11 +486,11 @@ func (s *Segment) Search(ctx context.Context, q []float32, k int, filter segment
 							endOffset := s.metadataOffsets[idx+1]
 							if startOffset < endOffset {
 								mdBytes := s.metadataBlob[startOffset:endOffset]
-								var md metadata.Document
-								if err := md.UnmarshalBinary(mdBytes); err != nil {
+								match, err := opts.Filter.MatchesBinary(mdBytes)
+								if err != nil {
 									continue
 								}
-								if !opts.Filter.Matches(md) {
+								if !match {
 									continue
 								}
 							} else {
@@ -524,20 +499,18 @@ func (s *Segment) Search(ctx context.Context, q []float32, k int, filter segment
 						}
 					}
 
-					cand := model.Candidate{
-						Loc: model.Location{
-							SegmentID: s.ID(),
-							RowID:     model.RowID(idx),
-						},
-						Score:  batchScores[j],
-						Approx: true,
+					cand := searcher.InternalCandidate{
+						SegmentID: uint32(s.ID()),
+						RowID:     uint32(idx),
+						Score:     batchScores[j],
+						Approx:    true,
 					}
 
 					if h.Len() < k {
 						h.Push(cand)
 					} else {
 						top := h.Candidates[0]
-						if searcher.CandidateBetter(cand, top, descending) {
+						if searcher.InternalCandidateBetter(cand, top, descending) {
 							h.ReplaceTop(cand)
 						}
 					}
@@ -579,12 +552,12 @@ func (s *Segment) Search(ctx context.Context, q []float32, k int, filter segment
 					endOffset := s.metadataOffsets[i+1]
 					if startOffset < endOffset {
 						mdBytes := s.metadataBlob[startOffset:endOffset]
-						var md metadata.Document
-						if err := md.UnmarshalBinary(mdBytes); err != nil {
+						match, err := opts.Filter.MatchesBinary(mdBytes)
+						if err != nil {
 							i++
 							continue
 						}
-						if !opts.Filter.Matches(md) {
+						if !match {
 							i++
 							continue
 						}
@@ -631,20 +604,18 @@ func (s *Segment) Search(ctx context.Context, q []float32, k int, filter segment
 				approx = false
 			}
 
-			cand := model.Candidate{
-				Loc: model.Location{
-					SegmentID: s.ID(),
-					RowID:     model.RowID(i),
-				},
-				Score:  dist,
-				Approx: approx,
+			cand := searcher.InternalCandidate{
+				SegmentID: uint32(s.ID()),
+				RowID:     uint32(i),
+				Score:     dist,
+				Approx:    approx,
 			}
 
 			if h.Len() < k {
 				h.Push(cand)
 			} else {
 				top := h.Candidates[0]
-				if searcher.CandidateBetter(cand, top, descending) {
+				if searcher.InternalCandidateBetter(cand, top, descending) {
 					h.ReplaceTop(cand)
 				}
 			}
@@ -726,7 +697,7 @@ func (s *Segment) Fetch(ctx context.Context, rows []uint32, cols []string) (segm
 	}
 
 	batch := &segment.SimpleRecordBatch{
-		PKs: make([]model.PK, len(rows)),
+		IDs: make([]model.ID, len(rows)),
 	}
 	if fetchVectors {
 		batch.Vectors = make([][]float32, len(rows))
@@ -739,18 +710,24 @@ func (s *Segment) Fetch(ctx context.Context, rows []uint32, cols []string) (segm
 	}
 
 	dim := int(s.header.Dim)
+	var vectorsBacking []float32
+	if fetchVectors {
+		vectorsBacking = make([]float32, len(rows)*dim)
+	}
+
 	for i, rowID := range rows {
 		if rowID >= s.header.RowCount {
 			return nil, fmt.Errorf("rowID %d out of bounds", rowID)
 		}
 
-		// Fetch PK
-		batch.PKs[i] = s.pks[rowID]
+		// Fetch ID
+		batch.IDs[i] = s.ids[rowID]
 
 		// Fetch Vector
 		if fetchVectors {
 			vec := s.vectors[int(rowID)*dim : (int(rowID)+1)*dim]
-			v := make([]float32, dim)
+			// Use backing array
+			v := vectorsBacking[i*dim : (i+1)*dim]
 			copy(v, vec)
 			batch.Vectors[i] = v
 		}
@@ -789,7 +766,7 @@ func (s *Segment) Fetch(ctx context.Context, rows []uint32, cols []string) (segm
 	return batch, nil
 }
 
-func (s *Segment) FetchPKs(ctx context.Context, rows []uint32, dst []model.PK) error {
+func (s *Segment) FetchIDs(ctx context.Context, rows []uint32, dst []model.ID) error {
 	if len(dst) != len(rows) {
 		return fmt.Errorf("dst length mismatch")
 	}
@@ -797,17 +774,17 @@ func (s *Segment) FetchPKs(ctx context.Context, rows []uint32, dst []model.PK) e
 		if rowID >= s.header.RowCount {
 			return fmt.Errorf("rowID %d out of bounds", rowID)
 		}
-		dst[i] = s.pks[rowID]
+		dst[i] = s.ids[rowID]
 	}
 	return nil
 }
 
 // Iterate iterates over all vectors in the segment.
-func (s *Segment) Iterate(fn func(rowID uint32, pk model.PK, vec []float32, md metadata.Document, payload []byte) error) error {
+func (s *Segment) Iterate(fn func(rowID uint32, id model.ID, vec []float32, md metadata.Document, payload []byte) error) error {
 	dim := int(s.header.Dim)
 	for i := 0; i < int(s.header.RowCount); i++ {
 		vec := s.vectors[i*dim : (i+1)*dim]
-		pk := s.pks[i]
+		id := s.ids[i]
 
 		var md metadata.Document
 		if len(s.metadataOffsets) > 0 {
@@ -834,11 +811,47 @@ func (s *Segment) Iterate(fn func(rowID uint32, pk model.PK, vec []float32, md m
 			}
 		}
 
-		if err := fn(uint32(i), pk, vec, md, payload); err != nil {
+		if err := fn(uint32(i), id, vec, md, payload); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// EvaluateFilter returns a bitmap of rows matching the filter.
+func (s *Segment) EvaluateFilter(ctx context.Context, filter *metadata.FilterSet) (segment.Bitmap, error) {
+	if filter == nil || len(filter.Filters) == 0 {
+		return nil, nil // All matches
+	}
+
+	result := imetadata.NewLocalBitmap()
+
+	// Scan all documents. Use specialized loop to avoid overhead of loading vectors/payloads.
+	// This is critical because Iterate unmarshals everything.
+
+	for i := 0; i < int(s.header.RowCount); i++ {
+		var md metadata.Document
+		if len(s.metadataOffsets) > 0 {
+			start := s.metadataOffsets[i]
+			end := s.metadataOffsets[i+1]
+			if start < end {
+				mdBytes := s.metadataBlob[start:end]
+				if err := md.UnmarshalBinary(mdBytes); err != nil {
+					return nil, err
+				}
+			}
+		} else {
+			continue // No metadata, cannot match (unless checking for missing)
+		}
+
+		// Optimize: If filter is nil, we shouldn't be here (checked at start).
+
+		if filter.Matches(md) {
+			result.Add(uint32(i))
+		}
+	}
+
+	return result, nil
 }
 
 // Advise hints the kernel about access patterns.

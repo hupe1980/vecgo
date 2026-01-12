@@ -2,6 +2,10 @@
 #include <immintrin.h> // AVX/AVX2 intrinsics
 #include <stdint.h>
 
+// Prefetch distance (in cache lines ahead). Tuned for L2 cache latency.
+// 256 bytes = 4 cache lines = optimal for most x86 processors.
+#define PREFETCH_AHEAD 256
+
 // DotProductAvx computes dot product with 4-way accumulator unrolling + FMA.
 // Processes 32 floats per iteration (4 accumulators × 8-wide AVX).
 // Requires AVX2 for FMA support.
@@ -19,6 +23,10 @@ void dotProductAvx(float *__restrict a, float *__restrict b, int64_t n, float *_
     for (i = 0; i < epoch; i++)
     {
         int64_t offset = i * 32;
+        
+        // Prefetch next iteration's data into L1 cache
+        _mm_prefetch((const char*)(a + offset + PREFETCH_AHEAD/4), _MM_HINT_T0);
+        _mm_prefetch((const char*)(b + offset + PREFETCH_AHEAD/4), _MM_HINT_T0);
         
         // Load 32 floats (4 × 8-wide vectors)
         __m256 a1 = _mm256_loadu_ps(a + offset);
@@ -76,6 +84,10 @@ void squaredL2Avx(float *__restrict vec1, float *__restrict vec2, int64_t n, flo
     for (i = 0; i < epoch; i++)
     {
         int64_t offset = i * 32;
+        
+        // Prefetch next iteration's data into L1 cache
+        _mm_prefetch((const char*)(vec1 + offset + PREFETCH_AHEAD/4), _MM_HINT_T0);
+        _mm_prefetch((const char*)(vec2 + offset + PREFETCH_AHEAD/4), _MM_HINT_T0);
         
         // Load vectors
         __m256 v1_1 = _mm256_loadu_ps(vec1 + offset);

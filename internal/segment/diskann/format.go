@@ -26,7 +26,7 @@ type FileHeader struct {
 	MaxDegree        uint32  // R
 	SearchListSize   uint32  // L
 	Entrypoint       uint32  // ID of the entry point node
-	QuantizationType uint8   // 0 = None, 1 = SQ8, 2 = PQ, 3 = BQ
+	QuantizationType uint8   // 0 = None, 1 = SQ8, 2 = PQ, 3 = BQ, 4 = RaBitQ
 	PQSubvectors     uint16  // M
 	PQCentroids      uint16  // K
 	_                [6]byte // Padding to align offsets to 8 bytes
@@ -35,7 +35,7 @@ type FileHeader struct {
 	VectorOffset        uint64   // Full precision vectors
 	GraphOffset         uint64   // Adjacency list (fixed size per node: R * 4 bytes)
 	PQCodesOffset       uint64   // PQ compressed vectors
-	BQCodesOffset       uint64   // Binary compressed vectors
+	BQCodesOffset       uint64   // BQ or RaBitQ compressed vectors
 	PQCodebookOffset    uint64   // PQ codebooks (if PQ enabled)
 	PKOffset            uint64   // Primary keys (uint64)
 	MetadataOffset      uint64   // Offset to start of metadata

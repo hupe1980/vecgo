@@ -1,6 +1,7 @@
 package s3
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -63,6 +64,17 @@ func (s *Store) Open(ctx context.Context, name string) (blobstore.Blob, error) {
 		key:    key,
 		size:   *head.ContentLength,
 	}, nil
+}
+
+// Put writes a blob atomically.
+func (s *Store) Put(ctx context.Context, name string, data []byte) error {
+	key := s.key(name)
+	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+		Body:   bytes.NewReader(data),
+	})
+	return err
 }
 
 func (s *Store) Create(ctx context.Context, name string) (blobstore.WritableBlob, error) {
@@ -166,7 +178,7 @@ func (b *s3Blob) ReadAt(p []byte, off int64) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }() // Intentionally ignore: cleanup path
 
 	n, err := io.ReadFull(resp.Body, p)
 	if err == io.ErrUnexpectedEOF {

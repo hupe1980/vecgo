@@ -1,32 +1,54 @@
 package manifest
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
-	"github.com/hupe1980/vecgo/internal/fs"
+	"github.com/hupe1980/vecgo/blobstore"
 	"github.com/hupe1980/vecgo/model"
 )
 
 const (
 	ManifestFileName = "MANIFEST"
 	CurrentFileName  = "CURRENT"
-	CurrentVersion   = 1
+	// CurrentVersion is the version of the manifest format.
+	// Version 1: JSON
+	// Version 2: Binary
+	// Version 3: Binary + CreatedAt
+	CurrentVersion = 3
 )
 
 // Manifest describes the state of the engine at a specific point in time.
 type Manifest struct {
 	Version       int             `json:"version"`
 	ID            uint64          `json:"id"`
+	CreatedAt     time.Time       `json:"created_at"` // Timestamp of creation
+	Dim           int             `json:"dim"`
+	Metric        string          `json:"metric"`
 	NextSegmentID model.SegmentID `json:"next_segment_id"`
 	Segments      []SegmentInfo   `json:"segments"`
 	PKIndex       PKIndexInfo     `json:"pk_index"`
 	MaxLSN        uint64          `json:"max_lsn"`
-	WALID         uint64          `json:"wal_id"` // ID of the current WAL file
+}
+
+// New creates a new empty manifest.
+func New(dim int, metric string) *Manifest {
+	return &Manifest{
+		Version:       CurrentVersion,
+		ID:            0,
+		CreatedAt:     time.Now(),
+		Dim:           dim,
+		Metric:        metric,
+		NextSegmentID: 1, // Start segment IDs at 1
+	}
 }
 
 // SegmentInfo describes a single segment.
@@ -35,6 +57,11 @@ type SegmentInfo struct {
 	Level    int             `json:"level"`
 	RowCount uint32          `json:"row_count"`
 	Path     string          `json:"path"` // Relative to data dir
+	Size     int64           `json:"size"` // Size in bytes
+	// MinID and MaxID track the range of primary keys in this segment.
+	// Used for calculating overlaps in leveled compaction.
+	MinID model.ID `json:"min_id"`
+	MaxID model.ID `json:"max_id"`
 }
 
 // PKIndexInfo describes the persistent PK index.
@@ -44,61 +71,109 @@ type PKIndexInfo struct {
 
 // Store manages the manifest file and atomic updates.
 type Store struct {
-	fs  fs.FileSystem
-	dir string
-	mu  sync.Mutex
+	store blobstore.BlobStore
+	mu    sync.Mutex
 }
 
 // NewStore creates a new manifest store.
-func NewStore(fsys fs.FileSystem, dir string) *Store {
-	if fsys == nil {
-		fsys = fs.Default
-	}
-	return &Store{fs: fsys, dir: dir}
+func NewStore(store blobstore.BlobStore) *Store {
+	return &Store{store: store}
 }
 
 // Load loads the current manifest.
 func (s *Store) Load() (*Manifest, error) {
+	return s.LoadVersion(0)
+}
+
+// LoadVersion loads a specific version ID. 0 means latest.
+func (s *Store) LoadVersion(versionID uint64) (*Manifest, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Read CURRENT file to get the manifest filename
-	currentPath := filepath.Join(s.dir, CurrentFileName)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
-	readFile := func(path string) ([]byte, error) {
-		f, err := s.fs.OpenFile(path, os.O_RDONLY, 0)
+	var manifestFilename string
+	if versionID == 0 {
+		b, err := s.store.Open(ctx, CurrentFileName)
+		if err != nil {
+			// If CURRENT file is missing, we must map underlying store "Not Found" error
+			// to manifest.ErrNotFound so engine can detect it and init new DB.
+			// blobstore.ErrNotFound is os.ErrNotExist.
+			if os.IsNotExist(err) || errors.Is(err, os.ErrNotExist) {
+				return nil, ErrNotFound
+			}
+			return nil, err
+		}
+		defer b.Close()
+		content, err := io.ReadAll(io.NewSectionReader(b, 0, b.Size()))
 		if err != nil {
 			return nil, err
 		}
-		defer f.Close()
-		return io.ReadAll(f)
+		manifestFilename = string(content)
+	} else {
+		manifestFilename = fmt.Sprintf("%s-%06d.bin", ManifestFileName, versionID)
 	}
 
-	content, err := readFile(currentPath)
-	if os.IsNotExist(err) {
-		// No manifest yet, return empty with current version
-		return &Manifest{ID: 0, Version: CurrentVersion}, nil
+	b, err := s.store.Open(ctx, manifestFilename)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open manifest %s: %w", manifestFilename, err)
 	}
+	defer b.Close()
+
+	var m *Manifest
+	if filepath.Ext(manifestFilename) == ".json" {
+		m = &Manifest{}
+		content, err := io.ReadAll(io.NewSectionReader(b, 0, b.Size()))
+		if err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(content, m); err != nil {
+			return nil, err
+		}
+	} else {
+		// Expect ReadBinary to be available (helper in binary.go)
+		// Assuming signature: func ReadBinary(r io.Reader) (*Manifest, error)
+		m, err = ReadBinary(io.NewSectionReader(b, 0, b.Size()))
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return m, nil
+}
+
+// ListVersions returns all available manifest versions.
+func (s *Store) ListVersions(ctx context.Context) ([]*Manifest, error) {
+	files, err := s.store.List(ctx, ManifestFileName)
 	if err != nil {
 		return nil, err
 	}
-
-	manifestPath := filepath.Join(s.dir, string(content))
-	data, err := readFile(manifestPath)
-	if err != nil {
-		return nil, err
+	var manifests []*Manifest
+	for _, f := range files {
+		if filepath.Ext(f) != ".bin" && filepath.Ext(f) != ".json" {
+			continue
+		}
+		b, err := s.store.Open(ctx, f)
+		if err != nil {
+			continue
+		}
+		// In a real implementation we would only read the header (metrics, timestamp)
+		// For now we read full for simplicity.
+		var m *Manifest
+		if filepath.Ext(f) == ".json" {
+			m = &Manifest{}
+			content, _ := io.ReadAll(io.NewSectionReader(b, 0, b.Size()))
+			json.Unmarshal(content, m)
+		} else {
+			m, _ = ReadBinary(io.NewSectionReader(b, 0, b.Size()))
+		}
+		b.Close()
+		if m != nil {
+			manifests = append(manifests, m)
+		}
 	}
-
-	var m Manifest
-	if err := json.Unmarshal(data, &m); err != nil {
-		return nil, err
-	}
-
-	if m.Version != CurrentVersion {
-		return nil, fmt.Errorf("%w: %d (expected %d)", ErrIncompatibleVersion, m.Version, CurrentVersion)
-	}
-
-	return &m, nil
+	return manifests, nil
 }
 
 // Save atomically saves a new manifest.
@@ -106,69 +181,42 @@ func (s *Store) Save(m *Manifest) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
 	m.Version = CurrentVersion
 	m.ID++
+	m.CreatedAt = time.Now()
 
-	// 1. Write new manifest file
-	filename := fmt.Sprintf("%s-%06d.json", ManifestFileName, m.ID)
-	path := filepath.Join(s.dir, filename)
+	filename := fmt.Sprintf("%s-%06d.bin", ManifestFileName, m.ID)
 
-	data, err := json.MarshalIndent(m, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	// Write to temp file first
-	tmpPath := path + ".tmp"
-	f, err := s.fs.OpenFile(tmpPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
-	if err != nil {
-		return err
-	}
-	if _, err := f.Write(data); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
+	var buf bytes.Buffer
+	if err := m.WriteBinary(&buf); err != nil {
 		return err
 	}
 
-	// Rename to final manifest file
-	if err := s.fs.Rename(tmpPath, path); err != nil {
+	// Atomic Write of Manifest Blob
+	if err := s.store.Put(ctx, filename, buf.Bytes()); err != nil {
 		return err
 	}
 
-	// Sync directory to persist rename
-	// syncDir uses os.Open, need to use s.fs
-	// But fs interface doesn't have SyncDir.
-	// We can skip directory sync for now or add it to interface.
-	// Let's skip for now to keep interface simple, or use a helper.
-	// if err := syncDir(s.dir); err != nil { return err }
+	// Atomic Update of CURRENT
+	// S3: Strong consistency on overwrites
+	// Local: Atomic rename in Create/Put
+	return s.store.Put(ctx, CurrentFileName, []byte(filename))
+}
 
-	// 2. Update CURRENT pointer atomically
-	currentTmp := filepath.Join(s.dir, CurrentFileName+".tmp")
-	cf, err := s.fs.OpenFile(currentTmp, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
-	if err != nil {
-		return err
-	}
-	if _, err := fmt.Fprint(cf, filename); err != nil {
-		cf.Close()
-		return err
-	}
-	if err := cf.Sync(); err != nil {
-		cf.Close()
-		return err
-	}
-	if err := cf.Close(); err != nil {
-		return err
-	}
+// DeleteVersion deletes the manifest file for the given version.
+func (s *Store) DeleteVersion(ctx context.Context, versionID uint64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	if err := s.fs.Rename(currentTmp, filepath.Join(s.dir, CurrentFileName)); err != nil {
-		return err
-	}
-
-	return nil
+	filename := fmt.Sprintf("%s-%06d.bin", ManifestFileName, versionID)
+	// Also try JSON if binary doesn't exist?
+	// For now we just try binary as that's what Save writes.
+	// But ListVersions might find .json.
+	// Clean implementation would check what exists.
+	// Simpler: Try deleting both variants.
+	_ = s.store.Delete(ctx, fmt.Sprintf("%s-%06d.json", ManifestFileName, versionID))
+	return s.store.Delete(ctx, filename)
 }

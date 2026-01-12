@@ -1,6 +1,6 @@
 package diskann
 
-import "sort"
+import "slices"
 
 type distNode struct {
 	id   uint32
@@ -8,7 +8,13 @@ type distNode struct {
 }
 
 func sortDistNodes(nodes []distNode) {
-	sort.Slice(nodes, func(i, j int) bool {
-		return nodes[i].dist < nodes[j].dist
+	slices.SortFunc(nodes, func(a, b distNode) int {
+		if a.dist < b.dist {
+			return -1
+		}
+		if a.dist > b.dist {
+			return 1
+		}
+		return 0
 	})
 }

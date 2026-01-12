@@ -33,7 +33,7 @@ func TestQuantizedSegment(t *testing.T) {
 	}
 
 	for i, vec := range vectors {
-		err := w.Add(model.PKUint64(uint64(i)), vec, nil, nil)
+		err := w.Add(model.ID(i), vec, nil, nil)
 		require.NoError(t, err)
 	}
 
@@ -66,7 +66,7 @@ func TestQuantizedSegment(t *testing.T) {
 	// Verify candidates have Approx=true
 	cands := make([]model.Candidate, 0, s.Heap.Len())
 	for s.Heap.Len() > 0 {
-		cands = append(cands, s.Heap.Pop())
+		cands = append(cands, s.Heap.Pop().ToModel())
 	}
 	for _, c := range cands {
 		assert.True(t, c.Approx)

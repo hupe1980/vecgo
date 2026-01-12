@@ -3,7 +3,7 @@ package kmeans
 import (
 	"math"
 	"math/rand"
-	"sort"
+	"slices"
 
 	"github.com/hupe1980/vecgo/distance"
 )
@@ -143,8 +143,14 @@ func FindClosestCentroids(query []float32, centroids []float32, dim int, n int, 
 		dists[i] = centroidDist{id: i, dist: d}
 	}
 
-	sort.Slice(dists, func(i, j int) bool {
-		return dists[i].dist < dists[j].dist
+	slices.SortFunc(dists, func(a, b centroidDist) int {
+		if a.dist < b.dist {
+			return -1
+		}
+		if a.dist > b.dist {
+			return 1
+		}
+		return 0
 	})
 
 	result := make([]int, n)

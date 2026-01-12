@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/hupe1980/vecgo/distance"
-	"github.com/hupe1980/vecgo/engine"
+	"github.com/hupe1980/vecgo"
 	"github.com/hupe1980/vecgo/model"
+
 	"github.com/hupe1980/vecgo/testutil"
 )
 
@@ -16,39 +16,35 @@ func BenchmarkBatchInsert(b *testing.B) {
 
 	b.Run("Sequential", func(b *testing.B) {
 		dir := b.TempDir()
-		e, _ := engine.Open(dir, dim, distance.MetricL2)
+		e, _ := vecgo.Open(dir, vecgo.Create(dim, vecgo.MetricL2))
 		defer e.Close()
 
 		vec := make([]float32, dim)
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			e.Insert(model.PKUint64(uint64(i)), vec, nil, nil)
+			e.Insert(vec, nil, nil)
 		}
 	})
 
 	b.Run("Batch", func(b *testing.B) {
 		dir := b.TempDir()
-		e, _ := engine.Open(dir, dim, distance.MetricL2)
+		e, _ := vecgo.Open(dir, vecgo.Create(dim, vecgo.MetricL2))
 		defer e.Close()
 
 		vec := make([]float32, dim)
-		records := make([]model.Record, batchSize)
+		vectors := make([][]float32, batchSize)
 		for i := 0; i < batchSize; i++ {
-			records[i] = model.Record{Vector: vec}
+			vectors[i] = vec
 		}
 
 		b.ResetTimer()
 		for i := 0; i < b.N; i += batchSize {
-			// Update PKs
-			for j := 0; j < batchSize; j++ {
-				records[j].PK = model.PKUint64(uint64(i + j))
-			}
 			// Handle last partial batch if b.N is not multiple of batchSize
 			count := batchSize
 			if i+count > b.N {
 				count = b.N - i
 			}
-			e.BatchInsert(records[:count])
+			e.BatchInsert(vectors[:count], nil, nil)
 		}
 	})
 }
@@ -59,16 +55,18 @@ func BenchmarkBatchSearch(b *testing.B) {
 	batchSize := 10
 
 	dir := b.TempDir()
-	e, _ := engine.Open(dir, dim, distance.MetricL2)
+	e, _ := vecgo.Open(dir, vecgo.Create(dim, vecgo.MetricL2))
 	defer e.Close()
 
 	rng := testutil.NewRNG(1)
 	data := make([][]float32, numVecs)
+	pks := make([]model.ID, numVecs)
 	for i := 0; i < numVecs; i++ {
 		vec := make([]float32, dim)
 		rng.FillUniform(vec)
 		data[i] = vec
-		e.Insert(model.PKUint64(uint64(i)), vec, nil, nil)
+		id, _ := e.Insert(vec, nil, nil)
+		pks[i] = id
 	}
 
 	ctx := context.Background()
@@ -89,7 +87,7 @@ func BenchmarkBatchSearch(b *testing.B) {
 		b.StopTimer()
 		var sum float64
 		for _, q := range queries {
-			truth := exactTopK_L2(data, q, 10)
+			truth := exactTopK_L2_WithIDs(data, pks, q, 10)
 			res, _ := e.Search(ctx, q, 10)
 			sum += recallAtK(res, truth)
 		}
@@ -104,7 +102,7 @@ func BenchmarkBatchSearch(b *testing.B) {
 		res, _ := e.BatchSearch(ctx, queries, 10)
 		var sum float64
 		for i, q := range queries {
-			truth := exactTopK_L2(data, q, 10)
+			truth := exactTopK_L2_WithIDs(data, pks, q, 10)
 			sum += recallAtK(res[i], truth)
 		}
 		b.ReportMetric(sum/float64(len(queries)), "recall@10")

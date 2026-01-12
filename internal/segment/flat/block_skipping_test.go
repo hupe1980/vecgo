@@ -36,7 +36,7 @@ func TestBlockSkipping(t *testing.T) {
 		md := metadata.Document{
 			"price": metadata.Value{Kind: metadata.KindFloat, F64: float64(i % 100)},
 		}
-		err := w.Add(model.PKUint64(uint64(i)), []float32{0.0, 0.0}, md, nil)
+		err := w.Add(model.ID(uint64(i)), []float32{0.0, 0.0}, md, nil)
 		require.NoError(t, err)
 	}
 
@@ -45,7 +45,7 @@ func TestBlockSkipping(t *testing.T) {
 		md := metadata.Document{
 			"price": metadata.Value{Kind: metadata.KindFloat, F64: float64(200 + (i % 100))},
 		}
-		err := w.Add(model.PKUint64(uint64(i)), []float32{1.0, 1.0}, md, nil) // Different vector to distinguish
+		err := w.Add(model.ID(uint64(i)), []float32{1.0, 1.0}, md, nil) // Different vector to distinguish
 		require.NoError(t, err)
 	}
 
@@ -89,7 +89,7 @@ func TestBlockSkipping(t *testing.T) {
 	// Should only find rows from Block 1 (ids >= 1024)
 	for s.Heap.Len() > 0 {
 		c := s.Heap.Pop()
-		assert.GreaterOrEqual(t, int(c.Loc.RowID), 1024)
+		assert.GreaterOrEqual(t, int(c.RowID), 1024)
 	}
 
 	// Case 2: Filter price < 50. Should skip Block 1.
@@ -110,6 +110,6 @@ func TestBlockSkipping(t *testing.T) {
 	// Should only find rows from Block 0 (ids < 1024)
 	for s.Heap.Len() > 0 {
 		c := s.Heap.Pop()
-		assert.Less(t, int(c.Loc.RowID), 1024)
+		assert.Less(t, int(c.RowID), 1024)
 	}
 }

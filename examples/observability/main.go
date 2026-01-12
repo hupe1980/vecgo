@@ -10,18 +10,17 @@ import (
 	"os"
 	"os/signal"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
-	"github.com/hupe1980/vecgo/distance"
-	"github.com/hupe1980/vecgo/engine"
-	"github.com/hupe1980/vecgo/model"
+	"github.com/hupe1980/vecgo"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-// PrometheusObserver implements engine.MetricsObserver
+const dim = 128
+
+// PrometheusObserver implements vecgo.MetricsObserver
 type PrometheusObserver struct {
 	opLatency     *prometheus.HistogramVec
 	memTableBytes prometheus.Gauge
@@ -134,10 +133,8 @@ func (o *PrometheusObserver) OnFlush(d time.Duration, r int, b uint64, err error
 }
 
 // No-ops for now to keep example simple
-func (o *PrometheusObserver) OnWALWrite(d time.Duration, b int)            {}
 func (o *PrometheusObserver) OnGet(d time.Duration, err error)             {}
 func (o *PrometheusObserver) OnBuild(d time.Duration, t string, err error) {}
-func (o *PrometheusObserver) OnStall(d time.Duration, r string)            {}
 func (o *PrometheusObserver) OnThroughput(n string, b int64)               {}
 
 var (
@@ -166,11 +163,8 @@ func main() {
 	fmt.Printf("Database dir: %s\n", dir)
 
 	obs := NewPrometheusObserver()
-	eng, err := engine.Open(dir, 128, distance.MetricL2,
-		engine.WithMetricsObserver(obs),
-		engine.WithFlushConfig(engine.FlushConfig{
-			MaxMemTableSize: 4 * 1024 * 1024,
-		}),
+	eng, err := vecgo.Open(dir, vecgo.Create(dim, vecgo.MetricL2),
+		vecgo.WithMetricsObserver(obs),
 	)
 	if err != nil {
 		log.Fatal(err)
@@ -192,8 +186,6 @@ func main() {
 		ticker := time.NewTicker(time.Second / time.Duration(*targetQPS))
 		defer ticker.Stop()
 
-		var idCounter uint64
-		dim := 128
 		vec := make([]float32, dim)
 
 		for {
@@ -205,9 +197,8 @@ func main() {
 				for i := 0; i < dim; i++ {
 					vec[i] = rand.Float32()
 				}
-				pk := model.PKUint64(atomic.AddUint64(&idCounter, 1))
 
-				if err := eng.Insert(pk, vec, nil, nil); err != nil {
+				if _, err := eng.Insert(vec, nil, nil); err != nil {
 					log.Printf("Insert error: %v", err)
 				}
 			}
@@ -218,7 +209,6 @@ func main() {
 	go func() {
 		defer wg.Done()
 		// Search runs as fast as possible but sleeps a tiny bit
-		dim := 128
 		query := make([]float32, dim)
 
 		for {
@@ -226,7 +216,7 @@ func main() {
 			case <-ctx.Done():
 				return
 			default:
-				for i := range dim {
+				for i := range query {
 					query[i] = rand.Float32()
 				}
 				_, err := eng.Search(ctx, query, 10)

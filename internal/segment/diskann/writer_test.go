@@ -10,10 +10,10 @@ import (
 
 	"github.com/hupe1980/vecgo/blobstore"
 	"github.com/hupe1980/vecgo/distance"
+	"github.com/hupe1980/vecgo/internal/resource"
 	"github.com/hupe1980/vecgo/internal/searcher"
 	"github.com/hupe1980/vecgo/metadata"
 	"github.com/hupe1980/vecgo/model"
-	"github.com/hupe1980/vecgo/resource"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -44,7 +44,7 @@ func TestWriter(t *testing.T) {
 	}
 
 	for i, v := range vectors {
-		err := w.Add(model.PKUint64(uint64(i)), v, nil, nil)
+		err := w.Add(model.ID(uint64(i)), v, nil, nil)
 		require.NoError(t, err)
 	}
 
@@ -85,7 +85,7 @@ func TestWriter(t *testing.T) {
 	expectedGraphSize := 5 * 4 * 4
 
 	// Check PKs
-	expectedPKSize := 5*4 + 5*9
+	expectedPKSize := 5 * 8
 
 	// Check Metadata
 	expectedMetadataOffsetsSize := (5 + 1) * 8
@@ -125,7 +125,7 @@ func TestWriter(t *testing.T) {
 
 	var last model.Candidate
 	for sc.Heap.Len() > 0 {
-		last = sc.Heap.Pop()
+		last = sc.Heap.Pop().ToModel()
 	}
 	assert.Equal(t, model.RowID(0), last.Loc.RowID) // Should find itself
 	assert.Equal(t, float32(0), last.Score)
@@ -147,7 +147,7 @@ func TestWriter_ResourceLimits(t *testing.T) {
 
 	// Add vectors
 	for i := 0; i < 10; i++ {
-		w.Add(model.PKUint64(uint64(i)), []float32{1, 0, 0, 0}, nil, nil)
+		w.Add(model.ID(uint64(i)), []float32{1, 0, 0, 0}, nil, nil)
 	}
 
 	// Write should fail due to memory limit (timeout)
@@ -190,12 +190,12 @@ func TestMetadataPersistence(t *testing.T) {
 
 	doc1, err := metadata.FromMap(md1)
 	require.NoError(t, err)
-	err = w.Add(model.PKUint64(0), vectors[0], doc1, nil)
+	err = w.Add(model.ID(0), vectors[0], doc1, nil)
 	require.NoError(t, err)
 
 	doc2, err := metadata.FromMap(md2)
 	require.NoError(t, err)
-	err = w.Add(model.PKUint64(1), vectors[1], doc2, nil)
+	err = w.Add(model.ID(1), vectors[1], doc2, nil)
 	require.NoError(t, err)
 
 	// Flush
@@ -233,7 +233,7 @@ func TestMetadataPersistence(t *testing.T) {
 
 	// Iterate
 	count := 0
-	err = s.Iterate(func(rowID uint32, pk model.PrimaryKey, vec []float32, md metadata.Document, payload []byte) error {
+	err = s.Iterate(func(rowID uint32, id model.ID, vec []float32, md metadata.Document, payload []byte) error {
 		count++
 		if rowID == 0 {
 			require.NotNil(t, md)
@@ -283,7 +283,7 @@ func TestFilteredSearch(t *testing.T) {
 	for i, v := range vectors {
 		doc, err := metadata.FromMap(mds[i])
 		require.NoError(t, err)
-		err = w.Add(model.PKUint64(uint64(i)), v, doc, nil)
+		err = w.Add(model.ID(uint64(i)), v, doc, nil)
 		require.NoError(t, err)
 	}
 
@@ -326,12 +326,14 @@ func TestFilteredSearch(t *testing.T) {
 
 	require.Equal(t, 2, sc.Heap.Len())
 
-	// Verify results
+	// Verify results using IDs (not RowIDs, which change due to BFS reordering)
 	c1 := sc.Heap.Pop()
 	c2 := sc.Heap.Pop()
 
-	ids := []uint64{uint64(c1.Loc.RowID), uint64(c2.Loc.RowID)}
-	assert.Contains(t, ids, uint64(0))
-	assert.Contains(t, ids, uint64(2))
-	assert.NotContains(t, ids, uint64(1))
+	id1, _ := s.GetID(c1.RowID)
+	id2, _ := s.GetID(c2.RowID)
+	ids := []uint64{uint64(id1), uint64(id2)}
+	assert.Contains(t, ids, uint64(0), "ID=0 (type=a) should be in results")
+	assert.Contains(t, ids, uint64(2), "ID=2 (type=a) should be in results")
+	assert.NotContains(t, ids, uint64(1), "ID=1 (type=b) should not be in results")
 }

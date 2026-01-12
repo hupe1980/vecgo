@@ -13,7 +13,7 @@ import (
 
 func TestEdgeCases_Vectors(t *testing.T) {
 	dir := t.TempDir()
-	eng, err := vecgo.Open(dir, 128, vecgo.MetricL2)
+	eng, err := vecgo.Open(dir, vecgo.Create(128, vecgo.MetricL2))
 	require.NoError(t, err)
 	defer eng.Close()
 
@@ -22,27 +22,27 @@ func TestEdgeCases_Vectors(t *testing.T) {
 	t.Run("Insert NaN", func(t *testing.T) {
 		vec := make([]float32, 128)
 		vec[0] = float32(math.NaN())
-		err := eng.Insert(model.PKString("nan"), vec, nil, nil)
+		_, err := eng.Insert(vec, nil, nil)
 		assert.Error(t, err)
 	})
 
 	t.Run("Insert Inf", func(t *testing.T) {
 		vec := make([]float32, 128)
 		vec[0] = float32(math.Inf(1))
-		err := eng.Insert(model.PKString("inf"), vec, nil, nil)
+		_, err := eng.Insert(vec, nil, nil)
 		assert.Error(t, err)
 	})
 
 	t.Run("Insert Zero Length", func(t *testing.T) {
 		vec := []float32{}
-		err := eng.Insert(model.PKString("zero"), vec, nil, nil)
+		_, err := eng.Insert(vec, nil, nil)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "dimension")
 	})
 
 	t.Run("Insert Wrong Dimension", func(t *testing.T) {
 		vec := make([]float32, 127)
-		err := eng.Insert(model.PKString("wrong"), vec, nil, nil)
+		_, err := eng.Insert(vec, nil, nil)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "dimension")
 	})
@@ -64,7 +64,7 @@ func TestEdgeCases_Vectors(t *testing.T) {
 
 func TestEdgeCases_EmptyEngine(t *testing.T) {
 	dir := t.TempDir()
-	eng, err := vecgo.Open(dir, 128, vecgo.MetricL2)
+	eng, err := vecgo.Open(dir, vecgo.Create(128, vecgo.MetricL2))
 	require.NoError(t, err)
 	defer eng.Close()
 
@@ -79,14 +79,14 @@ func TestEdgeCases_EmptyEngine(t *testing.T) {
 	})
 
 	t.Run("Get Non Existent", func(t *testing.T) {
-		_, err := eng.Get(model.PKString("missing"))
+		_, err := eng.Get(model.ID(99999))
 		assert.Error(t, err)
 		// Should be not found or invalid argument
 	})
 
 	t.Run("Delete Non Existent", func(t *testing.T) {
 		// Delete is idempotent
-		err := eng.Delete(model.PKString("missing"))
+		err := eng.Delete(model.ID(99999))
 		assert.NoError(t, err)
 	})
 }
@@ -96,18 +96,18 @@ func TestEdgeCases_MaxDimension(t *testing.T) {
 	// We test a reasonably large dimension.
 	dim := 4096
 	dir := t.TempDir()
-	eng, err := vecgo.Open(dir, dim, vecgo.MetricL2)
+	eng, err := vecgo.Open(dir, vecgo.Create(dim, vecgo.MetricL2))
 	require.NoError(t, err)
 	defer eng.Close()
 
 	vec := make([]float32, dim)
 	vec[0] = 1.0
 
-	err = eng.Insert(model.PKString("max"), vec, nil, nil)
+	id, err := eng.Insert(vec, nil, nil)
 	require.NoError(t, err)
 
 	res, err := eng.Search(context.Background(), vec, 10)
 	require.NoError(t, err)
 	require.NotEmpty(t, res)
-	assert.Equal(t, model.PKString("max"), res[0].PK)
+	assert.Equal(t, id, res[0].ID)
 }

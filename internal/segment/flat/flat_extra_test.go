@@ -63,14 +63,14 @@ func TestFlatSegment_Extra_Coverage(t *testing.T) {
 	w := NewWriter(buf, payloadBuf, model.SegmentID(1), dim, distance.MetricL2, 1, 0)
 
 	// Add data
-	pk1 := model.PKUint64(100)
+	id1 := model.ID(100)
 	vec1 := []float32{1.0, 1.0}
 	md1Map := map[string]any{"color": "red"}
 	md1, err := metadata.FromMap(md1Map)
 	require.NoError(t, err)
 	payload1 := []byte("payload1")
 
-	err = w.Add(pk1, vec1, md1, payload1)
+	err = w.Add(id1, vec1, md1, payload1)
 	require.NoError(t, err)
 
 	err = w.Flush()
@@ -89,7 +89,7 @@ func TestFlatSegment_Extra_Coverage(t *testing.T) {
 	batch, err := s.Fetch(ctx, []uint32{0}, nil) // All columns
 	require.NoError(t, err)
 	require.Equal(t, 1, batch.RowCount())
-	assert.Equal(t, pk1, batch.PK(0))
+	assert.Equal(t, id1, batch.ID(0))
 	assert.Equal(t, vec1, batch.Vector(0))
 	assert.Equal(t, payload1, batch.Payload(0))
 
@@ -98,21 +98,21 @@ func TestFlatSegment_Extra_Coverage(t *testing.T) {
 	assert.True(t, ok)
 	assert.Equal(t, "red", v.StringValue())
 
-	// 2. FetchPKs
-	dstPKs := make([]model.PK, 1)
-	err = s.FetchPKs(ctx, []uint32{0}, dstPKs)
+	// 2. FetchIDs
+	dstIDs := make([]model.ID, 1)
+	err = s.FetchIDs(ctx, []uint32{0}, dstIDs)
 	require.NoError(t, err)
-	assert.Equal(t, pk1, dstPKs[0])
+	assert.Equal(t, id1, dstIDs[0])
 
 	// 3. Size
 	assert.Greater(t, s.Size(), int64(0))
 
 	// 4. Iterate
 	iterCount := 0
-	err = s.Iterate(func(rowID uint32, pk model.PK, vec []float32, md metadata.Document, payload []byte) error {
+	err = s.Iterate(func(rowID uint32, id model.ID, vec []float32, md metadata.Document, payload []byte) error {
 		iterCount++
 		assert.Equal(t, uint32(0), rowID)
-		assert.Equal(t, pk1, pk)
+		assert.Equal(t, id1, id)
 		assert.Equal(t, vec1, vec)
 		assert.Equal(t, payload1, payload)
 		v, _ := md["color"]
@@ -133,8 +133,8 @@ func TestFlatSegment_Extra_Coverage(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, h.Len())
 	top := h.Candidates[0]
-	assert.Equal(t, model.SegmentID(1), top.Loc.SegmentID)
-	assert.Equal(t, model.RowID(0), top.Loc.RowID)
+	assert.Equal(t, uint32(1), top.SegmentID)
+	assert.Equal(t, uint32(0), top.RowID)
 
 	// 6. Filter test
 	h2 := searcher.NewCandidateHeap(k, false)
@@ -165,11 +165,11 @@ func TestFlatSegment_SQ8_Coverage(t *testing.T) {
 	w := NewWriter(buf, payloadBuf, model.SegmentID(2), dim, distance.MetricL2, 1, 1)
 
 	// Add data
-	pk1 := model.PKUint64(200)
+	id1 := model.ID(200)
 	vec1 := []float32{1.1, 2.2, 3.3, 4.4}
 	md1, _ := metadata.FromMap(map[string]any{"tag": "q"})
 
-	err := w.Add(pk1, vec1, md1, nil)
+	err := w.Add(id1, vec1, md1, nil)
 	require.NoError(t, err)
 
 	err = w.Flush()
@@ -204,7 +204,7 @@ func TestFlatSegment_ErrorCases(t *testing.T) {
 
 	w := NewWriter(buf, payloadBuf, model.SegmentID(3), dim, distance.MetricL2, 1, 0)
 	// Add one item
-	_ = w.Add(model.PKUint64(1), []float32{1, 1}, nil, nil)
+	_ = w.Add(model.ID(1), []float32{1, 1}, nil, nil)
 	_ = w.Flush()
 
 	mainBlob := &bytesBlob{data: buf.Bytes()}
@@ -217,13 +217,13 @@ func TestFlatSegment_ErrorCases(t *testing.T) {
 	_, err := s.Fetch(ctx, []uint32{100}, nil)
 	assert.Error(t, err)
 
-	// FetchPKs OOB
-	dst := make([]model.PK, 1)
-	err = s.FetchPKs(ctx, []uint32{100}, dst)
+	// FetchIDs OOB
+	dst := make([]model.ID, 1)
+	err = s.FetchIDs(ctx, []uint32{100}, dst)
 	assert.Error(t, err)
 
-	// FetchPKs len mismatch
-	err = s.FetchPKs(ctx, []uint32{0}, make([]model.PK, 0))
+	// FetchIDs len mismatch
+	err = s.FetchIDs(ctx, []uint32{0}, make([]model.ID, 0))
 	assert.Error(t, err)
 }
 
@@ -239,14 +239,14 @@ func TestFlatSegment_Large_Coverage(t *testing.T) {
 	// Add 1100 items to ensure at least one block boundary (assuming 1024 default)
 	// We need metadata on them to generate stats.
 	for i := 0; i < 1100; i++ {
-		pk := model.PKUint64(uint64(i))
+		id := model.ID(uint64(i))
 		vec := []float32{float32(i), float32(i)}
 		val := "small"
 		if i >= 1000 {
 			val = "large"
 		}
 		md, _ := metadata.FromMap(map[string]any{"size": val})
-		_ = w.Add(pk, vec, md, nil)
+		_ = w.Add(id, vec, md, nil)
 	}
 
 	require.NoError(t, w.Flush())
@@ -278,6 +278,6 @@ func TestFlatSegment_Large_Coverage(t *testing.T) {
 
 	// Check results are >= 1000
 	for _, c := range h.Candidates {
-		assert.GreaterOrEqual(t, int(c.Loc.RowID), 1000)
+		assert.GreaterOrEqual(t, int(c.RowID), 1000)
 	}
 }

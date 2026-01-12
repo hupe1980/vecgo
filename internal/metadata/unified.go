@@ -5,6 +5,7 @@ package imetadata
 
 import (
 	"encoding/binary"
+	"fmt"
 	"io"
 	"sync"
 	"unique"
@@ -302,6 +303,72 @@ func (ui *UnifiedIndex) createInCheck(filter metadata.Filter) func(model.RowID) 
 		}
 		return false
 	}
+}
+
+// Query evaluates a filter set and returns a bitmap of matching documents.
+// Returns nil if the filter set matches all documents (empty filter).
+// Returns error if the filter contains unsupported operators (e.g. range queries).
+func (ui *UnifiedIndex) Query(fs *metadata.FilterSet) (*LocalBitmap, error) {
+	ui.mu.RLock()
+	defer ui.mu.RUnlock()
+
+	if fs == nil || len(fs.Filters) == 0 {
+		return nil, nil
+	}
+
+	var result *LocalBitmap
+
+	for _, f := range fs.Filters {
+		var current *LocalBitmap
+		var err error
+
+		switch f.Operator {
+		case metadata.OpEqual:
+			b := ui.getBitmapLocked(f.Key, f.Value)
+			if b != nil {
+				current = b.Clone()
+			} else {
+				// No match for this filter -> Empty result
+				return NewLocalBitmap(), nil
+			}
+		case metadata.OpIn:
+			current, err = ui.queryInLocked(f)
+			if err != nil {
+				return nil, err
+			}
+		default:
+			return nil, fmt.Errorf("operator %s not supported in bitmap index", f.Operator)
+		}
+
+		if result == nil {
+			result = current
+		} else {
+			result.And(current)
+		}
+
+		if result.IsEmpty() {
+			return result, nil
+		}
+	}
+
+	return result, nil
+}
+
+func (ui *UnifiedIndex) queryInLocked(f metadata.Filter) (*LocalBitmap, error) {
+	arr, ok := f.Value.AsArray()
+	if !ok {
+		// If value is not an array, treat as Equal? Or error?
+		// Logic suggests OpIn expects Array.
+		return NewLocalBitmap(), nil
+	}
+
+	result := NewLocalBitmap()
+	for _, v := range arr {
+		if b := ui.getBitmapLocked(f.Key, v); b != nil {
+			result.Or(b)
+		}
+	}
+	return result, nil
 }
 
 func (ui *UnifiedIndex) createFallbackCheck(filter metadata.Filter) func(model.RowID) bool {

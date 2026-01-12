@@ -18,6 +18,7 @@ func init() {
 		dotBatchImpl = dotBatchAVX512
 		f16ToF32Impl = f16ToF32AVX512
 		sq8L2BatchImpl = sq8L2BatchAVX512
+		sq8uL2BatchPerDimensionImpl = sq8uL2BatchPerDimensionAVX512
 		popcountImpl = popcountAVX512
 		hammingImpl = hammingAVX512
 	} else if cpu.X86.HasAVX {
@@ -145,7 +146,11 @@ func sq8L2BatchAVX512(query []float32, codes []int8, scales []float32, biases []
 		sq8L2BatchAvx512(unsafe.Pointer(&query[0]), unsafe.Pointer(&codes[0]), unsafe.Pointer(&scales[0]), unsafe.Pointer(&biases[0]), int64(dim), int64(len(out)), unsafe.Pointer(&out[0]))
 	}
 }
-
+func sq8uL2BatchPerDimensionAVX512(query []float32, codes []byte, mins []float32, invScales []float32, dim int, out []float32) {
+	if len(query) > 0 {
+		sq8uL2BatchPerDimensionAvx512(unsafe.Pointer(&query[0]), unsafe.Pointer(&codes[0]), unsafe.Pointer(&mins[0]), unsafe.Pointer(&invScales[0]), int64(dim), int64(len(out)), unsafe.Pointer(&out[0]))
+	}
+}
 func popcountAVX(a []byte) int64 {
 	n := len(a)
 	if n == 0 {

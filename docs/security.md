@@ -18,8 +18,8 @@ Vecgo is an **embedded library**. Security is a **shared responsibility** betwee
 ### 1. Resource Exhaustion Protection
 Vecgo prevents trivial DoS attacks via:
 - **Memory Limits**: Hard caps on MemTable and Cache. Returns `ErrBackpressure` if exceeded.
-- **Dimension Limits**: Rejects vectors > 10k dimensions (configurable).
-- **Batch Limits**: Rejects batch operations > 10k items.
+- **Dimension Validation**: Rejects vectors with the wrong dimension for the index (`ErrInvalidArgument`).
+- **Batch Behavior**: Very large batches can still exhaust configured budgets and trigger `ErrBackpressure`; there is no fixed “max batch size” enforced by default.
 
 ### 2. Corruption Detection
 - **Checksums**: CRC32C on WAL records and Segment headers.
@@ -28,8 +28,7 @@ Vecgo prevents trivial DoS attacks via:
 
 ### 3. Safe Defaults
 - **Memory**: Default 1GB limit.
-- **WAL**: Async mode (balances safety/perf).
-- **Threads**: Bounded worker pool.
+- **WAL**: Sync mode by default (strongest durability).
 
 ## Recommendations for Secure Embedding
 

@@ -99,33 +99,3 @@ func Int64ToInt(v int64) (int, error) {
 	}
 	return int(v), nil
 }
-
-// Int32ToUint32 converts int32 to uint32 safely.
-func Int32ToUint32(v int32) (uint32, error) {
-	if v < 0 {
-		return 0, fmt.Errorf("integer overflow: %d cannot be converted to uint32 (negative)", v)
-	}
-	return uint32(v), nil
-}
-
-// Int32ToUint16 converts int32 to uint16 safely.
-func Int32ToUint16(v int32) (uint16, error) {
-	if v < 0 {
-		return 0, fmt.Errorf("integer overflow: %d cannot be converted to uint16 (negative)", v)
-	}
-	if v > math.MaxUint16 {
-		return 0, fmt.Errorf("integer overflow: %d cannot be converted to uint16 (too large)", v)
-	}
-	return uint16(v), nil
-}
-
-// IntToUint8 converts int to uint8 safely.
-func IntToUint8(v int) (uint8, error) {
-	if v < 0 {
-		return 0, fmt.Errorf("integer overflow: %d cannot be converted to uint8 (negative)", v)
-	}
-	if v > math.MaxUint8 {
-		return 0, fmt.Errorf("integer overflow: %d cannot be converted to uint8 (too large)", v)
-	}
-	return uint8(v), nil
-}

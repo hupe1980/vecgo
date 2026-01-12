@@ -40,6 +40,29 @@ func osMap(f *os.File, size int) ([]byte, func([]byte) error, error) {
 	}, nil
 }
 
+func osMapAnon(size int) ([]byte, func([]byte) error, error) {
+	// On Windows, use CreateFileMapping with invalid handle and commit memory
+	// PAGE_READWRITE for R/W access
+	prot := uint32(windows.PAGE_READWRITE)
+	h, err := windows.CreateFileMapping(windows.InvalidHandle, nil, prot, 0, uint32(size), nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer windows.CloseHandle(h)
+
+	// FILE_MAP_WRITE for read/write access
+	addr, err := windows.MapViewOfFile(h, windows.FILE_MAP_WRITE, 0, 0, uintptr(size))
+	if err != nil {
+		return nil, nil, err
+	}
+
+	data := unsafe.Slice((*byte)(unsafe.Pointer(addr)), size)
+
+	return data, func(b []byte) error {
+		return windows.UnmapViewOfFile(addr)
+	}, nil
+}
+
 func osAdvise(data []byte, pattern AccessPattern) error {
 	// Windows does not have a direct equivalent to madvise for file mappings in the same way.
 	// PrefetchVirtualMemory could be used, but it's more complex.

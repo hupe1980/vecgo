@@ -24,9 +24,9 @@ func TestFlatSegment(t *testing.T) {
 
 	w := NewWriter(f, nil, 1, 2, distance.MetricL2, 0, QuantizationNone)
 
-	err = w.Add(model.PKUint64(1), []float32{1.0, 0.0}, nil, nil)
+	err = w.Add(model.ID(1), []float32{1.0, 0.0}, nil, nil)
 	require.NoError(t, err)
-	err = w.Add(model.PKUint64(2), []float32{0.0, 1.0}, nil, nil)
+	err = w.Add(model.ID(2), []float32{0.0, 1.0}, nil, nil)
 	require.NoError(t, err)
 
 	err = w.Flush()
@@ -58,7 +58,7 @@ func TestFlatSegment(t *testing.T) {
 
 	var last model.Candidate
 	for s.Heap.Len() > 0 {
-		last = s.Heap.Pop()
+		last = s.Heap.Pop().ToModel()
 	}
 	assert.Equal(t, model.RowID(0), last.Loc.RowID) // Closest
 }

@@ -22,6 +22,18 @@ func osMap(f *os.File, size int) ([]byte, func([]byte) error, error) {
 	return data, unix.Munmap, nil
 }
 
+func osMapAnon(size int) ([]byte, func([]byte) error, error) {
+	prot := unix.PROT_READ | unix.PROT_WRITE
+	flags := unix.MAP_ANON | unix.MAP_PRIVATE
+
+	data, err := unix.Mmap(-1, 0, size, prot, flags)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return data, unix.Munmap, nil
+}
+
 func osAdvise(data []byte, pattern AccessPattern) error {
 	var advice int
 	switch pattern {

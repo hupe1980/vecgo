@@ -4,7 +4,8 @@ import (
 	"context"
 	"io"
 
-	"github.com/hupe1980/vecgo/cache"
+	"github.com/hupe1980/vecgo/internal/cache"
+	"golang.org/x/sync/errgroup"
 )
 
 // CachingStore wraps a BlobStore and adds block-level caching.
@@ -48,6 +49,14 @@ func (s *CachingStore) Create(ctx context.Context, name string) (WritableBlob, e
 	return s.inner.Create(ctx, name)
 }
 
+func (s *CachingStore) Put(ctx context.Context, name string, data []byte) error {
+	// Invalidate cache entries for this blob
+	s.cache.Invalidate(func(key cache.CacheKey) bool {
+		return key.Kind == cache.CacheKindBlob && key.Path == name
+	})
+	return s.inner.Put(ctx, name, data)
+}
+
 func (s *CachingStore) Delete(ctx context.Context, name string) error {
 	// Invalidate cache entries for this blob
 	s.cache.Invalidate(func(key cache.CacheKey) bool {
@@ -86,6 +95,11 @@ func (b *CachingBlob) ReadAt(p []byte, off int64) (int, error) {
 	// Align to block boundaries
 	startBlock := off / b.blockSize
 	endBlock := (off + int64(len(p)) - 1) / b.blockSize
+
+	// Prefetch/Coalesce missing blocks
+	if err := b.fillCache(startBlock, endBlock); err != nil {
+		return 0, err
+	}
 
 	for blk := startBlock; blk <= endBlock; blk++ {
 		// Calculate block range
@@ -138,6 +152,108 @@ func (b *CachingBlob) ReadAt(p []byte, off int64) (int, error) {
 	}
 
 	return totalRead, nil
+}
+
+// fillCache ensures that the blocks in the given range are loaded into the cache.
+// It optimizes by fetching contiguous runs of missing blocks in single backend requests.
+func (b *CachingBlob) fillCache(startBlock, endBlock int64) error {
+	ctx := context.Background()
+	var missingRuns []struct {
+		start, count int64
+	}
+
+	runStart := int64(-1)
+	runCount := int64(0)
+
+	// Identify missing blocks
+	for blk := startBlock; blk <= endBlock; blk++ {
+		key := cache.CacheKey{
+			Kind:   cache.CacheKindBlob,
+			Path:   b.name,
+			Offset: uint64(blk),
+		}
+		if _, ok := b.cache.Get(ctx, key); !ok {
+			if runStart == -1 {
+				runStart = blk
+				runCount = 1
+			} else {
+				runCount++
+			}
+		} else {
+			if runStart != -1 {
+				missingRuns = append(missingRuns, struct{ start, count int64 }{runStart, runCount})
+				runStart = -1
+				runCount = 0
+			}
+		}
+	}
+	if runStart != -1 {
+		missingRuns = append(missingRuns, struct{ start, count int64 }{runStart, runCount})
+	}
+
+	// Fetch missing runs in parallel
+	g, _ := errgroup.WithContext(ctx)
+	// Limit concurrency to avoid FD exhaustion or rate limits
+	g.SetLimit(16)
+
+	for _, run := range missingRuns {
+		run := run // capture loop variable
+		g.Go(func() error {
+			byteStart := run.start * b.blockSize
+			byteSize := run.count * b.blockSize
+
+			// Limit to file size
+			fileSize := b.Size()
+			if byteStart >= fileSize {
+				return nil
+			}
+			if byteStart+byteSize > fileSize {
+				byteSize = fileSize - byteStart
+			}
+
+			// Read from backend
+			// Use a new buffer for each read
+			buf := make([]byte, byteSize)
+			n, err := b.inner.ReadAt(buf, byteStart)
+			if err != nil && err != io.EOF {
+				return err
+			}
+			if n == 0 {
+				return nil
+			}
+
+			validData := buf[:n]
+
+			// Populate cache
+			for i := int64(0); i < run.count; i++ {
+				blkIdx := run.start + i
+				offsetInRun := i * b.blockSize
+
+				if offsetInRun >= int64(len(validData)) {
+					break
+				}
+
+				endInRun := offsetInRun + b.blockSize
+				if endInRun > int64(len(validData)) {
+					endInRun = int64(len(validData))
+				}
+
+				// We MUST make a copy to avoid pinning the large 'buf'
+				chunkSize := endInRun - offsetInRun
+				blockCopy := make([]byte, chunkSize)
+				copy(blockCopy, validData[offsetInRun:endInRun])
+
+				key := cache.CacheKey{
+					Kind:   cache.CacheKindBlob,
+					Path:   b.name,
+					Offset: uint64(blkIdx),
+				}
+				b.cache.Set(ctx, key, blockCopy)
+			}
+			return nil
+		})
+	}
+	return g.Wait()
 }
 
 func (b *CachingBlob) dofetchBlock(blkIdx int64) ([]byte, error) {

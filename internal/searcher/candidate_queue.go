@@ -1,50 +1,46 @@
 package searcher
 
-import (
-	"github.com/hupe1980/vecgo/model"
-)
-
-// CandidateHeap is a heap of model.Candidate.
+// CandidateHeap is a heap of InternalCandidate.
 // It is used for collecting top-k results.
 type CandidateHeap struct {
-	Candidates []model.Candidate
+	Candidates []InternalCandidate
 	descending bool // true if we want largest scores (Dot/Cosine), false for smallest (L2)
 }
 
-// CandidateBetter reports whether a is better than b under the metric direction.
+// InternalCandidateBetter reports whether a is better than b under the metric direction.
 // Tie-breaker is (SegmentID, RowID) ascending for determinism.
-func CandidateBetter(a, b model.Candidate, descending bool) bool {
+func InternalCandidateBetter(a, b InternalCandidate, descending bool) bool {
 	if a.Score != b.Score {
 		if descending {
 			return a.Score > b.Score
 		}
 		return a.Score < b.Score
 	}
-	if a.Loc.SegmentID != b.Loc.SegmentID {
-		return a.Loc.SegmentID < b.Loc.SegmentID
+	if a.SegmentID != b.SegmentID {
+		return a.SegmentID < b.SegmentID
 	}
-	return a.Loc.RowID < b.Loc.RowID
+	return a.RowID < b.RowID
 }
 
-// CandidateWorse reports whether a is worse than b under the metric direction.
+// InternalCandidateWorse reports whether a is worse than b under the metric direction.
 // Tie-breaker is (SegmentID, RowID) descending for determinism (so the heap evicts larger locations first).
-func CandidateWorse(a, b model.Candidate, descending bool) bool {
+func InternalCandidateWorse(a, b InternalCandidate, descending bool) bool {
 	if a.Score != b.Score {
 		if descending {
 			return a.Score < b.Score
 		}
 		return a.Score > b.Score
 	}
-	if a.Loc.SegmentID != b.Loc.SegmentID {
-		return a.Loc.SegmentID > b.Loc.SegmentID
+	if a.SegmentID != b.SegmentID {
+		return a.SegmentID > b.SegmentID
 	}
-	return a.Loc.RowID > b.Loc.RowID
+	return a.RowID > b.RowID
 }
 
 // NewCandidateHeap creates a new CandidateHeap.
 func NewCandidateHeap(capacity int, descending bool) *CandidateHeap {
 	return &CandidateHeap{
-		Candidates: make([]model.Candidate, 0, capacity),
+		Candidates: make([]InternalCandidate, 0, capacity),
 		descending: descending,
 	}
 }
@@ -68,15 +64,15 @@ func (h *CandidateHeap) Swap(i, j int) {
 
 func (h *CandidateHeap) Less(i, j int) bool {
 	// The heap is ordered by "worst first" so the top element is the eviction candidate.
-	return CandidateWorse(h.Candidates[i], h.Candidates[j], h.descending)
+	return InternalCandidateWorse(h.Candidates[i], h.Candidates[j], h.descending)
 }
 
-func (h *CandidateHeap) Push(x model.Candidate) {
+func (h *CandidateHeap) Push(x InternalCandidate) {
 	h.Candidates = append(h.Candidates, x)
 	h.up(h.Len() - 1)
 }
 
-func (h *CandidateHeap) Pop() model.Candidate {
+func (h *CandidateHeap) Pop() InternalCandidate {
 	n := h.Len() - 1
 	h.Swap(0, n)
 	h.down(0, n)
@@ -84,8 +80,10 @@ func (h *CandidateHeap) Pop() model.Candidate {
 	h.Candidates = h.Candidates[0:n]
 	return x
 }
-
-func (h *CandidateHeap) ReplaceTop(x model.Candidate) {
+func (h *CandidateHeap) Peek() InternalCandidate {
+	return h.Candidates[0]
+}
+func (h *CandidateHeap) ReplaceTop(x InternalCandidate) {
 	h.Candidates[0] = x
 	h.down(0, h.Len())
 }
@@ -121,6 +119,6 @@ func (h *CandidateHeap) down(i0, n int) {
 }
 
 // Candidates returns the underlying slice.
-func (h *CandidateHeap) GetCandidates() []model.Candidate {
+func (h *CandidateHeap) GetCandidates() []InternalCandidate {
 	return h.Candidates
 }

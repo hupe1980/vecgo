@@ -27,6 +27,8 @@ type BlobStore interface {
 	Open(ctx context.Context, name string) (Blob, error)
 	// Create creates a new blob for writing.
 	Create(ctx context.Context, name string) (WritableBlob, error)
+	// Put writes a blob atomically. (Useful for small metadata files like MANIFEST).
+	Put(ctx context.Context, name string, data []byte) error
 	// Delete deletes a blob.
 	Delete(ctx context.Context, name string) error
 	// List returns all blobs matching the prefix.

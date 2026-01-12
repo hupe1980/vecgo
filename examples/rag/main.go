@@ -9,9 +9,7 @@ import (
 	"time"
 
 	"github.com/hupe1980/vecgo"
-	"github.com/hupe1980/vecgo/engine"
 	"github.com/hupe1980/vecgo/metadata"
-	"github.com/hupe1980/vecgo/model"
 	"github.com/hupe1980/vecgo/testutil"
 )
 
@@ -33,10 +31,11 @@ func main() {
 	fmt.Printf("Initializing Vecgo RAG engine in %s...\n", dir)
 
 	// 2. Initialize the Engine.
+	// New unified API: Open(source, opts...)
 	// We use L2 distance (Euclidean) and a dimension of 128 for this example.
 	// In production, this would match your embedding model (e.g., 1536 for OpenAI).
 	const dim = 128
-	eng, err := vecgo.Open(dir, dim, vecgo.MetricL2)
+	eng, err := vecgo.Open(dir, vecgo.Create(dim, vecgo.MetricL2))
 	if err != nil {
 		log.Fatalf("Failed to open engine: %v", err)
 	}
@@ -65,10 +64,12 @@ func main() {
 		// Insert into Vecgo.
 		// We store the text content as the 'payload'.
 		// We could also store metadata (e.g., source, date) in the 3rd argument.
-		err := eng.Insert(
-			model.PKUint64(doc.ID),
+		_, err := eng.Insert(
 			doc.Vector,
-			metadata.Document{"source": metadata.String("wiki-sim")}, // Metadata
+			metadata.Document{
+				"source": metadata.String("wiki-sim"),
+				"doc_id": metadata.Int(int64(doc.ID)),
+			}, // Metadata
 			[]byte(doc.Content), // Payload (The text chunk)
 		)
 		if err != nil {
@@ -88,8 +89,8 @@ func main() {
 	rng.FillUniform(queryVec)
 
 	// Search for the top 3 most relevant chunks.
-	// We use engine.WithPayload() to fetch the text content in a single round-trip.
-	results, err := eng.Search(context.Background(), queryVec, 3, engine.WithPayload())
+	// We use vecgo.WithPayload() to fetch the text content in a single round-trip.
+	results, err := eng.Search(context.Background(), queryVec, 3, vecgo.WithPayload())
 	if err != nil {
 		log.Fatalf("Search failed: %v", err)
 	}

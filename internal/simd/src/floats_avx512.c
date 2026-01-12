@@ -2,6 +2,10 @@
 #include <immintrin.h>
 #include <stdint.h>
 
+// Prefetch distance (in cache lines ahead). Tuned for L2 cache latency.
+// 512 bytes = 8 cache lines = optimal for AVX-512 with larger vectors.
+#define PREFETCH_AHEAD 512
+
 // DotProductAvx512 computes dot product with 4-way accumulator unrolling + FMA.
 // Processes 64 floats per iteration (4 accumulators × 16-wide AVX-512).
 // Uses _mm512_reduce_add_ps() for efficient horizontal reduction.
@@ -19,6 +23,10 @@ void dotProductAvx512(float* __restrict vec1, float* __restrict vec2, int64_t n,
     for (i = 0; i < epoch; i++)
     {
         int64_t offset = i * 64;
+        
+        // Prefetch next iteration's data into L1 cache
+        _mm_prefetch((const char*)(vec1 + offset + PREFETCH_AHEAD/4), _MM_HINT_T0);
+        _mm_prefetch((const char*)(vec2 + offset + PREFETCH_AHEAD/4), _MM_HINT_T0);
         
         // Load 64 floats (4 × 16-wide vectors)
         __m512 v1_1 = _mm512_loadu_ps(vec1 + offset);
@@ -72,6 +80,10 @@ void squaredL2Avx512(float* __restrict vec1, float* __restrict vec2, int64_t n, 
     for (i = 0; i < epoch; i++)
     {
         int64_t offset = i * 64;
+        
+        // Prefetch next iteration's data into L1 cache
+        _mm_prefetch((const char*)(vec1 + offset + PREFETCH_AHEAD/4), _MM_HINT_T0);
+        _mm_prefetch((const char*)(vec2 + offset + PREFETCH_AHEAD/4), _MM_HINT_T0);
         
         // Load vectors
         __m512 v1_1 = _mm512_loadu_ps(vec1 + offset);

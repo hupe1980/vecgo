@@ -3,7 +3,7 @@ package benchmark_test
 import (
 	"testing"
 
-	"github.com/hupe1980/vecgo/quantization"
+	"github.com/hupe1980/vecgo/internal/quantization"
 	"github.com/hupe1980/vecgo/testutil"
 )
 

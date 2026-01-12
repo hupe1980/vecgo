@@ -31,9 +31,11 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unsafe"
 
 	"github.com/hupe1980/vecgo/internal/conv"
+	"github.com/hupe1980/vecgo/internal/mmap"
 )
 
 // MemoryAcquirer is an interface for acquiring memory.
@@ -93,9 +95,10 @@ type atomicStats struct {
 }
 
 type chunk struct {
-	data   []byte
-	offset atomic.Int64 // MUST be atomic - accessed concurrently without locks
-	index  uint32       // Index of this chunk in the arena
+	data    []byte
+	mapping *mmap.Mapping // Holds the off-heap mapping (if applicable)
+	offset  atomic.Int64  // MUST be atomic - accessed concurrently without locks
+	index   uint32        // Index of this chunk in the arena
 }
 
 // Arena is a memory arena allocator.
@@ -200,6 +203,7 @@ func (a *Arena) allocateChunk(ctx context.Context) error {
 
 func (a *Arena) allocateChunkLocked(ctx context.Context) error {
 	idx := a.chunkCount.Load()
+	// fmt.Printf("DEBUG: Allocating chunk %d (Max: %d)\n", idx, MaxChunks)
 
 	if idx >= MaxChunks {
 		// This is a critical failure for the arena.
@@ -209,14 +213,30 @@ func (a *Arena) allocateChunkLocked(ctx context.Context) error {
 	// Acquire memory if acquirer is set
 	if a.acquirer != nil {
 		chunkSize64 := int64(a.chunkSize)
+		// Check for timeout in context or use default short timeout
+		var cancel context.CancelFunc
+		if _, ok := ctx.Deadline(); !ok {
+			ctx, cancel = context.WithTimeout(ctx, 100*time.Millisecond)
+			defer cancel()
+		}
 		if err := a.acquirer.AcquireMemory(ctx, chunkSize64); err != nil {
 			return err
 		}
 	}
 
+	// Use off-heap anonymous mapping to avoid GC pressure for large graphs
+	mapping, err := mmap.MapAnon(a.chunkSize)
+	if err != nil {
+		if a.acquirer != nil {
+			a.acquirer.ReleaseMemory(int64(a.chunkSize))
+		}
+		return fmt.Errorf("failed to map anonymous memory for chunk: %w", err)
+	}
+
 	newChunk := &chunk{
-		data:  make([]byte, a.chunkSize),
-		index: idx,
+		data:    mapping.Bytes(),
+		mapping: mapping,
+		index:   idx,
 	}
 
 	// Store in array using atomic pointer (though lock protects against concurrent allocateChunk,
@@ -262,7 +282,7 @@ func (a *Arena) alloc(ctx context.Context, size int, align int) (uint64, []byte,
 	for {
 		curr := a.current.Load()
 		if curr == nil {
-			continue
+			return 0, nil, fmt.Errorf("arena is closed")
 		}
 
 		offset, data, ok, err := a.tryAllocInChunk(curr, size, alignedSize)
@@ -447,10 +467,15 @@ func (a *Arena) Free() {
 	// Increment generation to invalidate old references
 	a.generation.Add(1)
 
-	// Clear chunk references to enable GC
+	// Clear chunk references and unmap memory
 	count := a.chunkCount.Load()
 	countInt, _ := conv.Uint32ToInt(count) // Safe: count <= MaxChunks (65536)
 	for i := 0; i < countInt; i++ {
+		chunk := a.chunks[i].Load()
+		if chunk != nil && chunk.mapping != nil {
+			// Unmap off-heap memory
+			_ = chunk.mapping.Close()
+		}
 		a.chunks[i].Store(nil)
 	}
 	a.chunkCount.Store(0)

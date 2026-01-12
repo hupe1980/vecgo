@@ -88,9 +88,9 @@ func (idx *MemoryIndex) SearchDAAT(text string, k int) ([]model.Candidate, error
 		if score > 0 {
 			pk := idx.docIDToPK[minDoc]
 			if len(*h) < k {
-				h.push(model.Candidate{PK: pk, Score: float32(score)})
+				h.push(model.Candidate{ID: pk, Score: float32(score)})
 			} else if float32(score) > (*h)[0].Score {
-				(*h)[0] = model.Candidate{PK: pk, Score: float32(score)}
+				(*h)[0] = model.Candidate{ID: pk, Score: float32(score)}
 				h.down(0, len(*h))
 			}
 		}

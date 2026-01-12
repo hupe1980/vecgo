@@ -37,18 +37,74 @@ func (s *LocalStore) Open(ctx context.Context, name string) (Blob, error) {
 	return &localBlob{m: m}, nil
 }
 
+// Put writes a blob atomically.
+func (s *LocalStore) Put(ctx context.Context, name string, data []byte) error {
+	w, err := s.Create(ctx, name)
+	if err != nil {
+		return err
+	}
+	if _, err := w.Write(data); err != nil {
+		_ = w.Close() // Best effort cleanup
+		return err
+	}
+	return w.Close()
+}
+
 // Create creates a new blob for writing.
+// It ensures atomicity by writing to a temporary file and renaming on Close.
 func (s *LocalStore) Create(ctx context.Context, name string) (WritableBlob, error) {
 	path := filepath.Join(s.root, name)
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+
+	// Create a temp file in the same directory to ensure atomic rename works
+	tmp, err := os.CreateTemp(dir, "tmp-"+filepath.Base(name)+"-*")
 	if err != nil {
 		return nil, err
 	}
-	return f, nil
+
+	return &atomicFileWriter{
+		f:    tmp,
+		path: path,
+	}, nil
+}
+
+type atomicFileWriter struct {
+	f    *os.File
+	path string
+	done bool
+}
+
+func (w *atomicFileWriter) Write(p []byte) (int, error) {
+	return w.f.Write(p)
+}
+
+func (w *atomicFileWriter) Sync() error {
+	return w.f.Sync()
+}
+
+func (w *atomicFileWriter) Close() error {
+	if w.done {
+		return w.f.Close()
+	}
+	w.done = true
+
+	// Sync to ensure data is on disk before rename
+	if err := w.f.Sync(); err != nil {
+		_ = w.f.Close()           // Intentionally ignore: cleanup path
+		_ = os.Remove(w.f.Name()) // Intentionally ignore: best-effort cleanup
+		return err
+	}
+
+	if err := w.f.Close(); err != nil {
+		_ = os.Remove(w.f.Name()) // Intentionally ignore: best-effort cleanup
+		return err
+	}
+
+	// Atomic rename
+	return os.Rename(w.f.Name(), w.path)
 }
 
 // Delete deletes a blob.

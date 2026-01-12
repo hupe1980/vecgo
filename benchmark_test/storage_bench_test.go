@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/hupe1980/vecgo/blobstore"
-	"github.com/hupe1980/vecgo/cache"
-	"github.com/hupe1980/vecgo/resource"
+	"github.com/hupe1980/vecgo/internal/cache"
+	"github.com/hupe1980/vecgo/internal/resource"
 )
 
 // LatencyStore wraps a BlobStore and adds artificial latency to Open.
@@ -32,6 +32,18 @@ func (s *LatencyStore) Open(ctx context.Context, name string) (blobstore.Blob, e
 
 func (s *LatencyStore) Create(ctx context.Context, name string) (blobstore.WritableBlob, error) {
 	return s.base.Create(ctx, name)
+}
+
+func (s *LatencyStore) Put(ctx context.Context, name string, data []byte) error {
+	w, err := s.Create(ctx, name)
+	if err != nil {
+		return err
+	}
+	defer w.Close()
+	if _, err := w.Write(data); err != nil {
+		return err
+	}
+	return w.Sync()
 }
 
 func (s *LatencyStore) Delete(ctx context.Context, name string) error {
