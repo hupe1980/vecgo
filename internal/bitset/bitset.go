@@ -5,8 +5,6 @@ import (
 	"io"
 	"math/bits"
 	"sync/atomic"
-
-	"github.com/hupe1980/vecgo/internal/conv"
 )
 
 const (
@@ -235,11 +233,9 @@ func (b *BitSet) NextSetBit(i uint32) (uint32, bool) {
 		// Mask out bits before bitOffset
 		val &= ^((1 << bitOffset) - 1)
 		if val != 0 {
-			sIdx, _ := conv.IntToUint64(segIdx)
-			wIdx, _ := conv.IntToUint64(wordIdx)
-			zeros, _ := conv.IntToUint64(bits.TrailingZeros64(val))
-			res, _ := conv.Uint64ToUint32(sIdx*segmentSize + wIdx*64 + zeros)
-			return res, true
+			// segIdx * segmentSize + wordIdx * 64 + trailingZeros
+			// All values are guaranteed to be within uint32 range
+			return uint32(segIdx)*segmentSize + uint32(wordIdx)*64 + uint32(bits.TrailingZeros64(val)), true
 		}
 	}
 
@@ -248,11 +244,7 @@ func (b *BitSet) NextSetBit(i uint32) (uint32, bool) {
 		for w := wordIdx + 1; w < wordsPerSegment; w++ {
 			val := seg[w].Load()
 			if val != 0 {
-				sIdx, _ := conv.IntToUint64(segIdx)
-				wIdx, _ := conv.IntToUint64(w)
-				zeros, _ := conv.IntToUint64(bits.TrailingZeros64(val))
-				res, _ := conv.Uint64ToUint32(sIdx*segmentSize + wIdx*64 + zeros)
-				return res, true
+				return uint32(segIdx)*segmentSize + uint32(w)*64 + uint32(bits.TrailingZeros64(val)), true
 			}
 		}
 	}
@@ -266,11 +258,7 @@ func (b *BitSet) NextSetBit(i uint32) (uint32, bool) {
 		for w := 0; w < wordsPerSegment; w++ {
 			val := seg[w].Load()
 			if val != 0 {
-				sIdx, _ := conv.IntToUint64(s)
-				wIdx, _ := conv.IntToUint64(w)
-				zeros, _ := conv.IntToUint64(bits.TrailingZeros64(val))
-				res, _ := conv.Uint64ToUint32(sIdx*segmentSize + wIdx*64 + zeros)
-				return res, true
+				return uint32(s)*segmentSize + uint32(w)*64 + uint32(bits.TrailingZeros64(val)), true
 			}
 		}
 	}
@@ -305,7 +293,7 @@ func (b *BitSet) WriteTo(w io.Writer) (int64, error) {
 		return n, nil
 	}
 
-	numWords, _ := conv.Uint64ToUint32((uint64(size) + 63) / 64)
+	numWords := (size + 63) / 64
 
 	for i := uint32(0); i < numWords; i++ {
 		bitIdx := uint64(i) * 64
@@ -340,11 +328,11 @@ func (b *BitSet) ReadFrom(r io.Reader) (int64, error) {
 	b.size.Store(size)
 
 	n := int64(4)
-	numWords, _ := conv.Uint64ToUint32((uint64(size) + 63) / 64)
+	numWords := (size + 63) / 64
 
 	segments := b.segments.Load()
 
-	for i := uint32(0); i < numWords; i++ {
+	for i := range numWords {
 		var val uint64
 		if err := binary.Read(r, binary.LittleEndian, &val); err != nil {
 			return n, err
@@ -377,11 +365,10 @@ func (b *BitSet) Count() uint32 {
 	if len(*segments) == 1 {
 		seg := (*segments)[0]
 		if seg != nil {
-			for i := 0; i < wordsPerSegment; i++ {
+			for i := range wordsPerSegment {
 				val := seg[i].Load()
 				if val != 0 {
-					ones, _ := conv.IntToUint32(bits.OnesCount64(val))
-					count += ones
+					count += uint32(bits.OnesCount64(val))
 				}
 			}
 		}
@@ -389,7 +376,7 @@ func (b *BitSet) Count() uint32 {
 	}
 
 	size := b.size.Load()
-	numWords, _ := conv.Uint64ToUint32((uint64(size) + 63) / 64)
+	numWords := (size + 63) / 64
 	currentWord := uint32(0)
 
 	for _, seg := range *segments {
@@ -409,8 +396,7 @@ func (b *BitSet) Count() uint32 {
 		for i := 0; i < limit; i++ {
 			val := seg[i].Load()
 			if val != 0 {
-				ones, _ := conv.IntToUint32(bits.OnesCount64(val))
-				count += ones
+				count += uint32(bits.OnesCount64(val))
 			}
 		}
 		currentWord += wordsPerSegment

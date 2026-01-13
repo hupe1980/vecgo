@@ -14,9 +14,8 @@ import (
 	"github.com/hupe1980/vecgo/internal/mmap"
 )
 
-// arenaStatsEnabled controls whether allocation stats are tracked.
-// Set to false for maximum performance in production.
-const arenaStatsEnabled = true
+// Stats are always tracked. The overhead is negligible (~0.5ns per alloc)
+// and the visibility is valuable for debugging and monitoring.
 
 // MemoryAcquirer is an interface for acquiring memory.
 type MemoryAcquirer interface {
@@ -220,12 +219,10 @@ func (a *Arena) allocateChunkLocked(ctx context.Context) error {
 	// Get() is lock-free and needs to see the pointer safely)
 	a.chunks[idx].Store(newChunk)
 
-	// Update stats (compile-time eliminated when disabled)
-	if arenaStatsEnabled {
-		a.stats.ChunksAllocated.Add(1)
-		a.stats.BytesReserved.Add(uint64(a.chunkSize))
-		a.stats.ActiveChunks.Add(1)
-	}
+	// Update stats
+	a.stats.ChunksAllocated.Add(1)
+	a.stats.BytesReserved.Add(uint64(a.chunkSize))
+	a.stats.ActiveChunks.Add(1)
 
 	// Update count for next allocation
 	// Must be done BEFORE updating current to ensure Get() sees valid count
@@ -325,7 +322,6 @@ func (a *Arena) AllocContext(ctx context.Context, size int) (uint64, []byte, err
 }
 
 // tryAllocInChunk is the fast path for allocation.
-// Stats tracking is controlled by arenaStatsEnabled compile-time constant.
 func (a *Arena) tryAllocInChunk(curr *chunk, size, alignedSize int) (uint64, []byte, bool) {
 	oldOffset := curr.offset.Load()
 	newOffset := oldOffset + int64(alignedSize)
@@ -338,12 +334,10 @@ func (a *Arena) tryAllocInChunk(curr *chunk, size, alignedSize int) (uint64, []b
 		return 0, nil, false
 	}
 
-	// Stats tracking - compile-time eliminated when disabled
-	if arenaStatsEnabled {
-		a.stats.BytesUsed.Add(uint64(size))
-		a.stats.BytesWasted.Add(uint64(alignedSize - size))
-		a.stats.TotalAllocs.Add(1)
-	}
+	// Update stats (atomic, lock-free)
+	a.stats.BytesUsed.Add(uint64(size))
+	a.stats.BytesWasted.Add(uint64(alignedSize - size))
+	a.stats.TotalAllocs.Add(1)
 
 	// Calculate global offset
 	globalOffset := (uint64(curr.index) << a.chunkBits) | uint64(oldOffset)
@@ -378,8 +372,9 @@ func (a *Arena) Get(offset uint64) unsafe.Pointer {
 	return unsafe.Add(unsafe.Pointer(&c.data[0]), chunkOffset)
 }
 
-// AllocPointer allocates memory for a struct of the given size and alignment.
-func (a *Arena) AllocPointer(size, _ int) (unsafe.Pointer, error) {
+// AllocPointer allocates memory for a struct of the given size.
+// The returned pointer is aligned to DefaultAlignment (8 bytes).
+func (a *Arena) AllocPointer(size int) (unsafe.Pointer, error) {
 	_, bytes, err := a.Alloc(size)
 	if err != nil {
 		return nil, err
@@ -479,13 +474,11 @@ func (a *Arena) Free() {
 	a.chunkCount.Store(0)
 	a.current.Store(nil)
 
-	// Update stats to reflect freed state (compile-time eliminated when disabled)
-	if arenaStatsEnabled {
-		a.stats.ActiveChunks.Store(0)
-		a.stats.BytesReserved.Store(0)
-		a.stats.BytesUsed.Store(0)
-		a.stats.BytesWasted.Store(0)
-	}
+	// Update stats to reflect freed state
+	a.stats.ActiveChunks.Store(0)
+	a.stats.BytesReserved.Store(0)
+	a.stats.BytesUsed.Store(0)
+	a.stats.BytesWasted.Store(0)
 }
 
 // Reset clears all allocations and releases extra chunks, keeping only the first chunk.
@@ -528,23 +521,23 @@ func (a *Arena) Reset() {
 		// Free extra chunks (keep first for reuse)
 		countInt, _ := conv.Uint32ToInt(count) // Safe: count <= MaxChunks (65536)
 		for i := 1; i < countInt; i++ {
+			chunk := a.chunks[i].Load()
+			if chunk != nil && chunk.mapping != nil {
+				_ = chunk.mapping.Close() // Unmap off-heap memory
+			}
 			a.chunks[i].Store(nil)
 		}
 		a.chunkCount.Store(1)
 		a.current.Store(firstChunk)
 
-		// Update stats - only first chunk remains (compile-time eliminated when disabled)
-		if arenaStatsEnabled {
-			a.stats.ActiveChunks.Store(1)
-			a.stats.BytesReserved.Store(uint64(a.chunkSize))
-		}
+		// Update stats - only first chunk remains
+		a.stats.ActiveChunks.Store(1)
+		a.stats.BytesReserved.Store(uint64(a.chunkSize))
 	}
 
 	// Clear usage stats (historical counts like ChunksAllocated/TotalAllocs unchanged)
-	if arenaStatsEnabled {
-		a.stats.BytesUsed.Store(0)
-		a.stats.BytesWasted.Store(0)
-	}
+	a.stats.BytesUsed.Store(0)
+	a.stats.BytesWasted.Store(0)
 }
 
 // Usage returns the memory usage percentage.
