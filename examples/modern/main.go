@@ -29,8 +29,8 @@ func main() {
 	}
 
 	// 3. Open Engine with Modern Options
-	// New unified API: Open(source, opts...)
-	eng, err := vecgo.Open(dir,
+	// Unified API: Open(backend, opts...)
+	eng, err := vecgo.Open(vecgo.Local(dir),
 		vecgo.Create(4, vecgo.MetricL2),
 		vecgo.WithLogger(logger),
 		vecgo.WithSchema(schema),
@@ -81,10 +81,8 @@ func main() {
 		fmt.Printf("Record: ID=%v, Vector=%v, Meta=%v\n", record.ID, record.Vector, record.Metadata)
 	}
 
-	// 6. Search
-	results, err := eng.Search(context.Background(), []float32{1.0, 0.0, 0.0, 0.0}, 1,
-		vecgo.WithMetadata(),
-	)
+	// 6. Search (metadata and payload included by default)
+	results, err := eng.Search(context.Background(), []float32{1.0, 0.0, 0.0, 0.0}, 1)
 	if err != nil {
 		logger.Error("Search failed", "error", err)
 	}

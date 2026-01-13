@@ -13,7 +13,7 @@ import (
 
 func TestEdgeCases_Vectors(t *testing.T) {
 	dir := t.TempDir()
-	eng, err := vecgo.Open(dir, vecgo.Create(128, vecgo.MetricL2))
+	eng, err := vecgo.Open(vecgo.Local(dir), vecgo.Create(128, vecgo.MetricL2))
 	require.NoError(t, err)
 	defer eng.Close()
 
@@ -64,7 +64,7 @@ func TestEdgeCases_Vectors(t *testing.T) {
 
 func TestEdgeCases_EmptyEngine(t *testing.T) {
 	dir := t.TempDir()
-	eng, err := vecgo.Open(dir, vecgo.Create(128, vecgo.MetricL2))
+	eng, err := vecgo.Open(vecgo.Local(dir), vecgo.Create(128, vecgo.MetricL2))
 	require.NoError(t, err)
 	defer eng.Close()
 
@@ -96,7 +96,7 @@ func TestEdgeCases_MaxDimension(t *testing.T) {
 	// We test a reasonably large dimension.
 	dim := 4096
 	dir := t.TempDir()
-	eng, err := vecgo.Open(dir, vecgo.Create(dim, vecgo.MetricL2))
+	eng, err := vecgo.Open(vecgo.Local(dir), vecgo.Create(dim, vecgo.MetricL2))
 	require.NoError(t, err)
 	defer eng.Close()
 

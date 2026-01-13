@@ -7,7 +7,7 @@ import (
 
 const (
 	MagicNumber = 0x4449534B // "DISK"
-	Version     = 1
+	Version     = 2          // Bumped to 2 for compression support
 )
 
 var (
@@ -26,13 +26,14 @@ type FileHeader struct {
 	MaxDegree        uint32  // R
 	SearchListSize   uint32  // L
 	Entrypoint       uint32  // ID of the entry point node
-	QuantizationType uint8   // 0 = None, 1 = SQ8, 2 = PQ, 3 = BQ, 4 = RaBitQ
+	QuantizationType uint8   // 0 = None, 1 = SQ8, 2 = PQ, 3 = BQ, 4 = RaBitQ, 5 = INT4
 	PQSubvectors     uint16  // M
 	PQCentroids      uint16  // K
-	_                [6]byte // Padding to align offsets to 8 bytes
+	CompressionType  uint8   // 0 = None, 1 = LZ4
+	_                [5]byte // Padding to align offsets to 8 bytes
 
 	// Offsets
-	VectorOffset        uint64   // Full precision vectors
+	VectorOffset        uint64   // Full precision vectors (or compressed block start)
 	GraphOffset         uint64   // Adjacency list (fixed size per node: R * 4 bytes)
 	PQCodesOffset       uint64   // PQ compressed vectors
 	BQCodesOffset       uint64   // BQ or RaBitQ compressed vectors
@@ -45,7 +46,7 @@ type FileHeader struct {
 	_                   [36]byte // Reserved
 }
 
-const HeaderSize = 4 + 4 + 8 + 4 + 4 + 1 + 4 + 4 + 4 + 1 + 2 + 2 + 6 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 4 + 36
+const HeaderSize = 4 + 4 + 8 + 4 + 4 + 1 + 4 + 4 + 4 + 1 + 2 + 2 + 1 + 5 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 4 + 36
 
 func (h *FileHeader) Encode() []byte {
 	buf := make([]byte, HeaderSize)
@@ -61,7 +62,8 @@ func (h *FileHeader) Encode() []byte {
 	buf[37] = h.QuantizationType
 	binary.LittleEndian.PutUint16(buf[38:], h.PQSubvectors)
 	binary.LittleEndian.PutUint16(buf[40:], h.PQCentroids)
-	// Padding [42:48]
+	buf[42] = h.CompressionType
+	// Padding [43:48]
 	binary.LittleEndian.PutUint64(buf[48:], h.VectorOffset)
 	binary.LittleEndian.PutUint64(buf[56:], h.GraphOffset)
 	binary.LittleEndian.PutUint64(buf[64:], h.PQCodesOffset)
@@ -85,7 +87,7 @@ func DecodeHeader(buf []byte) (*FileHeader, error) {
 		return nil, ErrInvalidMagic
 	}
 	h.Version = binary.LittleEndian.Uint32(buf[4:])
-	if h.Version != Version {
+	if h.Version != Version && h.Version != 1 {
 		return nil, ErrInvalidVersion
 	}
 	h.SegmentID = binary.LittleEndian.Uint64(buf[8:])
@@ -98,6 +100,9 @@ func DecodeHeader(buf []byte) (*FileHeader, error) {
 	h.QuantizationType = buf[37]
 	h.PQSubvectors = binary.LittleEndian.Uint16(buf[38:])
 	h.PQCentroids = binary.LittleEndian.Uint16(buf[40:])
+	if h.Version >= 2 {
+		h.CompressionType = buf[42]
+	}
 
 	h.VectorOffset = binary.LittleEndian.Uint64(buf[48:])
 	h.GraphOffset = binary.LittleEndian.Uint64(buf[56:])

@@ -21,7 +21,7 @@ func BenchmarkHybridSearch(b *testing.B) {
 
 	dir := b.TempDir()
 	lexIdx := bm25.New()
-	e, _ := vecgo.Open(dir, vecgo.Create(dim, vecgo.MetricL2), vecgo.WithLexicalIndex(lexIdx, "text"))
+	e, _ := vecgo.Open(vecgo.Local(dir), vecgo.Create(dim, vecgo.MetricL2), vecgo.WithLexicalIndex(lexIdx, "text"))
 	defer e.Close()
 
 	rng := testutil.NewRNG(1)

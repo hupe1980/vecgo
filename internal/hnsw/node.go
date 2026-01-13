@@ -29,12 +29,14 @@ const (
 	genBits    = 64 - offsetBits
 )
 
-func packNodeRef(offset uint64, gen uint32) nodeRef {
-	// Ensure bounds (panic in debug/dev, strict check)
+// ErrOffsetOverflow is returned when a node offset exceeds 40 bits (1TB arena limit).
+var ErrOffsetOverflow = errors.New("hnsw: node offset exceeds 40 bits (1TB limit)")
+
+func packNodeRef(offset uint64, gen uint32) (nodeRef, error) {
 	if offset > offsetMask {
-		panic("node offset exceeds 40 bits")
+		return 0, ErrOffsetOverflow
 	}
-	return nodeRef(offset | (uint64(gen) << offsetBits))
+	return nodeRef(offset | (uint64(gen) << offsetBits)), nil
 }
 
 func (n nodeRef) unpack() (offset uint64, gen uint32) {
@@ -252,16 +254,12 @@ func (n Node) ReplaceConnections(ctx context.Context, a *arena.Arena, layer int,
 
 	// Alloc new list
 	size := 8 + cap*8
-	offset, _, err := a.AllocContext(ctx, size)
+	offset, data, err := a.Alloc(size)
 	if err != nil {
 		return err
 	}
 
-	_, gen := n.ref.unpack()
-	ptr := a.GetSafe(arena.Ref{Gen: gen, Offset: offset})
-	if ptr == nil {
-		return errors.New("invalid offset")
-	}
+	ptr := unsafe.Pointer(&data[0])
 
 	// 1. Write Count
 	*(*uint32)(ptr) = uint32(len(neighbors))
@@ -328,17 +326,13 @@ func (n Node) Init(ctx context.Context, a *arena.Arena, level int, m, m0 int) er
 
 		// Alloc list: 8 + cap*8 (to ensure 8-byte alignment for neighbors)
 		size := 8 + cap*8
-		offset, _, err := a.AllocContext(ctx, size)
+		offset, data, err := a.Alloc(size)
 		if err != nil {
 			return err
 		}
 
-		// Initialize count to 0 (implicit if memory reused? No, must set)
-		_, gen := n.ref.unpack()
-		ptr := a.GetSafe(arena.Ref{Gen: gen, Offset: offset})
-		if ptr != nil {
-			*(*uint32)(ptr) = 0
-		}
+		// Initialize count to 0
+		*(*uint32)(unsafe.Pointer(&data[0])) = 0
 
 		n.SetConnectionListPtr(a, i, offset)
 	}
@@ -351,13 +345,16 @@ func AllocNode(ctx context.Context, a *arena.Arena, level int, m, m0 int) (Node,
 	// Header(8) + (Level+1)*8 (Pointers)
 	nodeSize := 8 + (level+1)*8
 
-	offset, _, err := a.AllocContext(ctx, nodeSize)
+	offset, _, err := a.Alloc(nodeSize)
 	if err != nil {
 		return Node{}, err
 	}
 
 	// Pack offset and generation into reference
-	ref := packNodeRef(offset, a.Generation())
+	ref, err := packNodeRef(offset, a.Generation())
+	if err != nil {
+		return Node{}, err
+	}
 	node := Node{ref: ref}
 
 	if err := node.Init(ctx, a, level, m, m0); err != nil {

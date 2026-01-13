@@ -15,7 +15,7 @@ func BenchmarkBulkLoad(b *testing.B) {
 	b.Run("Standard", func(b *testing.B) {
 		dir := b.TempDir()
 		// Default config
-		e, _ := vecgo.Open(dir, vecgo.Create(dim, vecgo.MetricL2))
+		e, _ := vecgo.Open(vecgo.Local(dir), vecgo.Create(dim, vecgo.MetricL2))
 		defer e.Close()
 
 		vec := make([]float32, dim)
@@ -38,7 +38,7 @@ func BenchmarkBulkLoad(b *testing.B) {
 		dir := b.TempDir()
 		// Disable compaction and set large memtable to isolate pure ingest speed
 		// In production, you'd want to tune these based on your memory budget
-		e, _ := vecgo.Open(dir, vecgo.Create(dim, vecgo.MetricL2),
+		e, _ := vecgo.Open(vecgo.Local(dir), vecgo.Create(dim, vecgo.MetricL2),
 			vecgo.WithCompactionThreshold(1<<30),
 			vecgo.WithFlushConfig(vecgo.FlushConfig{MaxMemTableSize: 1 << 30}), // 1GB memtable
 			vecgo.WithMemoryLimit(0),                                           // Unlimited memory for benchmark

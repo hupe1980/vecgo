@@ -105,8 +105,8 @@ func main() {
 	}
 
 	startOpen := time.Now()
-	// OpenRemote: the source of truth IS the remote store
-	eng, err := vecgo.Open(s3Store, opts...)
+	// Open with Remote() backend - the source of truth IS the remote store
+	eng, err := vecgo.Open(vecgo.Remote(s3Store), opts...)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func main() {
 
 	fmt.Println("\n🔎 Executing Query 3 (Persistent Disk Cache)...")
 	eng.Close()
-	eng, _ = vecgo.Open(s3Store, opts...)
+	eng, _ = vecgo.Open(vecgo.Remote(s3Store), opts...)
 
 	start = time.Now()
 	_, err = eng.Search(context.Background(), vector, 10, vecgo.WithNProbes(10))
@@ -152,8 +152,8 @@ func main() {
 }
 
 func buildIndex(dir string) {
-	// For creating a NEW index, use OpenLocal with dimension/metric options
-	eng, err := vecgo.Open(dir, vecgo.Create(128, vecgo.MetricL2))
+	// For creating a NEW index, use Local() backend
+	eng, err := vecgo.Open(vecgo.Local(dir), vecgo.Create(128, vecgo.MetricL2))
 	if err != nil {
 		log.Fatalf("Failed to open builder: %v", err)
 	}

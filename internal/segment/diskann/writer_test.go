@@ -66,7 +66,7 @@ func TestWriter(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, uint32(MagicNumber), h.Magic)
-	assert.Equal(t, uint32(1), h.Version)
+	assert.Equal(t, uint32(Version), h.Version)
 	assert.Equal(t, uint64(123), h.SegmentID)
 	assert.Equal(t, uint32(5), h.RowCount)
 	assert.Equal(t, uint32(4), h.Dim)

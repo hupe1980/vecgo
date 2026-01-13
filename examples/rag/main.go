@@ -31,11 +31,10 @@ func main() {
 	fmt.Printf("Initializing Vecgo RAG engine in %s...\n", dir)
 
 	// 2. Initialize the Engine.
-	// New unified API: Open(source, opts...)
-	// We use L2 distance (Euclidean) and a dimension of 128 for this example.
-	// In production, this would match your embedding model (e.g., 1536 for OpenAI).
+	// Unified API: Open(backend, opts...)
+	// Use Local() for filesystem, Remote() for cloud storage
 	const dim = 128
-	eng, err := vecgo.Open(dir, vecgo.Create(dim, vecgo.MetricL2))
+	eng, err := vecgo.Open(vecgo.Local(dir), vecgo.Create(dim, vecgo.MetricL2))
 	if err != nil {
 		log.Fatalf("Failed to open engine: %v", err)
 	}
@@ -89,8 +88,8 @@ func main() {
 	rng.FillUniform(queryVec)
 
 	// Search for the top 3 most relevant chunks.
-	// We use vecgo.WithPayload() to fetch the text content in a single round-trip.
-	results, err := eng.Search(context.Background(), queryVec, 3, vecgo.WithPayload())
+	// Payload is returned by default - no extra options needed!
+	results, err := eng.Search(context.Background(), queryVec, 3)
 	if err != nil {
 		log.Fatalf("Search failed: %v", err)
 	}

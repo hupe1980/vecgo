@@ -4,15 +4,16 @@ import "github.com/hupe1980/vecgo/model"
 
 // VisitedSet tracks visited nodes using a generation-based approach.
 // optimizing for O(1) reset and efficient cache usage.
+// Uses uint32 generation to avoid overflow at high QPS (wraps after ~49 days at 1000 QPS).
 type VisitedSet struct {
-	visited    []uint16
-	generation uint16
+	visited    []uint32
+	generation uint32
 }
 
 // NewVisitedSet creates a new visited set.
 func NewVisitedSet(capacity int) *VisitedSet {
 	return &VisitedSet{
-		visited:    make([]uint16, capacity),
+		visited:    make([]uint32, capacity),
 		generation: 1, // Start at 1, 0 is "never visited"
 	}
 }
@@ -38,7 +39,7 @@ func (v *VisitedSet) Visited(id model.RowID) bool {
 func (v *VisitedSet) Reset() {
 	v.generation++
 	if v.generation == 0 {
-		// Overflow, reset all (rare: once per 65536 searches)
+		// Overflow, reset all (extremely rare: once per ~4B searches)
 		v.generation = 1
 		clear(v.visited)
 	}
@@ -55,7 +56,7 @@ func (v *VisitedSet) grow(newLen int) {
 	currentLen := len(v.visited)
 	newCap := max(currentLen*2, newLen)
 
-	newVisited := make([]uint16, newCap)
+	newVisited := make([]uint32, newCap)
 	copy(newVisited, v.visited)
 	v.visited = newVisited
 }

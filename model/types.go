@@ -48,6 +48,45 @@ type Record struct {
 	Payload  []byte
 }
 
+// RecordBuilder provides a fluent API for constructing records.
+// This enables type-safe, readable record creation:
+//
+//	rec := model.NewRecord(vec).
+//	    WithMetadata("category", metadata.String("tech")).
+//	    WithPayload(jsonBytes).
+//	    Build()
+type RecordBuilder struct {
+	rec Record
+}
+
+// NewRecord creates a new RecordBuilder with the given vector.
+func NewRecord(vector []float32) *RecordBuilder {
+	return &RecordBuilder{
+		rec: Record{
+			Vector:   vector,
+			Metadata: make(metadata.Document),
+		},
+	}
+}
+
+// WithMetadata adds a metadata field to the record.
+// Uses type-safe metadata.Value for compile-time safety.
+func (b *RecordBuilder) WithMetadata(key string, value metadata.Value) *RecordBuilder {
+	b.rec.Metadata[key] = value
+	return b
+}
+
+// WithPayload sets the payload (arbitrary bytes, typically JSON).
+func (b *RecordBuilder) WithPayload(payload []byte) *RecordBuilder {
+	b.rec.Payload = payload
+	return b
+}
+
+// Build returns the constructed Record.
+func (b *RecordBuilder) Build() Record {
+	return b.rec
+}
+
 // SearchOptions controls the execution of a search query.
 type SearchOptions struct {
 	// K is the number of nearest neighbors to return.

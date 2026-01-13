@@ -1,0 +1,18 @@
+//go:build !noasm && arm64
+
+package simd
+
+import "unsafe"
+
+//go:noescape
+func dotProductSve2(a unsafe.Pointer, b unsafe.Pointer, n int64, result unsafe.Pointer)
+
+//go:noescape
+func pqAdcLookupSve2(table unsafe.Pointer, codes unsafe.Pointer, m int64, result unsafe.Pointer)
+
+//go:noescape
+func scaleSve2(a unsafe.Pointer, n int64, scalar unsafe.Pointer)
+
+//go:noescape
+func squaredL2Sve2(a unsafe.Pointer, b unsafe.Pointer, n int64, result unsafe.Pointer)
+

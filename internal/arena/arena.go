@@ -10,15 +10,22 @@
 //
 // # Memory Management
 //
-// Arena allocates memory in large chunks (1 MiB default) and uses lock-free CAS for
+// Arena allocates memory in large chunks (4 MiB default) and uses lock-free CAS for
 // fast allocation. Memory is not returned to the OS until Free() is called, making it
 // ideal for bulk allocation patterns like HNSW graph construction.
+//
+// # API
+//
+//   - Alloc: Standard allocation (~4ns/op, 0 allocs) - use for most cases
+//   - AllocContext: For paths requiring backpressure/timeout (memory acquirer)
+//
+// Stats tracking is optional via the arenaStatsEnabled compile-time constant.
 //
 // # HNSW Usage Recommendations
 //
 //  1. Create one arena per HNSW index (not per-operation)
 //  2. Store arena reference in HNSW struct
-//  3. Use AllocUint32Slice for adjacency lists (excellent cache locality)
+//  3. Use Alloc for adjacency lists, node allocations
 //  4. Call Free() in HNSW's Close() method for cleanup
 //  5. Do NOT call Reset/Free while allocations are happening
 package arena
@@ -38,6 +45,10 @@ import (
 	"github.com/hupe1980/vecgo/internal/mmap"
 )
 
+// arenaStatsEnabled controls whether allocation stats are tracked.
+// Set to false for maximum performance in production.
+const arenaStatsEnabled = true
+
 // MemoryAcquirer is an interface for acquiring memory.
 type MemoryAcquirer interface {
 	AcquireMemory(ctx context.Context, amount int64) error
@@ -52,12 +63,14 @@ var (
 )
 
 const (
-	// DefaultChunkSize is the default size of a chunk (1MB).
-	DefaultChunkSize = 1024 * 1024
+	// DefaultChunkSize is the default size of a chunk (4MB).
+	// Larger chunks reduce CAS contention and syscall overhead.
+	// Apple Silicon and modern x86 benefit from larger linear memory regions.
+	DefaultChunkSize = 4 * 1024 * 1024
 	// DefaultAlignment is the default memory alignment (8 bytes).
 	DefaultAlignment = 8
 	// MaxChunks limits the number of chunks to prevent excessive memory usage.
-	// Limit to 64GB addressable space with 1MB chunks.
+	// Limit to 256GB addressable space with 4MB chunks.
 	MaxChunks = 65536
 )
 
@@ -243,11 +256,12 @@ func (a *Arena) allocateChunkLocked(ctx context.Context) error {
 	// Get() is lock-free and needs to see the pointer safely)
 	a.chunks[idx].Store(newChunk)
 
-	// Update stats
-	a.stats.ChunksAllocated.Add(1)
-	chunkSizeU64, _ := conv.IntToUint64(a.chunkSize)
-	a.stats.BytesReserved.Add(chunkSizeU64)
-	a.stats.ActiveChunks.Add(1)
+	// Update stats (compile-time eliminated when disabled)
+	if arenaStatsEnabled {
+		a.stats.ChunksAllocated.Add(1)
+		a.stats.BytesReserved.Add(uint64(a.chunkSize))
+		a.stats.ActiveChunks.Add(1)
+	}
 
 	// Update count for next allocation
 	// Must be done BEFORE updating current to ensure Get() sees valid count
@@ -263,48 +277,76 @@ func (a *Arena) allocateChunkLocked(ctx context.Context) error {
 // Alloc allocates memory and returns the global offset and the byte slice.
 // The global offset can be used with Get() to retrieve the pointer later.
 func (a *Arena) Alloc(size int) (uint64, []byte, error) {
-	return a.AllocContext(context.Background(), size)
-}
-
-// AllocContext allocates memory with a context.
-func (a *Arena) AllocContext(ctx context.Context, size int) (uint64, []byte, error) {
-	return a.alloc(ctx, size, a.alignment)
-}
-
-func (a *Arena) alloc(ctx context.Context, size int, align int) (uint64, []byte, error) {
 	if size <= 0 {
 		return 0, nil, nil
 	}
 
-	mask := align - 1
+	mask := a.alignment - 1
 	alignedSize := (size + mask) & ^mask
 
 	for {
 		curr := a.current.Load()
 		if curr == nil {
-			return 0, nil, fmt.Errorf("arena is closed")
+			return 0, nil, errors.New("arena is closed")
 		}
 
-		offset, data, ok, err := a.tryAllocInChunk(curr, size, alignedSize)
-		if err != nil {
-			return 0, nil, err
-		}
+		offset, data, ok := a.tryAllocInChunk(curr, size, alignedSize)
 		if ok {
 			return offset, data, nil
 		}
 
 		// Current chunk is full. Try to allocate a new one.
-		// We use a lock to ensure only one goroutine allocates a new chunk.
-		// But we must be careful not to block readers.
-
-		// Optimization: Check if someone else already allocated a new chunk
-		// by checking if a.current changed.
 		if a.current.Load() != curr {
 			continue
 		}
 
 		a.mu.Lock()
-		// Double check under lock
+		if a.current.Load() != curr {
+			a.mu.Unlock()
+			continue
+		}
+
+		if err := a.allocateChunkLocked(context.Background()); err != nil {
+			a.mu.Unlock()
+			return 0, nil, err
+		}
+		a.mu.Unlock()
+	}
+}
+
+// AllocContext allocates memory with a context for backpressure control.
+// Use this for paths where timeout/cancellation is needed (e.g., with memory acquirer).
+func (a *Arena) AllocContext(ctx context.Context, size int) (uint64, []byte, error) {
+	if size <= 0 {
+		return 0, nil, nil
+	}
+
+	mask := a.alignment - 1
+	alignedSize := (size + mask) & ^mask
+
+	for {
+		curr := a.current.Load()
+		if curr == nil {
+			return 0, nil, errors.New("arena is closed")
+		}
+
+		offset, data, ok := a.tryAllocInChunk(curr, size, alignedSize)
+		if ok {
+			return offset, data, nil
+		}
+
+		// Check context before expensive operations
+		select {
+		case <-ctx.Done():
+			return 0, nil, ctx.Err()
+		default:
+		}
+
+		if a.current.Load() != curr {
+			continue
+		}
+
+		a.mu.Lock()
 		if a.current.Load() != curr {
 			a.mu.Unlock()
 			continue
@@ -318,62 +360,57 @@ func (a *Arena) alloc(ctx context.Context, size int, align int) (uint64, []byte,
 	}
 }
 
-func (a *Arena) tryAllocInChunk(curr *chunk, size, alignedSize int) (uint64, []byte, bool, error) {
+// tryAllocInChunk is the fast path for allocation.
+// Stats tracking is controlled by arenaStatsEnabled compile-time constant.
+func (a *Arena) tryAllocInChunk(curr *chunk, size, alignedSize int) (uint64, []byte, bool) {
 	oldOffset := curr.offset.Load()
 	newOffset := oldOffset + int64(alignedSize)
 
 	if newOffset > int64(len(curr.data)) {
-		return 0, nil, false, nil
+		return 0, nil, false
 	}
 
 	if !curr.offset.CompareAndSwap(oldOffset, newOffset) {
-		return 0, nil, false, nil
+		return 0, nil, false
 	}
 
-	sizeU64, _ := conv.IntToUint64(size)
-	a.stats.BytesUsed.Add(sizeU64)
-	wastedU64, _ := conv.IntToUint64(alignedSize - size)
-	a.stats.BytesWasted.Add(wastedU64)
-	a.stats.TotalAllocs.Add(1)
+	// Stats tracking - compile-time eliminated when disabled
+	if arenaStatsEnabled {
+		a.stats.BytesUsed.Add(uint64(size))
+		a.stats.BytesWasted.Add(uint64(alignedSize - size))
+		a.stats.TotalAllocs.Add(1)
+	}
 
 	// Calculate global offset
-	// GlobalOffset = (ChunkIndex << ChunkBits) | ChunkOffset
-	// Ensure ChunkOffset fits in ChunkMask
-	oldOffsetU64, err := conv.Int64ToUint64(oldOffset)
-	if err != nil {
-		return 0, nil, false, err
-	}
-	if oldOffsetU64 > a.chunkMask {
-		return 0, nil, false, fmt.Errorf("arena: offset exceeds chunk mask")
-	}
-	globalOffset := (uint64(curr.index) << a.chunkBits) | oldOffsetU64
-	return globalOffset, curr.data[oldOffset:newOffset:newOffset], true, nil
+	globalOffset := (uint64(curr.index) << a.chunkBits) | uint64(oldOffset)
+	return globalOffset, curr.data[oldOffset:newOffset:newOffset], true
 }
 
 // Get returns an unsafe.Pointer to the memory at the given global offset.
-// It performs no bounds checking.
+// Returns nil if the offset is invalid (out of bounds or stale).
+// Callers should check for nil if using untrusted offsets.
 func (a *Arena) Get(offset uint64) unsafe.Pointer {
 	chunkIdx := offset >> a.chunkBits
 	chunkOffset := offset & a.chunkMask
 
-	// Bounds check
+	// Bounds check - return nil instead of panic for invalid offsets
 	if chunkIdx >= uint64(a.chunkCount.Load()) {
-		panic("arena: stale offset")
+		return nil
 	}
 
 	// Use atomic load to safely read the chunk pointer without locks.
 	// Since chunks are only appended and never removed/moved during allocation,
 	// and we use a fixed-size array, this is safe.
-	// Note: We don't check bounds of chunks array because chunkIdx comes from
-	// a valid offset returned by Alloc, which ensures chunkIdx < MaxChunks.
 	c := a.chunks[chunkIdx].Load()
-
 	if c == nil {
-		panic("Arena.Get: chunk is nil")
+		return nil
 	}
 
-	// In a correct program, c should never be nil if offset is valid.
-	// However, if offset is garbage, this might panic or return garbage.
+	// Final bounds check on chunk data
+	if chunkOffset >= uint64(len(c.data)) {
+		return nil
+	}
+
 	return unsafe.Add(unsafe.Pointer(&c.data[0]), chunkOffset) //nolint:gosec // unsafe is required for arena implementation
 }
 
@@ -382,7 +419,7 @@ func (a *Arena) AllocPointer(size, align int) (unsafe.Pointer, error) {
 	if align <= 0 {
 		align = a.alignment
 	}
-	_, bytes, err := a.alloc(context.Background(), size, align)
+	_, bytes, err := a.Alloc(size)
 	if err != nil {
 		return nil, err
 	}
@@ -481,11 +518,13 @@ func (a *Arena) Free() {
 	a.chunkCount.Store(0)
 	a.current.Store(nil)
 
-	// Update stats to reflect freed state
-	a.stats.ActiveChunks.Store(0)
-	a.stats.BytesReserved.Store(0)
-	a.stats.BytesUsed.Store(0)
-	a.stats.BytesWasted.Store(0)
+	// Update stats to reflect freed state (compile-time eliminated when disabled)
+	if arenaStatsEnabled {
+		a.stats.ActiveChunks.Store(0)
+		a.stats.BytesReserved.Store(0)
+		a.stats.BytesUsed.Store(0)
+		a.stats.BytesWasted.Store(0)
+	}
 }
 
 // Reset clears all allocations and releases extra chunks, keeping only the first chunk.
@@ -533,15 +572,18 @@ func (a *Arena) Reset() {
 		a.chunkCount.Store(1)
 		a.current.Store(firstChunk)
 
-		// Update stats - only first chunk remains
-		a.stats.ActiveChunks.Store(1)
-		chunkSizeU64, _ := conv.IntToUint64(a.chunkSize)
-		a.stats.BytesReserved.Store(chunkSizeU64)
+		// Update stats - only first chunk remains (compile-time eliminated when disabled)
+		if arenaStatsEnabled {
+			a.stats.ActiveChunks.Store(1)
+			a.stats.BytesReserved.Store(uint64(a.chunkSize))
+		}
 	}
 
 	// Clear usage stats (historical counts like ChunksAllocated/TotalAllocs unchanged)
-	a.stats.BytesUsed.Store(0)
-	a.stats.BytesWasted.Store(0)
+	if arenaStatsEnabled {
+		a.stats.BytesUsed.Store(0)
+		a.stats.BytesWasted.Store(0)
+	}
 }
 
 // Usage returns the memory usage percentage.

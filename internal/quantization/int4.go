@@ -4,15 +4,18 @@ import (
 	"encoding/binary"
 	"errors"
 	"math"
+
+	"github.com/hupe1980/vecgo/internal/simd"
 )
 
 // Int4Quantizer implements 4-bit scalar quantization.
 // It compresses float32 vectors (4 bytes/dim) to 4 bits (0.5 byte/dim) for 8x memory savings.
 // Two dimensions are packed into a single byte.
 type Int4Quantizer struct {
-	min  []float32
-	diff []float32
-	dim  int
+	min         []float32
+	diff        []float32
+	dim         int
+	lookupTable []float32 // Pre-computed dequantization table (16 * dim)
 }
 
 // NewInt4Quantizer creates a new Int4Quantizer.
@@ -54,6 +57,9 @@ func (q *Int4Quantizer) Train(vectors [][]float32) error {
 			q.diff[i] = 1.0 // Avoid division by zero
 		}
 	}
+
+	// Pre-compute lookup table for SIMD-optimized distance
+	q.lookupTable = simd.BuildInt4LookupTable(q.min, q.diff)
 
 	return nil
 }
@@ -126,33 +132,23 @@ func (q *Int4Quantizer) Decode(b []byte) ([]float32, error) {
 }
 
 // L2Distance computes squared L2 distance between query and compressed vector.
+// Uses SIMD-optimized precomputed lookup tables for fast distance calculation.
 func (q *Int4Quantizer) L2Distance(query []float32, code []byte) (float32, error) {
 	if len(query) != q.dim || len(code) != (q.dim+1)/2 {
 		return 0, errors.New("dimension mismatch")
 	}
 
-	var dist float32
-	for i := 0; i < q.dim; i += 2 {
-		byteVal := code[i/2]
-
-		// High nibble
-		quant1 := (byteVal >> 4) & 0x0F
-		val1 := float32(quant1)/15.0*q.diff[i] + q.min[i]
-		diff1 := val1 - query[i]
-		dist += diff1 * diff1
-
-		// Low nibble
-		if i+1 < q.dim {
-			quant2 := byteVal & 0x0F
-			val2 := float32(quant2)/15.0*q.diff[i+1] + q.min[i+1]
-			diff2 := val2 - query[i+1]
-			dist += diff2 * diff2
-		}
+	// Use SIMD-optimized precomputed lookup if available
+	if q.lookupTable != nil {
+		return simd.Int4L2DistancePrecomputed(query, code, q.lookupTable), nil
 	}
-	return dist, nil
+
+	// Fallback to direct SIMD computation
+	return simd.Int4L2Distance(query, code, q.min, q.diff), nil
 }
 
 // L2DistanceBatch computes squared L2 distance for a batch of codes.
+// Uses SIMD-optimized batch computation for better cache locality.
 func (q *Int4Quantizer) L2DistanceBatch(query []float32, codes []byte, n int, out []float32) error {
 	codeSize := (q.dim + 1) / 2
 	if len(codes) < n*codeSize {
@@ -162,11 +158,8 @@ func (q *Int4Quantizer) L2DistanceBatch(query []float32, codes []byte, n int, ou
 		return errors.New("output buffer too small")
 	}
 
-	for j := 0; j < n; j++ {
-		code := codes[j*codeSize : (j+1)*codeSize]
-		d, _ := q.L2Distance(query, code) // Validation checks duplicated but acceptable
-		out[j] = d
-	}
+	// Use SIMD-optimized batch computation
+	simd.Int4L2DistanceBatch(query, codes, q.dim, n, q.min, q.diff, out)
 	return nil
 }
 
@@ -218,6 +211,9 @@ func (q *Int4Quantizer) UnmarshalBinary(data []byte) error {
 		q.diff[i] = math.Float32frombits(binary.LittleEndian.Uint32(data[offset:]))
 		offset += 4
 	}
+
+	// Rebuild lookup table for SIMD-optimized distance
+	q.lookupTable = simd.BuildInt4LookupTable(q.min, q.diff)
 
 	return nil
 }

@@ -45,10 +45,13 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 			return
 		}
 
-		// Parse options
+		// Parse options - default: include metadata and payload (best DX)
+		// Use WithoutData() to disable for high-throughput scenarios
 		options := model.SearchOptions{
-			K:            k,
-			RefineFactor: 1.0,
+			K:               k,
+			RefineFactor:    1.0,
+			IncludeMetadata: true,
+			IncludePayload:  true,
 		}
 		for _, opt := range opts {
 			opt(&options)

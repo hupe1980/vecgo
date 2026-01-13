@@ -2,20 +2,20 @@ goos: darwin
 goarch: arm64
 pkg: github.com/hupe1980/vecgo/benchmark_test
 cpu: Apple M4 Pro
-BenchmarkBatchInsert/Sequential-14      	    4214	    580119 ns/op	   47132 B/op	     119 allocs/op
-BenchmarkBatchInsert/Batch-14           	   14661	     83355 ns/op	   39761 B/op	     192 allocs/op
-BenchmarkBatchSearch/Sequential-14      	     932	   1240164 ns/op	         1.000 recall@10	    9448 B/op	      20 allocs/op
-BenchmarkBatchSearch/Batch-14           	    5206	    208452 ns/op	         1.000 recall@10	   32121 B/op	      85 allocs/op
-BenchmarkBulkLoad/Standard-14           	   12757	    101355 ns/op	   27767 B/op	     135 allocs/op
-BenchmarkBulkLoad/Deferred-14           	 5516574	      4012 ns/op	    8450 B/op	     132 allocs/op
-BenchmarkCompaction_Pressure-14         	   26782	   1434933 ns/op	  336138 B/op	     890 allocs/op
-BenchmarkHybridSearch/VectorOnly-14     	    5311	    211066 ns/op	         1.000 recall@10	    1441 B/op	       9 allocs/op
-BenchmarkHybridSearch/Hybrid-14         	    4455	    258328 ns/op	         1.000 recall@10	   23543 B/op	      19 allocs/op
-BenchmarkHybridSearch/DAAT-14           	   34138	     34396 ns/op	         1.000 recall@10	     920 B/op	       2 allocs/op
-BenchmarkInsertMicro/Deferred-14        	 5227273	       250.4 ns/op	    2149 B/op	       2 allocs/op
-BenchmarkBinaryQuantizer_Distance-14    	201019292	         6.111 ns/op	       0 B/op	       0 allocs/op
-BenchmarkStorage_ReadRandom/Local_NVMe-14         	76922874	        15.27 ns/op	       0 B/op	       0 allocs/op
-BenchmarkStorage_ReadRandom/Simulated_S3_Direct-14         	      38	  30915171 ns/op	       0 B/op	       0 allocs/op
-BenchmarkStorage_ReadRandom/Cached_S3_Warm-14              	 4757004	       233.9 ns/op	     272 B/op	       4 allocs/op
+BenchmarkBatchInsert/Sequential-14      	    4113	    620286 ns/op	   48302 B/op	     122 allocs/op
+BenchmarkBatchInsert/Batch-14           	   14593	     87417 ns/op	   39955 B/op	     193 allocs/op
+BenchmarkBatchSearch/Sequential-14      	     894	   1285337 ns/op	         1.000 recall@10	   28257 B/op	     483 allocs/op
+BenchmarkBatchSearch/Batch-14           	    4938	    258332 ns/op	         1.000 recall@10	   51517 B/op	     548 allocs/op
+BenchmarkBulkLoad/Standard-14           	   11248	     98766 ns/op	   30700 B/op	     136 allocs/op
+BenchmarkBulkLoad/Deferred-14           	 5291052	       736.1 ns/op	    3362 B/op	      24 allocs/op
+BenchmarkCompaction_Pressure-14         	   18628	   2408229 ns/op	  511149 B/op	    1356 allocs/op
+BenchmarkHybridSearch/VectorOnly-14     	    4473	    234374 ns/op	         1.000 recall@10	    9817 B/op	      53 allocs/op
+BenchmarkHybridSearch/Hybrid-14         	    3954	    281379 ns/op	         1.000 recall@10	   65414 B/op	     215 allocs/op
+BenchmarkHybridSearch/DAAT-14           	   36672	     31781 ns/op	         1.000 recall@10	     922 B/op	       2 allocs/op
+BenchmarkInsertMicro/Deferred-14        	 5063506	       224.4 ns/op	    2194 B/op	       2 allocs/op
+BenchmarkBinaryQuantizer_Distance-14    	201706449	         6.005 ns/op	       0 B/op	       0 allocs/op
+BenchmarkStorage_ReadRandom/Local_NVMe-14         	74781884	        15.34 ns/op	       0 B/op	       0 allocs/op
+BenchmarkStorage_ReadRandom/Simulated_S3_Direct-14         	      38	  30851741 ns/op	       0 B/op	       0 allocs/op
+BenchmarkStorage_ReadRandom/Cached_S3_Warm-14              	 5139446	       219.8 ns/op	     272 B/op	       4 allocs/op
 PASS
-ok  	github.com/hupe1980/vecgo/benchmark_test	83.034s
+ok  	github.com/hupe1980/vecgo/benchmark_test	71.132s

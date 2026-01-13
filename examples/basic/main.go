@@ -16,9 +16,9 @@ func main() {
 	defer os.RemoveAll(dir)
 
 	// 1. Open the engine
-	// New unified API: Open(source, opts...)
-	// Use Create(dim, metric) when creating a new index
-	eng, err := vecgo.Open(dir, vecgo.Create(4, vecgo.MetricL2))
+	// Unified API: Open(backend, opts...)
+	// Use Local() for filesystem, Remote() for cloud storage
+	eng, err := vecgo.Open(vecgo.Local(dir), vecgo.Create(4, vecgo.MetricL2))
 	if err != nil {
 		log.Fatalf("Failed to open engine: %v", err)
 	}

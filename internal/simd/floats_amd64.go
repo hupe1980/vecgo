@@ -21,7 +21,9 @@ func init() {
 		sq8uL2BatchPerDimensionImpl = sq8uL2BatchPerDimensionAVX512
 		popcountImpl = popcountAVX512
 		hammingImpl = hammingAVX512
-	} else if cpu.X86.HasAVX {
+		return
+	}
+	if cpu.X86.HasAVX {
 		dotImpl = dotAVX
 		squaredL2Impl = squaredL2AVX
 		pqAdcImpl = pqAdcAVX

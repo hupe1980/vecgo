@@ -30,11 +30,12 @@ type Writer struct {
 	rc        *resource.Controller
 
 	// Configuration
-	r            int     // Max degree
-	l            int     // Search list size
-	alpha        float32 // Pruning factor
-	pqSubvectors int     // PQ M
-	pqCentroids  int     // PQ K
+	r               int             // Max degree
+	l               int             // Search list size
+	alpha           float32         // Pruning factor
+	pqSubvectors    int             // PQ M
+	pqCentroids     int             // PQ K
+	compressionType CompressionType // LZ4 or None
 
 	// Data
 	vectors  [][]float32
@@ -67,6 +68,7 @@ type Options struct {
 	PQSubvectors       int
 	PQCentroids        int
 	ResourceController *resource.Controller
+	CompressionType    CompressionType // LZ4 or None
 }
 
 func DefaultOptions() Options {
@@ -77,6 +79,7 @@ func DefaultOptions() Options {
 		QuantizationType: quantization.TypeNone,
 		PQSubvectors:     0, // Auto-detect or disable
 		PQCentroids:      256,
+		CompressionType:  CompressionLZ4, // LZ4 by default for best-in-class storage
 	}
 }
 
@@ -108,10 +111,9 @@ func NewWriter(w io.Writer, payloadW io.Writer, segID uint64, dim int, metric di
 		alpha:            opts.Alpha,
 		quantizationType: opts.QuantizationType,
 		pqSubvectors:     opts.PQSubvectors,
-		pqCentroids:      opts.PQCentroids,
-		vectors:          make([][]float32, 0),
-		ids:              make([]model.ID, 0),
-		index:            imetadata.NewUnifiedIndex(),
+		pqCentroids:      opts.PQCentroids, compressionType: opts.CompressionType, vectors: make([][]float32, 0),
+		ids:   make([]model.ID, 0),
+		index: imetadata.NewUnifiedIndex(),
 	}
 }
 
@@ -605,6 +607,7 @@ func (w *Writer) Flush() error {
 		SearchListSize:   uint32(w.l),
 		Entrypoint:       w.entryPoint,
 		QuantizationType: uint8(w.quantizationType),
+		CompressionType:  uint8(w.compressionType),
 	}
 	if w.quantizationType == quantization.TypePQ {
 		h.PQSubvectors = uint16(w.pqSubvectors)
@@ -615,6 +618,11 @@ func (w *Writer) Flush() error {
 	if _, err := bw.Write(h.Encode()); err != nil {
 		return err
 	}
+
+	// Suppress unused variable warnings - these are used for offset calculation
+	_ = vectorSize
+	_ = graphSize
+	_ = compressedVectorsSize
 
 	// Calculate Checksum of the body
 	crc := crc32.New(crc32.MakeTable(crc32.Castagnoli))

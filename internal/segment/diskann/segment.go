@@ -511,6 +511,7 @@ func (s *Segment) searchInternal(query []float32, k int, l int, filter segment.F
 	}
 
 	// Distance function wrapper
+	// For lazy-load paths (not mmap), use IOBuffer from searcherCtx to avoid allocations.
 	var distFn func(id uint32) (float32, error)
 	if s.rq != nil {
 		bytesPerVec := int(((s.header.Dim+63)/64)*8 + 4)
@@ -521,8 +522,14 @@ func (s *Segment) searchInternal(query []float32, k int, l int, filter segment.F
 				return s.rq.Distance(query, code)
 			}
 		} else {
+			// Lazy load path - use IOBuffer if available
+			var code []byte
+			if searcherCtx != nil && cap(searcherCtx.IOBuffer) >= bytesPerVec {
+				code = searcherCtx.IOBuffer[:bytesPerVec]
+			} else {
+				code = make([]byte, bytesPerVec)
+			}
 			distFn = func(id uint32) (float32, error) {
-				code := make([]byte, bytesPerVec)
 				if err := s.readRaBitQCode(id, code); err != nil {
 					return 0, err
 				}
@@ -537,8 +544,14 @@ func (s *Segment) searchInternal(query []float32, k int, l int, filter segment.F
 				return s.pq.ComputeAsymmetricDistance(query, code)
 			}
 		} else {
+			// Lazy load path - use IOBuffer if available
+			var code []byte
+			if searcherCtx != nil && cap(searcherCtx.IOBuffer) >= m {
+				code = searcherCtx.IOBuffer[:m]
+			} else {
+				code = make([]byte, m)
+			}
 			distFn = func(id uint32) (float32, error) {
-				code := make([]byte, m)
 				if err := s.readPQCode(id, code); err != nil {
 					return 0, err
 				}
@@ -554,8 +567,14 @@ func (s *Segment) searchInternal(query []float32, k int, l int, filter segment.F
 				return s.iq.L2Distance(query, code)
 			}
 		} else {
+			// Lazy load path - use IOBuffer if available
+			var code []byte
+			if searcherCtx != nil && cap(searcherCtx.IOBuffer) >= bytesPerVec {
+				code = searcherCtx.IOBuffer[:bytesPerVec]
+			} else {
+				code = make([]byte, bytesPerVec)
+			}
 			distFn = func(id uint32) (float32, error) {
-				code := make([]byte, bytesPerVec)
 				if err := s.readINT4Code(id, code); err != nil {
 					return 0, err
 				}

@@ -15,7 +15,7 @@ func BenchmarkCompaction_Pressure(b *testing.B) {
 	// Configure engine for high compaction pressure:
 	// - Small MemTable (flush often)
 	// - Low compaction threshold (compact often)
-	eng, err := vecgo.Open(dir, vecgo.Create(128, vecgo.MetricL2),
+	eng, err := vecgo.Open(vecgo.Local(dir), vecgo.Create(128, vecgo.MetricL2),
 		vecgo.WithFlushConfig(vecgo.FlushConfig{
 			MaxMemTableSize: 1 * 1024 * 1024, // 1MB MemTable
 		}),

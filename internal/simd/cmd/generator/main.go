@@ -178,6 +178,154 @@ func (g *Generator) Generate() error {
 }
 
 // ------------------------------------------------------------
+// C Function Parsing
+// ------------------------------------------------------------
+
+// FunctionSignature represents a parsed C function signature
+type FunctionSignature struct {
+	Name       string
+	Parameters []Parameter
+	ArgOffsets map[string]int
+	ReturnType string
+}
+
+func (g *Generator) parseCFunctions() (map[string]*FunctionSignature, error) {
+	content, err := os.ReadFile(g.SourcePath)
+	if err != nil {
+		return nil, err
+	}
+
+	signatures := make(map[string]*FunctionSignature)
+	text := string(content)
+
+	// Match function definitions: return_type function_name(params)
+	// Handle return types like "void", "float", "long long", "int64_t", etc.
+	funcRe := regexp.MustCompile(`(?m)^((?:unsigned\s+)?(?:long\s+long|long|int|short|char|float|double|void|int8_t|int16_t|int32_t|int64_t|uint8_t|uint16_t|uint32_t|uint64_t))\s+(\w+)\s*\(([^)]*)\)`)
+
+	matches := funcRe.FindAllStringSubmatch(text, -1)
+	for _, m := range matches {
+		retType := strings.TrimSpace(m[1])
+		funcName := m[2]
+		paramsStr := m[3]
+
+		sig := &FunctionSignature{
+			Name:       funcName,
+			ReturnType: retType,
+			ArgOffsets: make(map[string]int),
+		}
+
+		if paramsStr != "" && paramsStr != "void" {
+			params := strings.Split(paramsStr, ",")
+			offset := 0
+			for _, p := range params {
+				p = strings.TrimSpace(p)
+				// Remove __restrict__ and const modifiers
+				p = strings.ReplaceAll(p, "__restrict__", "")
+				p = strings.ReplaceAll(p, "const ", "")
+				p = strings.TrimSpace(p)
+
+				// Extract type and name
+				// Handle pointers: "float *name" or "float* name"
+				parts := strings.Fields(p)
+				if len(parts) >= 2 {
+					paramName := parts[len(parts)-1]
+					paramName = strings.TrimPrefix(paramName, "*")
+					paramType := strings.Join(parts[:len(parts)-1], " ")
+
+					sig.Parameters = append(sig.Parameters, Parameter{
+						Name: paramName,
+						Type: paramType,
+					})
+					sig.ArgOffsets[paramName] = offset
+					offset += 8 // 64-bit platform
+				}
+			}
+		}
+
+		signatures[funcName] = sig
+	}
+
+	return signatures, nil
+}
+
+func (g *Generator) generateGoStubs(functions map[string]*Function) error {
+	if !g.EmitGoStubs {
+		return nil
+	}
+
+	base := strings.TrimSuffix(filepath.Base(g.SourcePath), filepath.Ext(g.SourcePath))
+	goFile := filepath.Join(g.OutputDir, base+"_stubs_"+g.Arch+".go")
+
+	var buf bytes.Buffer
+	fmt.Fprintf(&buf, "//go:build !noasm && %s\n\n", g.Arch)
+	buf.WriteString("package simd\n\n")
+
+	names := make([]string, 0, len(functions))
+	for name := range functions {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		fn := functions[name]
+		buf.WriteString("//go:noescape\n")
+
+		// Build parameter list
+		var params []string
+		for _, p := range fn.Parameters {
+			goType := cTypeToGo(p.Type)
+			params = append(params, p.Name+" "+goType)
+		}
+
+		retType := ""
+		if fn.ReturnType != "void" && fn.ReturnType != "" {
+			retType = " " + cTypeToGo(fn.ReturnType)
+		}
+
+		fmt.Fprintf(&buf, "func %s(%s)%s\n\n", name, strings.Join(params, ", "), retType)
+	}
+
+	return os.WriteFile(goFile, buf.Bytes(), 0600)
+}
+
+func cTypeToGo(cType string) string {
+	cType = strings.TrimSpace(cType)
+	cType = strings.TrimSuffix(cType, "*")
+	cType = strings.TrimSpace(cType)
+
+	switch cType {
+	case "float":
+		return "float32"
+	case "double":
+		return "float64"
+	case "int", "int32_t":
+		return "int32"
+	case "long", "int64_t", "long long":
+		return "int64"
+	case "uint8_t", "unsigned char":
+		return "uint8"
+	case "uint16_t", "unsigned short":
+		return "uint16"
+	case "uint32_t", "unsigned int":
+		return "uint32"
+	case "uint64_t", "unsigned long", "unsigned long long":
+		return "uint64"
+	case "int8_t", "char":
+		return "int8"
+	case "int16_t", "short":
+		return "int16"
+	case "void":
+		return ""
+	default:
+		// Check for pointer types
+		if strings.Contains(cType, "*") {
+			return "uintptr"
+		}
+		return "uintptr" // Default for unknown types
+	}
+}
+
+// ------------------------------------------------------------
 // Clang helpers
 // ------------------------------------------------------------
 
@@ -225,6 +373,12 @@ func (g *Generator) compileToAssembly() (string, error) {
 
 	if g.Arch == archARM64 {
 		args = append(args, "-ffixed-x18")
+
+		// Detect SIMD instruction set from filename and add appropriate flags
+		baseName := strings.ToLower(filepath.Base(g.SourcePath))
+		if strings.Contains(baseName, "sve2") {
+			args = append(args, "-march=armv9-a+sve2", "-D__ARM_FEATURE_SVE2=1")
+		}
 	}
 	if g.Arch == "amd64" {
 		args = append(args, "-mno-red-zone", "-mstackrealign")
@@ -244,12 +398,21 @@ func (g *Generator) compileToAssembly() (string, error) {
 
 func (g *Generator) compileToObject(asmPath string) (string, error) {
 	objPath := strings.TrimSuffix(asmPath, ".s") + ".o"
-	return objPath, g.runCommand(
-		"clang",
+	args := []string{
 		"-target", g.getClangTarget(),
 		"-c", asmPath,
 		"-o", objPath,
-	)
+	}
+
+	// For SVE2 files, we need the same march flag for assembly
+	if g.Arch == archARM64 {
+		baseName := strings.ToLower(filepath.Base(g.SourcePath))
+		if strings.Contains(baseName, "sve2") {
+			args = append(args, "-march=armv9-a+sve2")
+		}
+	}
+
+	return objPath, g.runCommand("clang", args...)
 }
 
 func (g *Generator) validateNoRelocations(objPath string) error {

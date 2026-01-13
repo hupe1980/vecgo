@@ -97,6 +97,8 @@ func NewSearcher(visitedCap, queueCap int) *Searcher {
 		Heap:              NewCandidateHeap(queueCap, false),
 		Scores:            make([]float32, 256),
 		ScratchMap:        make(map[model.ID]float32),
+		// IOBuffer for DiskANN PQ/INT4/RaBitQ code reads (256 bytes covers most quantization formats)
+		IOBuffer: make([]byte, 256),
 		// Pre-allocate result/scratch buffers to reduce allocations
 		Results:           make([]model.Candidate, 0, queueCap),
 		CandidateBuffer:   make([]InternalCandidate, 0, queueCap),

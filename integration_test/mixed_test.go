@@ -26,7 +26,7 @@ func TestMixedSegments(t *testing.T) {
 		DiskANNThreshold: 5, // Low threshold for testing
 	}
 
-	db, err := vecgo.Open(dir,
+	db, err := vecgo.Open(vecgo.Local(dir),
 		vecgo.Create(dim, vecgo.MetricL2),
 		vecgo.WithLogger(logger),
 		vecgo.WithCompactionConfig(compactionCfg),
@@ -110,7 +110,7 @@ func TestSimpleFlushCompaction(t *testing.T) {
 	// Enable logging to see compaction details
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	e, err := vecgo.Open(dir, vecgo.Create(dim, vecgo.MetricL2),
+	e, err := vecgo.Open(vecgo.Local(dir), vecgo.Create(dim, vecgo.MetricL2),
 		vecgo.WithCompactionConfig(compactionCfg),
 		vecgo.WithCompactionThreshold(2),
 		vecgo.WithLogger(logger),

@@ -5,28 +5,32 @@
 //
 // # Quick Start
 //
-// Local mode (path string IS the index):
+// Local mode:
 //
-//	// Create new index
-//	db, _ := vecgo.Open("./data", vecgo.Create(128, vecgo.MetricL2))
+//	db, _ := vecgo.Open(vecgo.Local("./data"), vecgo.Create(128, vecgo.MetricL2))
+//	db, _ := vecgo.Open(vecgo.Local("./data"))  // re-open existing
 //
-//	// Re-open existing index (dim/metric loaded from manifest)
-//	db, _ := vecgo.Open("./data")
+// Cloud mode:
 //
-// Cloud mode (BlobStore IS the index):
-//
-//	// Create S3 store
 //	s3Store, _ := s3.New(ctx, "my-bucket", s3.WithPrefix("vectors/"))
+//	db, _ := vecgo.Open(vecgo.Remote(s3Store))
+//	db, _ := vecgo.Open(vecgo.Remote(s3Store), vecgo.WithCacheDir("/fast/nvme"))
 //
-//	// Open from S3 (cache auto-created in temp dir)
-//	db, _ := vecgo.Open(s3Store)
+// # Search with Data
 //
-//	// Or with explicit cache directory
-//	db, _ := vecgo.Open(s3Store, vecgo.WithCacheDir("/fast/nvme"))
+// By default, search returns IDs, scores, metadata, and payload:
+//
+//	results, _ := db.Search(ctx, query, 10)
+//	for _, r := range results {
+//	    fmt.Println(r.ID, r.Score, r.Metadata, r.Payload)
+//	}
+//
+// For minimal results (IDs + scores only), use WithoutData():
+//
+//	results, _ := db.Search(ctx, query, 10, vecgo.WithoutData())
 package vecgo
 
 import (
-	"fmt"
 	"log/slog"
 
 	"github.com/hupe1980/vecgo/blobstore"
@@ -43,6 +47,104 @@ import (
 type DB struct {
 	*engine.Engine
 }
+
+// Backend represents a storage backend for the vector database.
+// Use Local() for filesystem storage or Remote() for cloud storage.
+type Backend interface {
+	open(opts ...Option) (*engine.Engine, error)
+}
+
+// localBackend is a local filesystem backend.
+type localBackend string
+
+func (b localBackend) open(opts ...Option) (*engine.Engine, error) {
+	return engine.OpenLocal(string(b), opts...)
+}
+
+// remoteBackend is a remote BlobStore backend (S3, GCS, Azure, etc.).
+type remoteBackend struct {
+	store blobstore.BlobStore
+}
+
+func (b remoteBackend) open(opts ...Option) (*engine.Engine, error) {
+	return engine.OpenRemote(b.store, opts...)
+}
+
+// Local creates a local filesystem backend.
+//
+// Example:
+//
+//	db, _ := vecgo.Open(vecgo.Local("./data"), vecgo.Create(128, vecgo.MetricL2))
+func Local(path string) Backend {
+	return localBackend(path)
+}
+
+// Remote creates a remote storage backend (S3, GCS, Azure, etc.).
+//
+// Example:
+//
+//	s3Store, _ := s3.New(ctx, "my-bucket")
+//	db, _ := vecgo.Open(vecgo.Remote(s3Store), vecgo.WithCacheDir("/fast/nvme"))
+func Remote(store blobstore.BlobStore) Backend {
+	return remoteBackend{store: store}
+}
+
+// Open opens or creates a vector database with the given backend.
+//
+// For new indexes, use the Create option:
+//
+//	db, _ := vecgo.Open(vecgo.Local("./data"), vecgo.Create(128, vecgo.MetricL2))
+//
+// For existing indexes, dimension and metric are loaded from the manifest:
+//
+//	db, _ := vecgo.Open(vecgo.Local("./data"))
+//
+// For cloud storage:
+//
+//	db, _ := vecgo.Open(vecgo.Remote(s3Store))
+func Open(backend Backend, opts ...Option) (*DB, error) {
+	e, err := backend.open(opts...)
+	if err != nil {
+		return nil, err
+	}
+	return &DB{Engine: e}, nil
+}
+
+// InsertRecord inserts a record built with the fluent RecordBuilder API.
+//
+// Example:
+//
+//	rec := vecgo.NewRecord(vec).
+//	    WithMetadata("category", metadata.String("tech")).
+//	    WithPayload(jsonData).
+//	    Build()
+//	id, err := db.InsertRecord(rec)
+func (db *DB) InsertRecord(rec Record) (ID, error) {
+	return db.Engine.Insert(rec.Vector, rec.Metadata, rec.Payload)
+}
+
+// BatchInsertRecords inserts multiple records in a single batch.
+//
+// Example:
+//
+//	records := []vecgo.Record{rec1, rec2, rec3}
+//	ids, err := db.BatchInsertRecords(records)
+func (db *DB) BatchInsertRecords(records []Record) ([]ID, error) {
+	vectors := make([][]float32, len(records))
+	mds := make([]metadata.Document, len(records))
+	payloads := make([][]byte, len(records))
+
+	for i, rec := range records {
+		vectors[i] = rec.Vector
+		mds[i] = rec.Metadata
+		payloads[i] = rec.Payload
+	}
+
+	return db.Engine.BatchInsert(vectors, mds, payloads)
+}
+
+// NewRecord creates a new RecordBuilder for fluent record construction.
+var NewRecord = model.NewRecord
 
 // Option configures the engine.
 type Option = engine.Option
@@ -61,8 +163,6 @@ type Metric = distance.Metric
 
 // QuantizationType defines the vector quantization method.
 type QuantizationType = quantization.Type
-
-// Vecgo is purely commit-oriented. No WAL required.
 
 // Public error taxonomy (re-exported from engine).
 var (
@@ -95,24 +195,6 @@ const (
 	QuantizationTypeINT4   = quantization.TypeINT4
 )
 
-// Source represents the location of a vector index.
-// It can be either a local directory path (string) or a remote BlobStore.
-type Source interface {
-	isSource()
-}
-
-// LocalPath is a local filesystem path to the index.
-type LocalPath string
-
-func (LocalPath) isSource() {}
-
-// RemoteStore wraps a BlobStore as an index source.
-type RemoteStore struct {
-	Store blobstore.BlobStore
-}
-
-func (RemoteStore) isSource() {}
-
 // Create returns an Option that specifies creating a new index with the given dimension and metric.
 // Use this when creating a new index for the first time.
 // If omitted, vecgo will attempt to open an existing index and read dim/metric from the manifest.
@@ -124,70 +206,22 @@ func Create(dim int, metric Metric) Option {
 }
 
 // WithCacheDir sets the local directory for caching remote data.
-// Only applicable when opening a remote store. Defaults to os.TempDir()/vecgo-cache-<random>.
+// Only applicable when using Remote() backend. Defaults to os.TempDir()/vecgo-cache-<random>.
 func WithCacheDir(dir string) Option {
 	return engine.WithCacheDir(dir)
 }
 
 // ReadOnly puts the engine in read-only mode.
 // In this mode:
-//   - No WAL is created or used
 //   - Insert/Delete operations return ErrReadOnly
 //   - No local state is required (pure memory cache)
 //   - Ideal for stateless serverless search nodes
 //
-// This follows LanceDB's model for cloud deployments where the remote
-// store (S3) is the source of truth and search nodes are stateless.
-//
 // Example:
 //
-//	// Stateless search node - boots from S3, no local storage needed
-//	db, _ := vecgo.Open(s3Store, vecgo.ReadOnly())
+//	db, _ := vecgo.Open(vecgo.Remote(s3Store), vecgo.ReadOnly())
 func ReadOnly() Option {
 	return engine.ReadOnly()
-}
-
-// Open opens or creates a vector database.
-//
-// The source parameter determines where the index data lives:
-//   - string: Local filesystem path (e.g., "./data")
-//   - blobstore.BlobStore: Remote store (e.g., S3, GCS)
-//
-// For new indexes, use the Create option:
-//
-//	db, _ := vecgo.Open("./data", vecgo.Create(128, vecgo.MetricL2))
-//
-// For existing indexes, dimension and metric are loaded from the manifest:
-//
-//	db, _ := vecgo.Open("./data")
-//
-// For remote stores, a local cache directory is auto-created:
-//
-//	db, _ := vecgo.Open(s3Store)
-//	db, _ := vecgo.Open(s3Store, vecgo.WithCacheDir("/fast/nvme"))
-func Open(source interface{}, opts ...Option) (*DB, error) {
-	var e *engine.Engine
-	var err error
-
-	switch s := source.(type) {
-	case string:
-		// Local path - use existing Open logic
-		e, err = engine.OpenLocal(s, opts...)
-	case blobstore.BlobStore:
-		// Remote store - use cloud logic with auto cache dir
-		e, err = engine.OpenRemote(s, opts...)
-	case LocalPath:
-		e, err = engine.OpenLocal(string(s), opts...)
-	case RemoteStore:
-		e, err = engine.OpenRemote(s.Store, opts...)
-	default:
-		return nil, fmt.Errorf("vecgo.Open: unsupported source type %T, expected string or blobstore.BlobStore", source)
-	}
-
-	if err != nil {
-		return nil, err
-	}
-	return &DB{Engine: e}, nil
 }
 
 // WithLogger sets the logger for the engine.
@@ -220,17 +254,23 @@ func WithPreFilter(preFilter bool) SearchOption {
 	return engine.WithPreFilter(preFilter)
 }
 
-// WithMetadata requests the metadata to be returned in the search results.
-func WithMetadata() SearchOption {
-	return engine.WithMetadata()
-}
-
-// WithPayload requests the payload to be returned in the search results.
-func WithPayload() SearchOption {
-	return engine.WithPayload()
+// WithoutData disables automatic retrieval of metadata and payload.
+// By default, search returns metadata and payload for each result.
+// Use this option for high-throughput scenarios where only IDs and scores are needed.
+//
+// Example:
+//
+//	results, _ := db.Search(ctx, query, 10, vecgo.WithoutData())
+func WithoutData() SearchOption {
+	return func(o *model.SearchOptions) {
+		o.IncludeMetadata = false
+		o.IncludePayload = false
+		o.IncludeVector = false
+	}
 }
 
 // WithVector requests the vector to be returned in the search results.
+// Vectors are NOT included by default due to their large size.
 func WithVector() SearchOption {
 	return engine.WithVector()
 }
