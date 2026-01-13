@@ -1,33 +1,3 @@
-// Package arena provides a custom memory arena allocator optimized for HNSW graph construction.
-//
-// # Concurrency Model
-//
-// Arena supports concurrent allocations (AllocBytes, AllocUint32Slice, AllocFloat32Slice)
-// but does NOT support concurrent Reset/Free operations. The typical usage pattern is:
-//   - Create arena during HNSW index construction
-//   - Allocate from multiple goroutines during parallel inserts (SAFE)
-//   - Call Close() once when index is destroyed (NOT concurrent with allocations)
-//
-// # Memory Management
-//
-// Arena allocates memory in large chunks (4 MiB default) and uses lock-free CAS for
-// fast allocation. Memory is not returned to the OS until Free() is called, making it
-// ideal for bulk allocation patterns like HNSW graph construction.
-//
-// # API
-//
-//   - Alloc: Standard allocation (~4ns/op, 0 allocs) - use for most cases
-//   - AllocContext: For paths requiring backpressure/timeout (memory acquirer)
-//
-// Stats tracking is optional via the arenaStatsEnabled compile-time constant.
-//
-// # HNSW Usage Recommendations
-//
-//  1. Create one arena per HNSW index (not per-operation)
-//  2. Store arena reference in HNSW struct
-//  3. Use Alloc for adjacency lists, node allocations
-//  4. Call Free() in HNSW's Close() method for cleanup
-//  5. Do NOT call Reset/Free while allocations are happening
 package arena
 
 import (

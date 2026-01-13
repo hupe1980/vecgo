@@ -5,159 +5,125 @@
 [![goreportcard](https://goreportcard.com/badge/github.com/hupe1980/vecgo)](https://goreportcard.com/report/github.com/hupe1980/vecgo)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
-**Vecgo** is a **pure Go, embeddable, hybrid vector database** designed for high-performance production workloads. It combines commit-oriented durability with HNSW + DiskANN indexing to deliver best-in-class performance for embedded use cases.
+**Vecgo** is a **pure Go, embeddable, hybrid vector database** designed for high-performance production workloads. It combines commit-oriented durability with [HNSW](https://arxiv.org/abs/1603.09320) + [DiskANN](https://papers.nips.cc/paper/2019/hash/09853c7fb1d3f8ee67a61b6bf4a7f8e6-Abstract.html) indexing for best-in-class performance.
 
-**Key Differentiators:**
-- **Faster & lighter than external services** (no network overhead, no sidecar, 15MB binary).
-- **More capable than simple libraries** (provides durability, MVCC, hybrid search, cloud storage).
-- **Simpler than CGO wrappers** (pure Go toolchain, static binaries, cross-compilation).
-- **Modern architecture** (commit-oriented like LanceDB/Git, no WAL complexity).
+## ✨ Key Differentiators
 
-✅ **Production Ready (A++ Grade, 9.9/10)**: Core architecture is stable and best-in-class. HNSW+DiskANN indexing with **FreshDiskANN streaming updates**, full quantization suite (PQ/OPQ/SQ/BQ/RaBitQ/INT4), LZ4 block compression, complete SIMD coverage (AVX-512/AVX2/NEON for Float32+Int8+Batch), hybrid search (BM25+vectors), time-travel queries, and commit-oriented durability. See [ARCHITECTURE_REVIEW.md](ARCHITECTURE_REVIEW.md) for comprehensive analysis.
+- ⚡ **Faster & lighter than external services** — no network overhead, no sidecar, 15MB binary
+- 🔧 **More capable than simple libraries** — durability, MVCC, hybrid search, cloud storage
+- 🎯 **Simpler than CGO wrappers** — pure Go toolchain, static binaries, cross-compilation
+- 🏗️ **Modern architecture** — commit-oriented durability (like LanceDB/Git), no WAL complexity
 
-## 📚 Documentation
+## 🎯 Features
 
-- **[Architecture Review](ARCHITECTURE_REVIEW.md)**: ⭐ **Read this first** - comprehensive analysis, no rewrite needed.
-- **[Findings & Roadmap](FINDINGS.md)**: Detailed gap analysis, state-of-the-art comparison, backlog.
-- **[Architecture Guide](docs/architecture.md)**: Deep dive into the tiered engine, LSM tree, and component design.
-- **[Performance Tuning](docs/tuning.md)**: How to configure Vecgo for optimal throughput and latency.
-- **[Development Guide](docs/development.md)**: For contributors - build, test, and benchmark workflows.
-- **[Operations Guide](docs/operations.md)**: Runbooks for production monitoring and troubleshooting.
-- **[Deployment Guide](docs/deployment.md)**: Patterns for local vs. cloud deployment and resource sizing.
-- **[Recovery & Durability](docs/recovery.md)**: Understanding crash safety, commit-oriented durability, and data guarantees.
-- **[Security Guide](docs/security.md)**: Responsibility matrix and safety features.
+### 📊 Index Types
 
-## ⚡ Key Features
+| Index | Description | Use Case |
+|-------|-------------|----------|
+| **[HNSW](https://arxiv.org/abs/1603.09320)** | Hierarchical Navigable Small World graph | In-memory L0 (16-way sharded, lock-free search, arena allocator) |
+| **[DiskANN/Vamana](https://papers.nips.cc/paper/2019/hash/09853c7fb1d3f8ee67a61b6bf4a7f8e6-Abstract.html)** | Disk-resident graph with quantization | Large-scale on-disk segments with PQ/RaBitQ |
+| **[FreshDiskANN](https://dl.acm.org/doi/10.1145/3448016.3457550)** | Streaming updates for Vamana | Lock-free reads, soft deletion, background consolidation |
+| **Flat** | Exact nearest-neighbor with SIMD | Exact search, small segments |
 
-### 🎯 Index Types
-- **HNSW**: Primary in-memory L0 index (sharded 16-way, lock-free search, arena allocator)
-- **DiskANN**: Disk-resident Vamana segments with PQ/RaBitQ quantization
-- **FreshVamana**: Streaming insert/delete via FreshDiskANN algorithm (lock-free reads, soft deletion)
-- **Flat**: Exact nearest-neighbor search with SIMD-optimized distance computation
+### 🗜️ Quantization
 
-### 🗄️ Enterprise Features
-- **Auto-Increment Primary Keys**: Default 64-bit integer IDs for 10-20% faster inserts and 50% less memory
-- **Cloud-Native Storage**: S3 native support, pluggable BlobStore interface for GCS/Azure
-- **Commit-Oriented Durability**: Atomic commits with immutable segments (no WAL complexity)
-- **Hybrid Search**: BM25 + vector similarity with RRF fusion
-- **Snapshot Isolation**: Lock-free reads via MVCC; strict serializability for writes
-- **Binary Manifest**: Fast startup via CRC32-protected binary registry
-- **Typed Metadata**: Schema-enforced metadata for type safety and performance
-- **Time-Travel**: Query historical snapshots
+| Method | Compression | Description |
+|--------|-------------|-------------|
+| **[Product Quantization (PQ)](https://hal.inria.fr/inria-00514462v2/document)** | 8-64× | Learned codebooks for sub-vector encoding |
+| **[Optimized PQ (OPQ)](https://www.microsoft.com/en-us/research/publication/optimized-product-quantization-for-approximate-nearest-neighbor-search/)** | 8-64× | Rotation-optimized PQ (20-30% better reconstruction) |
+| **Scalar Quantization (SQ8)** | 4× | 8-bit per-dimension encoding |
+| **[Binary Quantization](https://arxiv.org/abs/2405.12497)** | 32× | 1-bit per dimension (Hamming distance) |
+| **[RaBitQ](https://arxiv.org/abs/2405.12497)** | 32× | Randomized binary quantization |
+| **INT4** | 8× | 4-bit per dimension |
 
-### 🚀 Performance (Apple M4 Pro)
+### 🏢 Enterprise Features
 
-| Metric | Current | Industry Best |
-|--------|---------|---------------|
-| **Write Throughput (HNSW)** | 12K/s | 50-150K/s |
-| **Write Throughput (Bulk)** | **300K/s** ✅ | 500K-1M/s |
-| **Search (L0)** | 37μs | 10-50μs |
-| **Filtered Search** | 1.7ms | 10-50μs |
-| **Memory/Vector** | 150B | 60-100B |
-| **Recall@10** | **1.0** ✅ | 0.95-0.99 |
-| **DAAT Lexical** | 32μs | — |
-| **Hybrid Search** | 337μs | — |
-
-**Completed Optimizations:**
-- ✅ LZ4 block compression for DiskANN segments (3-5x storage reduction)
-- ✅ FreshDiskANN streaming updates (lock-free reads, ~104μs insert, ~128μs search)
-- ✅ Bulk load (300K vec/s)
-- ✅ Graph BFS reordering (DiskANN)
-- ✅ SIMD Int8 kernels (AVX-512/AVX2/NEON)
-- ✅ Batch distance calculations
-- ✅ INT4 quantization (2x memory savings)
-- ✅ Adaptive bitmap threshold
-
-**Remaining Work (16h):**
-- 📋 ACORN filtered search (16h) - 2-1000x throughput
-
-### 🛡️ Production Status
-
-**Production-Ready ✅:**
-- ✅ **Crash Safety**: Commit-oriented durability with atomic manifest updates (no WAL complexity).
-- ✅ **Memory Safety**: No goroutine leaks; deep copy on inserts; Arena allocation for stable heap.
-- ✅ **Concurrency**: 16-way sharded MemTable with lock-free snapshot reads (MVCC).
-- ✅ **Cloud Storage**: Pluggable BlobStore (local/S3/GCS) with immutable segments on object storage.
-- ✅ **SIMD Optimized**: Full AVX-512/AVX/NEON support (194M ops/sec binary quantized distance).
-- ✅ **Zero-Allocation Search**: Generation-based VisitedSet + Searcher pool.
-- ✅ **Best-in-Class Recall**: 1.0 recall@10 verified across all benchmarks.
-- ✅ **Time-Travel**: Query historical versions with `WithTimestamp(time.Time)`.
-- ✅ **Hybrid Search**: BM25 + vector fusion with RRF scoring.
-- ✅ **Bitmap Pre-Filter**: 3-tier routing for optimal filtered search.
-
-**All Phase 1 Optimizations Complete:**
-- ✅ LZ4 block compression (3-5x storage reduction)
-- ✅ Bulk load optimization (300K vec/s)
-- ✅ Graph BFS reordering (DiskANN)
-- ✅ SIMD Int8 kernels (AVX-512/AVX2/NEON)
-- ✅ Batch distance calculations (SIMD-optimized)
-- ✅ INT4 quantization (2x memory savings)
-- ✅ AVX prefetch instructions
-- ✅ Adaptive bitmap threshold
-
-See [FINDINGS.md](FINDINGS.md) for detailed roadmap.
-
-### 🗜️ Compression & Quantization
-- **LZ4 Block Compression**: 3-5x storage reduction for DiskANN segments (5.6μs compress, 5.2μs decompress per 40KB block)
-- **INT4 Quantization**: 8x compression (4-bit per dimension) with 2x memory savings
-- **Binary Quantization**: 32x compression (0.68ns/op for 128-dim Hamming)
-- **Scalar Quantization**: 4x compression with 8-bit encoding
-- **Product Quantization**: Learned codebooks for 8-64x compression
-- **Optimized PQ (OPQ)**: 20-30% better reconstruction vs standard PQ
-- **RaBitQ**: Randomized Binary Quantization for fast approximate search
-
-> Note: DiskANN can optionally use Binary Quantization as a **search-only traversal prefilter** via `BinaryPrefilter(...)` (it does not replace PQ traversal or float32 reranking).
-
-### 📊 Observability
-- **Structured Logging**: `log/slog` integration with contextual attributes
-- **Metrics**: Prometheus-compatible instrumentation
-- **Production-Ready**: Built-in monitoring and alerting support
+- ☁️ **Cloud-Native Storage** — S3/GCS/Azure via pluggable BlobStore interface
+- �� **Commit-Oriented Durability** — Atomic commits with immutable segments
+- 🔀 **[Hybrid Search](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf)** — BM25 + vector similarity with RRF fusion
+- 📸 **Snapshot Isolation** — Lock-free reads via MVCC
+- ⏰ **Time-Travel** — Query historical snapshots
+- 🏷️ **Typed Metadata** — Schema-enforced metadata with filtering
+- 🚀 **SIMD Optimized** — AVX-512/AVX2/NEON/SVE2 runtime detection
 
 ## 🚀 Quick Start
 
-### Basic Usage (Local Mode)
+### 📦 Installation
+
+```bash
+go get github.com/hupe1980/vecgo
+```
+
+### 💻 Basic Usage
 
 ```go
+package main
+
 import (
+    "context"
+    "fmt"
+    "log"
+
     "github.com/hupe1980/vecgo"
     "github.com/hupe1980/vecgo/metadata"
 )
 
-// Create a new index with dimension and distance metric
-// Use Local() for filesystem, Remote() for cloud storage
-db, err := vecgo.Open(vecgo.Local("./data"), vecgo.Create(128, vecgo.MetricL2))
-if err != nil {
-    log.Fatal(err)
-}
-defer db.Close()
+func main() {
+    ctx := context.Background()
 
-// Insert vectors with fluent builder API (type-safe)
-rec := vecgo.NewRecord(vector).
-    WithMetadata("category", metadata.String("electronics")).
-    WithMetadata("price", metadata.Float(99.99)).
-    WithPayload([]byte(`{"desc": "A cool gadget"}`)).
-    Build()
-id, err := db.InsertRecord(rec)
+    // Create a new index (128 dimensions, L2 distance)
+    db, err := vecgo.Open(vecgo.Local("./data"), vecgo.Create(128, vecgo.MetricL2))
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer db.Close()
 
-// Or use the simple API
-id, err := db.Insert(vector, nil, nil)
+    // Insert with fluent builder API
+    vector := make([]float32, 128)
+    rec := vecgo.NewRecord(vector).
+        WithMetadata("category", metadata.String("electronics")).
+        WithMetadata("price", metadata.Float(99.99)).
+        WithPayload([]byte(`{"desc": "Product description"}`)).
+        Build()
+    
+    id, err := db.InsertRecord(ctx, rec)
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Printf("Inserted ID: %d\n", id)
 
-// Search - metadata and payload returned by default!
-results, err := db.Search(ctx, queryVec, 10)
-for _, r := range results {
-    fmt.Println(r.ID, r.Score, r.Metadata, r.Payload)
-}
+    // Or use the simple API
+    id, err = db.Insert(ctx, vector, nil, nil)
 
-// High-throughput mode (IDs + scores only)
-results, err := db.Search(ctx, queryVec, 10, vecgo.WithoutData())
+    // Commit to disk (data is durable after this)
+    if err := db.Commit(ctx); err != nil {
+        log.Fatal(err)
+    }
 
-// Persist to disk
-if err := db.Flush(); err != nil {
-    log.Fatal(err)
+    // Search — returns IDs, scores, metadata, and payload by default
+    query := make([]float32, 128)
+    results, err := db.Search(ctx, query, 10)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    for _, r := range results {
+        fmt.Printf("ID: %d, Score: %.4f\n", r.ID, r.Score)
+    }
+
+    // High-throughput mode (IDs + scores only)
+    results, _ = db.Search(ctx, query, 10, vecgo.WithoutData())
 }
 ```
 
-### Cloud Storage (S3/GCS)
+### 🔄 Re-open Existing Index
+
+```go
+// Dimension and metric are auto-loaded from manifest
+db, err := vecgo.Open(vecgo.Local("./data"))
+```
+
+### ☁️ Cloud Storage (S3)
 
 ```go
 import (
@@ -168,111 +134,122 @@ import (
 // Create S3 store
 store, _ := s3.New(ctx, "my-bucket", s3.WithPrefix("vectors/"))
 
-// Open remote database (type-safe API)
-db, err := vecgo.OpenRemote(store, vecgo.Create(128, vecgo.MetricL2))
+// Open with remote backend
+db, err := vecgo.Open(vecgo.Remote(store), vecgo.Create(128, vecgo.MetricL2))
+
 // Or read-only for search nodes
-db, err := vecgo.OpenRemote(store, vecgo.ReadOnly())
+db, err := vecgo.Open(vecgo.Remote(store), vecgo.ReadOnly())
+
+// With explicit cache directory
+db, err := vecgo.Open(vecgo.Remote(store),
+    vecgo.WithCacheDir("/fast/nvme"),
+    vecgo.WithBlockCacheSize(64 * 1024 * 1024),
+)
 ```
 
-### Commit-Oriented Durability
-
-Vecgo uses a **commit-oriented** durability model with append-only versioned commits — the same approach used by LanceDB and Git. Unlike WAL-based databases (PostgreSQL, DuckDB), Vecgo writes immutable segments directly and updates the manifest atomically.
-Data is durable only after an explicit `Commit()` (or `Flush()`) call.
+### 🔍 Filtered Search
 
 ```go
-import "github.com/hupe1980/vecgo"
-
-// Create a new index
-db, err := vecgo.Open(vecgo.Local("./data"), vecgo.Create(128, vecgo.MetricL2))
-if err != nil {
-    log.Fatal(err)
+// Define schema for type safety
+schema := metadata.Schema{
+    "category": metadata.FieldTypeString,
+    "price":    metadata.FieldTypeFloat,
 }
-defer db.Close()
 
-// Insert vectors (buffered in memory, NOT durable yet)
-db.Insert(vec1, metadata1, payload1)
-db.Insert(vec2, metadata2, payload2)
+db, _ := vecgo.Open(vecgo.Local("./data"),
+    vecgo.Create(128, vecgo.MetricL2),
+    vecgo.WithSchema(schema),
+)
 
-// Batch insert (also buffered)
-ids, _ := db.BatchInsert(vectors, metadatas, payloads)
+// Search with filter
+filter := metadata.NewFilterSet(
+    metadata.Filter{Key: "category", Operator: metadata.OpEqual, Value: metadata.String("electronics")},
+    metadata.Filter{Key: "price", Operator: metadata.OpLessThan, Value: metadata.Float(100.0)},
+)
 
-// COMMIT — this is the durability point
-// Flushes buffer to immutable segment, updates manifest atomically
-err = db.Commit()  // ← After this, data survives any crash
-
-// Search (always includes buffered data)
-results, _ := db.Search(ctx, queryVec, 10)
+results, _ := db.Search(ctx, query, 10, vecgo.WithFilter(filter))
 ```
 
-**Durability Contract:**
+### 🔀 Hybrid Search (Vector + BM25)
+
+```go
+// Insert with text for BM25 indexing
+doc := metadata.Document{
+    "text": metadata.String("machine learning neural networks"),
+}
+db.Insert(ctx, vector, doc, nil)
+
+// Hybrid search with RRF fusion
+results, _ := db.HybridSearch(ctx, vector, "neural networks", 10)
+```
+
+### 📦 Batch Operations
+
+```go
+vectors := [][]float32{vec1, vec2, vec3}
+metadatas := []metadata.Document{md1, md2, md3}
+payloads := [][]byte{p1, p2, p3}
+
+// Batch insert
+ids, err := db.BatchInsert(ctx, vectors, metadatas, payloads)
+
+// Batch insert deferred (optimized for bulk loading)
+ids, err = db.BatchInsertDeferred(ctx, vectors, metadatas, payloads)
+
+// Batch delete
+err = db.BatchDelete(ctx, ids)
+```
+
+## 💾 Durability Model
+
+Vecgo uses **commit-oriented durability** — the same model used by LanceDB and Git:
+
+```go
+// Insert (buffered in memory, NOT durable)
+db.Insert(ctx, vec1, nil, nil)
+db.Insert(ctx, vec2, nil, nil)
+
+// Commit — this is the durability point
+// Writes immutable segment, updates manifest atomically
+err := db.Commit(ctx)
+// After Commit(), data survives any crash
+```
+
 | State | Survives Crash? |
 |-------|-----------------|
-| After `Insert()`, before `Commit()` | ❌ No (data is buffered) |
-| After `Commit()` | ✅ Yes (data is durable) |
+| After `Insert()`, before `Commit()` | ❌ No |
+| After `Commit()` | ✅ Yes |
 | After `Close()` | ✅ Yes (auto-commits pending) |
 
-**Why commit-oriented is best for vector workloads:**
-- ✅ **Simpler code**: No WAL rotation, recovery, or checkpointing
-- ✅ **Faster batch inserts**: No fsync per insert, amortized over commit
-- ✅ **Cloud-native**: Pure segment writes, perfect for S3/GCS
-- ✅ **Instant startup**: No recovery/replay, just read the manifest
-
-### Re-opening an Existing Index
-
-```go
-// Re-open an existing index — no need to specify dim/metric
-// They are auto-loaded from the self-describing manifest
-db, err := vecgo.Open(vecgo.Local("./data"))
-if err != nil {
-    log.Fatal(err)
-}
-defer db.Close()
-```
-
-### Cloud/Serverless Mode (LanceDB-style API)
-
-```go
-import (
-    "github.com/hupe1980/vecgo"
-    "github.com/hupe1980/vecgo/blobstore/s3"
-)
-
-// Create S3-backed blob store
-s3Store, _ := s3.New(ctx, "my-bucket", s3.WithPrefix("vectors/"))
-
-// Open with Remote() backend — the store IS the source of truth
-// Dimension and metric are loaded from the self-describing manifest.
-eng, err := vecgo.Open(vecgo.Remote(s3Store),
-    vecgo.WithCacheDir("/fast/nvme"),             // Optional: explicit cache dir
-    vecgo.WithBlockCacheSize(64 * 1024 * 1024),   // 64MB memory cache
-)
-if err != nil {
-    log.Fatal(err)
-}
-defer eng.Close()
-
-// Search — cache automatically warms up
-results, _ := eng.Search(ctx, queryVector, 10)
-```
-
-**Why `Remote()` backend?**
-- ✅ **Zero Configuration**: Auto-creates temp cache if not specified
-- ✅ **Self-Describing Index**: Dimension and metric stored in manifest
-- ✅ **Multi-Tier Cache**: RAM → Disk → S3 with automatic promotion
-- ✅ **Serverless Ready**: Stateless compute nodes boot from S3 in milliseconds
-
-For tuning and current segment integration status, see `docs/tuning.md`.
+**Why commit-oriented?**
+- 🧹 Simpler code — no WAL rotation, recovery, or checkpointing
+- ⚡ Faster batch inserts — no fsync per insert
+- ☁️ Cloud-native — pure segment writes, ideal for S3/GCS
+- 🚀 Instant startup — no recovery/replay, just read manifest
 
 ## 📚 Documentation
 
-- **API Reference**: [pkg.go.dev/github.com/hupe1980/vecgo](https://pkg.go.dev/github.com/hupe1980/vecgo)
-- **Architecture**: [docs/architecture.md](docs/architecture.md)
-- **Performance Tuning**: [docs/tuning.md](docs/tuning.md)
+- 📖 **API Reference**: [pkg.go.dev/github.com/hupe1980/vecgo](https://pkg.go.dev/github.com/hupe1980/vecgo)
+- 🏗️ **[Architecture Guide](docs/architecture.md)** — Engine internals, storage tiers, concurrency model
+- ⚙️ **[Performance Tuning](docs/tuning.md)** — HNSW parameters, compaction, caching
+- 🔧 **[Operations Guide](docs/operations.md)** — Monitoring, troubleshooting
+- 💾 **[Recovery & Durability](docs/recovery.md)** — Crash safety, data guarantees
+- 🚀 **[Deployment Guide](docs/deployment.md)** — Local vs. cloud patterns
+
+## 📄 Algorithm References
+
+- **HNSW**: Malkov & Yashunin, "[Efficient and robust approximate nearest neighbor search using Hierarchical Navigable Small World graphs](https://arxiv.org/abs/1603.09320)", IEEE TPAMI 2018
+- **DiskANN/Vamana**: Subramanya et al., "[DiskANN: Fast Accurate Billion-point Nearest Neighbor Search on a Single Node](https://papers.nips.cc/paper/2019/hash/09853c7fb1d3f8ee67a61b6bf4a7f8e6-Abstract.html)", NeurIPS 2019
+- **FreshDiskANN**: Singh et al., "[FreshDiskANN: A Fast and Accurate Graph-Based ANN Index for Streaming Similarity Search](https://dl.acm.org/doi/10.1145/3448016.3457550)", SIGMOD 2021
+- **Product Quantization**: Jégou et al., "[Product Quantization for Nearest Neighbor Search](https://hal.inria.fr/inria-00514462v2/document)", IEEE TPAMI 2011
+- **OPQ**: Ge et al., "[Optimized Product Quantization](https://www.microsoft.com/en-us/research/publication/optimized-product-quantization-for-approximate-nearest-neighbor-search/)", IEEE CVPR 2013
+- **RaBitQ**: Gao & Long, "[RaBitQ: Quantizing High-Dimensional Vectors with a Theoretical Error Bound for Approximate Nearest Neighbor Search](https://arxiv.org/abs/2405.12497)", SIGMOD 2024
+- **RRF**: Cormack et al., "[Reciprocal Rank Fusion outperforms Condorcet and individual Rank Learning Methods](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf)", SIGIR 2009
 
 ## 🤝 Contributing
 
 Contributions welcome! Please open an issue or pull request.
 
-## 📄 License
+## 📜 License
 
 Licensed under the Apache License 2.0. See [LICENSE](LICENSE) for details.

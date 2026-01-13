@@ -40,8 +40,6 @@ Vecgo is designed around a **Shared-Nothing, LSM-Tree Architecture** to maximize
 
 Note: legacy execution paths have been removed; the tree reflects the current engine-first design.
 
-For the current roadmap and planned work (e.g. FlatBuffers headers), see the phase plan in `TODO.md`.
-
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    Vecgo API Layer                          │
@@ -298,7 +296,7 @@ To ensure stability under load, Vecgo uses a **ResourceController** to manage gl
 
 *   **Memory Budget**: Tracks estimated usage of L0 arenas, caches, and mmap overhead.
     *   Current implementation: a hard limit (`MemoryLimitBytes`) enforced via a weighted semaphore. The controller is wired into the MemTable allocator and the block cache.
-    *   Note: the engine has automatic flush triggers (MemTable/WAL thresholds), but the flush signal is best-effort (buffered size 1, dropped when already pending). This is not a complete admission-control or backpressure policy.
+    *   Note: the engine has automatic commit triggers (MemTable size thresholds), but the commit signal is best-effort (buffered size 1, dropped when already pending). This is not a complete admission-control or backpressure policy.
 *   **Concurrency Budget**: Limits the number of active goroutines for background tasks (compaction, build) using a weighted semaphore.
 *   **IO Budget**: (Optional) Token bucket for disk IOPS to prevent compaction from starving search.
 
@@ -665,7 +663,7 @@ For high-throughput writes (especially in DiskANN), Vecgo uses an LSM-tree inspi
 
 2.  **Flushing (Immutable Queue)**:
     *   When the Hot MemTable crosses configured thresholds, a flush is triggered via a buffered channel.
-    *   The background loop calls `Flush()` when signaled.
+    *   The background loop calls `Commit()` when signaled.
     *   There is no explicit flush queue today; multiple triggers can coalesce, and signals can be dropped if one is already pending.
     *   Admission control/backpressure comes from the ResourceController (hard limits), not from a flush-queue growth policy.
 
@@ -686,7 +684,7 @@ Vecgo uses **commit-oriented durability**:
 | Operation | Durable? | Description |
 |-----------|----------|-------------|
 | `Insert()` | ❌ No | Buffered in MemTable (memory) |
-| `Commit()` / `Flush()` | ✅ Yes | Writes segment + updates manifest |
+| `Commit()` | ✅ Yes | Writes segment + updates manifest |
 | `Close()` | ✅ Yes | Auto-commits pending data |
 
 This model matches LanceDB (Databricks) and Git — optimized for batch vector workloads. Unlike WAL-based databases, committed segments are immutable and self-describing.

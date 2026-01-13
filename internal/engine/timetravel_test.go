@@ -37,11 +37,11 @@ func TestTimeTravel(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		vec := make([]float32, 128)
 		vec[0] = float32(i)
-		_, err := e.Insert(vec, nil, nil)
+		_, err := e.Insert(context.Background(), vec, nil, nil)
 		require.NoError(t, err)
 	}
 	// Flush to create Version 1
-	err = e.Flush()
+	err = e.Commit(context.Background())
 	require.NoError(t, err)
 
 	// IMPORTANT: Capture timestamp AFTER Flush completes.
@@ -55,11 +55,11 @@ func TestTimeTravel(t *testing.T) {
 	for i := 10; i < 20; i++ {
 		vec := make([]float32, 128)
 		vec[0] = float32(i)
-		_, err := e.Insert(vec, nil, nil)
+		_, err := e.Insert(context.Background(), vec, nil, nil)
 		require.NoError(t, err)
 	}
 	// Flush to create Version 2
-	err = e.Flush()
+	err = e.Commit(context.Background())
 	require.NoError(t, err)
 
 	// Verify current running engine has 20 items
@@ -85,10 +85,10 @@ func TestTimeTravel(t *testing.T) {
 	stats := e.Stats()
 	assert.Equal(t, 20, stats.RowCount)
 
-	err = e.Delete(1) // Delete ID 1
+	err = e.Delete(context.Background(), 1) // Delete ID 1
 	require.NoError(t, err)
 
-	err = e.Flush()
+	err = e.Commit(context.Background())
 	require.NoError(t, err)
 
 	_ = time.Now() // t3 unused but kept for symmetry

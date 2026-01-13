@@ -21,15 +21,15 @@ func TestHybridSearch(t *testing.T) {
 
 	// Insert data
 	// 1. "apple" near origin
-	id1, err := e.Insert([]float32{0.1, 0.1}, metadata.Document{"text": metadata.String("apple fruit")}, nil)
+	id1, err := e.Insert(context.Background(), []float32{0.1, 0.1}, metadata.Document{"text": metadata.String("apple fruit")}, nil)
 	require.NoError(t, err)
 
 	// 2. "banana" far from origin
-	id2, err := e.Insert([]float32{10.0, 10.0}, metadata.Document{"text": metadata.String("banana fruit")}, nil)
+	id2, err := e.Insert(context.Background(), []float32{10.0, 10.0}, metadata.Document{"text": metadata.String("banana fruit")}, nil)
 	require.NoError(t, err)
 
 	// 3. "apple" far from origin
-	id3, err := e.Insert([]float32{10.0, 10.1}, metadata.Document{"text": metadata.String("apple pie")}, nil)
+	id3, err := e.Insert(context.Background(), []float32{10.0, 10.1}, metadata.Document{"text": metadata.String("apple pie")}, nil)
 	require.NoError(t, err)
 
 	ctx := context.Background()

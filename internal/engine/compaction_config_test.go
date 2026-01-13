@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -28,17 +29,17 @@ func TestCompactionConfig_Quantization(t *testing.T) {
 	// Insert enough data to create 2 segments
 	// Segment 1
 	for i := 0; i < 100; i++ {
-		_, err := e.Insert([]float32{0.1, 0.2, 0.3, 0.4}, nil, nil)
+		_, err := e.Insert(context.Background(), []float32{0.1, 0.2, 0.3, 0.4}, nil, nil)
 		require.NoError(t, err)
 	}
-	require.NoError(t, e.Flush())
+	require.NoError(t, e.Commit(context.Background()))
 
 	// Segment 2
 	for i := 100; i < 200; i++ {
-		_, err := e.Insert([]float32{0.5, 0.6, 0.7, 0.8}, nil, nil)
+		_, err := e.Insert(context.Background(), []float32{0.5, 0.6, 0.7, 0.8}, nil, nil)
 		require.NoError(t, err)
 	}
-	require.NoError(t, e.Flush())
+	require.NoError(t, e.Commit(context.Background()))
 
 	// Wait for compaction
 	// Compaction runs in background. We can poll for segment count to drop to 1.

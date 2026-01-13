@@ -47,7 +47,7 @@ func TestFilteringEquivalence(t *testing.T) {
 			"price":    metadata.Float(price),
 			"id":       metadata.Float(float64(i)),
 		}
-		id, err := e.Insert(vec, md, nil)
+		id, err := e.Insert(context.Background(), vec, md, nil)
 		require.NoError(t, err)
 
 		records[i] = record{
@@ -58,7 +58,7 @@ func TestFilteringEquivalence(t *testing.T) {
 	}
 
 	// Force flush
-	err = e.Flush()
+	err = e.Commit(context.Background())
 	require.NoError(t, err)
 
 	// Define filters

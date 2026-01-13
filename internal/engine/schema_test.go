@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"testing"
 
 	"github.com/hupe1980/vecgo/distance"
@@ -81,7 +82,7 @@ func TestSchemaValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := e.Insert(vec, tt.md, nil)
+			_, err := e.Insert(context.Background(), vec, tt.md, nil)
 			if tt.wantErr {
 				require.Error(t, err)
 			} else {
@@ -104,6 +105,7 @@ func TestBatchInsertSchemaValidation(t *testing.T) {
 
 	// Valid batch
 	_, err = e.BatchInsert(
+		context.Background(),
 		[][]float32{vec, vec},
 		[]metadata.Document{
 			{"age": metadata.Int(20)},
@@ -115,6 +117,7 @@ func TestBatchInsertSchemaValidation(t *testing.T) {
 
 	// Invalid batch
 	_, err = e.BatchInsert(
+		context.Background(),
 		[][]float32{vec, vec},
 		[]metadata.Document{
 			{"age": metadata.Int(20)},

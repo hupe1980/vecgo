@@ -30,16 +30,16 @@ func TestINT4Quantization(t *testing.T) {
 	for i := 0; i < 128; i++ {
 		vec1[i] = 0.2
 	}
-	id1, _ := db.Insert(vec1, nil, nil)
-	db.Flush() // Segment 1
+	id1, _ := db.Insert(context.Background(), vec1, nil, nil)
+	db.Commit(context.Background()) // Segment 1
 
 	// Vector 2: All 0.8
 	vec2 := make([]float32, 128)
 	for i := 0; i < 128; i++ {
 		vec2[i] = 0.8
 	}
-	id2, _ := db.Insert(vec2, nil, nil)
-	db.Flush() // Segment 2
+	id2, _ := db.Insert(context.Background(), vec2, nil, nil)
+	db.Commit(context.Background()) // Segment 2
 
 	// Wait for compaction (2 segments -> 1)
 	time.Sleep(1 * time.Second)

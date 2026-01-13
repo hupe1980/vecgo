@@ -22,13 +22,13 @@ Vecgo prevents trivial DoS attacks via:
 - **Batch Behavior**: Very large batches can still exhaust configured budgets and trigger `ErrBackpressure`; there is no fixed “max batch size” enforced by default.
 
 ### 2. Corruption Detection
-- **Checksums**: CRC32C on WAL records and Segment headers.
+- **Checksums**: CRC32C on Manifest and Segment headers.
 - **Safe Decoding**: All binary decoding validates bounds. No panics on malformed data.
 - **Fast Fail**: `ErrIncompatibleFormat` for version mismatches.
 
 ### 3. Safe Defaults
 - **Memory**: Default 1GB limit.
-- **WAL**: Sync mode by default (strongest durability).
+- **Durability**: Commit-oriented with atomic manifest updates.
 
 ## Recommendations for Secure Embedding
 

@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"testing"
 
 	"github.com/hupe1980/vecgo/distance"
@@ -19,14 +20,14 @@ func TestIntrospection(t *testing.T) {
 	assert.Equal(t, 0, stats.SegmentCount)
 
 	// Insert
-	_, err = e.Insert([]float32{1.0, 0.0}, nil, nil)
+	_, err = e.Insert(context.Background(), []float32{1.0, 0.0}, nil, nil)
 	require.NoError(t, err)
 
 	stats = e.Stats()
 	assert.Greater(t, stats.MemoryUsageBytes, int64(0))
 
 	// Flush
-	err = e.Flush()
+	err = e.Commit(context.Background())
 	require.NoError(t, err)
 
 	stats = e.Stats()

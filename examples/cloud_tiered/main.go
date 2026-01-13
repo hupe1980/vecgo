@@ -95,12 +95,12 @@ func main() {
 	s3Store := NewSimulatedS3Store(s3BucketDir, 20*time.Millisecond)
 
 	// LanceDB-style Read-Only Mode: Truly stateless!
-	// - No WAL created
+	// - Commit-oriented durability (no complex WAL)
 	// - No local directory required (uses temp for cache)
 	// - Insert/Delete operations return ErrReadOnly
 	// - Perfect for serverless deployments
 	opts := []vecgo.Option{
-		vecgo.ReadOnly(),                           // 🆕 No WAL, purely stateless
+		vecgo.ReadOnly(),                           // Stateless read-only node
 		vecgo.WithCacheDir(searcherDir),            // Optional: specify where to cache blocks
 		vecgo.WithBlockCacheSize(10 * 1024 * 1024), // Optional: tune memory usage
 	}
@@ -115,7 +115,7 @@ func main() {
 	fmt.Printf("⏱️  Engine Open Time: %v\n", time.Since(startOpen))
 
 	// Try to write (should fail in read-only mode)
-	_, writeErr := eng.Insert(randomVector(128), nil, nil)
+	_, writeErr := eng.Insert(context.Background(), randomVector(128), nil, nil)
 	if errors.Is(writeErr, vecgo.ErrReadOnly) {
 		fmt.Println("✅ Write correctly rejected in read-only mode")
 	}
@@ -160,7 +160,7 @@ func buildIndex(dir string) {
 	}
 
 	for i := 0; i < 2000; i++ {
-		eng.Insert(randomVector(128), nil, nil)
+		eng.Insert(context.Background(), randomVector(128), nil, nil)
 	}
 	eng.Close()
 }

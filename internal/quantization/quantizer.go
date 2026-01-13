@@ -1,4 +1,3 @@
-// Package quantization provides vector quantization implementations for memory-efficient storage.
 package quantization
 
 import (

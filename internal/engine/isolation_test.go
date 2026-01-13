@@ -21,7 +21,7 @@ func TestConsistency_Churn(t *testing.T) {
 	vec2[0] = 2.0
 
 	// Initial insert
-	id1, err := eng.Insert(vec1, nil, nil)
+	id1, err := eng.Insert(context.Background(), vec1, nil, nil)
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -49,11 +49,11 @@ func TestConsistency_Churn(t *testing.T) {
 
 				mu.Lock()
 				oldID := currentID
-				err := eng.Delete(oldID)
+				err := eng.Delete(context.Background(), oldID)
 				if err != nil {
 					// Ignore valid delete errors
 				}
-				newID, err := eng.Insert(v, nil, nil)
+				newID, err := eng.Insert(context.Background(), v, nil, nil)
 				if err == nil {
 					currentID = newID
 				}

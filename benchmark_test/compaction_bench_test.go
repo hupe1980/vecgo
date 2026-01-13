@@ -1,6 +1,7 @@
 package benchmark_test
 
 import (
+	"context"
 	"testing"
 
 	"github.com/hupe1980/vecgo"
@@ -36,7 +37,7 @@ func BenchmarkCompaction_Pressure(b *testing.B) {
 	// Each iteration inserts a vector.
 	// Compaction happens in background.
 	for i := 0; i < b.N; i++ {
-		if _, err := eng.Insert(vec, nil, nil); err != nil {
+		if _, err := eng.Insert(context.Background(), vec, nil, nil); err != nil {
 			b.Fatal(err)
 		}
 	}

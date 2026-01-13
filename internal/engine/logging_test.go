@@ -2,6 +2,7 @@ package engine
 
 import (
 	"bytes"
+	"context"
 	"log/slog"
 	"testing"
 
@@ -19,10 +20,10 @@ func TestStructuredLogging(t *testing.T) {
 
 	// Trigger a log event by flushing.
 	// Insert some data to make flush do something.
-	_, err = e.Insert(make([]float32, 128), nil, nil)
+	_, err = e.Insert(context.Background(), make([]float32, 128), nil, nil)
 	require.NoError(t, err)
 
-	err = e.Flush()
+	err = e.Commit(context.Background())
 	require.NoError(t, err)
 
 	// Check logs

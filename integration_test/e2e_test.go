@@ -15,10 +15,10 @@ func TestE2E_Restart(t *testing.T) {
 	e, err := vecgo.Open(vecgo.Local(dir), vecgo.Create(2, vecgo.MetricL2))
 	require.NoError(t, err)
 
-	id, err := e.Insert([]float32{1.0, 0.0}, nil, nil)
+	id, err := e.Insert(context.Background(), []float32{1.0, 0.0}, nil, nil)
 	require.NoError(t, err)
 
-	err = e.Flush()
+	err = e.Commit(context.Background())
 	require.NoError(t, err)
 
 	err = e.Close()

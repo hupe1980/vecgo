@@ -25,26 +25,31 @@ This example demonstrates Vecgo's **serverless-ready** architecture with multi-t
 
 ## Usage
 
-### Simple API (LanceDB-style)
+### Simple API
 
 ```go
+import (
+    "github.com/hupe1980/vecgo"
+    "github.com/hupe1980/vecgo/blobstore/s3"
+)
+
 // Create S3-backed blob store
 s3Store, _ := s3.New(ctx, "my-bucket", s3.WithPrefix("vectors/"))
 
-// Open with auto-configuration
-eng, err := engine.OpenCloud("/tmp/cache",
-    engine.WithRemoteStore(s3Store),
-    engine.WithBlockCacheSize(64 * 1024 * 1024),
+// Open with remote backend (read-only for search nodes)
+eng, err := vecgo.Open(vecgo.Remote(s3Store),
+    vecgo.ReadOnly(),
+    vecgo.WithCacheDir("/tmp/cache"),
+    vecgo.WithBlockCacheSize(64 * 1024 * 1024),
 )
 ```
 
-### What `OpenCloud` Does
+### What This Does
 
-1. **Sets BlobStore** for segment data automatically
-2. **Sets ManifestStore** for metadata (via BlobStoreAdapter)
-3. **Uses scratch directory** for local caching
-4. **Loads dimension/metric** from persisted manifest (self-describing index)
-5. **Enables read-optimized mode** (no WAL, no writes to remote)
+1. **Remote backend** stores segment data in S3/cloud
+2. **Local cache directory** for block caching
+3. **Self-describing index** — dimension/metric loaded from manifest
+4. **Read-only mode** — commit-oriented durability, no writes to remote
 
 ## Running the Example
 
@@ -55,36 +60,37 @@ go run main.go
 ### Expected Output
 
 ```
-=== Cloud-Tiered Caching Demo ===
+🏗️  Building Index locally...
+☁️  Uploading blocks to 'S3'...
+🚀 Starting Stateless Search Node...
+⏱️  Engine Open Time: ~Xms
+✅ Write correctly rejected in read-only mode
 
-Ingesting 1000 vectors...
-✓ Ingested 1000 vectors in Xms
+🔎 Executing Query 1 (Cold Cache)...
+   Cold Query Latency: ~Xms
 
-Flushing to remote storage...
-✓ Flushed to remote storage
-
---- Search Latency Tests ---
-
-Cold search (cache empty):
-  Search latency: ~35µs
-
-Warm search (RAM cache hit):
-  Search latency: ~1.25µs
-
-Disk cache search (after simulated restart):
-  Search latency: ~83µs
+🔎 Executing Query 2 (Warm Cache)...
+   Warm Query Latency: ~Xµs
 ```
 
 ## Production Deployment
 
-For real S3 deployment, replace the simulated store:
+For real S3 deployment:
 
 ```go
 import "github.com/hupe1980/vecgo/blobstore/s3"
 
-s3Store, err := s3.New(ctx, "my-bucket",
-    s3.WithPrefix("vectors/prod/"),
-    s3.WithRegion("us-east-1"),
+// Writer node (builds index)
+s3Store, _ := s3.New(ctx, "my-bucket", s3.WithPrefix("vectors/prod/"))
+db, _ := vecgo.Open(vecgo.Remote(s3Store), vecgo.Create(128, vecgo.MetricL2))
+// ... insert vectors ...
+db.Commit(ctx)
+db.Close()
+
+// Reader nodes (stateless search)
+db, _ := vecgo.Open(vecgo.Remote(s3Store),
+    vecgo.ReadOnly(),
+    vecgo.WithCacheDir("/fast/nvme"),
 )
 ```
 
@@ -98,6 +104,6 @@ s3Store, err := s3.New(ctx, "my-bucket",
 
 ## See Also
 
-- [FINDINGS.md](../../FINDINGS.md) - Full architecture analysis
 - [docs/deployment.md](../../docs/deployment.md) - Production deployment guide
 - [docs/tuning.md](../../docs/tuning.md) - Performance tuning
+- [docs/architecture.md](../../docs/architecture.md) - Architecture deep-dive

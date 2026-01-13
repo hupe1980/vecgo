@@ -18,18 +18,18 @@ func TestBatchDelete(t *testing.T) {
 	// Insert 10 items
 	ids := make([]model.ID, 10)
 	for i := 0; i < 10; i++ {
-		id, err := e.Insert([]float32{float32(i), float32(i)}, nil, nil)
+		id, err := e.Insert(context.Background(), []float32{float32(i), float32(i)}, nil, nil)
 		require.NoError(t, err)
 		ids[i] = id
 	}
 
 	// Flush to create a segment (items 0-9 in segment)
-	require.NoError(t, e.Flush())
+	require.NoError(t, e.Commit(context.Background()))
 
 	// Insert 5 more items (items 10-14 in MemTable)
 	moreIDs := make([]model.ID, 5)
 	for i := 0; i < 5; i++ {
-		id, err := e.Insert([]float32{float32(10 + i), float32(10 + i)}, nil, nil)
+		id, err := e.Insert(context.Background(), []float32{float32(10 + i), float32(10 + i)}, nil, nil)
 		require.NoError(t, err)
 		moreIDs[i] = id
 	}
@@ -46,7 +46,7 @@ func TestBatchDelete(t *testing.T) {
 		model.ID(99),
 	}
 
-	require.NoError(t, e.BatchDelete(toDelete))
+	require.NoError(t, e.BatchDelete(context.Background(), toDelete))
 
 	// Verify deletions
 	for _, id := range toDelete {

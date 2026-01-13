@@ -41,10 +41,10 @@ func TestMixedSegments(t *testing.T) {
 		for j := range vec {
 			vec[j] = float32(i - 1)
 		}
-		_, err := db.Insert(vec, nil, nil)
+		_, err := db.Insert(context.Background(), vec, nil, nil)
 		require.NoError(t, err)
 	}
-	require.NoError(t, db.Flush())
+	require.NoError(t, db.Commit(context.Background()))
 	t.Log("Flushed segment 1")
 
 	// Phase 2: Insert and flush second batch
@@ -53,10 +53,10 @@ func TestMixedSegments(t *testing.T) {
 		for j := range vec {
 			vec[j] = float32(i - 1)
 		}
-		_, err := db.Insert(vec, nil, nil)
+		_, err := db.Insert(context.Background(), vec, nil, nil)
 		require.NoError(t, err)
 	}
-	require.NoError(t, db.Flush())
+	require.NoError(t, db.Commit(context.Background()))
 	t.Log("Flushed segment 2")
 
 	// Wait for compaction
@@ -121,39 +121,39 @@ func TestSimpleFlushCompaction(t *testing.T) {
 	// Insert 5 vectors
 	for i := 0; i < 5; i++ {
 		vec := []float32{float32(i), float32(i), float32(i), float32(i)}
-		id, err := e.Insert(vec, nil, nil)
+		id, err := e.Insert(context.Background(), vec, nil, nil)
 		require.NoError(t, err)
 		t.Logf("Inserted ID=%d vec=%v", id, vec)
 	}
 
 	// Flush
-	err = e.Flush()
+	err = e.Commit(context.Background())
 	require.NoError(t, err)
 	t.Log("Flushed segment 1")
 
 	// Insert 5 more
 	for i := 5; i < 10; i++ {
 		vec := []float32{float32(i), float32(i), float32(i), float32(i)}
-		id, err := e.Insert(vec, nil, nil)
+		id, err := e.Insert(context.Background(), vec, nil, nil)
 		require.NoError(t, err)
 		t.Logf("Inserted ID=%d vec=%v", id, vec)
 	}
 
 	// Flush
-	err = e.Flush()
+	err = e.Commit(context.Background())
 	require.NoError(t, err)
 	t.Log("Flushed segment 2")
 
 	// Insert 5 more
 	for i := 10; i < 15; i++ {
 		vec := []float32{float32(i), float32(i), float32(i), float32(i)}
-		id, err := e.Insert(vec, nil, nil)
+		id, err := e.Insert(context.Background(), vec, nil, nil)
 		require.NoError(t, err)
 		t.Logf("Inserted ID=%d vec=%v", id, vec)
 	}
 
 	// Flush - this should trigger compaction (3 segments >= threshold of 2)
-	err = e.Flush()
+	err = e.Commit(context.Background())
 	require.NoError(t, err)
 	t.Log("Flushed segment 3")
 

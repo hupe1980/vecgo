@@ -19,16 +19,16 @@ func TestTombstonePersistence(t *testing.T) {
 	require.NoError(t, err)
 
 	// 2. Insert data
-	id1, err := e.Insert([]float32{1.0, 0.0}, nil, nil)
+	id1, err := e.Insert(context.Background(), []float32{1.0, 0.0}, nil, nil)
 	require.NoError(t, err)
-	id2, err := e.Insert([]float32{0.0, 1.0}, nil, nil)
+	id2, err := e.Insert(context.Background(), []float32{0.0, 1.0}, nil, nil)
 	require.NoError(t, err)
 
 	// 3. Flush to create L1 segment (Segment 0)
-	require.NoError(t, e.Flush())
+	require.NoError(t, e.Commit(context.Background()))
 
 	// 4. Delete PK 1 (which is in Segment 0)
-	require.NoError(t, e.Delete(id1))
+	require.NoError(t, e.Delete(context.Background(), id1))
 
 	// Verify deletion in memory
 	cands, err := e.Search(ctx, []float32{1.0, 0.0}, 10)

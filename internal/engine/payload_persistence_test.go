@@ -18,9 +18,9 @@ func TestPayloadSurvivesFlushAndCompaction(t *testing.T) {
 	require.NoError(t, err)
 	defer e.Close()
 
-	id1, err := e.Insert([]float32{1, 0}, nil, []byte("p1"))
+	id1, err := e.Insert(context.Background(), []float32{1, 0}, nil, []byte("p1"))
 	require.NoError(t, err)
-	require.NoError(t, e.Flush())
+	require.NoError(t, e.Commit(context.Background()))
 
 	res, err := e.Search(ctx, []float32{1, 0}, 1, WithPayload())
 	require.NoError(t, err)
@@ -40,9 +40,9 @@ func TestPayloadSurvivesFlushAndCompaction(t *testing.T) {
 	require.Equal(t, id1, res[0].ID)
 	require.Equal(t, []byte("p1"), res[0].Payload)
 
-	id2, err := e2.Insert([]float32{0, 1}, nil, []byte("p2"))
+	id2, err := e2.Insert(ctx, []float32{0, 1}, nil, []byte("p2"))
 	require.NoError(t, err)
-	require.NoError(t, e2.Flush())
+	require.NoError(t, e2.Commit(ctx))
 
 	snap := e2.current.Load()
 	segmentsToCompact := make([]model.SegmentID, 0, len(snap.segments))
@@ -72,9 +72,9 @@ func TestOpenIgnoresOrphanTmpFiles(t *testing.T) {
 	e, err := Open(dir, 2, distance.MetricL2)
 	require.NoError(t, err)
 
-	_, err = e.Insert([]float32{1, 0}, nil, []byte("p1"))
+	_, err = e.Insert(context.Background(), []float32{1, 0}, nil, []byte("p1"))
 	require.NoError(t, err)
-	require.NoError(t, e.Flush())
+	require.NoError(t, e.Commit(context.Background()))
 	require.NoError(t, e.Close())
 
 	// Create orphan tmp artifacts (simulates crash mid-write).

@@ -1,4 +1,3 @@
-// Package mmap provides memory-mapped file functionality.
 package mmap
 
 import (

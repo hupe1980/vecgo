@@ -1,6 +1,7 @@
 package engine_test
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -36,7 +37,7 @@ func TestEngine_Flush_DiskFull(t *testing.T) {
 	// Insert some data to generate WAL traffic and fill memtable
 	vec := make([]float32, 128)
 	for i := 0; i < 100; i++ {
-		_, err := e.Insert(vec, nil, nil)
+		_, err := e.Insert(context.Background(), vec, nil, nil)
 		require.NoError(t, err)
 	}
 
@@ -51,7 +52,7 @@ func TestEngine_Flush_DiskFull(t *testing.T) {
 	faultyFS.SetLimit(writtenBefore + 1024) // Allow 1KB more, then fail
 
 	// Trigger Flush
-	err = e.Flush()
+	err = e.Commit(context.Background())
 
 	// Expect error
 	assert.Error(t, err)
@@ -86,15 +87,15 @@ func TestEngine_Compaction_DiskFull(t *testing.T) {
 
 	// Segment 1
 	for i := 0; i < 50; i++ {
-		e.Insert(vec, nil, nil)
+		e.Insert(context.Background(), vec, nil, nil)
 	}
-	require.NoError(t, e.Flush())
+	require.NoError(t, e.Commit(context.Background()))
 
 	// Segment 2
 	for i := 0; i < 50; i++ {
-		e.Insert(vec, nil, nil)
+		e.Insert(context.Background(), vec, nil, nil)
 	}
-	require.NoError(t, e.Flush())
+	require.NoError(t, e.Commit(context.Background()))
 
 	// Measure written so far
 	writtenBefore := faultyFS.GetWritten()
@@ -127,11 +128,11 @@ func TestFault_CorruptSegmentHeader(t *testing.T) {
 	require.NoError(t, err)
 
 	vec := make([]float32, 128)
-	_, err = e.Insert(vec, nil, nil)
+	_, err = e.Insert(context.Background(), vec, nil, nil)
 	require.NoError(t, err)
 
 	// Force flush to create segment file
-	err = e.Flush()
+	err = e.Commit(context.Background())
 	require.NoError(t, err)
 	e.Close()
 
@@ -189,7 +190,7 @@ func TestFault_ConcurrentClose(t *testing.T) {
 			<-start
 			vec := make([]float32, 128)
 			for j := 0; j < 100; j++ {
-				_, err := e.Insert(vec, nil, nil)
+				_, err := e.Insert(context.Background(), vec, nil, nil)
 				if err != nil {
 					if err == engine.ErrClosed {
 						return

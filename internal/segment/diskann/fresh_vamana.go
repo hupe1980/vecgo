@@ -1,14 +1,3 @@
-// Package diskann provides FreshDiskANN - streaming updates for DiskANN.
-//
-// FreshDiskANN (Microsoft Research, 2021) enables real-time insertions and deletions
-// without rebuilding the entire graph. Key features:
-//
-//   - Streaming Insert: New vectors are added with RobustPrune edge selection
-//   - Soft Delete: Nodes marked deleted, cleaned during consolidation
-//   - Consolidation: Background cleanup of deleted nodes and edge repair
-//
-// This implementation is designed for vecgo's LSM-tree architecture where
-// FreshVamana can be used as a mutable index layer alongside immutable segments.
 package diskann
 
 import (

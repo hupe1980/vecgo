@@ -1,36 +1,7 @@
-// Package vecgo provides a high-performance embedded vector database for Go.
-//
-// Vecgo is an embeddable, hybrid vector database designed for production workloads.
-// It combines LSM-tree architecture with HNSW indexing for optimal performance.
-//
-// # Quick Start
-//
-// Local mode:
-//
-//	db, _ := vecgo.Open(vecgo.Local("./data"), vecgo.Create(128, vecgo.MetricL2))
-//	db, _ := vecgo.Open(vecgo.Local("./data"))  // re-open existing
-//
-// Cloud mode:
-//
-//	s3Store, _ := s3.New(ctx, "my-bucket", s3.WithPrefix("vectors/"))
-//	db, _ := vecgo.Open(vecgo.Remote(s3Store))
-//	db, _ := vecgo.Open(vecgo.Remote(s3Store), vecgo.WithCacheDir("/fast/nvme"))
-//
-// # Search with Data
-//
-// By default, search returns IDs, scores, metadata, and payload:
-//
-//	results, _ := db.Search(ctx, query, 10)
-//	for _, r := range results {
-//	    fmt.Println(r.ID, r.Score, r.Metadata, r.Payload)
-//	}
-//
-// For minimal results (IDs + scores only), use WithoutData():
-//
-//	results, _ := db.Search(ctx, query, 10, vecgo.WithoutData())
 package vecgo
 
 import (
+	"context"
 	"log/slog"
 
 	"github.com/hupe1980/vecgo/blobstore"
@@ -118,9 +89,9 @@ func Open(backend Backend, opts ...Option) (*DB, error) {
 //	    WithMetadata("category", metadata.String("tech")).
 //	    WithPayload(jsonData).
 //	    Build()
-//	id, err := db.InsertRecord(rec)
-func (db *DB) InsertRecord(rec Record) (ID, error) {
-	return db.Insert(rec.Vector, rec.Metadata, rec.Payload)
+//	id, err := db.InsertRecord(ctx, rec)
+func (db *DB) InsertRecord(ctx context.Context, rec Record) (ID, error) {
+	return db.Insert(ctx, rec.Vector, rec.Metadata, rec.Payload)
 }
 
 // BatchInsertRecords inserts multiple records in a single batch.
@@ -128,8 +99,8 @@ func (db *DB) InsertRecord(rec Record) (ID, error) {
 // Example:
 //
 //	records := []vecgo.Record{rec1, rec2, rec3}
-//	ids, err := db.BatchInsertRecords(records)
-func (db *DB) BatchInsertRecords(records []Record) ([]ID, error) {
+//	ids, err := db.BatchInsertRecords(ctx, records)
+func (db *DB) BatchInsertRecords(ctx context.Context, records []Record) ([]ID, error) {
 	vectors := make([][]float32, len(records))
 	mds := make([]metadata.Document, len(records))
 	payloads := make([][]byte, len(records))
@@ -140,7 +111,7 @@ func (db *DB) BatchInsertRecords(records []Record) ([]ID, error) {
 		payloads[i] = rec.Payload
 	}
 
-	return db.BatchInsert(vectors, mds, payloads)
+	return db.BatchInsert(ctx, vectors, mds, payloads)
 }
 
 // NewRecord creates a new RecordBuilder for fluent record construction.

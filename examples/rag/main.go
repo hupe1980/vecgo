@@ -63,7 +63,9 @@ func main() {
 		// Insert into Vecgo.
 		// We store the text content as the 'payload'.
 		// We could also store metadata (e.g., source, date) in the 3rd argument.
+		ctx := context.Background()
 		_, err := eng.Insert(
+			ctx,
 			doc.Vector,
 			metadata.Document{
 				"source": metadata.String("wiki-sim"),

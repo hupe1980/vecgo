@@ -34,8 +34,9 @@ func main() {
 	}
 
 	fmt.Println("Inserting vectors...")
+	ctx := context.Background()
 	for _, v := range vectors {
-		if _, err := eng.Insert(v, nil, nil); err != nil {
+		if _, err := eng.Insert(ctx, v, nil, nil); err != nil {
 			log.Fatalf("Insert failed: %v", err)
 		}
 	}
@@ -57,9 +58,9 @@ func main() {
 		fmt.Printf("%d. ID: %v, Score: %.4f\n", i+1, res.ID, res.Score)
 	}
 
-	// 4. Flush (force persistence)
-	if err := eng.Flush(); err != nil {
-		log.Fatalf("Flush failed: %v", err)
+	// 4. Commit (force persistence)
+	if err := eng.Commit(context.Background()); err != nil {
+		log.Fatalf("Commit failed: %v", err)
 	}
-	fmt.Println("Flushed to disk.")
+	fmt.Println("Committed to disk.")
 }

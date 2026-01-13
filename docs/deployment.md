@@ -20,8 +20,8 @@ However, Vecgo's presence introduces stateful requirements.
     store := s3.NewStore(client, "my-bucket", "prefix")
     engine.Open(..., engine.WithBlobStore(store), engine.WithBlockCacheSize(4*1024*1024*1024))
     ```
-*   **Caveat**: WAL and Manifest are currently still **local**. Only immutable segments are offloaded.
-    *   The PK index is held in memory and is rebuilt at startup by scanning segment PK columns (rather than being persisted as a separate artifact).
+*   **Caveat**: Manifest is currently still **local**. Only immutable segments are offloaded.
+    *   The PK index is held in memory and is rebuilt at startup by scanning segment PK columns.
     *   *Note: Truly stateless shared-storage requires specific coordination not yet fully GA in v1.0.*
 
 ## Resource Sizing
@@ -42,9 +42,9 @@ However, Vecgo's presence introduces stateful requirements.
 
 ### Disk I/O
 *   **IOPS**: Critical for:
-    1.  WAL syncs (latency).
+    1.  Commit syncs (latency).
     2.  Compaction (throughput).
-    3.  Code reads during search (if not in block cache).
+    3.  Segment reads during search (if not in block cache).
 *   **Recommendation**: NVMe or high-IOPS EBS (gp3/io2). Avoid HDD.
 
 ## Scaling Patterns
@@ -63,5 +63,5 @@ However, Vecgo's presence introduces stateful requirements.
 ## Backups
 *   **Snapshot**: 
     1.  Pause writes (optional, but ensures consistent point-in-time).
-    2.  Copy directory (snapshot-isolation means copying `.bin` files is safe, but Manifest+WAL needs care).
+    2.  Copy directory (snapshot-isolation means copying `.bin` files and Manifest is safe).
 *   **Scan API**: Use `engine.Scan()` to stream all records to JSON/Parquet for logical backup.

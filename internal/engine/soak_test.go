@@ -50,7 +50,7 @@ func TestSoak(t *testing.T) {
 			default:
 				vec := make([]float32, dim)
 				rng.FillUniform(vec)
-				if _, err := e.Insert(vec, nil, nil); err != nil {
+				if _, err := e.Insert(context.Background(), vec, nil, nil); err != nil {
 					// Backpressure errors are expected under load
 					time.Sleep(10 * time.Millisecond)
 				}
@@ -90,7 +90,7 @@ func TestSoak(t *testing.T) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				_ = e.Flush()
+				_ = e.Commit(context.Background())
 			}
 		}
 	}()

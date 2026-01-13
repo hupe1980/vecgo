@@ -1,4 +1,3 @@
-// Package simd provides SIMD-optimized int4 vector operations.
 package simd
 
 // int4L2DistanceGeneric computes squared L2 distance between query and INT4 code.

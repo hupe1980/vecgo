@@ -1,5 +1,3 @@
-// Package simd provides SIMD-optimized float32 vector operations.
-// This is an internal package - external users should use the distance package.
 package simd
 
 import (

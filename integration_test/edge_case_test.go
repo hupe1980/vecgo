@@ -22,27 +22,27 @@ func TestEdgeCases_Vectors(t *testing.T) {
 	t.Run("Insert NaN", func(t *testing.T) {
 		vec := make([]float32, 128)
 		vec[0] = float32(math.NaN())
-		_, err := eng.Insert(vec, nil, nil)
+		_, err := eng.Insert(context.Background(), vec, nil, nil)
 		assert.Error(t, err)
 	})
 
 	t.Run("Insert Inf", func(t *testing.T) {
 		vec := make([]float32, 128)
 		vec[0] = float32(math.Inf(1))
-		_, err := eng.Insert(vec, nil, nil)
+		_, err := eng.Insert(context.Background(), vec, nil, nil)
 		assert.Error(t, err)
 	})
 
 	t.Run("Insert Zero Length", func(t *testing.T) {
 		vec := []float32{}
-		_, err := eng.Insert(vec, nil, nil)
+		_, err := eng.Insert(context.Background(), vec, nil, nil)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "dimension")
 	})
 
 	t.Run("Insert Wrong Dimension", func(t *testing.T) {
 		vec := make([]float32, 127)
-		_, err := eng.Insert(vec, nil, nil)
+		_, err := eng.Insert(context.Background(), vec, nil, nil)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "dimension")
 	})
@@ -86,7 +86,7 @@ func TestEdgeCases_EmptyEngine(t *testing.T) {
 
 	t.Run("Delete Non Existent", func(t *testing.T) {
 		// Delete is idempotent
-		err := eng.Delete(model.ID(99999))
+		err := eng.Delete(context.Background(), model.ID(99999))
 		assert.NoError(t, err)
 	})
 }
@@ -103,7 +103,7 @@ func TestEdgeCases_MaxDimension(t *testing.T) {
 	vec := make([]float32, dim)
 	vec[0] = 1.0
 
-	id, err := eng.Insert(vec, nil, nil)
+	id, err := eng.Insert(context.Background(), vec, nil, nil)
 	require.NoError(t, err)
 
 	res, err := eng.Search(context.Background(), vec, 10)

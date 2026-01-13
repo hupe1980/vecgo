@@ -1,4 +1,3 @@
-// Package hnsw implements the Hierarchical Navigable Small World (HNSW) graph for approximate nearest neighbor searcher.
 package hnsw
 
 import (

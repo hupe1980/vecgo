@@ -43,7 +43,9 @@ func main() {
 
 	// 4. Insert Data (Generic PKs + Typed Metadata)
 	logger.Info("Inserting data...")
+	ctx := context.Background()
 	_, err = eng.Insert(
+		ctx,
 		[]float32{1.0, 0.0, 0.0, 0.0},
 		metadata.Document{
 			"id":       metadata.String("prod-1"),
@@ -58,6 +60,7 @@ func main() {
 	}
 
 	_, err = eng.Insert(
+		ctx,
 		[]float32{0.0, 1.0, 0.0, 0.0},
 		metadata.Document{
 			"id":       metadata.String("prod-2"),

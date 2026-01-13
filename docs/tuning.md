@@ -1,149 +1,191 @@
 # Vecgo Performance Tuning Guide
 
-This guide describes tuning for the **current public API** in this repo:
+This guide covers performance tuning for Vecgo's tiered engine architecture.
 
-- Public entry point: `vecgo.Open(source, ...opts)` where source is a local path or remote BlobStore.
-- Storage engine: a tiered engine with an in-memory L0 MemTable and immutable on-disk segments.
-- Segment types currently integrated: Flat (exact, mmap) and DiskANN (built by compaction above a size threshold).
-
-If you’re looking for builder-style APIs (e.g. `vecgo.HNSW[T]().Build()`), those examples refer to the legacy surface and are not part of the current facade.
-
----
-
-## Quick Start (Current API)
+## API Overview
 
 ```go
+import (
+    "context"
+    "github.com/hupe1980/vecgo"
+)
+
+ctx := context.Background()
+
 // Create a new index
-db, err := vecgo.Open("./data", vecgo.Create(128, vecgo.MetricL2))
+db, err := vecgo.Open(vecgo.Local("./data"), vecgo.Create(128, vecgo.MetricL2))
 if err != nil {
-	panic(err)
+    panic(err)
 }
 defer db.Close()
 
-// Ingest
-_ = db.Insert(1, make([]float32, 128))
+// Insert vectors
+_, _ = db.Insert(ctx, make([]float32, 128), nil, nil)
 
-// Persist the active MemTable into an immutable Flat segment.
-if err := db.Flush(); err != nil {
-	panic(err)
+// Commit to disk (durability point)
+if err := db.Commit(ctx); err != nil {
+    panic(err)
 }
 
-// Query
+// Search
 results, _ := db.Search(ctx, make([]float32, 128), 10)
-_ = results
 ```
 
-Operational note: the engine supports **automatic flush triggers** via `engine.FlushConfig` (MemTable size). The trigger signal is best-effort (buffered size 1; can coalesce and be dropped if one is already pending), so you should still call `Commit()` explicitly at batch boundaries when you need deterministic persistence.
-
-Backpressure/admission control is enforced via `resource.Controller` budgets; when limits are exceeded, operations can return `ErrBackpressure`.
-
-See `TODO.md` for the current technical concept and roadmap.
-
-Benchmarking note: the benchmark suite is treated as a correctness+performance harness — benchmarks report allocation metrics by default, and search benchmarks additionally report `recall@k` against an exact baseline.
+The engine supports **automatic flush triggers** based on MemTable size. However, call `Commit(ctx)` explicitly at batch boundaries for deterministic persistence.
 
 ---
 
 ## SIMD and CPU Features
 
-Vecgo’s hot-path distance math is implemented in `internal/simd` and dispatched at runtime based on CPU features (AVX/AVX-512 on amd64, NEON on arm64) with a safe generic fallback.
+Distance computation is SIMD-optimized with runtime CPU feature detection:
 
-Practical guidance:
+| Platform | Features |
+|----------|----------|
+| amd64 | AVX-512, AVX2, SSE4.2 |
+| arm64 | NEON, SVE2 |
 
-- Prefer AVX2/AVX-512 (amd64) or NEON (arm64) for best throughput.
-- Build with `-tags noasm` when debugging portability issues (forces generic math).
+Build with `-tags noasm` to force the generic fallback (useful for debugging).
+
+---
 
 ## HNSW Parameters (L0 MemTable)
 
-The in-memory L0 layer uses HNSW for fast approximate search. The default parameters are tuned for high recall (>95% @ k=10) on typical datasets.
+The in-memory L0 layer uses [HNSW](https://arxiv.org/abs/1603.09320) for approximate nearest neighbor search.
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `M` | 32 | Max connections per node. Higher = better recall, slower insert/search, more memory. |
-| `EF` | 300 | Candidate queue size during construction. Higher = better graph quality, slower insert. |
-| `EFSearch` | max(k+100, 200) | Candidate queue size during search. Higher = better recall, slower search. |
-
-To tune these, you currently need to modify the source code in `internal/segment/memtable/memtable.go` as they are not yet exposed via `engine.Config`.
-- If you control embedding size, common dims like 128/256/384/512 tend to perform well.
+| `M` | 32 | Max connections per node. Higher = better recall, more memory |
+| `EF` | 300 | Construction queue size. Higher = better graph quality, slower insert |
+| `EFSearch` | max(k+100, 200) | Search queue size. Higher = better recall, slower search |
 
 ---
 
-## Compaction (When it Happens, What it Produces)
+## Compaction
 
-Current behavior:
+Compaction runs in the background after commits:
 
-- `Flush()` writes a new Flat segment to disk.
-- Compaction is triggered after flush and runs in the background.
-- Compaction chooses the output segment format based on total row count:
-  - Below a threshold: compaction outputs a Flat segment.
-  - Above a threshold: compaction outputs a DiskANN segment.
+1. **Commit** writes a new Flat segment to disk
+2. **Compaction** merges segments based on size-tiered policy
+3. **Output format** depends on row count:
+   - Small: Flat segment (exact search, mmap)
+   - Large: [DiskANN](https://papers.nips.cc/paper/2019/hash/09853c7fb1d3f8ee67a61b6bf4a7f8e6-Abstract.html) segment (graph-based, quantized)
 
-### Configurable knobs (current)
-
-The public facade exposes compaction policy configuration via engine options:
+### Configuration
 
 ```go
 db, err := vecgo.Open(
-	"./data",
-	128,
-	vecgo.MetricL2,
-	vecgo.WithCompactionThreshold(8),
+    vecgo.Local("./data"),
+    vecgo.Create(128, vecgo.MetricL2),
+    vecgo.WithCompactionThreshold(8), // Trigger after 8 segments
 )
 ```
 
-Notes:
-
-- The default policy is size-tiered by segment *count* (default threshold is 4).
-- DiskANN/quantization knobs are exposed via engine options (see `engine.CompactionConfig` and `engine.WithCompactionConfig`).
-
 ---
 
-## Caching (Current Reality)
+## Caching
 
-For local disk + mmap segments, the OS page cache is the primary “block cache”.
+### Local Storage (mmap)
 
-This repo includes a `cache` package (e.g. `cache.LRUBlockCache`) intended for non-mmap/BlobStore readers and small immutable blocks. The current `engine` constructs a default bounded block cache and threads it into segment readers.
+For local disk with mmap segments, the OS page cache handles caching. Focus on:
+- Contiguous column access patterns
+- Minimizing random seeks
 
-Practical guidance:
+### Remote Storage (S3/GCS)
 
-- On local SSD: focus on access patterns (contiguous columns, fewer random seeks) and rely on the OS page cache.
-- If/when adding a non-mmap reader: add an explicit bounded cache governed by ResourceController budgets (bytes) and ensure cache keys include SegmentID and (if needed) ManifestID.
-
----
-
-## Segment Integration Status
-
-- Flat segments: fully integrated (flush + open + search).
-- DiskANN segments: integrated as a compaction output and openable on restart.
-- HNSW: used for the L0 MemTable via `internal/hnsw`. There is currently no engine-integrated on-disk HNSW segment type.
-- Quantization: flat segments support SQ8/PQ via header flags, but the engine compacts to *unquantized* flat segments by default unless configured via `engine.CompactionConfig.FlatQuantizationType`.
-
----
-
-## Durability (Commit-Oriented)
-
-Vecgo uses a **commit-oriented durability model** — there is no Write-Ahead Log (WAL).
-
-**How it works:**
-1. `Insert()`/`Delete()` operations accumulate in the in-memory MemTable
-2. `Commit()` (or `Flush()`) atomically writes the MemTable to an immutable segment
-3. The manifest is updated with the new segment reference (atomic rename)
-
-**Why no WAL?** Vector workloads are inherently batch-oriented:
-- RAG pipelines: Batch embed → insert → commit
-- ML training: Checkpoint after epoch
-- Semantic search: Build offline → serve queries
-
-**Durability guarantees:**
-- Data is durable after `Commit()` returns
-- Uncommitted data is lost on crash (by design)
-- For durability, call `Commit()` after each batch of inserts
+For cloud storage, configure the block cache:
 
 ```go
-// Pattern: Batch insert with explicit commit
+db, err := vecgo.Open(
+    vecgo.Remote(s3Store),
+    vecgo.WithCacheDir("/fast/nvme"),           // Disk cache location
+    vecgo.WithBlockCacheSize(64 * 1024 * 1024), // 64MB memory cache
+)
+```
+
+---
+
+## Segment Types
+
+| Segment | Storage | Use Case |
+|---------|---------|----------|
+| **MemTable** | Memory | L0 hot tier (HNSW index) |
+| **Flat** | Disk (mmap) | Small segments, exact search |
+| **DiskANN** | Disk | Large segments, graph-based ANN |
+
+---
+
+## Durability Model
+
+Vecgo uses **commit-oriented durability** — no Write-Ahead Log (WAL).
+
+```go
+// Insert operations accumulate in memory
+db.Insert(ctx, vec1, nil, nil)
+db.Insert(ctx, vec2, nil, nil)
+
+// Commit writes immutable segment + updates manifest atomically
+err := db.Commit(ctx)
+// Data is durable after Commit() returns
+```
+
+**Why no WAL?** Vector workloads are batch-oriented:
+- RAG pipelines: embed → insert batch → commit
+- ML training: checkpoint after epoch
+- Search: build offline → serve queries
+
+**Pattern: Batch insert with explicit commit**
+
+```go
 for _, batch := range batches {
     for _, item := range batch {
-        db.Insert(item.Vector, item.Metadata, item.Payload)
+        db.Insert(ctx, item.Vector, item.Metadata, item.Payload)
     }
-    db.Commit() // Data is now durable
+    db.Commit(ctx) // Data is now durable
 }
 ```
+
+---
+
+## Memory Management
+
+### Arena Allocator
+
+HNSW uses a custom arena allocator for stable heap and reduced GC pressure:
+- 4MB chunk size (fewer syscalls)
+- Off-heap allocation via mmap
+- Zero-allocation search path
+
+### Resource Limits
+
+```go
+db, err := vecgo.Open(
+    vecgo.Local("./data"),
+    vecgo.Create(128, vecgo.MetricL2),
+    vecgo.WithMemoryLimit(0), // Unlimited (for bulk load)
+)
+```
+
+---
+
+## Quantization
+
+Configure quantization for DiskANN segments:
+
+| Method | Compression | Accuracy | Use Case |
+|--------|-------------|----------|----------|
+| None | 1× | 100% | Small datasets |
+| SQ8 | 4× | ~99% | Balanced |
+| PQ | 8-64× | ~95% | Large scale |
+| INT4 | 8× | ~97% | Memory constrained |
+
+---
+
+## Benchmarking
+
+Run benchmarks with allocation tracking:
+
+```bash
+go test -bench=. -benchmem ./benchmark_test/
+```
+
+Search benchmarks report `recall@k` against an exact baseline.

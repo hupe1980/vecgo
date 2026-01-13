@@ -1,6 +1,3 @@
-// Package distance provides public API for vector distance calculations.
-// All distance functions use SIMD-optimized implementations from internal/simd
-// when available (AVX/AVX512 on x86-64, NEON on ARM64).
 package distance
 
 import (

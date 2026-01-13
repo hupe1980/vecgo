@@ -21,9 +21,9 @@ func TestEngine(t *testing.T) {
 	require.NoError(t, err)
 
 	// 2. Insert
-	id1, err := e.Insert([]float32{1.0, 0.0}, nil, nil)
+	id1, err := e.Insert(context.Background(), []float32{1.0, 0.0}, nil, nil)
 	require.NoError(t, err)
-	id2, err := e.Insert([]float32{0.0, 1.0}, nil, nil)
+	id2, err := e.Insert(context.Background(), []float32{0.0, 1.0}, nil, nil)
 	require.NoError(t, err)
 
 	// 3. Search
@@ -33,7 +33,7 @@ func TestEngine(t *testing.T) {
 	assert.Len(t, cands, 2)
 
 	// 4. Close
-	err = e.Flush()
+	err = e.Commit(context.Background())
 	require.NoError(t, err)
 	err = e.Close()
 	require.NoError(t, err)
@@ -51,9 +51,9 @@ func TestEngine(t *testing.T) {
 	// For Auto-Inc ID, Update is just another Insert with a new ID,
 	// unless we explicitly delete the old one. This test logic changes.
 	// If we want to simulate "update", we delete and insert.
-	err = e2.Delete(id1)
+	err = e2.Delete(context.Background(), id1)
 	require.NoError(t, err)
-	id1New, err := e2.Insert([]float32{0.0, 0.0}, nil, nil) // Move 1 to origin
+	id1New, err := e2.Insert(context.Background(), []float32{0.0, 0.0}, nil, nil) // Move 1 to origin
 	require.NoError(t, err)
 	_ = id1New
 
@@ -61,8 +61,8 @@ func TestEngine(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, cands3, 2)
 
-	// 7. Flush
-	err = e2.Flush()
+	// 7. Commit
+	err = e2.Commit(context.Background())
 	require.NoError(t, err)
 
 	// 8. Search after Flush
@@ -83,7 +83,7 @@ func TestEngine(t *testing.T) {
 	assert.Len(t, cands5, 2)
 
 	// 10. Delete
-	err = e3.Delete(id2)
+	err = e3.Delete(context.Background(), id2)
 	require.NoError(t, err)
 
 	cands6, err := e3.Search(ctx, []float32{0.0, 1.0}, 10)
@@ -91,10 +91,10 @@ func TestEngine(t *testing.T) {
 	assert.Len(t, cands6, 1)
 
 	// 11. Compact
-	// Insert 3 and Flush to create Seg 3
-	_, err = e3.Insert([]float32{1.0, 1.0}, nil, nil)
+	// Insert 3 and Commit to create Seg 3
+	_, err = e3.Insert(context.Background(), []float32{1.0, 1.0}, nil, nil)
 	require.NoError(t, err)
-	err = e3.Flush()
+	err = e3.Commit(context.Background())
 	require.NoError(t, err)
 
 	// Get current segments to compact

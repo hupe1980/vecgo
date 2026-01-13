@@ -45,7 +45,7 @@ benchstat old.txt new.txt
 
 ## Project Structure
 
-*   `engine/`: Core logic (WAL, Flush, Compaction, Orchestration).
+*   `engine/`: Core logic (Commit, Compaction, Snapshots, Orchestration).
 *   `internal/segment/`: Immutable segment implementations (Flat, DiskANN, HNSW).
 *   `internal/manifest/`: Metadata management.
 *   `blobstore/`: Storage abstraction (Local, S3).

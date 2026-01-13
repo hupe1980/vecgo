@@ -1,6 +1,7 @@
 package benchmark_test
 
 import (
+	"context"
 	"testing"
 
 	"github.com/hupe1980/vecgo"
@@ -38,7 +39,7 @@ func BenchmarkInsertMicro(b *testing.B) {
 			if i+count > b.N {
 				count = b.N - i
 			}
-			e.BatchInsertDeferred(vectors[:count], nil, nil)
+			e.BatchInsertDeferred(context.Background(), vectors[:count], nil, nil)
 		}
 	})
 }

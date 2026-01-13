@@ -17,26 +17,26 @@ func TestFiltering(t *testing.T) {
 	require.NoError(t, err)
 	defer e.Close()
 
+	ctx := context.Background()
+
 	// Insert with metadata
-	id1, err := e.Insert([]float32{1.0, 0.0}, metadata.Document{
+	id1, err := e.Insert(ctx, []float32{1.0, 0.0}, metadata.Document{
 		"category": metadata.String("A"),
 		"price":    metadata.Float(10.0),
 	}, nil)
 	require.NoError(t, err)
 
-	id2, err := e.Insert([]float32{0.0, 1.0}, metadata.Document{
+	id2, err := e.Insert(ctx, []float32{0.0, 1.0}, metadata.Document{
 		"category": metadata.String("B"),
 		"price":    metadata.Float(20.0),
 	}, nil)
 	require.NoError(t, err)
 
-	id3, err := e.Insert([]float32{1.0, 1.0}, metadata.Document{
+	id3, err := e.Insert(ctx, []float32{1.0, 1.0}, metadata.Document{
 		"category": metadata.String("A"),
 		"price":    metadata.Float(30.0),
 	}, nil)
 	require.NoError(t, err)
-
-	ctx := context.Background()
 
 	// 1. Filter by category = "A"
 	filterA := metadata.NewFilterSet(metadata.Filter{

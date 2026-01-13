@@ -1,6 +1,3 @@
-// Package metadata provides a unified metadata storage and indexing system.
-// This package combines metadata storage with inverted indexing using Bitmaps
-// for efficient hybrid vector + metadata search.
 package imetadata
 
 import (

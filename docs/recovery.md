@@ -7,7 +7,7 @@ This is the same pattern used by LanceDB and Git — append-only versioned commi
 
 ## Durability Model
 
-**Key Principle:** Data is durable only after an explicit `Commit()` (or `Flush()`) call.
+**Key Principle:** Data is durable only after an explicit `Commit(ctx)` call.
 
 | State | Survives Crash? | Description |
 |-------|-----------------|-------------|

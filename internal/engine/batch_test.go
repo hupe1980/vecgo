@@ -21,7 +21,7 @@ func TestBatchOperations(t *testing.T) {
 		{0.0, 1.0},
 		{1.0, 1.0},
 	}
-	ids, err := e.BatchInsert(vectors, nil, nil)
+	ids, err := e.BatchInsert(context.Background(), vectors, nil, nil)
 	require.NoError(t, err)
 	require.Len(t, ids, 3)
 

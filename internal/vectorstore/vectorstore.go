@@ -1,7 +1,3 @@
-// Package vectorstore defines a canonical vector storage interface.
-//
-// The Flat and HNSW indexes use this interface as their internal (canonical)
-// vector memory owner, including snapshot/mmap load paths.
 package vectorstore
 
 import (

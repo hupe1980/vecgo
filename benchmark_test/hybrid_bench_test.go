@@ -36,7 +36,7 @@ func BenchmarkHybridSearch(b *testing.B) {
 		w2 := vocab[rng.Intn(len(vocab))]
 		text := fmt.Sprintf("%s %s", w1, w2)
 
-		id, _ := e.Insert(vec, metadata.Document{"text": metadata.String(text)}, nil)
+		id, _ := e.Insert(context.Background(), vec, metadata.Document{"text": metadata.String(text)}, nil)
 		pks[i] = id
 	}
 

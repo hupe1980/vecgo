@@ -1,4 +1,3 @@
-// Package quantization provides advanced vector quantization for extreme compression.
 package quantization
 
 import (

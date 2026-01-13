@@ -238,17 +238,6 @@ func WithFileSystem(fs fs.FileSystem) Option {
 	}
 }
 
-// WithBlobStore is deprecated. Use Open with WithRemoteStore instead.
-// To keep backward compatibility for now, it behaves as before but
-// it is better to let the engine manage the store stack (Remote -> Disk Cache -> Mem Cache).
-func WithBlobStore(st blobstore.BlobStore) Option {
-	return func(e *Engine) {
-		if st != nil {
-			e.store = st
-		}
-	}
-}
-
 // WithManifestStore sets the store used for the manifest file.
 // If unset, defaults to local file system.
 // This is useful for stateless compute nodes that need to read the manifest from S3.
@@ -283,26 +272,6 @@ func WithDiskCache(dir string, size, blockSize int64) Option {
 		e.diskCacheDir = dir
 		e.diskCacheSize = size
 		e.diskCacheBlockSize = blockSize
-	}
-}
-
-// WithRemoteStore configures the engine to run in "Stateless/Cloud" mode.
-// The provided store is treated as the source of truth for all persistent data (Manifest, Segments, etc.).
-// The local directory passed to Open() is used purely for caching and temporary files.
-//
-// Deprecated: Use OpenRemote(store, opts...) instead.
-func WithRemoteStore(st blobstore.BlobStore) Option {
-	return func(e *Engine) {
-		// In Cloud Mode:
-		// 1. The remote store is the source of truth (Manifest + Segments)
-		e.manifestStore = st
-
-		// 2. The main data store starts as the remote store.
-		//    Open() will wrap this with DiskCache(localDir) and BlockCache(RAM).
-		e.store = st
-
-		// 3. Mark the engine as stateless/cloud-backed so we can apply defaults later
-		e.isCloud = true
 	}
 }
 
@@ -882,11 +851,16 @@ func (e *Engine) loadSnapshot() (*Snapshot, error) {
 	}
 }
 
-func (e *Engine) Insert(vec []float32, md metadata.Document, payload []byte) (id model.ID, err error) {
+func (e *Engine) Insert(ctx context.Context, vec []float32, md metadata.Document, payload []byte) (id model.ID, err error) {
 	start := time.Now()
 	defer func() {
 		e.metrics.OnInsert(time.Since(start), err)
 	}()
+
+	// Check context cancellation
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 
 	// Read-only mode check (LanceDB-style stateless deployments)
 	if e.readOnly {
@@ -969,7 +943,12 @@ func (e *Engine) Insert(vec []float32, md metadata.Document, payload []byte) (id
 
 // BatchInsert adds multiple vectors to the engine.
 // It amortizes locking overhead.
-func (e *Engine) BatchInsert(vectors [][]float32, mds []metadata.Document, payloads [][]byte) ([]model.ID, error) {
+func (e *Engine) BatchInsert(ctx context.Context, vectors [][]float32, mds []metadata.Document, payloads [][]byte) ([]model.ID, error) {
+	// Check context cancellation
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	n := len(vectors)
 	if n == 0 {
 		return nil, nil
@@ -1135,7 +1114,12 @@ func (e *Engine) BatchInsert(vectors [][]float32, mds []metadata.Document, paylo
 // OPTIMIZATION: This uses sequential processing to avoid goroutine overhead.
 // For bulk load, the bottleneck is memory allocation and data copying, not CPU.
 // Parallel goroutines with semaphores add ~20% overhead from channel ops.
-func (e *Engine) BatchInsertDeferred(vectors [][]float32, mds []metadata.Document, payloads [][]byte) ([]model.ID, error) {
+func (e *Engine) BatchInsertDeferred(ctx context.Context, vectors [][]float32, mds []metadata.Document, payloads [][]byte) ([]model.ID, error) {
+	// Check context cancellation
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	n := len(vectors)
 	if n == 0 {
 		return nil, nil
@@ -1314,11 +1298,16 @@ func (e *Engine) BatchInsertDeferred(vectors [][]float32, mds []metadata.Documen
 }
 
 // Delete removes a vector from the engine.
-func (e *Engine) Delete(id model.ID) (err error) {
+func (e *Engine) Delete(ctx context.Context, id model.ID) (err error) {
 	start := time.Now()
 	defer func() {
 		e.metrics.OnDelete(time.Since(start), err)
 	}()
+
+	// Check context cancellation
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	// Read-only mode check
 	if e.readOnly {
@@ -1381,7 +1370,12 @@ func (e *Engine) Delete(id model.ID) (err error) {
 
 // BatchDelete removes multiple vectors from the engine in a single operation.
 // It is atomic and more efficient than calling Delete in a loop.
-func (e *Engine) BatchDelete(ids []model.ID) error {
+func (e *Engine) BatchDelete(ctx context.Context, ids []model.ID) error {
+	// Check context cancellation
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	e.mu.RLock()
 	if e.closed.Load() {
 		e.mu.RUnlock()
@@ -1792,26 +1786,24 @@ func (e *Engine) Get(id model.ID) (rec *model.Record, err error) {
 
 // Commit flushes the in-memory buffer to a durable immutable segment.
 //
-// This is the durability boundary for NoWAL mode (the default).
+// This is the durability boundary in commit-oriented mode.
 // After Commit() returns successfully, all previously inserted/deleted
 // data is guaranteed to survive crashes.
 //
-// In WAL mode, Commit() is equivalent to Flush().
-//
 // Usage pattern:
 //
-//	db.Insert(vec1, meta1, payload1)
-//	db.Insert(vec2, meta2, payload2)  // Buffered, not yet durable
-//	db.Commit()                        // Now durable
+//	db.Insert(ctx, vec1, meta1, payload1)
+//	db.Insert(ctx, vec2, meta2, payload2)  // Buffered, not yet durable
+//	db.Commit(ctx)                          // Now durable
 //
 // Commit is safe to call concurrently. It blocks until the flush completes.
 // If the buffer is empty, Commit returns immediately with no error.
-func (e *Engine) Commit() error {
-	return e.Flush()
-}
+func (e *Engine) Commit(ctx context.Context) (err error) {
+	// Check context cancellation
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
-// Flush flushes the active MemTable to disk.
-func (e *Engine) Flush() (err error) {
 	start := time.Now()
 	var itemsFlushed int
 	var bytesFlushed uint64
@@ -2448,7 +2440,7 @@ func (e *Engine) runFlushLoop() {
 		case <-e.closeCh:
 			return
 		case <-e.flushCh:
-			if err := e.Flush(); err != nil {
+			if err := e.Commit(e.ctx); err != nil {
 				if e.logger != nil {
 					e.logger.Error("Background flush failed", "error", err)
 				}

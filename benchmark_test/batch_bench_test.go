@@ -22,7 +22,7 @@ func BenchmarkBatchInsert(b *testing.B) {
 		vec := make([]float32, dim)
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			e.Insert(vec, nil, nil)
+			e.Insert(context.Background(), vec, nil, nil)
 		}
 	})
 
@@ -44,7 +44,7 @@ func BenchmarkBatchInsert(b *testing.B) {
 			if i+count > b.N {
 				count = b.N - i
 			}
-			e.BatchInsert(vectors[:count], nil, nil)
+			e.BatchInsert(context.Background(), vectors[:count], nil, nil)
 		}
 	})
 }
@@ -65,7 +65,7 @@ func BenchmarkBatchSearch(b *testing.B) {
 		vec := make([]float32, dim)
 		rng.FillUniform(vec)
 		data[i] = vec
-		id, _ := e.Insert(vec, nil, nil)
+		id, _ := e.Insert(context.Background(), vec, nil, nil)
 		pks[i] = id
 	}
 

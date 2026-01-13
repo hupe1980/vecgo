@@ -43,7 +43,7 @@ func TestFullLifecycle(t *testing.T) {
 	payload1 := []byte("payload-v1")
 
 	// 2. Insert
-	id1, err := e.Insert(vec1, meta1, payload1)
+	id1, err := e.Insert(context.Background(), vec1, meta1, payload1)
 	require.NoError(t, err)
 
 	// 3. Get (Verify Insert)
@@ -72,7 +72,7 @@ func TestFullLifecycle(t *testing.T) {
 	// 5. Update (Upsert Simulation: Delete + Insert)
 	// Since IDs are immutable/auto-increment, we cannot update in-place with strict ID retention unless engine supports it.
 	// We simulate update by Delete old + Insert new.
-	err = e.Delete(id1)
+	err = e.Delete(context.Background(), id1)
 	require.NoError(t, err)
 
 	vec2 := []float32{0.0, 1.0}
@@ -82,7 +82,7 @@ func TestFullLifecycle(t *testing.T) {
 	}
 	payload2 := []byte("payload-v2")
 
-	id2, err := e.Insert(vec2, meta2, payload2)
+	id2, err := e.Insert(context.Background(), vec2, meta2, payload2)
 	require.NoError(t, err)
 
 	// 6. Get (Verify Update - New ID)
@@ -129,7 +129,7 @@ func TestFullLifecycle(t *testing.T) {
 	assert.Len(t, res, 0)
 
 	// 9. Delete
-	err = e.Delete(id2)
+	err = e.Delete(context.Background(), id2)
 	require.NoError(t, err)
 
 	// 10. Get (Verify Delete)
@@ -176,7 +176,7 @@ func TestBatchCRUD(t *testing.T) {
 		vectors = append(vectors, []float32{float32(i), 0, 0, 0})
 	}
 
-	ids, err := e.BatchInsert(vectors, nil, nil)
+	ids, err := e.BatchInsert(context.Background(), vectors, nil, nil)
 	require.NoError(t, err)
 	require.Len(t, ids, count)
 
@@ -193,7 +193,7 @@ func TestBatchCRUD(t *testing.T) {
 		idsToDelete = append(idsToDelete, ids[i])
 	}
 
-	err = e.BatchDelete(idsToDelete)
+	err = e.BatchDelete(context.Background(), idsToDelete)
 	require.NoError(t, err)
 
 	// Verify

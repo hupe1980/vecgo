@@ -22,13 +22,12 @@ Key metrics to alert on (via a Prometheus `engine.MetricsObserver` implementatio
 - Logs show "write: no space left on device".
 
 **Resolution**:
-1. **Immediate**: Add disk space or delete old logs/files.
+1. **Immediate**: Add disk space or delete old files.
 2. **Recovery**: Vecgo handles disk-full gracefully. Once space is available, writes will succeed.
-   - If flush failed, MemTable remains in memory.
-   - If WAL append failed, partial record is truncated on restart.
+   - If commit failed, uncommitted data remains in MemTable.
 
 **Prevention**:
-- Set `MaxWALSize` to trigger flushes earlier.
+- Call `Commit()` regularly to bound MemTable size.
 - Monitor disk usage alerts at 80%.
 
 ### Out of Memory (OOM)
@@ -49,16 +48,16 @@ Key metrics to alert on (via a Prometheus `engine.MetricsObserver` implementatio
 - Logs indicate "checksum mismatch" or "invalid magic".
 
 **Resolution**:
-1. **WAL Corruption**: Vecgo truncates corrupted tail entries automatically. Otherwise, manual truncation may be needed.
-2. **Segment Corruption**: Delete the corrupted `.bin` file. Vecgo will load remaining segments (might lose data in that segment).
-3. **Restore**: If manifest is corrupt, wipe directory and restore from backup.
+1. **Segment Corruption**: Delete the corrupted `.bin` file. Vecgo will load remaining segments (might lose data in that segment).
+2. **Manifest Corruption**: If manifest is corrupt, wipe directory and restore from backup.
+3. **Restore**: Restore from backup or rebuild from source data.
 
 ## Capacity Planning
 
 **Formula**:
 ```
 RAM = (MemTableSize) + (BlockCacheSize) + (IndexOverhead)
-Disk = (RawVectorSize * 1.5) + (WALSize)
+Disk = (RawVectorSize * 1.5) // compaction headroom
 ```
 
 **Example (10M vectors, 1536 dim, float32)**:
