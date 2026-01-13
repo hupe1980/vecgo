@@ -15,6 +15,19 @@ import (
 	"github.com/hupe1980/vecgo/model"
 )
 
+type segBitmap struct {
+	seg    segment.Segment
+	bitmap segment.Bitmap
+	ts     segment.Filter // Tombstone filter
+}
+
+var segBitmapPool = sync.Pool{
+	New: func() any {
+		s := make([]segBitmap, 0, 16)
+		return &s
+	},
+}
+
 // SearchIter performs a k-NN search and yields results via an iterator.
 // This allows for zero-copy streaming of results.
 //
@@ -164,15 +177,19 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 
 			if options.Filter != nil {
 				// Try to get bitmaps from all segments
-				type segBitmap struct {
-					seg    segment.Segment
-					bitmap segment.Bitmap
-					ts     segment.Filter // Tombstone filter
-					offset int            // Offset for flat result merging (not used here)
-				}
 
 				// We need bitmaps for Active + Immutable
-				bitmaps := make([]segBitmap, 0, len(snap.sortedSegments)+1)
+				bitmapsPtr := segBitmapPool.Get().(*[]segBitmap)
+				bitmaps := (*bitmapsPtr)[:0]
+				defer func() {
+					// Avoid retaining references to segments/bitmaps/filters across searches.
+					for i := range bitmaps {
+						bitmaps[i] = segBitmap{}
+					}
+					*bitmapsPtr = bitmaps[:0]
+					segBitmapPool.Put(bitmapsPtr)
+				}()
+
 				totalHits := uint64(0)
 				possible := true
 
@@ -181,7 +198,7 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 					if b, err := snap.active.EvaluateFilter(ctx, options.Filter); err == nil && b != nil {
 						hits := b.Cardinality()
 						totalHits += hits
-						bitmaps = append(bitmaps, segBitmap{snap.active, b, activeFilter, 0})
+						bitmaps = append(bitmaps, segBitmap{seg: snap.active, bitmap: b, ts: activeFilter})
 					} else if err != nil {
 						possible = false
 					} else {
@@ -206,7 +223,7 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 							if f := s.SegmentFilters[i]; f != nil {
 								ts = f.(segment.Filter)
 							}
-							bitmaps = append(bitmaps, segBitmap{seg, b, ts, 0})
+							bitmaps = append(bitmaps, segBitmap{seg: seg, bitmap: b, ts: ts})
 						} else {
 							// Error or MatchesAll
 							possible = false
@@ -228,7 +245,12 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 
 					for _, sb := range bitmaps {
 						// Collect RowIDs
-						rowIDs := make([]uint32, 0, sb.bitmap.Cardinality())
+						rowIDs := s.ScratchIDs[:0]
+						needed := int(sb.bitmap.Cardinality())
+						if cap(rowIDs) < needed {
+							rowIDs = make([]uint32, 0, needed)
+						}
+
 						sb.bitmap.ForEach(func(id uint32) bool {
 							// Apply Tombstone Filter
 							if sb.ts != nil && !sb.ts.Matches(id) {
@@ -278,6 +300,8 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 								}
 							}
 						}
+
+						s.ScratchIDs = rowIDs[:0]
 					}
 				}
 			}
@@ -317,7 +341,8 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 					s.ParallelSlices[i] = nil
 				}
 				results := s.ParallelSlices
-				errCh := make(chan error, 1)
+				var firstErr error
+				var firstErrOnce sync.Once
 
 				runSearch := func(idx int, seg segment.Segment, filt segment.Filter) {
 					defer wg.Done()
@@ -332,10 +357,7 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 					localS.Heap.Reset(descending)
 
 					if err := seg.Search(ctx, qExec, searchK, filt, options, localS); err != nil {
-						select {
-						case errCh <- err:
-						default:
-						}
+						firstErrOnce.Do(func() { firstErr = err })
 						return
 					}
 
@@ -376,10 +398,9 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 				}
 
 				wg.Wait()
-				close(errCh)
 
-				if err := <-errCh; err != nil {
-					yield(model.Candidate{}, err)
+				if firstErr != nil {
+					yield(model.Candidate{}, firstErr)
 					return
 				}
 
