@@ -10,7 +10,7 @@
 void int4L2DistanceNeon(const float *__restrict__ query,
                         const uint8_t *__restrict__ code,
                         int64_t dim,
-                        const float *__restrict__ min,
+                        const float *__restrict__ minVal,
                         const float *__restrict__ diff,
                         float *__restrict__ out) {
     // Avoid literal pool constants
@@ -45,8 +45,8 @@ void int4L2DistanceNeon(const float *__restrict__ query,
         // Load diff and min for first 8
         float32x4_t diff_0 = vld1q_f32(diff + i);
         float32x4_t diff_1 = vld1q_f32(diff + i + 4);
-        float32x4_t min_0 = vld1q_f32(min + i);
-        float32x4_t min_1 = vld1q_f32(min + i + 4);
+        float32x4_t min_0 = vld1q_f32(minVal + i);
+        float32x4_t min_1 = vld1q_f32(minVal + i + 4);
         
         // Dequantize: val = (quant / 15.0) * diff + min
         float32x4_t dequant_0 = vfmaq_f32(min_0, vmulq_f32(f_0, scale), diff_0);
@@ -72,8 +72,8 @@ void int4L2DistanceNeon(const float *__restrict__ query,
         
         float32x4_t diff_2 = vld1q_f32(diff + i + 8);
         float32x4_t diff_3 = vld1q_f32(diff + i + 12);
-        float32x4_t min_2 = vld1q_f32(min + i + 8);
-        float32x4_t min_3 = vld1q_f32(min + i + 12);
+        float32x4_t min_2 = vld1q_f32(minVal + i + 8);
+        float32x4_t min_3 = vld1q_f32(minVal + i + 12);
         
         float32x4_t dequant_2 = vfmaq_f32(min_2, vmulq_f32(f_2, scale), diff_2);
         float32x4_t dequant_3 = vfmaq_f32(min_3, vmulq_f32(f_3, scale), diff_3);
@@ -96,12 +96,12 @@ void int4L2DistanceNeon(const float *__restrict__ query,
         uint8_t q1 = (packed_byte >> 4) & 0x0F;
         uint8_t q2 = packed_byte & 0x0F;
         
-        float val1 = ((float)q1 / 15.0f) * diff[i] + min[i];
+        float val1 = ((float)q1 / 15.0f) * diff[i] + minVal[i];
         float d1 = query[i] - val1;
         total += d1 * d1;
         
         if (i + 1 < dim) {
-            float val2 = ((float)q2 / 15.0f) * diff[i + 1] + min[i + 1];
+            float val2 = ((float)q2 / 15.0f) * diff[i + 1] + minVal[i + 1];
             float d2 = query[i + 1] - val2;
             total += d2 * d2;
         }
@@ -172,12 +172,12 @@ void int4L2DistanceBatchNeon(const float *__restrict__ query,
                              const uint8_t *__restrict__ codes,
                              int64_t dim,
                              int64_t n,
-                             const float *__restrict__ min,
+                             const float *__restrict__ minVal,
                              const float *__restrict__ diff,
                              float *__restrict__ out) {
     int64_t codeSize = (dim + 1) / 2;
     
     for (int64_t j = 0; j < n; j++) {
-        int4L2DistanceNeon(query, codes + j * codeSize, dim, min, diff, out + j);
+        int4L2DistanceNeon(query, codes + j * codeSize, dim, minVal, diff, out + j);
     }
 }

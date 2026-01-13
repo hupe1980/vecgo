@@ -4,13 +4,13 @@
 // INT4 (4-bit) quantization SIMD kernels for AVX-512
 //
 // INT4 is nibble-packed: high nibble = first value, low nibble = second value
-// Dequantization: val[i] = (quant[i] / 15.0) * diff[i] + min[i]
+// Dequantization: val[i] = (quant[i] / 15.0) * diff[i] + minVal[i]
 
 // int4L2DistanceAvx512 computes squared L2 distance between query and INT4 code.
 void int4L2DistanceAvx512(const float *__restrict__ query,
                           const uint8_t *__restrict__ code,
                           int64_t dim,
-                          const float *__restrict__ min,
+                          const float *__restrict__ minVal,
                           const float *__restrict__ diff,
                           float *__restrict__ out) {
     __m512 sum = _mm512_setzero_ps();
@@ -43,8 +43,8 @@ void int4L2DistanceAvx512(const float *__restrict__ query,
         // Dequantize: val = (quant / 15.0) * diff + min
         __m512 diff_0 = _mm512_loadu_ps(diff + i);
         __m512 diff_1 = _mm512_loadu_ps(diff + i + 16);
-        __m512 min_0 = _mm512_loadu_ps(min + i);
-        __m512 min_1 = _mm512_loadu_ps(min + i + 16);
+        __m512 min_0 = _mm512_loadu_ps(minVal + i);
+        __m512 min_1 = _mm512_loadu_ps(minVal + i + 16);
         
         __m512 dequant_0 = _mm512_fmadd_ps(_mm512_mul_ps(f_0, scale), diff_0, min_0);
         __m512 dequant_1 = _mm512_fmadd_ps(_mm512_mul_ps(f_1, scale), diff_1, min_1);
@@ -71,12 +71,12 @@ void int4L2DistanceAvx512(const float *__restrict__ query,
         uint8_t q1 = (packed_byte >> 4) & 0x0F;
         uint8_t q2 = packed_byte & 0x0F;
         
-        float val1 = ((float)q1 / 15.0f) * diff[i] + min[i];
+        float val1 = ((float)q1 / 15.0f) * diff[i] + minVal[i];
         float d1 = query[i] - val1;
         total += d1 * d1;
         
         if (i + 1 < dim) {
-            float val2 = ((float)q2 / 15.0f) * diff[i + 1] + min[i + 1];
+            float val2 = ((float)q2 / 15.0f) * diff[i + 1] + minVal[i + 1];
             float d2 = query[i + 1] - val2;
             total += d2 * d2;
         }
@@ -141,12 +141,12 @@ void int4L2DistanceBatchAvx512(const float *__restrict__ query,
                                const uint8_t *__restrict__ codes,
                                int64_t dim,
                                int64_t n,
-                               const float *__restrict__ min,
+                               const float *__restrict__ minVal,
                                const float *__restrict__ diff,
                                float *__restrict__ out) {
     int64_t codeSize = (dim + 1) / 2;
     
     for (int64_t j = 0; j < n; j++) {
-        int4L2DistanceAvx512(query, codes + j * codeSize, dim, min, diff, out + j);
+        int4L2DistanceAvx512(query, codes + j * codeSize, dim, minVal, diff, out + j);
     }
 }

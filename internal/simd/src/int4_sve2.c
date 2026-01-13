@@ -12,7 +12,7 @@
 void int4L2DistanceSve2(const float *__restrict__ query,
                         const uint8_t *__restrict__ code,
                         int64_t dim,
-                        const float *__restrict__ min,
+                        const float *__restrict__ minVal,
                         const float *__restrict__ diff,
                         float *__restrict__ out) {
     svfloat32_t sum = svdup_f32(0.0f);
@@ -47,7 +47,7 @@ void int4L2DistanceSve2(const float *__restrict__ query,
         // We need strided load or gather - use interleaved approach
         svfloat32_t diff_h = svld1_gather_s32index_f32(svptrue_b32(), diff + i, 
                                                         svindex_s32(0, 2));
-        svfloat32_t min_h = svld1_gather_s32index_f32(svptrue_b32(), min + i,
+        svfloat32_t min_h = svld1_gather_s32index_f32(svptrue_b32(), minVal + i,
                                                        svindex_s32(0, 2));
         
         // Dequantize high nibbles
@@ -69,7 +69,7 @@ void int4L2DistanceSve2(const float *__restrict__ query,
         
         svfloat32_t diff_l = svld1_gather_s32index_f32(svptrue_b32(), diff + i + 1,
                                                         svindex_s32(0, 2));
-        svfloat32_t min_l = svld1_gather_s32index_f32(svptrue_b32(), min + i + 1,
+        svfloat32_t min_l = svld1_gather_s32index_f32(svptrue_b32(), minVal + i + 1,
                                                        svindex_s32(0, 2));
         
         svfloat32_t scaled_l = svmul_n_f32_x(svptrue_b32(), l_f32, inv15);
@@ -91,12 +91,12 @@ void int4L2DistanceSve2(const float *__restrict__ query,
         uint8_t q1 = (packed_byte >> 4) & 0x0F;
         uint8_t q2 = packed_byte & 0x0F;
         
-        float val1 = ((float)q1 * inv15) * diff[i] + min[i];
+        float val1 = ((float)q1 * inv15) * diff[i] + minVal[i];
         float d1 = query[i] - val1;
         total += d1 * d1;
         
         if (i + 1 < dim) {
-            float val2 = ((float)q2 * inv15) * diff[i + 1] + min[i + 1];
+            float val2 = ((float)q2 * inv15) * diff[i + 1] + minVal[i + 1];
             float d2 = query[i + 1] - val2;
             total += d2 * d2;
         }
@@ -171,13 +171,13 @@ void int4L2DistanceBatchSve2(const float *__restrict__ query,
                              const uint8_t *__restrict__ codes,
                              int64_t dim,
                              int64_t n,
-                             const float *__restrict__ min,
+                             const float *__restrict__ minVal,
                              const float *__restrict__ diff,
                              float *__restrict__ out) {
     int64_t codeSize = (dim + 1) / 2;
     
     for (int64_t j = 0; j < n; j++) {
-        int4L2DistanceSve2(query, codes + j * codeSize, dim, min, diff, out + j);
+        int4L2DistanceSve2(query, codes + j * codeSize, dim, minVal, diff, out + j);
     }
 }
 
