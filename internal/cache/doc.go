@@ -1,13 +1,19 @@
 // Package cache provides LRU caching for block data.
 //
-// # Block Cache
+// # Block Cache (RAM)
 //
-// The LRU block cache stores recently accessed data blocks from segments.
-// It uses 64-way sharding for high concurrency (~18ns access under load).
+// The ShardedLRUBlockCache stores recently accessed data blocks from segments.
+// It uses 64-way sharding for high concurrency (~18ns access under parallel load).
 //
-// # Disk Cache
+// Key features:
+//   - Lock-free shard selection using splitmix64 hash
+//   - Per-shard mutex for minimal contention
+//   - Integrated with ResourceController for memory limits
 //
-// For cloud storage backends, a two-tier cache is used:
-//   - L1: RAM (LRU, configurable size)
-//   - L2: Disk (persistent across restarts)
+// # Disk Cache (L2)
+//
+// For cloud storage backends, DiskBlockCache provides a persistent L2 cache:
+//   - Async writes to avoid blocking the search path
+//   - LRU eviction with configurable size limits
+//   - Rebuilds index from disk on startup
 package cache

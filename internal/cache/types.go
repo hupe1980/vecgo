@@ -33,6 +33,7 @@ type CacheKey struct {
 
 // BlockCache is a byte-oriented cache for immutable blocks.
 // Returned slices must be treated as read-only.
+// Note: ctx is reserved for future cancellation support (e.g., disk/network caches).
 type BlockCache interface {
 	// Get returns a cached block. ok=false if missing.
 	Get(ctx context.Context, key CacheKey) (b []byte, ok bool)
@@ -44,10 +45,4 @@ type BlockCache interface {
 	Close() error
 	// Stats returns cache statistics.
 	Stats() (hits, misses int64)
-}
-
-// AdmissionPolicy decides whether a value should be cached.
-// Start simple (e.g., “cache on second hit” or size-based).
-type AdmissionPolicy interface {
-	Admit(key CacheKey, sizeBytes int) bool
 }

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/hupe1980/vecgo/model"
 )
@@ -32,6 +33,10 @@ type DiskBlockCache struct {
 	lruHead *lruEntry
 	lruTail *lruEntry
 	wg      sync.WaitGroup
+
+	// Stats
+	hits   atomic.Int64
+	misses atomic.Int64
 }
 
 type lruEntry struct {
@@ -148,6 +153,7 @@ func (c *DiskBlockCache) Get(ctx context.Context, key CacheKey) ([]byte, bool) {
 	c.mu.Unlock()
 
 	if !ok {
+		c.misses.Add(1)
 		return nil, false
 	}
 
@@ -157,8 +163,10 @@ func (c *DiskBlockCache) Get(ctx context.Context, key CacheKey) ([]byte, bool) {
 		c.mu.Lock()
 		c.removeEntry(ent)
 		c.mu.Unlock()
+		c.misses.Add(1)
 		return nil, false
 	}
+	c.hits.Add(1)
 	return data, true
 }
 
@@ -296,8 +304,7 @@ func (c *DiskBlockCache) Close() error {
 }
 
 func (c *DiskBlockCache) Stats() (hits, misses int64) {
-	// Not implemented for disk cache yet
-	return 0, 0
+	return c.hits.Load(), c.misses.Load()
 }
 
 // Internal LRU helpers (must hold lock)

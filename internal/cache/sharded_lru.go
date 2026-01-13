@@ -2,7 +2,6 @@ package cache
 
 import (
 	"context"
-	"hash/maphash"
 	"sync"
 	"sync/atomic"
 
@@ -15,7 +14,6 @@ const numShards = 64
 // It distributes entries across 64 shards to reduce lock contention.
 type ShardedLRUBlockCache struct {
 	shards [numShards]*LRUBlockCache
-	seed   maphash.Seed
 }
 
 // NewShardedLRUBlockCache creates a new sharded LRU cache.
@@ -26,9 +24,7 @@ func NewShardedLRUBlockCache(capacity int64, rc *resource.Controller) *ShardedLR
 		shardCapacity = 1
 	}
 
-	s := &ShardedLRUBlockCache{
-		seed: maphash.MakeSeed(),
-	}
+	s := &ShardedLRUBlockCache{}
 
 	for i := range numShards {
 		s.shards[i] = NewLRUBlockCache(shardCapacity, rc)
@@ -37,35 +33,16 @@ func NewShardedLRUBlockCache(capacity int64, rc *resource.Controller) *ShardedLR
 	return s
 }
 
-// shard returns the shard for a given key using a fast hash.
+// shard returns the shard for a given key using fast XOR hash.
+// Uses splitmix64 finalizer for good distribution.
 func (s *ShardedLRUBlockCache) shard(key CacheKey) *LRUBlockCache {
-	// Use maphash for consistent, fast hashing
-	var h maphash.Hash
-	h.SetSeed(s.seed)
-
-	// Hash the segment ID and offset
-	var buf [16]byte
-	buf[0] = byte(key.SegmentID)
-	buf[1] = byte(key.SegmentID >> 8)
-	buf[2] = byte(key.SegmentID >> 16)
-	buf[3] = byte(key.SegmentID >> 24)
-	buf[4] = byte(key.SegmentID >> 32)
-	buf[5] = byte(key.SegmentID >> 40)
-	buf[6] = byte(key.SegmentID >> 48)
-	buf[7] = byte(key.SegmentID >> 56)
-	buf[8] = byte(key.Offset)
-	buf[9] = byte(key.Offset >> 8)
-	buf[10] = byte(key.Offset >> 16)
-	buf[11] = byte(key.Offset >> 24)
-	buf[12] = byte(key.Offset >> 32)
-	buf[13] = byte(key.Offset >> 40)
-	buf[14] = byte(key.Offset >> 48)
-	buf[15] = byte(key.Offset >> 56)
-
-	_, _ = h.Write(buf[:])
-
-	idx := h.Sum64() % numShards
-	return s.shards[idx]
+	// Combine SegmentID and Offset with XOR and splitmix64 finalizer
+	h := uint64(key.SegmentID) ^ key.Offset ^ key.ManifestID
+	// splitmix64 finalizer for excellent distribution
+	h = (h ^ (h >> 30)) * 0xbf58476d1ce4e5b9
+	h = (h ^ (h >> 27)) * 0x94d049bb133111eb
+	h = h ^ (h >> 31)
+	return s.shards[h&(numShards-1)] // Faster than modulo for power-of-2
 }
 
 // Get returns a cached block.
