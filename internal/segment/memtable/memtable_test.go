@@ -16,7 +16,7 @@ import (
 )
 
 func TestMemTable_BasicCRUD(t *testing.T) {
-	mt, err := New(1, 4, distance.MetricL2, nil)
+	mt, err := New(context.Background(), 1, 4, distance.MetricL2, nil)
 	require.NoError(t, err)
 
 	// Check Initial State
@@ -30,7 +30,7 @@ func TestMemTable_BasicCRUD(t *testing.T) {
 	md1 := metadata.Document{"tag": metadata.String("a")}
 	payload1 := []byte("payload1")
 
-	id1, err := mt.InsertWithPayload(id1User, vec1, md1, payload1)
+	id1, err := mt.InsertWithPayload(context.Background(), id1User, vec1, md1, payload1)
 	require.NoError(t, err)
 	// Shard 0, Row 0 -> Global RowID 0 (if bitmask is 0)
 	// Just verify it works
@@ -38,7 +38,7 @@ func TestMemTable_BasicCRUD(t *testing.T) {
 
 	id2User := model.ID(17) // Shard 1 (17%16=1)
 	vec2 := []float32{0, 1, 0, 0}
-	id2, err := mt.Insert(id2User, vec2) // Insert without payload/md
+	id2, err := mt.Insert(context.Background(), id2User, vec2) // Insert without payload/md
 	require.NoError(t, err)
 	// Different shards -> different RowIDs
 	assert.NotEqual(t, id1, id2)
@@ -94,14 +94,14 @@ func TestMemTable_BasicCRUD(t *testing.T) {
 	mt.DecRef() // 0 -> Close
 
 	// Operations after close should fail
-	_, err = mt.Insert(id1User, vec1)
+	_, err = mt.Insert(context.Background(), id1User, vec1)
 	assert.Error(t, err)
 	_, err = mt.Fetch(context.Background(), []uint32{0}, nil)
 	assert.Error(t, err)
 }
 
 func TestMemTable_Search(t *testing.T) {
-	mt, err := New(1, 2, distance.MetricL2, nil)
+	mt, err := New(context.Background(), 1, 2, distance.MetricL2, nil)
 	require.NoError(t, err)
 	defer mt.Close()
 
@@ -114,7 +114,7 @@ func TestMemTable_Search(t *testing.T) {
 
 	for i := 0; i < 4; i++ {
 		v := float32(i)
-		rid, err := mt.Insert(ids[i], []float32{v, v})
+		rid, err := mt.Insert(context.Background(), ids[i], []float32{v, v})
 		require.NoError(t, err)
 		rowIDs[i] = rid
 	}
@@ -154,11 +154,11 @@ func TestMemTable_Search(t *testing.T) {
 }
 
 func TestMemTable_Rerank(t *testing.T) {
-	mt, err := New(1, 2, distance.MetricL2, nil)
+	mt, err := New(context.Background(), 1, 2, distance.MetricL2, nil)
 	require.NoError(t, err)
 	defer mt.Close()
 
-	rid, _ := mt.Insert(model.ID(16), []float32{0, 0}) // Shard 0
+	rid, _ := mt.Insert(context.Background(), model.ID(16), []float32{0, 0}) // Shard 0
 
 	cands := []model.Candidate{
 		{Loc: model.Location{SegmentID: 1, RowID: rid}, Approx: true},          // Good
@@ -178,7 +178,7 @@ func TestMemTable_Rerank(t *testing.T) {
 }
 
 func TestMemTable_Concurrency(t *testing.T) {
-	mt, err := New(1, 128, distance.MetricL2, nil)
+	mt, err := New(context.Background(), 1, 128, distance.MetricL2, nil)
 	require.NoError(t, err)
 	defer mt.Close()
 
@@ -197,7 +197,7 @@ func TestMemTable_Concurrency(t *testing.T) {
 				for j := range vec {
 					vec[j] = rng.Float32()
 				}
-				_, err := mt.Insert(model.ID(uint64(id*ops+i)), vec)
+				_, err := mt.Insert(context.Background(), model.ID(uint64(id*ops+i)), vec)
 				assert.NoError(t, err)
 			}
 		}(w)
@@ -226,13 +226,13 @@ func TestMemTable_Concurrency(t *testing.T) {
 }
 
 func TestMemTable_Errors(t *testing.T) {
-	_, err := New(1, 0, distance.MetricL2, nil)
+	_, err := New(context.Background(), 1, 0, distance.MetricL2, nil)
 	assert.Error(t, err)
 
-	mt, _ := New(1, 2, distance.MetricL2, nil)
+	mt, _ := New(context.Background(), 1, 2, distance.MetricL2, nil)
 	mt.Close() // Should close immediately
 
-	_, err = mt.Insert(model.ID(1), []float32{1, 1})
+	_, err = mt.Insert(context.Background(), model.ID(1), []float32{1, 1})
 	assert.Error(t, err)
 
 	err = mt.Search(context.Background(), nil, 10, nil, model.SearchOptions{}, nil)

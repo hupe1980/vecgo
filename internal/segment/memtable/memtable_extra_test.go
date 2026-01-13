@@ -12,7 +12,7 @@ import (
 )
 
 func TestMemTable_InsertWithPayload_Coverage(t *testing.T) {
-	m, err := New(1, 2, distance.MetricL2, nil)
+	m, err := New(context.Background(), 1, 2, distance.MetricL2, nil)
 	require.NoError(t, err)
 	defer m.DecRef()
 
@@ -20,7 +20,7 @@ func TestMemTable_InsertWithPayload_Coverage(t *testing.T) {
 	id1In := model.ID(1)
 	vec1 := []float32{1.0, 1.0}
 	payload1 := []byte("payload1")
-	rowID1, err := m.InsertWithPayload(id1In, vec1, nil, payload1)
+	rowID1, err := m.InsertWithPayload(context.Background(), id1In, vec1, nil, payload1)
 	require.NoError(t, err)
 	// Shard 1 (1 mod 16 = 1) -> RowID starts with 1<<28
 	expectedRowID := model.RowID(1) << 28
@@ -40,16 +40,16 @@ func TestMemTable_InsertWithPayload_Coverage(t *testing.T) {
 
 func TestMemTable_EdgeCases(t *testing.T) {
 	// Closed memtable
-	m, err := New(1, 2, distance.MetricL2, nil)
+	m, err := New(context.Background(), 1, 2, distance.MetricL2, nil)
 	require.NoError(t, err)
 	m.DecRef() // Close it
 
-	_, err = m.Insert(model.ID(1), []float32{1, 1})
+	_, err = m.Insert(context.Background(), model.ID(1), []float32{1, 1})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "memtable is closed")
 
 	// InsertWithPayload on closed
-	_, err = m.InsertWithPayload(model.ID(1), []float32{1, 1}, nil, nil)
+	_, err = m.InsertWithPayload(context.Background(), model.ID(1), []float32{1, 1}, nil, nil)
 	assert.Error(t, err)
 }
 
@@ -59,13 +59,13 @@ func TestMemTable_Growth(t *testing.T) {
 	// We can try to insert 1025 items.
 	// That might be slow but let's try 1050 items.
 
-	m, err := New(1, 2, distance.MetricL2, nil)
+	m, err := New(context.Background(), 1, 2, distance.MetricL2, nil)
 	require.NoError(t, err)
 	defer m.DecRef()
 
 	count := 2000 // > 1024
 	for i := 0; i < count; i++ {
-		_, err := m.Insert(model.ID(uint64(i)), []float32{0.1, 0.1})
+		_, err := m.Insert(context.Background(), model.ID(uint64(i)), []float32{0.1, 0.1})
 		require.NoError(t, err)
 	}
 	assert.Equal(t, uint32(count), m.RowCount())

@@ -208,7 +208,7 @@ func newStringColumn(capacity int) *stringColumn {
 func (c *stringColumn) Len() int { return len(c.data) }
 
 func (c *stringColumn) Grow(n int) {
-	for i := 0; i < n; i++ {
+	for range n {
 		c.data = append(c.data, unique.Handle[string]{})
 		c.valid = append(c.valid, false)
 	}
@@ -280,7 +280,7 @@ func newBoolColumn(capacity int) *boolColumn {
 func (c *boolColumn) Len() int { return len(c.data) }
 
 func (c *boolColumn) Grow(n int) {
-	for i := 0; i < n; i++ {
+	for range n {
 		c.data = append(c.data, false)
 		c.valid = append(c.valid, false)
 	}

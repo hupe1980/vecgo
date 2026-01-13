@@ -43,6 +43,7 @@ type Segment struct {
 	// Metadata
 	metadataOffsets []uint32
 	metadataBlob    []byte
+	metadataIndex   *imetadata.UnifiedIndex // Inverted index for fast filtering
 
 	// Payload
 	payloadBlob    blobstore.Blob
@@ -54,6 +55,7 @@ type Segment struct {
 
 	cache          cache.BlockCache
 	verifyChecksum bool
+	indexMetadata  bool // Build inverted index at open time
 }
 
 // GetID returns the external ID for a given internal row ID.
@@ -85,6 +87,15 @@ func WithVerifyChecksum(verify bool) Option {
 func WithPayloadBlob(blob blobstore.Blob) Option {
 	return func(s *Segment) {
 		s.payloadBlob = blob
+	}
+}
+
+// WithMetadataIndex enables building an inverted index at segment open time.
+// This significantly speeds up filtered search at the cost of memory.
+// Recommended for segments that will be searched with filters.
+func WithMetadataIndex(index bool) Option {
+	return func(s *Segment) {
+		s.indexMetadata = index
 	}
 }
 
@@ -364,6 +375,22 @@ func Open(blob blobstore.Blob, opts ...Option) (*Segment, error) {
 					return nil, err
 				}
 				bsData = bsData[l:]
+			}
+		}
+	}
+
+	// Build metadata inverted index if enabled
+	if s.indexMetadata && len(s.metadataOffsets) > 0 {
+		s.metadataIndex = imetadata.NewUnifiedIndex()
+		for i := 0; i < int(s.header.RowCount); i++ {
+			start := s.metadataOffsets[i]
+			end := s.metadataOffsets[i+1]
+			if start < end {
+				mdBytes := s.metadataBlob[start:end]
+				var md metadata.Document
+				if err := md.UnmarshalBinary(mdBytes); err == nil && md != nil {
+					s.metadataIndex.AddInvertedIndex(model.RowID(i), md)
+				}
 			}
 		}
 	}
@@ -826,10 +853,13 @@ func (s *Segment) EvaluateFilter(ctx context.Context, filter *metadata.FilterSet
 		return nil, nil // All matches
 	}
 
-	result := imetadata.NewLocalBitmap()
+	// Fast path: use inverted index if available
+	if s.metadataIndex != nil {
+		return s.metadataIndex.EvaluateFilter(filter, s.header.RowCount), nil
+	}
 
-	// Scan all documents. Use specialized loop to avoid overhead of loading vectors/payloads.
-	// This is critical because Iterate unmarshals everything.
+	// Slow path: scan all documents (fallback when index not built)
+	result := imetadata.NewLocalBitmap()
 
 	for i := 0; i < int(s.header.RowCount); i++ {
 		var md metadata.Document
@@ -845,8 +875,6 @@ func (s *Segment) EvaluateFilter(ctx context.Context, filter *metadata.FilterSet
 		} else {
 			continue // No metadata, cannot match (unless checking for missing)
 		}
-
-		// Optimize: If filter is nil, we shouldn't be here (checked at start).
 
 		if filter.Matches(md) {
 			result.Add(uint32(i))

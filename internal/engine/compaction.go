@@ -466,7 +466,10 @@ func openSegment(ctx context.Context, st blobstore.BlobStore, name string, c cac
 
 	switch magic {
 	case flat.MagicNumber:
-		opts := []flat.Option{flat.WithBlockCache(c)}
+		opts := []flat.Option{
+			flat.WithBlockCache(c),
+			flat.WithMetadataIndex(true), // Enable inverted index for fast filtered search
+		}
 		if payloadBlob != nil {
 			opts = append(opts, flat.WithPayloadBlob(payloadBlob))
 		}

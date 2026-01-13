@@ -8,7 +8,6 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
-	"time"
 	"unsafe"
 
 	"github.com/hupe1980/vecgo/internal/conv"
@@ -196,12 +195,7 @@ func (a *Arena) allocateChunkLocked(ctx context.Context) error {
 	// Acquire memory if acquirer is set
 	if a.acquirer != nil {
 		chunkSize64 := int64(a.chunkSize)
-		// Check for timeout in context or use default short timeout
-		var cancel context.CancelFunc
-		if _, ok := ctx.Deadline(); !ok {
-			ctx, cancel = context.WithTimeout(ctx, 100*time.Millisecond)
-			defer cancel()
-		}
+		// Respect caller's context - they control timeouts
 		if err := a.acquirer.AcquireMemory(ctx, chunkSize64); err != nil {
 			return err
 		}

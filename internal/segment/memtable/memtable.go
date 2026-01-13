@@ -31,20 +31,6 @@ var rerankByShardPool = sync.Pool{
 	},
 }
 
-// fetchIDReq is a request for FetchIDs dispatch
-type fetchIDReq struct {
-	origIdx int
-	rowID   uint32
-}
-
-// Pool for FetchIDs shard dispatch
-var fetchIDReqsPool = sync.Pool{
-	New: func() any {
-		s := make([][]fetchIDReq, shardCount)
-		return &s
-	},
-}
-
 type MemTable struct {
 	id     model.SegmentID // This L0 segment ID
 	shards []*shard
@@ -65,10 +51,10 @@ func (m *MemTable) Close() error {
 	return nil
 }
 
-func New(id model.SegmentID, dim int, metric distance.Metric, acquirer arena.MemoryAcquirer) (*MemTable, error) {
+func New(ctx context.Context, id model.SegmentID, dim int, metric distance.Metric, acquirer arena.MemoryAcquirer) (*MemTable, error) {
 	shards := make([]*shard, shardCount)
-	for i := 0; i < shardCount; i++ {
-		s, err := newShard(id, uint8(i), dim, metric, acquirer)
+	for i := range shardCount {
+		s, err := newShard(ctx, id, uint8(i), dim, metric, acquirer)
 		if err != nil {
 			// Cleanup already created shards
 			for j := 0; j < i; j++ {
@@ -129,15 +115,15 @@ func (m *MemTable) Advise(pattern segment.AccessPattern) error {
 
 // Write/Update Ops
 
-func (m *MemTable) Insert(id model.ID, vec []float32) (model.RowID, error) {
-	return m.InsertWithPayload(id, vec, nil, nil)
+func (m *MemTable) Insert(ctx context.Context, id model.ID, vec []float32) (model.RowID, error) {
+	return m.InsertWithPayload(ctx, id, vec, nil, nil)
 }
 
-func (m *MemTable) InsertWithPayload(id model.ID, vec []float32, md metadata.Document, payload []byte) (model.RowID, error) {
+func (m *MemTable) InsertWithPayload(ctx context.Context, id model.ID, vec []float32, md metadata.Document, payload []byte) (model.RowID, error) {
 	shardIdx := int(id & shardMask) // e.g. id % 16
 	s := m.shards[shardIdx]
 
-	localRowID, err := s.InsertWithPayload(id, vec, md, payload)
+	localRowID, err := s.InsertWithPayload(ctx, id, vec, md, payload)
 	if err != nil {
 		return 0, err
 	}
@@ -150,11 +136,11 @@ func (m *MemTable) InsertWithPayload(id model.ID, vec []float32, md metadata.Doc
 	return (model.RowID(shardIdx) << 28) | localRowID, nil
 }
 
-func (m *MemTable) InsertDeferred(id model.ID, vec []float32, md metadata.Document, payload []byte) (model.RowID, error) {
+func (m *MemTable) InsertDeferred(ctx context.Context, id model.ID, vec []float32, md metadata.Document, payload []byte) (model.RowID, error) {
 	shardIdx := int(id & shardMask)
 	s := m.shards[shardIdx]
 
-	localRowID, err := s.InsertDeferred(id, vec, md, payload)
+	localRowID, err := s.InsertDeferred(ctx, id, vec, md, payload)
 	if err != nil {
 		return 0, err
 	}
@@ -362,46 +348,19 @@ func (m *MemTable) FetchIDs(ctx context.Context, rows []uint32, dst []model.ID) 
 		return fmt.Errorf("dst length must match rows length")
 	}
 
-	// Get pooled slice of slices
-	shardReqsPtr := fetchIDReqsPool.Get().(*[][]fetchIDReq)
-	shardReqs := *shardReqsPtr
-
-	// Clear previous contents
-	for i := range shardReqs {
-		shardReqs[i] = shardReqs[i][:0]
-	}
-
+	// Fast path: directly call GetID for each row (avoids allocations)
 	for i, r := range rows {
 		sIdx := r >> 28
 		if int(sIdx) >= shardCount {
-			fetchIDReqsPool.Put(shardReqsPtr)
 			return fmt.Errorf("invalid rowID")
 		}
-		shardReqs[sIdx] = append(shardReqs[sIdx], fetchIDReq{i, r & uint32(rowIdMask)})
-	}
-
-	for sIdx, reqs := range shardReqs {
-		if len(reqs) == 0 {
-			continue
-		}
-
-		rowIDs := make([]uint32, len(reqs))
-		for k, r := range reqs {
-			rowIDs[k] = r.rowID
-		}
-
-		// Temp dst for this shard
-		tempDst := make([]model.ID, len(reqs))
-		if err := m.shards[sIdx].FetchIDs(ctx, rowIDs, tempDst); err != nil {
-			fetchIDReqsPool.Put(shardReqsPtr)
-			return err
-		}
-
-		for k, r := range reqs {
-			dst[r.origIdx] = tempDst[k]
+		localRowID := r & uint32(rowIdMask)
+		if id, ok := m.shards[sIdx].GetID(localRowID); ok {
+			dst[i] = id
+		} else {
+			dst[i] = 0 // Invalid/deleted ID
 		}
 	}
-	fetchIDReqsPool.Put(shardReqsPtr)
 	return nil
 }
 

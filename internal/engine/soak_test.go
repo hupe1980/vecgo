@@ -90,7 +90,10 @@ func TestSoak(t *testing.T) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				_ = e.Commit(context.Background())
+				// Use a timeout for Commit to avoid blocking forever if memory is exhausted
+				commitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				_ = e.Commit(commitCtx)
+				cancel()
 			}
 		}
 	}()

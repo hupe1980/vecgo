@@ -8,7 +8,6 @@ import (
 	"io"
 	"sync"
 	"sync/atomic"
-	"time"
 	"unsafe"
 
 	"github.com/hupe1980/vecgo/distance"
@@ -164,30 +163,20 @@ func (s *ColumnarStore) Close() error {
 }
 
 // New creates a new in-memory columnar store with the given dimension.
+// The store is created without pre-allocated memory. Call Preallocate(ctx)
+// to acquire initial memory with caller-controlled context.
 func New(dim int, acquirer arena.MemoryAcquirer) (*ColumnarStore, error) {
 	if dim <= 0 {
 		dim = 1
 	}
-	// Pre-allocate for ~1K vectors using aligned memory
-	initialCap := 1024 * dim
-
-	// Acquire memory for initial chunk
-	if acquirer != nil {
-		// Use a timeout to prevent deadlocks if memory is full
-		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-		defer cancel()
-		if err := acquirer.AcquireMemory(ctx, int64(initialCap*4)); err != nil {
-			return nil, err
-		}
-	}
-
-	data := mem.AllocAlignedFloat32(initialCap)
-	data = data[:0]
 
 	dimU32, err := conv.IntToUint32(dim)
 	if err != nil {
 		return nil, err
 	}
+
+	// Start with empty slice - no memory acquisition needed
+	data := make([]float32, 0)
 	s := &ColumnarStore{
 		dim:      dimU32,
 		versions: make([]uint64, 0, 1024),
@@ -199,6 +188,26 @@ func New(dim int, acquirer arena.MemoryAcquirer) (*ColumnarStore, error) {
 	s.deleted.Store(&deleted)
 
 	return s, nil
+}
+
+// Preallocate acquires initial memory for ~1K vectors.
+// This is optional - the store will grow on demand during Append.
+// Use this to fail fast if memory is not available.
+func (s *ColumnarStore) Preallocate(ctx context.Context) error {
+	initialCap := 1024 * int(s.dim)
+
+	if s.acquirer != nil {
+		if err := s.acquirer.AcquireMemory(ctx, int64(initialCap*4)); err != nil {
+			return fmt.Errorf("failed to acquire initial memory: %w", err)
+		}
+	}
+
+	// Allocate aligned memory for SIMD operations
+	data := mem.AllocAlignedFloat32(initialCap)
+	data = data[:0]
+	s.data.Store(&data)
+
+	return nil
 }
 
 // Dimension returns the vector dimensionality.
@@ -420,10 +429,7 @@ func (s *ColumnarStore) growAndSet(ctx context.Context, id model.RowID, required
 		s.data.Store(&published)
 	} else {
 		// Allocate new backing array, populate fully, then publish.
-		newCap := requiredLen * 2
-		if len(currentData)*2 > newCap {
-			newCap = len(currentData) * 2
-		}
+		newCap := max(len(currentData)*2, requiredLen*2)
 
 		// Check memory limits
 		if s.acquirer != nil {
@@ -645,7 +651,7 @@ func (s *ColumnarStore) Iterate(fn func(id model.RowID, vec []float32) bool) {
 
 	dim := int(s.dim)
 
-	for id := uint64(0); id < count; id++ {
+	for id := range count {
 		idU32, err := conv.Uint64ToUint32(id)
 		if err != nil {
 			break

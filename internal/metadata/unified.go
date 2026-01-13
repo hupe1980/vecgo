@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
+	"strconv"
 	"sync"
 	"unique"
 
@@ -102,6 +104,164 @@ func (ui *UnifiedIndex) SetDocumentProvider(provider DocumentProvider) {
 	ui.mu.Lock()
 	defer ui.mu.Unlock()
 	ui.provider = provider
+}
+
+// EvaluateFilter evaluates a filter set against the inverted index and returns a bitmap.
+// This method supports all operators, including numeric comparisons like OpLessThan.
+// For operators not directly supported by the inverted index (e.g. OpLessThan),
+// it falls back to scanning all unique values in the index.
+// The rowCount parameter specifies the maximum row ID for iteration.
+func (ui *UnifiedIndex) EvaluateFilter(fs *metadata.FilterSet, rowCount uint32) *LocalBitmap {
+	if fs == nil || len(fs.Filters) == 0 {
+		return nil // All matches
+	}
+
+	ui.mu.RLock()
+	defer ui.mu.RUnlock()
+
+	var result *LocalBitmap
+
+	for _, f := range fs.Filters {
+		var current *LocalBitmap
+
+		switch f.Operator {
+		case metadata.OpEqual:
+			b := ui.getBitmapLocked(f.Key, f.Value)
+			if b != nil {
+				current = b.Clone()
+			} else {
+				return NewLocalBitmap() // No match for this filter
+			}
+
+		case metadata.OpIn:
+			current = NewLocalBitmap()
+			arr, ok := f.Value.AsArray()
+			if ok {
+				for _, v := range arr {
+					if b := ui.getBitmapLocked(f.Key, v); b != nil {
+						current.Or(b)
+					}
+				}
+			}
+
+		case metadata.OpLessThan, metadata.OpLessEqual, metadata.OpGreaterThan, metadata.OpGreaterEqual, metadata.OpNotEqual:
+			// For numeric comparisons, scan all values in the inverted index
+			current = ui.evaluateNumericFilter(f)
+
+		default:
+			// Unsupported operator - fall back to empty (will fail filter)
+			return NewLocalBitmap()
+		}
+
+		if result == nil {
+			result = current
+		} else {
+			result.And(current)
+		}
+
+		if result.IsEmpty() {
+			return result
+		}
+	}
+
+	return result
+}
+
+// evaluateNumericFilter handles comparison operators by scanning the inverted index.
+func (ui *UnifiedIndex) evaluateNumericFilter(f metadata.Filter) *LocalBitmap {
+	result := NewLocalBitmap()
+
+	valueMap, ok := ui.inverted[unique.Make(f.Key)]
+	if !ok {
+		return result // Field doesn't exist, no matches
+	}
+
+	for valueKey, bitmap := range valueMap {
+		// Parse the stored value to check against filter
+		// The valueKey is the serialized form of the value
+		storedValue := parseValueKey(valueKey.Value())
+
+		if matchesComparison(storedValue, f.Value, f.Operator) {
+			result.Or(bitmap)
+		}
+	}
+
+	return result
+}
+
+// parseValueKey parses a value key back to a numeric value for comparison.
+func parseValueKey(key string) metadata.Value {
+	// Value.Key() format: "i:123" for int, "f:hex_bits" for float, "s:text" for string
+	if len(key) < 2 {
+		return metadata.String(key)
+	}
+
+	switch key[0] {
+	case 'i':
+		if key[1] == ':' {
+			i, err := strconv.ParseInt(key[2:], 10, 64)
+			if err == nil {
+				return metadata.Int(i)
+			}
+		}
+	case 'f':
+		if key[1] == ':' {
+			// Float is stored as hex bits
+			bits, err := strconv.ParseUint(key[2:], 16, 64)
+			if err == nil {
+				return metadata.Float(math.Float64frombits(bits))
+			}
+		}
+	}
+
+	// Default to string
+	if len(key) > 2 && key[1] == ':' {
+		return metadata.String(key[2:])
+	}
+	return metadata.String(key)
+}
+
+// matchesComparison checks if stored value matches filter value with given operator.
+func matchesComparison(stored, filter metadata.Value, op metadata.Operator) bool {
+	// Get numeric values for comparison
+	var storedNum, filterNum float64
+
+	switch stored.Kind {
+	case metadata.KindInt:
+		storedNum = float64(stored.I64)
+	case metadata.KindFloat:
+		storedNum = stored.F64
+	default:
+		// Non-numeric comparison - only NotEqual makes sense for strings
+		if op == metadata.OpNotEqual {
+			return stored.Key() != filter.Key()
+		}
+		return false
+	}
+
+	switch filter.Kind {
+	case metadata.KindInt:
+		filterNum = float64(filter.I64)
+	case metadata.KindFloat:
+		filterNum = filter.F64
+	default:
+		return false
+	}
+
+	switch op {
+	case metadata.OpLessThan:
+		return storedNum < filterNum
+	case metadata.OpLessEqual:
+		return storedNum <= filterNum
+	case metadata.OpGreaterThan:
+		return storedNum > filterNum
+	case metadata.OpGreaterEqual:
+		return storedNum >= filterNum
+	case metadata.OpNotEqual:
+		return storedNum != filterNum
+	default:
+		return false
+	}
 }
 
 // Get retrieves metadata for an ID.
@@ -643,7 +803,7 @@ func (ui *UnifiedIndex) ReadInvertedIndex(r io.Reader) error {
 		return err
 	}
 
-	for i := uint64(0); i < count; i++ {
+	for range count {
 		// Read field key
 		keyLen, err := readUvarint(r)
 		if err != nil {
@@ -664,7 +824,7 @@ func (ui *UnifiedIndex) ReadInvertedIndex(r io.Reader) error {
 		valueMap := make(map[unique.Handle[string]]*LocalBitmap, valCount)
 		ui.inverted[fieldKey] = valueMap
 
-		for j := uint64(0); j < valCount; j++ {
+		for range valCount {
 			// Read value key
 			valLen, err := readUvarint(r)
 			if err != nil {

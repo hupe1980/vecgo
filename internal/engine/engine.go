@@ -754,7 +754,7 @@ func (e *Engine) init() (*Engine, error) {
 		m.NextSegmentID++
 
 		var err error
-		mt, err = memtable.New(activeID, e.dim, e.metric, e.resourceController)
+		mt, err = memtable.New(context.Background(), activeID, e.dim, e.metric, e.resourceController)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create memtable: %w", err)
 		}
@@ -779,7 +779,7 @@ func (e *Engine) init() (*Engine, error) {
 		// Let's create a dummy one for now to satisfy the non-nil invariance,
 		// but using a safe ID (e.g. m.NextSegmentID but DO NOT increment manifest).
 		var err error
-		mt, err = memtable.New(m.NextSegmentID, e.dim, e.metric, e.resourceController)
+		mt, err = memtable.New(context.Background(), m.NextSegmentID, e.dim, e.metric, e.resourceController)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create dummy memtable: %w", err)
 		}
@@ -895,8 +895,8 @@ func (e *Engine) Insert(ctx context.Context, vec []float32, md metadata.Document
 	// Durability is achieved via explicit Commit() or periodic Flush().
 	// If the process crashes before flush, data in MemTable is lost.
 
-	// Insert into Active MemTable
-	rowID, err := snap.active.InsertWithPayload(id, vec, md, payload)
+	// Insert into Active MemTable - pass ctx for cancellation/timeout
+	rowID, err := snap.active.InsertWithPayload(ctx, id, vec, md, payload)
 	if err != nil {
 		e.mu.RUnlock()
 		return 0, err
@@ -1046,8 +1046,8 @@ func (e *Engine) BatchInsert(ctx context.Context, vectors [][]float32, mds []met
 			}
 			errMu.Unlock()
 
-			// Insert into Active MemTable
-			rowID, err := snap.active.InsertWithPayload(item.id, vectors[i], item.md, item.payload)
+			// Insert into Active MemTable - pass ctx for cancellation
+			rowID, err := snap.active.InsertWithPayload(ctx, item.id, vectors[i], item.md, item.payload)
 			if err != nil {
 				errMu.Lock()
 				if firstErr == nil {
@@ -1233,8 +1233,8 @@ func (e *Engine) BatchInsertDeferred(ctx context.Context, vectors [][]float32, m
 					payload = payloads[item.idx]
 				}
 
-				// Insert into Active MemTable using DEFERRED mode (no graph)
-				rowID, err := snap.active.InsertDeferred(item.id, vectors[item.idx], md, payload)
+				// Insert into Active MemTable using DEFERRED mode (no graph) - pass ctx
+				rowID, err := snap.active.InsertDeferred(ctx, item.id, vectors[item.idx], md, payload)
 				if err != nil {
 					errMu.Lock()
 					if firstErr == nil {
@@ -1851,7 +1851,7 @@ func (e *Engine) Commit(ctx context.Context) (err error) {
 	// Create New Active MemTable
 	newActiveID := e.manifest.NextSegmentID
 	e.manifest.NextSegmentID++
-	newSnap.active, err = memtable.New(newActiveID, e.dim, e.metric, e.resourceController)
+	newSnap.active, err = memtable.New(ctx, newActiveID, e.dim, e.metric, e.resourceController)
 	if err != nil {
 		e.mu.Unlock()
 		// Try to restore old WAL? Very bad state.
@@ -1982,7 +1982,10 @@ func (e *Engine) Commit(ctx context.Context) (err error) {
 		return err
 	}
 
-	opts := []flat.Option{flat.WithBlockCache(e.blockCache)}
+	opts := []flat.Option{
+		flat.WithBlockCache(e.blockCache),
+		flat.WithMetadataIndex(true), // Enable inverted index for fast filtered search
+	}
 	if payloadBlob, err := e.store.Open(context.Background(), payloadFilename); err == nil {
 		opts = append(opts, flat.WithPayloadBlob(payloadBlob))
 	}

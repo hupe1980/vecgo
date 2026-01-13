@@ -111,7 +111,7 @@ func (e *Engine) ApplyBatch(ctx context.Context, batch *WriteBatch) ([]model.ID,
 
 		// Apply to Memory
 		if op.Type == OpInsert {
-			rowID, err := snap.active.InsertWithPayload(id, op.Vector, op.Metadata, op.Payload)
+			rowID, err := snap.active.InsertWithPayload(ctx, id, op.Vector, op.Metadata, op.Payload)
 			if err != nil {
 				e.mu.RUnlock()
 				return resultIDs, err

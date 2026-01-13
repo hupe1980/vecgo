@@ -175,6 +175,9 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 				adaptiveThreshold = 5000
 			}
 
+			// User can force pre-filtering via WithPreFilter(true) to bypass adaptive heuristic
+			forcePreFilter := options.PreFilter != nil && *options.PreFilter
+
 			if options.Filter != nil {
 				// Try to get bitmaps from all segments
 
@@ -215,7 +218,8 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 						if err == nil && b != nil {
 							hits := b.Cardinality()
 							totalHits += hits
-							if totalHits > adaptiveThreshold {
+							// Skip threshold check if user forced pre-filtering
+							if !forcePreFilter && totalHits > adaptiveThreshold {
 								possible = false
 								break
 							}
@@ -232,7 +236,8 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 					}
 				}
 
-				if possible && totalHits <= adaptiveThreshold {
+				// Use bitmap strategy if below threshold OR user forced pre-filtering
+				if possible && (forcePreFilter || totalHits <= adaptiveThreshold) {
 					usedBitmapStrategy = true
 
 					// Execute Bitmap Brute Force
