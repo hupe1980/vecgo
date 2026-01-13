@@ -168,7 +168,7 @@ func (vt *VersionedTombstones) LoadFromBitmap(bm *imetadata.LocalBitmap) {
 
 	// Collect all IDs
 	var maxID uint32
-	var ids []uint32
+	ids := make([]uint32, 0, bm.Cardinality())
 	for id := range bm.Iterator() {
 		ids = append(ids, uint32(id))
 		if uint32(id) > maxID {
@@ -265,7 +265,7 @@ func (tf *TombstoneFilter) Matches(rowID uint32) bool {
 	}
 
 	lsn := chunk.lsns[int(rowID)&chunkMask]
-	return !(lsn != 0 && lsn <= tf.snapshotLSN)
+	return lsn == 0 || lsn > tf.snapshotLSN
 }
 
 func (tf *TombstoneFilter) MatchesBatch(ids []uint32, out []bool) {
@@ -290,7 +290,7 @@ func (tf *TombstoneFilter) MatchesBatch(ids []uint32, out []bool) {
 			continue
 		}
 		delLSN := chunk.lsns[int(id)&chunkMask]
-		out[i] = !(delLSN != 0 && delLSN <= tf.snapshotLSN)
+		out[i] = delLSN == 0 || delLSN > tf.snapshotLSN
 	}
 }
 

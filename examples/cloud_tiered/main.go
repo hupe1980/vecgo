@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -115,7 +116,7 @@ func main() {
 
 	// Try to write (should fail in read-only mode)
 	_, writeErr := eng.Insert(randomVector(128), nil, nil)
-	if writeErr == vecgo.ErrReadOnly {
+	if errors.Is(writeErr, vecgo.ErrReadOnly) {
 		fmt.Println("✅ Write correctly rejected in read-only mode")
 	}
 

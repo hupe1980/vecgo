@@ -4,11 +4,11 @@ package simd
 // int4L2DistanceGeneric computes squared L2 distance between query and INT4 code.
 //
 // INT4 codes are nibble-packed: high nibble first, low nibble second.
-// Dequantization: val = (quant / 15.0) * diff[i] + min[i]
+// Dequantization: val = (quant / 15.0) * diff[i] + minVal[i]
 //
 // SAFETY: Assumes len(query) == dim, len(code) == (dim+1)/2
 // Caller's responsibility to ensure alignment.
-func int4L2DistanceGeneric(query []float32, code []byte, min, diff []float32) float32 {
+func int4L2DistanceGeneric(query []float32, code []byte, minVal, diff []float32) float32 {
 	var sum float32
 	dim := len(query)
 
@@ -17,14 +17,14 @@ func int4L2DistanceGeneric(query []float32, code []byte, min, diff []float32) fl
 
 		// High nibble (first value)
 		quant1 := (byteVal >> 4) & 0x0F
-		val1 := float32(quant1)/15.0*diff[i] + min[i]
+		val1 := float32(quant1)/15.0*diff[i] + minVal[i]
 		d1 := val1 - query[i]
 		sum += d1 * d1
 
 		// Low nibble (second value)
 		if i+1 < dim {
 			quant2 := byteVal & 0x0F
-			val2 := float32(quant2)/15.0*diff[i+1] + min[i+1]
+			val2 := float32(quant2)/15.0*diff[i+1] + minVal[i+1]
 			d2 := val2 - query[i+1]
 			sum += d2 * d2
 		}
@@ -38,19 +38,19 @@ var int4L2DistanceImpl = int4L2DistanceGeneric
 // Int4L2Distance computes squared L2 distance between query and INT4 code.
 //
 // SAFETY: Assumes len(query) == dim, len(code) == (dim+1)/2
-func Int4L2Distance(query []float32, code []byte, min, diff []float32) float32 {
-	return int4L2DistanceImpl(query, code, min, diff)
+func Int4L2Distance(query []float32, code []byte, minVal, diff []float32) float32 {
+	return int4L2DistanceImpl(query, code, minVal, diff)
 }
 
 // int4L2DistanceBatchGeneric computes L2 distances for multiple INT4 codes.
 //
 // codes is a flattened array of n codes, each of size (dim+1)/2.
 // out must have length n.
-func int4L2DistanceBatchGeneric(query []float32, codes []byte, dim, n int, min, diff []float32, out []float32) {
+func int4L2DistanceBatchGeneric(query []float32, codes []byte, dim, n int, minVal, diff []float32, out []float32) {
 	codeSize := (dim + 1) / 2
 	for j := 0; j < n; j++ {
 		code := codes[j*codeSize : (j+1)*codeSize]
-		out[j] = int4L2DistanceGeneric(query, code, min, diff)
+		out[j] = int4L2DistanceGeneric(query, code, minVal, diff)
 	}
 }
 
@@ -60,8 +60,8 @@ var int4L2DistanceBatchImpl = int4L2DistanceBatchGeneric
 //
 // codes is a flattened array of n codes, each of size (dim+1)/2.
 // out must have length n.
-func Int4L2DistanceBatch(query []float32, codes []byte, dim, n int, min, diff []float32, out []float32) {
-	int4L2DistanceBatchImpl(query, codes, dim, n, min, diff, out)
+func Int4L2DistanceBatch(query []float32, codes []byte, dim, n int, minVal, diff []float32, out []float32) {
+	int4L2DistanceBatchImpl(query, codes, dim, n, minVal, diff, out)
 }
 
 // int4L2DistancePrecomputedGeneric uses pre-computed dequantization tables.
@@ -103,13 +103,13 @@ func Int4L2DistancePrecomputed(query []float32, code []byte, lookupTable []float
 
 // BuildInt4LookupTable builds a dequantization lookup table for INT4.
 // Returns a table of 16 * dim floats.
-func BuildInt4LookupTable(min, diff []float32) []float32 {
-	dim := len(min)
+func BuildInt4LookupTable(minVal, diff []float32) []float32 {
+	dim := len(minVal)
 	table := make([]float32, 16*dim)
 
 	for i := range dim {
 		for q := range 16 {
-			table[i*16+q] = float32(q)/15.0*diff[i] + min[i]
+			table[i*16+q] = float32(q)/15.0*diff[i] + minVal[i]
 		}
 	}
 

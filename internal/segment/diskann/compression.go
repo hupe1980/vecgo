@@ -132,6 +132,9 @@ func compressBlockZSTD(data []byte) ([]byte, error) {
 
 // decompressBlock decompresses a block using the appropriate algorithm.
 // The compression type is auto-detected from the data format.
+// Used by tests to verify compression/decompression roundtrips.
+//
+//nolint:unused // Used in compression_test.go
 func decompressBlock(data []byte, compressionType CompressionType) ([]byte, error) {
 	if len(data) < blockHeaderSize {
 		return nil, errors.New("block too small for header")
@@ -276,9 +279,6 @@ func (c *CompressedBlockWriter) BytesWritten() int64 {
 type CompressedBlockReader struct {
 	data            []byte
 	offset          int64
-	buffer          []byte
-	bufStart        int
-	bufEnd          int
 	compressionType CompressionType
 }
 
@@ -356,7 +356,7 @@ func DecompressAll(data []byte, startOffset int64, compressionType CompressionTy
 
 	for {
 		block, err := reader.ReadBlock()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {

@@ -97,7 +97,7 @@ func (idx *MemoryIndex) Add(id model.ID, text string) error {
 
 	// If exists, delete first
 	if _, ok := idx.pkToDocID[id]; ok {
-		idx.deleteLocked(id)
+		_ = idx.deleteLocked(id) // Error ignored: deleteLocked only returns nil for existing IDs
 	}
 
 	// Allocate DocID

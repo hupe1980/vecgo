@@ -81,7 +81,7 @@ func (e *Engine) ApplyBatch(ctx context.Context, batch *WriteBatch) ([]model.ID,
 			}
 			if e.schema != nil && op.Metadata != nil {
 				if err := e.schema.Validate(op.Metadata); err != nil {
-					return nil, fmt.Errorf("op %d: %w: %v", i, ErrInvalidArgument, err)
+					return nil, fmt.Errorf("op %d: %w: %w", i, ErrInvalidArgument, err)
 				}
 			}
 		}
@@ -123,14 +123,8 @@ func (e *Engine) ApplyBatch(ctx context.Context, batch *WriteBatch) ([]model.ID,
 			}, lsn)
 
 			if exists {
-				// Initialize tombstones for the old segment if missing
-				// This guards against potential map access panics or missing entries
-				if _, ok := e.tombstones[oldLoc.SegmentID]; !ok {
-					// Safe to upgrade lock? No, we have RLock.
-					// This suggests a design flaw if tombstones are missing.
-					// But tombstones map is pre-populated for all known segments.
-					// active.ID() tombstones created in init/flush.
-				}
+				// Mark old location as deleted in tombstones
+				// Note: tombstones map is pre-populated for all known segments
 				if vt, ok := e.tombstones[oldLoc.SegmentID]; ok {
 					vt.MarkDeleted(uint32(oldLoc.RowID), lsn)
 				}
@@ -144,7 +138,6 @@ func (e *Engine) ApplyBatch(ctx context.Context, batch *WriteBatch) ([]model.ID,
 					}
 				}
 			}
-
 		} else if op.Type == OpDelete {
 			// Delete logic
 			oldLoc, exists := e.pkIndex.Delete(id, lsn)

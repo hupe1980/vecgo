@@ -127,11 +127,11 @@ func loadVectorData(store *MmapStore, reader *mmap.Mapping, header FileHeader) e
 		copy(vecBytes, reader.Bytes()[offset:offset+size])
 		store.data = make([]float32, countInt*dimInt)
 		for i := range store.data {
-			store.data[i] = *(*float32)(unsafe.Pointer(&vecBytes[i*4])) //nolint:gosec // unsafe is required for mmap access
+			store.data[i] = *(*float32)(unsafe.Pointer(&vecBytes[i*4]))
 		}
 	} else {
 		// Zero-copy access
-		store.data = unsafe.Slice((*float32)(unsafe.Pointer(&reader.Bytes()[offset])), countInt*dimInt) //nolint:gosec // unsafe is required for mmap access
+		store.data = unsafe.Slice((*float32)(unsafe.Pointer(&reader.Bytes()[offset])), countInt*dimInt)
 	}
 	return nil
 }
@@ -166,7 +166,7 @@ func loadBitmapData(store *MmapStore, reader *mmap.Mapping, header FileHeader) e
 		}
 	} else {
 		// Zero-copy access
-		store.deleted = unsafe.Slice((*uint64)(unsafe.Pointer(&reader.Bytes()[offset])), bitmapLen) //nolint:gosec // unsafe is required for mmap access
+		store.deleted = unsafe.Slice((*uint64)(unsafe.Pointer(&reader.Bytes()[offset])), bitmapLen)
 	}
 	return nil
 }

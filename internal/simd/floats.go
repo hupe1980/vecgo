@@ -61,10 +61,10 @@ func dotBatchGeneric(query []float32, targets []float32, dim int, out []float32)
 	}
 
 	q := query[:dim]
-	max := len(targets) / dim
+	maxVal := len(targets) / dim
 	n := len(out)
-	if max < n {
-		n = max
+	if maxVal < n {
+		n = maxVal
 	}
 
 	for i := 0; i < n; i++ {
@@ -100,10 +100,10 @@ func squaredL2BatchGeneric(query []float32, targets []float32, dim int, out []fl
 	}
 
 	q := query[:dim]
-	max := len(targets) / dim
+	maxVal := len(targets) / dim
 	n := len(out)
-	if max < n {
-		n = max
+	if maxVal < n {
+		n = maxVal
 	}
 
 	for i := 0; i < n; i++ {

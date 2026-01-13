@@ -73,7 +73,7 @@ func (c *DiskBlockCache) scanExistingFiles() {
 
 	_ = filepath.Walk(c.rootDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			return nil // Skip errors
+			return nil //nolint:nilerr // intentionally ignore walk errors to continue scanning
 		}
 		if info.IsDir() {
 			return nil

@@ -47,7 +47,7 @@ func dotNEON(a, b []float32) float32 {
 	var ret float32
 
 	if len(a) > 0 {
-		dotProductNeon(unsafe.Pointer(&a[0]), unsafe.Pointer(&b[0]), int64(len(a)), unsafe.Pointer(&ret)) //nolint:gosec // unsafe is required for SIMD
+		dotProductNeon(unsafe.Pointer(&a[0]), unsafe.Pointer(&b[0]), int64(len(a)), unsafe.Pointer(&ret))
 	}
 
 	return ret
@@ -57,7 +57,7 @@ func squaredL2NEON(a, b []float32) float32 {
 	var ret float32
 
 	if len(a) > 0 {
-		squaredL2Neon(unsafe.Pointer(&a[0]), unsafe.Pointer(&b[0]), int64(len(a)), unsafe.Pointer(&ret)) //nolint:gosec // unsafe is required for SIMD
+		squaredL2Neon(unsafe.Pointer(&a[0]), unsafe.Pointer(&b[0]), int64(len(a)), unsafe.Pointer(&ret))
 	}
 
 	return ret

@@ -156,13 +156,13 @@ func (n Node) GetConnectionsRaw(a *arena.Arena, layer int, m, m0 int) []uint64 {
 	}
 
 	count := atomic.LoadUint32((*uint32)(ptr))
-	neighborsPtr := unsafe.Pointer(uintptr(ptr) + 8) //nolint:gosec // unsafe is required for performance
+	neighborsPtr := unsafe.Pointer(uintptr(ptr) + 8)
 
 	countInt, err := conv.Uint32ToInt(count)
 	if err != nil {
 		return nil
 	}
-	return unsafe.Slice((*uint64)(neighborsPtr), countInt) //nolint:gosec // unsafe is required for performance
+	return unsafe.Slice((*uint64)(neighborsPtr), countInt)
 }
 
 // GetConnection returns the neighbor at the given index for the given layer.
@@ -244,16 +244,16 @@ func (n Node) GetCount(a *arena.Arena, layer int, m, m0 int) int {
 // ReplaceConnections replaces the connection list for the given layer with a new list (COW).
 // This ensures atomic visibility of the new list to concurrent readers.
 func (n Node) ReplaceConnections(ctx context.Context, a *arena.Arena, layer int, neighbors []Neighbor, m, m0 int) error {
-	cap := m
+	capacity := m
 	if layer == 0 {
-		cap = m0
+		capacity = m0
 	}
-	if len(neighbors) > cap {
-		neighbors = neighbors[:cap]
+	if len(neighbors) > capacity {
+		neighbors = neighbors[:capacity]
 	}
 
 	// Alloc new list
-	size := 8 + cap*8
+	size := 8 + capacity*8
 	offset, data, err := a.Alloc(size)
 	if err != nil {
 		return err
@@ -295,12 +295,12 @@ func (n Node) AppendConnection(a *arena.Arena, layer int, neighbor Neighbor, m, 
 	countPtr := (*uint32)(ptr)
 	count := atomic.LoadUint32(countPtr)
 
-	cap := m
+	capacity := m
 	if layer == 0 {
-		cap = m0
+		capacity = m0
 	}
 
-	if int(count) >= cap {
+	if int(count) >= capacity {
 		return false // List full
 	}
 
@@ -319,13 +319,13 @@ func (n Node) Init(ctx context.Context, a *arena.Arena, level int, m, m0 int) er
 
 	// Create initial empty lists
 	for i := 0; i <= level; i++ {
-		cap := m
+		capacity := m
 		if i == 0 {
-			cap = m0
+			capacity = m0
 		}
 
-		// Alloc list: 8 + cap*8 (to ensure 8-byte alignment for neighbors)
-		size := 8 + cap*8
+		// Alloc list: 8 + capacity*8 (to ensure 8-byte alignment for neighbors)
+		size := 8 + capacity*8
 		offset, data, err := a.Alloc(size)
 		if err != nil {
 			return err

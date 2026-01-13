@@ -112,7 +112,6 @@ type Engine struct {
 	fs     fs.FileSystem
 	logger *slog.Logger
 
-	watermarkFilterPool sync.Pool
 	tombstoneFilterPool sync.Pool
 
 	ctx    context.Context
@@ -609,7 +608,7 @@ func (e *Engine) init() (*Engine, error) {
 			}
 			m = manifest.New(e.dim, e.metric.String())
 		} else if errors.Is(err, manifest.ErrIncompatibleVersion) {
-			return nil, fmt.Errorf("%w: %v", ErrIncompatibleFormat, err)
+			return nil, fmt.Errorf("%w: %w", ErrIncompatibleFormat, err)
 		} else {
 			return nil, fmt.Errorf("failed to load manifest: %w", err)
 		}
@@ -719,7 +718,7 @@ func (e *Engine) init() (*Engine, error) {
 		seg, err := openSegment(context.Background(), e.store, segMeta.Path, e.blockCache, payloadBlob)
 		if err != nil {
 			if errors.Is(err, flat.ErrInvalidVersion) || errors.Is(err, flat.ErrInvalidMagic) {
-				return nil, fmt.Errorf("%w: segment %d: %v", ErrIncompatibleFormat, segMeta.ID, err)
+				return nil, fmt.Errorf("%w: segment %d: %w", ErrIncompatibleFormat, segMeta.ID, err)
 			}
 			return nil, fmt.Errorf("failed to open segment %d: %w", segMeta.ID, err)
 		}
@@ -843,41 +842,6 @@ func (e *Engine) init() (*Engine, error) {
 	return e, nil
 }
 
-// loadSegment opens a segment from disk.
-func (e *Engine) loadSegment(sInfo manifest.SegmentInfo) (*flat.Segment, error) {
-	// Open main segment file
-	blob, err := e.store.Open(context.Background(), sInfo.Path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open segment blob: %w", err)
-	}
-
-	// Open optional payload
-	var payloadBlob blobstore.Blob
-	payloadPath := fmt.Sprintf("segment_%d.payload", sInfo.ID)
-	if pb, err := e.store.Open(context.Background(), payloadPath); err == nil {
-		payloadBlob = pb
-	} else if !errors.Is(err, blobstore.ErrNotFound) {
-		return nil, fmt.Errorf("failed to open payload blob: %w", err)
-	}
-
-	opts := []flat.Option{
-		flat.WithBlockCache(e.blockCache),
-		flat.WithPayloadBlob(payloadBlob),
-	}
-
-	// In the future: e.blockCache might need to be passed down.
-	// The flat package might accept cache options.
-
-	seg, err := flat.Open(blob, opts...)
-	if err != nil {
-		if errors.Is(err, flat.ErrInvalidVersion) || errors.Is(err, flat.ErrInvalidMagic) {
-			return nil, fmt.Errorf("%w: segment %d: %v", ErrIncompatibleFormat, sInfo.ID, err)
-		}
-		return nil, err
-	}
-	return seg, nil
-}
-
 func (e *Engine) validateVector(vec []float32) error {
 	if len(vec) != e.dim {
 		return fmt.Errorf("%w: dimension mismatch: expected %d, got %d", ErrInvalidArgument, e.dim, len(vec))
@@ -935,7 +899,7 @@ func (e *Engine) Insert(vec []float32, md metadata.Document, payload []byte) (id
 
 	if e.schema != nil {
 		if err := e.schema.Validate(md); err != nil {
-			return 0, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
+			return 0, fmt.Errorf("%w: %w", ErrInvalidArgument, err)
 		}
 	}
 
@@ -1024,7 +988,7 @@ func (e *Engine) BatchInsert(vectors [][]float32, mds []metadata.Document, paylo
 		}
 		if e.schema != nil && mds != nil && mds[i] != nil {
 			if err := e.schema.Validate(mds[i]); err != nil {
-				return nil, fmt.Errorf("record %d: %w: %v", i, ErrInvalidArgument, err)
+				return nil, fmt.Errorf("record %d: %w: %w", i, ErrInvalidArgument, err)
 			}
 		}
 	}
@@ -1195,7 +1159,7 @@ func (e *Engine) BatchInsertDeferred(vectors [][]float32, mds []metadata.Documen
 		for i, md := range mds {
 			if md != nil {
 				if err := e.schema.Validate(md); err != nil {
-					return nil, fmt.Errorf("record %d: %w: %v", i, ErrInvalidArgument, err)
+					return nil, fmt.Errorf("record %d: %w: %w", i, ErrInvalidArgument, err)
 				}
 			}
 		}
@@ -1652,7 +1616,7 @@ func (e *Engine) SearchThreshold(ctx context.Context, q []float32, threshold flo
 
 	var filtered []model.Candidate
 	for _, c := range cands {
-		keep := false
+		var keep bool
 		if e.metric == distance.MetricL2 {
 			keep = c.Score <= threshold
 		} else {
@@ -2105,7 +2069,7 @@ func (e *Engine) Flush() (err error) {
 	e.manifest.Segments = append(e.manifest.Segments, manifest.SegmentInfo{
 		ID:       activeID,
 		Level:    0, // L0
-		RowCount: uint32(count),
+		RowCount: count,
 		Path:     filename,
 	})
 	if e.logger != nil {

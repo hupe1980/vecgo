@@ -181,7 +181,7 @@ func (b *s3Blob) ReadAt(p []byte, off int64) (int, error) {
 	defer func() { _ = resp.Body.Close() }() // Intentionally ignore: cleanup path
 
 	n, err := io.ReadFull(resp.Body, p)
-	if err == io.ErrUnexpectedEOF {
+	if errors.Is(err, io.ErrUnexpectedEOF) {
 		if off+int64(n) == b.size {
 			return n, nil
 		}
@@ -226,7 +226,6 @@ type s3WritableBlob struct {
 	done     chan error
 	uploader *manager.Uploader
 	closed   atomic.Bool
-	writeErr error
 }
 
 func (b *s3WritableBlob) Write(p []byte) (int, error) {

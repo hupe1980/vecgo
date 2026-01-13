@@ -97,11 +97,11 @@ func (bs *BlockStats) UnmarshalBinary(data []byte) error {
 		if len(data) < 16 {
 			return errors.New("stats too short")
 		}
-		min := math.Float64frombits(binary.LittleEndian.Uint64(data[:8]))
-		max := math.Float64frombits(binary.LittleEndian.Uint64(data[8:16]))
+		minVal := math.Float64frombits(binary.LittleEndian.Uint64(data[:8]))
+		maxVal := math.Float64frombits(binary.LittleEndian.Uint64(data[8:16]))
 		data = data[16:]
 
-		bs.Fields[key] = segment.FieldStats{Min: min, Max: max}
+		bs.Fields[key] = segment.FieldStats{Min: minVal, Max: maxVal}
 	}
 	return nil
 }

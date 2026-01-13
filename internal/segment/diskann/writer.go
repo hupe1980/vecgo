@@ -426,9 +426,6 @@ func (w *Writer) greedySearch(query []float32, startNode uint32, l int) []uint32
 	visited := make(map[uint32]bool)
 	visited[startNode] = true
 
-	candidates := make([]distNode, 0, l*2)
-	candidates = append(candidates, distNode{id: startNode, dist: w.dist(w.vectors[startNode], query)})
-
 	// Use a heap for best candidates
 	// For construction, we just need a set of candidates.
 	// Standard greedy search:
@@ -459,7 +456,7 @@ func (w *Writer) greedySearch(query []float32, startNode uint32, l int) []uint32
 		sortDistNodes(pool)
 
 		// Find closest unexpanded
-		var currIdx int = -1
+		currIdx := -1
 		for i := range pool {
 			if !expanded[pool[i].id] {
 				currIdx = i
@@ -722,7 +719,7 @@ func (w *Writer) Flush() error {
 	pkBlob.Grow(len(w.ids) * 8)
 
 	for _, id := range w.ids {
-		binary.Write(&pkBlob, binary.LittleEndian, uint64(id))
+		_ = binary.Write(&pkBlob, binary.LittleEndian, uint64(id)) // bytes.Buffer.Write never fails
 	}
 
 	// Write Blob
@@ -766,7 +763,7 @@ func (w *Writer) Flush() error {
 	if err := w.index.WriteInvertedIndex(cw); err != nil {
 		return err
 	}
-	bytesWritten += cw.n
+	_ = bytesWritten + cw.n // bytesWritten tracked for debugging but not used after this
 
 	// Flush
 	if err := bw.Flush(); err != nil {

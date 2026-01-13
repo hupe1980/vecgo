@@ -75,13 +75,13 @@ func (r *RNG) FillUniform(dst []float32) {
 	}
 }
 
-// FillUniformRange fills dst with random values in range [min, max).
-func (r *RNG) FillUniformRange(dst []float32, min, max float32) {
+// FillUniformRange fills dst with random values in range [minVal, maxVal).
+func (r *RNG) FillUniformRange(dst []float32, minVal, maxVal float32) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	span := max - min
+	span := maxVal - minVal
 	for i := range dst {
-		dst[i] = min + r.rand.Float32()*span
+		dst[i] = minVal + r.rand.Float32()*span
 	}
 }
 
@@ -261,7 +261,7 @@ func BruteForceSearch(vectors [][]float32, query []float32, k int) []SearchResul
 
 	for i, v := range vectors {
 		d := simd.SquaredL2(query, v)
-		results[i] = result{id: uint64(i), dist: d} //nolint:gosec
+		results[i] = result{id: uint64(i), dist: d}
 	}
 
 	sort.Slice(results, func(i, j int) bool {

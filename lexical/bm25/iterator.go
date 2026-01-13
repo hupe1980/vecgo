@@ -7,15 +7,6 @@ type termIterator struct {
 	idf      float64
 }
 
-// newTermIterator creates a new iterator for the given postings.
-func newTermIterator(postings []posting, idf float64) *termIterator {
-	return &termIterator{
-		postings: postings,
-		idx:      0,
-		idf:      idf,
-	}
-}
-
 // doc returns the current docID. Returns max uint32 if exhausted.
 func (it *termIterator) doc() uint32 {
 	if it.idx >= len(it.postings) {
@@ -35,13 +26,4 @@ func (it *termIterator) count() uint32 {
 // next advances to the next posting.
 func (it *termIterator) next() {
 	it.idx++
-}
-
-// advance moves to the first posting with docID >= target.
-func (it *termIterator) advance(target uint32) {
-	// Simple linear scan for now.
-	// Optimization: Use binary search or skipping if postings are large.
-	for it.doc() < target {
-		it.next()
-	}
 }

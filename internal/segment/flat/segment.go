@@ -9,15 +9,15 @@ import (
 	"unsafe"
 
 	"github.com/hupe1980/vecgo/blobstore"
-	"github.com/hupe1980/vecgo/internal/cache"
 	"github.com/hupe1980/vecgo/distance"
+	"github.com/hupe1980/vecgo/internal/cache"
 	"github.com/hupe1980/vecgo/internal/kmeans"
 	imetadata "github.com/hupe1980/vecgo/internal/metadata"
+	"github.com/hupe1980/vecgo/internal/quantization"
 	"github.com/hupe1980/vecgo/internal/searcher"
 	"github.com/hupe1980/vecgo/internal/segment"
 	"github.com/hupe1980/vecgo/metadata"
 	"github.com/hupe1980/vecgo/model"
-	"github.com/hupe1980/vecgo/internal/quantization"
 )
 
 // Segment implements an immutable flat segment.
@@ -456,7 +456,7 @@ func (s *Segment) Search(ctx context.Context, q []float32, k int, filter segment
 							continue
 						}
 						if opts.Filter != nil {
-							var fs *metadata.FilterSet = opts.Filter
+							fs := opts.Filter
 							if !matchesFilterSet(fs, stats) {
 								i += BlockSize
 								continue
@@ -472,7 +472,9 @@ func (s *Segment) Search(ctx context.Context, q []float32, k int, filter segment
 				count := limit - i
 
 				batchCodes := s.codes[i*dim : limit*dim]
-				s.sq.L2DistanceBatch(q, batchCodes, count, batchScores[:count])
+				if err := s.sq.L2DistanceBatch(q, batchCodes, count, batchScores[:count]); err != nil {
+					return err
+				}
 
 				for j := 0; j < count; j++ {
 					idx := i + j
@@ -531,7 +533,7 @@ func (s *Segment) Search(ctx context.Context, q []float32, k int, filter segment
 						continue
 					}
 					if opts.Filter != nil {
-						var fs *metadata.FilterSet = opts.Filter
+						fs := opts.Filter
 						if !matchesFilterSet(fs, stats) {
 							i += BlockSize
 							continue
@@ -733,7 +735,7 @@ func (s *Segment) Fetch(ctx context.Context, rows []uint32, cols []string) (segm
 		}
 
 		// Fetch Metadata
-		if fetchMetadata && len(s.metadataOffsets) > 0 && uint32(rowID) < uint32(len(s.metadataOffsets)-1) {
+		if fetchMetadata && len(s.metadataOffsets) > 0 && rowID < uint32(len(s.metadataOffsets)-1) {
 			start := s.metadataOffsets[rowID]
 			end := s.metadataOffsets[rowID+1]
 			size := end - start
@@ -748,7 +750,7 @@ func (s *Segment) Fetch(ctx context.Context, rows []uint32, cols []string) (segm
 		}
 
 		// Fetch Payload
-		if fetchPayloads && s.payloadBlob != nil && uint32(rowID) < s.payloadCount {
+		if fetchPayloads && s.payloadBlob != nil && rowID < s.payloadCount {
 			start := s.payloadOffsets[rowID]
 			end := s.payloadOffsets[rowID+1]
 			size := end - start

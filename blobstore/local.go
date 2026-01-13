@@ -30,7 +30,7 @@ func (s *LocalStore) Open(ctx context.Context, name string) (Blob, error) {
 	m, err := mmap.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("%w: %v", ErrNotFound, err)
+			return nil, fmt.Errorf("%w: %w", ErrNotFound, err)
 		}
 		return nil, err
 	}
@@ -147,12 +147,12 @@ func (b *localBlob) ReadAt(p []byte, off int64) (n int, err error) {
 	return n, nil
 }
 
-func (b *localBlob) ReadRange(off, len int64) (io.ReadCloser, error) {
+func (b *localBlob) ReadRange(off, length int64) (io.ReadCloser, error) {
 	data := b.m.Bytes()
 	if off < 0 || off >= int64(cap(data)) {
 		return io.NopCloser(bytes.NewReader(nil)), io.EOF
 	}
-	end := off + len
+	end := off + length
 	if end > int64(cap(data)) {
 		end = int64(cap(data))
 	}

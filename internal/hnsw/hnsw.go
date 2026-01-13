@@ -485,9 +485,9 @@ func (h *HNSW) addConnection(ctx context.Context, s *searcher.Searcher, scratch 
 
 	if len(conns) < maxM {
 		return h.addConnectionSimple(ctx, g, sourceID, level, conns, targetID, dist)
-	} else {
-		return h.addConnectionPrune(ctx, s, scratch, g, sourceID, level, conns, targetID, dist, maxM)
 	}
+
+	return h.addConnectionPrune(ctx, s, scratch, g, sourceID, level, conns, targetID, dist, maxM)
 }
 
 func (h *HNSW) addConnectionSimple(ctx context.Context, g *graph, sourceID model.RowID, level int, conns []Neighbor, targetID model.RowID, dist float32) error {
@@ -844,7 +844,7 @@ func (h *HNSW) determineLayer(id model.RowID, layer int, useProvidedID bool) int
 	}
 	// Lock-free RNG using xorshift64* algorithm
 	// This is much faster than mutex-protected rand.Rand
-	seed := h.rngSeed.Add(0x9E3779B97f4A7C15) // Golden ratio prime
+	seed := h.rngSeed.Add(0x9E3779B97F4A7C15) // Golden ratio prime
 	seed ^= seed >> 12
 	seed ^= seed << 25
 	seed ^= seed >> 27
@@ -859,7 +859,7 @@ func (h *HNSW) performInsertion(ctx context.Context, g *graph, id model.RowID, v
 		if g.countAtomic.Load() == 0 {
 			if g.countAtomic.CompareAndSwap(0, 1) {
 				g.entryPointAtomic.Store(uint32(id))
-				g.maxLevelAtomic.Store(int32(layer)) //nolint:gosec // layer is small
+				g.maxLevelAtomic.Store(int32(layer))
 				return true, nil
 			}
 			// Lost race, continue
@@ -891,7 +891,7 @@ func (h *HNSW) updateEntryPoint(g *graph, id model.RowID, layer int) {
 			if layer <= int(oldMax) {
 				break
 			}
-			if g.maxLevelAtomic.CompareAndSwap(oldMax, int32(layer)) { //nolint:gosec // layer is small
+			if g.maxLevelAtomic.CompareAndSwap(oldMax, int32(layer)) {
 				g.entryPointAtomic.Store(uint32(id))
 				break
 			}
@@ -1790,7 +1790,7 @@ func (g *graph) checkAndSetEntryPoint(node Node, i, j int) bool {
 
 	if !g.tombstones.Test(idU32) {
 		g.entryPointAtomic.Store(idU32)
-		g.maxLevelAtomic.Store(int32(node.Level(g.arena))) //nolint:gosec // level is small
+		g.maxLevelAtomic.Store(int32(node.Level(g.arena)))
 		return true
 	}
 	return false

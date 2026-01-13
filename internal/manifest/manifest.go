@@ -164,7 +164,10 @@ func (s *Store) ListVersions(ctx context.Context) ([]*Manifest, error) {
 		if filepath.Ext(f) == ".json" {
 			m = &Manifest{}
 			content, _ := io.ReadAll(io.NewSectionReader(b, 0, b.Size()))
-			json.Unmarshal(content, m)
+			if err := json.Unmarshal(content, m); err != nil {
+				b.Close()
+				continue
+			}
 		} else {
 			m, _ = ReadBinary(io.NewSectionReader(b, 0, b.Size()))
 		}

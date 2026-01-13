@@ -126,7 +126,7 @@ func applyRotation(u, v [][]float32, m, n, i, j int, alpha, beta, gamma float32)
 // Returns R.
 func computeProcrustesRotation(mMatrix [][]float32) ([][]float32, error) {
 	if len(mMatrix) == 0 || len(mMatrix) != len(mMatrix[0]) {
-		return nil, fmt.Errorf("Procrustes requires square matrix")
+		return nil, fmt.Errorf("procrustes requires square matrix")
 	}
 
 	u, sigma, v := svd(mMatrix)

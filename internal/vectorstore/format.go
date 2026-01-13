@@ -75,12 +75,12 @@ func (h *FileHeader) HasVersions() bool {
 
 // VectorDataSize returns the size of the vector data section in bytes.
 func (h *FileHeader) VectorDataSize() int64 {
-	return int64(h.Count) * int64(h.Dimension) * 4 //nolint:gosec
+	return int64(h.Count) * int64(h.Dimension) * 4
 }
 
 // BitmapSize returns the size of the deletion bitmap in bytes.
 func (h *FileHeader) BitmapSize() int64 {
-	return (int64(h.Count) + 7) / 8 //nolint:gosec
+	return (int64(h.Count) + 7) / 8
 }
 
 // VersionDataSize returns the size of the version data section in bytes.
@@ -88,7 +88,7 @@ func (h *FileHeader) VersionDataSize() int64 {
 	if !h.HasVersions() {
 		return 0
 	}
-	return int64(h.Count) * 8 //nolint:gosec
+	return int64(h.Count) * 8
 }
 
 // TotalSize returns the total file size in bytes.

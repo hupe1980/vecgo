@@ -84,21 +84,8 @@ func (s *PagedIDStore) Append(id model.ID) {
 		newPages = append(newPages, new([pageSize]model.ID))
 		s.pages.Store(&newPages)
 		pages = newPages // Update local view
-	} else if pages[pageIdx] == nil {
-		// Just in case we didn't allocate it? (Should happen in block above usually)
-		// But if we pre-grow?
-		// For Append, we strictly grow.
-		// Wait, if len(pages) > pageIdx, we might still have nil?
-		// In previous logic, we append.
-		// If we are strictly appending, pageIdx should match len(pages) only when full?
-		// No. pageIdx == len(pages) means we need a new page.
-		// If pageIdx < len(pages), valid page exists?
-		// Let's assume strict sequential fill.
 	}
-
-	// Verify page exists
-	// We allocated it above if pageIdx >= len(pages).
-	// But what if it was 0 length? Handled.
+	// Note: pages[pageIdx] == nil is unreachable with strict sequential append pattern
 
 	// Write
 	pages[pageIdx][offset] = id

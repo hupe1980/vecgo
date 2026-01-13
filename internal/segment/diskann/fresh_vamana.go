@@ -605,79 +605,6 @@ func (fv *FreshVamana) greedySearch(ctx context.Context, query []float32, ep uin
 	return results
 }
 
-// searchCandidates searches for insert candidates (includes deleted for navigation).
-func (fv *FreshVamana) searchCandidates(ctx context.Context, vec []float32, ep uint32, ef int) []searchCandidate {
-	// Check closed state
-	fv.closedMu.RLock()
-	if fv.closed {
-		fv.closedMu.RUnlock()
-		return nil
-	}
-	fv.closedMu.RUnlock()
-
-	visited := make(map[uint32]bool, ef*2)
-	candidates := make([]searchCandidate, 0, ef)
-	results := make([]searchCandidate, 0, ef)
-
-	epVec, ok := fv.getVectorSafe(ep)
-	if !ok {
-		return nil
-	}
-	startDist := fv.distFunc(vec, epVec)
-	candidates = append(candidates, searchCandidate{nodeID: ep, dist: startDist})
-	if !fv.isDeleted(ep) {
-		results = append(results, searchCandidate{nodeID: ep, dist: startDist})
-	}
-	visited[ep] = true
-
-	for len(candidates) > 0 {
-		select {
-		case <-ctx.Done():
-			return results
-		default:
-		}
-
-		// Check closed state
-		fv.closedMu.RLock()
-		if fv.closed {
-			fv.closedMu.RUnlock()
-			return results
-		}
-		fv.closedMu.RUnlock()
-
-		closest := candidates[0]
-		candidates = candidates[1:]
-
-		if len(results) >= ef && closest.dist > results[len(results)-1].dist {
-			break
-		}
-
-		// Use lock-free neighbor access
-		neighbors := fv.getNeighborsSafe(closest.nodeID)
-		for _, n := range neighbors {
-			if visited[n] {
-				continue
-			}
-			visited[n] = true
-
-			nVec, ok := fv.getVectorSafe(n)
-			if !ok {
-				continue
-			}
-			dist := fv.distFunc(vec, nVec)
-			c := searchCandidate{nodeID: n, dist: dist}
-
-			candidates = insertCandidate(candidates, c, ef*2)
-
-			if !fv.isDeleted(n) {
-				results = insertCandidate(results, c, ef)
-			}
-		}
-	}
-
-	return results
-}
-
 // searchCandidatesLocked searches for insert candidates. Caller must hold growMu.
 func (fv *FreshVamana) searchCandidatesLocked(ctx context.Context, vec []float32, ep uint32, ef int) []searchCandidate {
 	data := fv.data.Load()
@@ -917,7 +844,7 @@ func (fv *FreshVamana) consolidate(ctx context.Context) {
 			fv.growMu.Lock()
 
 			data := fv.data.Load()
-			if data == nil || int(i) >= len(data.vectors) {
+			if data == nil || i >= len(data.vectors) {
 				fv.growMu.Unlock()
 				continue
 			}

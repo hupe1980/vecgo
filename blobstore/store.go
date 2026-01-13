@@ -43,7 +43,7 @@ type Blob interface {
 	Size() int64
 	// ReadRange reads a range of bytes from the blob.
 	// This makes it easier to optimize for range requests (e.g. S3 Range header).
-	ReadRange(off, len int64) (io.ReadCloser, error)
+	ReadRange(off, length int64) (io.ReadCloser, error)
 }
 
 // Mappable is an optional interface for Blobs that support memory mapping.

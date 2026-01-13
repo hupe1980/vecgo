@@ -55,17 +55,17 @@ func main() {
 	}
 
 	gen := &Generator{
-		SourcePath: sourcePath,
-		OutputDir:  outputDir,
-		Verbose:    *verbose,
-		OptLevel:   *optimize,
-		Arch:       *arch,
-		OS:         *goos,
-		NoTail:     *noTail,
+		SourcePath:  sourcePath,
+		OutputDir:   outputDir,
+		Verbose:     *verbose,
+		OptLevel:    *optimize,
+		Arch:        *arch,
+		OS:          *goos,
+		NoTail:      *noTail,
 		EmitGoStubs: *emitGoStubs,
-		AllowReloc: *allowRelocs,
-		KeepTemp:   *keepTemp,
-		Defines:    append([]string(nil), defines...),
+		AllowReloc:  *allowRelocs,
+		KeepTemp:    *keepTemp,
+		Defines:     append([]string(nil), defines...),
 	}
 
 	if err := gen.Generate(); err != nil {
@@ -84,11 +84,11 @@ type Generator struct {
 	Arch       string
 	OS         string
 
-	NoTail     bool
+	NoTail      bool
 	EmitGoStubs bool
-	AllowReloc bool
-	KeepTemp   bool
-	Defines    []string
+	AllowReloc  bool
+	KeepTemp    bool
+	Defines     []string
 }
 
 type multiFlag []string
@@ -214,7 +214,7 @@ func (g *Generator) parseCFunctions() (map[string]*FunctionSignature, error) {
 			ArgOffsets: make(map[string]int),
 		}
 
-		if paramsStr != "" && paramsStr != "void" {
+		if paramsStr != "" && paramsStr != "void" { //nolint:goconst // inline string is clearer in code generator
 			params := strings.Split(paramsStr, ",")
 			offset := 0
 			for _, p := range params {
@@ -444,7 +444,7 @@ func (g *Generator) validateNoRelocations(objPath string) error {
 // ------------------------------------------------------------
 
 func (g *Generator) parseAssembly(asmPath string) (map[string]*Function, error) {
-	file, err := os.Open(asmPath) //nolint:gosec // generator tool
+	file, err := os.Open(asmPath)
 	if err != nil {
 		return nil, err
 	}

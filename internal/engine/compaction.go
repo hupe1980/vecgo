@@ -117,7 +117,7 @@ func (e *Engine) CompactWithContext(ctx context.Context, segmentIDs []model.Segm
 
 	var writer io.Writer = f
 	if e.resourceController != nil {
-		writer = resource.NewRateLimitedWriter(f, e.resourceController, ctx)
+		writer = resource.NewRateLimitedWriter(ctx, f, e.resourceController)
 	}
 
 	var (
@@ -199,7 +199,7 @@ func (e *Engine) CompactWithContext(ctx context.Context, segmentIDs []model.Segm
 
 		err := seg.Iterate(func(rowID uint32, id model.ID, vec []float32, md metadata.Document, payload []byte) error {
 			// Check tombstone (snapshot)
-			if ts != nil && ts.Contains(uint32(rowID)) {
+			if ts != nil && ts.Contains(rowID) {
 				return nil // Skip deleted
 			}
 

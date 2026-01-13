@@ -147,7 +147,7 @@ func New(chunkSize int, opts ...Option) (*Arena, error) {
 	}
 
 	// Round up to next power of 2 for efficient bitwise operations
-	chunkBits := bits.Len(uint(chunkSize - 1)) //nolint:gosec // chunkSize > 0
+	chunkBits := bits.Len(uint(chunkSize - 1))
 	// If chunkSize is already a power of 2, bits.Len(chunkSize-1) is correct.
 	// Example: 1024 (10000000000) -> 1023 (1111111111) -> Len=10. 1<<10 = 1024. Correct.
 	// Example: 1025 -> 1024 -> Len=11. 1<<11 = 2048. Correct.
@@ -411,19 +411,16 @@ func (a *Arena) Get(offset uint64) unsafe.Pointer {
 		return nil
 	}
 
-	return unsafe.Add(unsafe.Pointer(&c.data[0]), chunkOffset) //nolint:gosec // unsafe is required for arena implementation
+	return unsafe.Add(unsafe.Pointer(&c.data[0]), chunkOffset)
 }
 
 // AllocPointer allocates memory for a struct of the given size and alignment.
-func (a *Arena) AllocPointer(size, align int) (unsafe.Pointer, error) {
-	if align <= 0 {
-		align = a.alignment
-	}
+func (a *Arena) AllocPointer(size, _ int) (unsafe.Pointer, error) {
 	_, bytes, err := a.Alloc(size)
 	if err != nil {
 		return nil, err
 	}
-	return unsafe.Pointer(&bytes[0]), nil //nolint:gosec // unsafe is required for arena implementation
+	return unsafe.Pointer(&bytes[0]), nil
 }
 
 // AllocBytes allocates a byte slice of the given size.
@@ -444,7 +441,7 @@ func (a *Arena) AllocUint32Slice(capacity int) ([]uint32, error) {
 		return nil, err
 	}
 
-	return unsafe.Slice((*uint32)(unsafe.Pointer(&bytes[0])), capacity)[:0:capacity], nil //nolint:gosec // unsafe is required for arena implementation
+	return unsafe.Slice((*uint32)(unsafe.Pointer(&bytes[0])), capacity)[:0:capacity], nil
 }
 
 // AllocFloat32Slice allocates a float32 slice of the given capacity.
@@ -459,7 +456,7 @@ func (a *Arena) AllocFloat32Slice(capacity int) ([]float32, error) {
 		return nil, err
 	}
 
-	return unsafe.Slice((*float32)(unsafe.Pointer(&bytes[0])), capacity)[:0:capacity], nil //nolint:gosec // unsafe is required for arena implementation
+	return unsafe.Slice((*float32)(unsafe.Pointer(&bytes[0])), capacity)[:0:capacity], nil
 }
 
 // Stats returns the current arena statistics.

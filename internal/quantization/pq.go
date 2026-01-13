@@ -132,7 +132,7 @@ func (pq *ProductQuantizer) Train(vectors [][]float32) error {
 				if val > 255 {
 					val = 255
 				}
-				q := int8(val - 128) //nolint:gosec
+				q := int8(val - 128)
 				pq.codebooks[baseOffset+i] = q
 			}
 		}(m)
@@ -170,7 +170,7 @@ func (pq *ProductQuantizer) Encode(vec []float32) ([]byte, error) {
 		offset := pq.offsets[m]
 
 		nearestIdx := pq.findNearestQuantizedCentroid(subvec, pq.codebooks[codebookStart:codebookEnd], scale, offset)
-		codes[m] = uint8(nearestIdx) //nolint:gosec
+		codes[m] = uint8(nearestIdx)
 	}
 
 	return codes, nil

@@ -33,26 +33,26 @@ func (q *Int4Quantizer) Train(vectors [][]float32) error {
 
 	q.dim = len(vectors[0])
 	q.min = make([]float32, q.dim)
-	max := make([]float32, q.dim)
+	maxVal := make([]float32, q.dim)
 
 	// Initialize with first vector
 	copy(q.min, vectors[0])
-	copy(max, vectors[0])
+	copy(maxVal, vectors[0])
 
 	for _, v := range vectors[1:] {
 		for i, val := range v {
 			if val < q.min[i] {
 				q.min[i] = val
 			}
-			if val > max[i] {
-				max[i] = val
+			if val > maxVal[i] {
+				maxVal[i] = val
 			}
 		}
 	}
 
 	q.diff = make([]float32, q.dim)
 	for i := 0; i < q.dim; i++ {
-		q.diff[i] = max[i] - q.min[i]
+		q.diff[i] = maxVal[i] - q.min[i]
 		if q.diff[i] == 0 {
 			q.diff[i] = 1.0 // Avoid division by zero
 		}

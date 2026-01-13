@@ -10,10 +10,10 @@ import (
 
 	"github.com/hupe1980/vecgo/distance"
 	"github.com/hupe1980/vecgo/internal/kmeans"
+	"github.com/hupe1980/vecgo/internal/quantization"
 	"github.com/hupe1980/vecgo/internal/segment"
 	"github.com/hupe1980/vecgo/metadata"
 	"github.com/hupe1980/vecgo/model"
-	"github.com/hupe1980/vecgo/internal/quantization"
 )
 
 // Writer builds a flat segment.
@@ -154,7 +154,7 @@ func (w *Writer) Flush() error {
 	var pqCodebooks []int8
 	var pqScales, pqOffsets []float32
 	var codes []byte
-	var quantType uint8 = uint8(w.quantType)
+	quantType := uint8(w.quantType)
 
 	if w.quantType != QuantizationNone && rowCount > 0 {
 		// Prepare vectors for training

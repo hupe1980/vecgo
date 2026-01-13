@@ -43,7 +43,7 @@ func fromInt(v any) (Value, error) {
 	case int64:
 		return Int(x), nil
 	case uint:
-		return Int(int64(x)), nil //nolint:gosec
+		return Int(int64(x)), nil
 	case uint8:
 		return Int(int64(x)), nil
 	case uint16:

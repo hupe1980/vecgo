@@ -2,6 +2,7 @@ package blobstore
 
 import (
 	"context"
+	"errors"
 	"io"
 
 	"github.com/hupe1980/vecgo/internal/cache"
@@ -215,7 +216,7 @@ func (b *CachingBlob) fillCache(startBlock, endBlock int64) error {
 			// Use a new buffer for each read
 			buf := make([]byte, byteSize)
 			n, err := b.inner.ReadAt(buf, byteStart)
-			if err != nil && err != io.EOF {
+			if err != nil && !errors.Is(err, io.EOF) {
 				return err
 			}
 			if n == 0 {
@@ -275,7 +276,7 @@ func (b *CachingBlob) dofetchBlock(blkIdx int64) ([]byte, error) {
 
 	// ReadAt might return fewer bytes if EOF is reached
 	n, err := b.inner.ReadAt(buf, offset)
-	if err != nil && err != io.EOF {
+	if err != nil && !errors.Is(err, io.EOF) {
 		return nil, err
 	}
 
@@ -297,22 +298,8 @@ func (b *CachingBlob) dofetchBlock(blkIdx int64) ([]byte, error) {
 // ReadRange optimizes for larger reads by bypassing cache or pre-warming?
 // For now, simpler implementation: utilize the generic ReadRange which usually calls ReadAt.
 // OR, we can just use the default implementation or delegate to ReadAt loop.
-func (b *CachingBlob) ReadRange(off, len int64) (io.ReadCloser, error) {
+func (b *CachingBlob) ReadRange(off, length int64) (io.ReadCloser, error) {
 	// TODO: For very large ranges, we might bypass cache to avoid thrashing?
 	// For now, just use SectionReader which calls ReadAt.
-	return io.NopCloser(io.NewSectionReader(b, off, len)), nil
-}
-
-func max(a, b int64) int64 {
-	if a > b {
-		return a
-	}
-	return b
-}
-
-func min(a, b int64) int64 {
-	if a < b {
-		return a
-	}
-	return b
+	return io.NopCloser(io.NewSectionReader(b, off, length)), nil
 }

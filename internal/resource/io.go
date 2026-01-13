@@ -14,7 +14,7 @@ type RateLimitedWriter struct {
 }
 
 // NewRateLimitedWriter creates a new RateLimitedWriter.
-func NewRateLimitedWriter(w io.Writer, rc *Controller, ctx context.Context) *RateLimitedWriter {
+func NewRateLimitedWriter(ctx context.Context, w io.Writer, rc *Controller) *RateLimitedWriter {
 	return &RateLimitedWriter{
 		w:   w,
 		rc:  rc,
@@ -45,7 +45,7 @@ type RateLimitedReader struct {
 }
 
 // NewRateLimitedReader creates a new RateLimitedReader.
-func NewRateLimitedReader(r io.Reader, rc *Controller, ctx context.Context) *RateLimitedReader {
+func NewRateLimitedReader(ctx context.Context, r io.Reader, rc *Controller) *RateLimitedReader {
 	return &RateLimitedReader{
 		r:   r,
 		rc:  rc,

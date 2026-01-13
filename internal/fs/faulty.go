@@ -72,7 +72,7 @@ func (f *FaultyFS) OpenFile(name string, flag int, perm os.FileMode) (File, erro
 	}
 
 	f.mu.Lock()
-	var fault Fault = f.Default
+	fault := f.Default
 	// Match pattern (last winning match)
 	for pattern, rule := range f.rules {
 		if strings.Contains(name, pattern) {

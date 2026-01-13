@@ -22,14 +22,14 @@ func init() {
 	int4L2DistanceBatchImpl = int4L2DistanceBatchNEON
 }
 
-func int4L2DistanceNEON(query []float32, code []byte, min, diff []float32) float32 {
+func int4L2DistanceNEON(query []float32, code []byte, minVal, diff []float32) float32 {
 	var ret float32
 	if len(query) > 0 {
 		int4L2DistanceNeon(
 			unsafe.Pointer(&query[0]),
 			unsafe.Pointer(&code[0]),
 			int64(len(query)),
-			unsafe.Pointer(&min[0]),
+			unsafe.Pointer(&minVal[0]),
 			unsafe.Pointer(&diff[0]),
 			unsafe.Pointer(&ret),
 		)
@@ -51,14 +51,14 @@ func int4L2DistancePrecomputedNEON(query []float32, code []byte, lookupTable []f
 	return ret
 }
 
-func int4L2DistanceBatchNEON(query []float32, codes []byte, dim, n int, min, diff []float32, out []float32) {
+func int4L2DistanceBatchNEON(query []float32, codes []byte, dim, n int, minVal, diff []float32, out []float32) {
 	if len(query) > 0 && n > 0 {
 		int4L2DistanceBatchNeon(
 			unsafe.Pointer(&query[0]),
 			unsafe.Pointer(&codes[0]),
 			int64(dim),
 			int64(n),
-			unsafe.Pointer(&min[0]),
+			unsafe.Pointer(&minVal[0]),
 			unsafe.Pointer(&diff[0]),
 			unsafe.Pointer(&out[0]),
 		)
@@ -67,14 +67,14 @@ func int4L2DistanceBatchNEON(query []float32, codes []byte, dim, n int, min, dif
 
 // SVE2 implementations
 
-func int4L2DistanceSVE2(query []float32, code []byte, min, diff []float32) float32 {
+func int4L2DistanceSVE2(query []float32, code []byte, minVal, diff []float32) float32 {
 	var ret float32
 	if len(query) > 0 {
 		int4L2DistanceSve2(
 			unsafe.Pointer(&query[0]),
 			unsafe.Pointer(&code[0]),
 			int64(len(query)),
-			unsafe.Pointer(&min[0]),
+			unsafe.Pointer(&minVal[0]),
 			unsafe.Pointer(&diff[0]),
 			unsafe.Pointer(&ret),
 		)
@@ -96,14 +96,14 @@ func int4L2DistancePrecomputedSVE2(query []float32, code []byte, lookupTable []f
 	return ret
 }
 
-func int4L2DistanceBatchSVE2(query []float32, codes []byte, dim, n int, min, diff []float32, out []float32) {
+func int4L2DistanceBatchSVE2(query []float32, codes []byte, dim, n int, minVal, diff []float32, out []float32) {
 	if len(query) > 0 && n > 0 {
 		int4L2DistanceBatchSve2(
 			unsafe.Pointer(&query[0]),
 			unsafe.Pointer(&codes[0]),
 			int64(dim),
 			int64(n),
-			unsafe.Pointer(&min[0]),
+			unsafe.Pointer(&minVal[0]),
 			unsafe.Pointer(&diff[0]),
 			unsafe.Pointer(&out[0]),
 		)

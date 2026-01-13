@@ -120,7 +120,7 @@ func Open(backend Backend, opts ...Option) (*DB, error) {
 //	    Build()
 //	id, err := db.InsertRecord(rec)
 func (db *DB) InsertRecord(rec Record) (ID, error) {
-	return db.Engine.Insert(rec.Vector, rec.Metadata, rec.Payload)
+	return db.Insert(rec.Vector, rec.Metadata, rec.Payload)
 }
 
 // BatchInsertRecords inserts multiple records in a single batch.
@@ -140,7 +140,7 @@ func (db *DB) BatchInsertRecords(records []Record) ([]ID, error) {
 		payloads[i] = rec.Payload
 	}
 
-	return db.Engine.BatchInsert(vectors, mds, payloads)
+	return db.BatchInsert(vectors, mds, payloads)
 }
 
 // NewRecord creates a new RecordBuilder for fluent record construction.

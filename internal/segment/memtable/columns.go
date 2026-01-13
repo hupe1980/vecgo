@@ -21,10 +21,10 @@ type intColumn struct {
 	valid []bool
 }
 
-func newIntColumn(cap int) *intColumn {
+func newIntColumn(capacity int) *intColumn {
 	return &intColumn{
-		data:  make([]int64, 0, cap),
-		valid: make([]bool, 0, cap),
+		data:  make([]int64, 0, capacity),
+		valid: make([]bool, 0, capacity),
 	}
 }
 
@@ -103,10 +103,10 @@ type floatColumn struct {
 	valid []bool
 }
 
-func newFloatColumn(cap int) *floatColumn {
+func newFloatColumn(capacity int) *floatColumn {
 	return &floatColumn{
-		data:  make([]float64, 0, cap),
-		valid: make([]bool, 0, cap),
+		data:  make([]float64, 0, capacity),
+		valid: make([]bool, 0, capacity),
 	}
 }
 
@@ -198,10 +198,10 @@ type stringColumn struct {
 	valid []bool
 }
 
-func newStringColumn(cap int) *stringColumn {
+func newStringColumn(capacity int) *stringColumn {
 	return &stringColumn{
-		data:  make([]unique.Handle[string], 0, cap),
-		valid: make([]bool, 0, cap),
+		data:  make([]unique.Handle[string], 0, capacity),
+		valid: make([]bool, 0, capacity),
 	}
 }
 
@@ -270,10 +270,10 @@ type boolColumn struct {
 	valid []bool
 }
 
-func newBoolColumn(cap int) *boolColumn {
+func newBoolColumn(capacity int) *boolColumn {
 	return &boolColumn{
-		data:  make([]bool, 0, cap),
-		valid: make([]bool, 0, cap),
+		data:  make([]bool, 0, capacity),
+		valid: make([]bool, 0, capacity),
 	}
 }
 

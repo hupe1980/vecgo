@@ -72,7 +72,7 @@ func findNearestCentroidInt8Generic(querySubvec []float32, codebook []int8, subd
 	}
 
 	bestIdx := 0
-	bestDist := float32(0)
+	var bestDist float32
 	{
 		c0 := codebook[:subdim]
 		bestDist = squaredL2Int8DequantizedGeneric(querySubvec, c0, scale, offset)

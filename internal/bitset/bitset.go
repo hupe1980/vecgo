@@ -310,7 +310,7 @@ func (b *BitSet) WriteTo(w io.Writer) (int64, error) {
 
 	for i := uint32(0); i < numWords; i++ {
 		bitIdx := uint64(i) * 64
-		segIdx := int(bitIdx >> segmentBits) //nolint:gosec // segment index fits in int
+		segIdx := int(bitIdx >> segmentBits)
 
 		var val uint64
 		if segIdx < len(*segments) {
@@ -352,7 +352,7 @@ func (b *BitSet) ReadFrom(r io.Reader) (int64, error) {
 		}
 
 		bitIdx := uint64(i) * 64
-		segIdx := int(bitIdx >> segmentBits) //nolint:gosec // segment index fits in int
+		segIdx := int(bitIdx >> segmentBits)
 		if segments != nil && segIdx < len(*segments) {
 			seg := (*segments)[segIdx]
 			if seg != nil {

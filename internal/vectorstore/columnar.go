@@ -601,7 +601,7 @@ func (s *ColumnarStore) Compact() (map[model.RowID]model.RowID, error) {
 
 	dim := int(s.dim)
 	oldData := *s.data.Load()
-	newData := mem.AllocAlignedFloat32(int(s.live) * dim) //nolint:gosec
+	newData := mem.AllocAlignedFloat32(int(s.live) * dim)
 	newData = newData[:0]
 	idMap := make(map[model.RowID]model.RowID, s.live)
 
@@ -616,7 +616,7 @@ func (s *ColumnarStore) Compact() (map[model.RowID]model.RowID, error) {
 			continue
 		}
 
-		start := int(oldID) * dim //nolint:gosec
+		start := int(oldID) * dim
 		end := start + dim
 		newData = append(newData, oldData[start:end]...)
 		idMap[localOldID] = newID
@@ -659,7 +659,7 @@ func (s *ColumnarStore) Iterate(fn func(id model.RowID, vec []float32) bool) {
 			continue
 		}
 
-		start := int(id) * dim //nolint:gosec
+		start := int(id) * dim
 		end := start + dim
 		if end > len(*data) {
 			break
@@ -691,7 +691,7 @@ func (s *ColumnarStore) WriteTo(w io.Writer) (int64, error) {
 		LiveCount:  s.live,
 		DataOffset: HeaderSize,
 	}
-	header.BitmapOff = header.DataOffset + uint64(header.VectorDataSize()) //nolint:gosec
+	header.BitmapOff = header.DataOffset + uint64(header.VectorDataSize())
 
 	var written int64
 
@@ -709,7 +709,7 @@ func (s *ColumnarStore) WriteTo(w io.Writer) (int64, error) {
 	// Write vector data as raw bytes
 	vecData := *data
 	if len(vecData) > 0 {
-		byteSlice := unsafe.Slice((*byte)(unsafe.Pointer(&vecData[0])), len(vecData)*4) //nolint:gosec // unsafe is required for performance
+		byteSlice := unsafe.Slice((*byte)(unsafe.Pointer(&vecData[0])), len(vecData)*4)
 		n, err := mw.Write(byteSlice)
 		written += int64(n)
 		if err != nil {
@@ -779,7 +779,7 @@ func (s *ColumnarStore) ReadFrom(r io.Reader) (int64, error) {
 	vecData := mem.AllocAlignedFloat32(vecSize / 4)
 
 	// Create a byte slice view of the aligned memory
-	vecBytes := unsafe.Slice((*byte)(unsafe.Pointer(&vecData[0])), vecSize) //nolint:gosec // unsafe is required for performance
+	vecBytes := unsafe.Slice((*byte)(unsafe.Pointer(&vecData[0])), vecSize)
 
 	n2, err := io.ReadFull(tr, vecBytes)
 	read += int64(n2)

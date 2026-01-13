@@ -104,45 +104,45 @@ func newShard(id model.SegmentID, shardIdx uint8, dim int, metric distance.Metri
 }
 
 // IncRef increments the reference count.
-func (m *shard) IncRef() {
-	atomic.AddInt64(&m.refs, 1)
+func (s *shard) IncRef() {
+	atomic.AddInt64(&s.refs, 1)
 }
 
 // DecRef decrements the reference count and closes the memtable if it reaches zero.
-func (m *shard) DecRef() {
-	if atomic.AddInt64(&m.refs, -1) == 0 {
-		m.Close()
+func (s *shard) DecRef() {
+	if atomic.AddInt64(&s.refs, -1) == 0 {
+		s.Close()
 	}
 }
 
 // Insert adds a vector to the memtable.
 // Returns the assigned RowID.
-func (m *shard) Insert(id model.ID, vec []float32) (model.RowID, error) {
-	return m.InsertWithPayload(id, vec, nil, nil)
+func (s *shard) Insert(id model.ID, vec []float32) (model.RowID, error) {
+	return s.InsertWithPayload(id, vec, nil, nil)
 }
 
 // InsertDeferred adds a vector without building the HNSW graph (Bulk Load).
-func (m *shard) InsertDeferred(id model.ID, vec []float32, md metadata.Document, payload []byte) (model.RowID, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+func (s *shard) InsertDeferred(id model.ID, vec []float32, md metadata.Document, payload []byte) (model.RowID, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	if m.idx == nil {
+	if s.idx == nil {
 		return 0, fmt.Errorf("memtable is closed")
 	}
 
 	// Insert into HNSW (Deferred Mode)
 	// Note: Arena internally adds timeout if needed, so context.Background() is sufficient here.
 	// This avoids the allocation overhead of context.WithTimeout on every insert.
-	rowID, err := m.idx.InsertDeferred(context.Background(), vec)
+	rowID, err := s.idx.InsertDeferred(context.Background(), vec)
 	if err != nil {
 		return 0, err
 	}
 
 	// Common metadata/payload/ID logic
-	return m.handleInsert(rowID, id, md, payload)
+	return s.handleInsert(rowID, id, md, payload)
 }
 
-func (m *shard) handleInsert(rowID model.RowID, id model.ID, md metadata.Document, payload []byte) (model.RowID, error) {
+func (s *shard) handleInsert(rowID model.RowID, id model.ID, md metadata.Document, payload []byte) (model.RowID, error) {
 	// Intern metadata
 	var interned metadata.InternedDocument
 	if md != nil {
@@ -151,7 +151,7 @@ func (m *shard) handleInsert(rowID model.RowID, id model.ID, md metadata.Documen
 
 	// Check sequence alignment with HNSW
 	idx := int(rowID)
-	expected := m.ids.Count()
+	expected := s.ids.Count()
 
 	if uint64(idx) > expected {
 		// HNSW advanced ahead of us (likely due to failed inserts burning IDs).
@@ -160,11 +160,11 @@ func (m *shard) handleInsert(rowID model.RowID, id model.ID, md metadata.Documen
 		for i := uint64(0); i < gap; i++ {
 			// Mark the skipped ID as deleted in HNSW to ensure it's treated as a tombstone.
 			// Use Background context to ensure cleanup happens even if the current request is tight on time.
-			_ = m.idx.Delete(context.Background(), model.RowID(expected+i))
+			_ = s.idx.Delete(context.Background(), model.RowID(expected+i))
 
-			m.ids.Append(0) // Placeholder ID
-			m.metadata.Append(metadata.InternedDocument{})
-			m.payloads.Append(nil)
+			s.ids.Append(0) // Placeholder ID
+			s.metadata.Append(metadata.InternedDocument{})
+			s.payloads.Append(nil)
 		}
 	} else if uint64(idx) < expected {
 		// This implies HNSW reused an ID we already have committed. Critical failure.
@@ -172,14 +172,14 @@ func (m *shard) handleInsert(rowID model.RowID, id model.ID, md metadata.Documen
 	}
 
 	// Append to Paged Stores (O(1))
-	m.ids.Append(id)
-	m.metadata.Append(interned)
-	m.payloads.Append(payload)
+	s.ids.Append(id)
+	s.metadata.Append(interned)
+	s.payloads.Append(payload)
 
 	// Sync columnar metadata
 	// 1. Sync existing columns
 	targetLen := idx + 1
-	for key, col := range m.columns {
+	for key, col := range s.columns {
 		val, hasVal := md[key]
 		var v metadata.Value
 		if hasVal {
@@ -199,18 +199,16 @@ func (m *shard) handleInsert(rowID model.RowID, id model.ID, md metadata.Documen
 	}
 
 	// 2. Handle new columns
-	if md != nil {
-		for key, val := range md {
-			if _, exists := m.columns[key]; !exists {
-				// Create new column with initial capacity hint
-				col, err := createColumn(val.Kind, 1024)
-				if err == nil {
-					// Grow to current index (fill nulls)
-					col.Grow(idx)
-					// Append current value
-					col.Append(val)
-					m.columns[key] = col
-				}
+	for key, val := range md {
+		if _, exists := s.columns[key]; !exists {
+			// Create new column with initial capacity hint
+			col, err := createColumn(val.Kind, 1024)
+			if err == nil {
+				// Grow to current index (fill nulls)
+				col.Grow(idx)
+				// Append current value
+				col.Append(val)
+				s.columns[key] = col
 			}
 		}
 	}
@@ -218,26 +216,26 @@ func (m *shard) handleInsert(rowID model.RowID, id model.ID, md metadata.Documen
 }
 
 // InsertWithPayload adds a vector and metadata to the memtable.
-func (m *shard) InsertWithPayload(id model.ID, vec []float32, md metadata.Document, payload []byte) (model.RowID, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+func (s *shard) InsertWithPayload(id model.ID, vec []float32, md metadata.Document, payload []byte) (model.RowID, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	if m.idx == nil {
+	if s.idx == nil {
 		return 0, fmt.Errorf("memtable is closed")
 	}
 
 	// Insert into HNSW (this also adds to the vector store via the interface)
 	// Note: Arena internally adds timeout if needed, so context.Background() is sufficient here.
 	// This avoids the allocation overhead of context.WithTimeout on every insert.
-	rowID, err := m.idx.Insert(context.Background(), vec)
+	rowID, err := s.idx.Insert(context.Background(), vec)
 	if err != nil {
 		return 0, err
 	}
 
-	return m.finishInsert(rowID, id, md, payload)
+	return s.finishInsert(rowID, id, md, payload)
 }
 
-func (m *shard) finishInsert(rowID model.RowID, id model.ID, md metadata.Document, payload []byte) (model.RowID, error) {
+func (s *shard) finishInsert(rowID model.RowID, id model.ID, md metadata.Document, payload []byte) (model.RowID, error) {
 	// Intern metadata
 	var interned metadata.InternedDocument
 	if md != nil {
@@ -246,7 +244,7 @@ func (m *shard) finishInsert(rowID model.RowID, id model.ID, md metadata.Documen
 
 	// Check sequence alignment with HNSW
 	idx := int(rowID)
-	expected := m.ids.Count()
+	expected := s.ids.Count()
 
 	if uint64(idx) > expected {
 		// HNSW advanced ahead of us (likely due to failed inserts burning IDs).
@@ -255,11 +253,11 @@ func (m *shard) finishInsert(rowID model.RowID, id model.ID, md metadata.Documen
 		for i := uint64(0); i < gap; i++ {
 			// Mark the skipped ID as deleted in HNSW to ensure it's treated as a tombstone.
 			// Use Background context to ensure cleanup happens even if the current request is tight on time.
-			_ = m.idx.Delete(context.Background(), model.RowID(expected+i))
+			_ = s.idx.Delete(context.Background(), model.RowID(expected+i))
 
-			m.ids.Append(0) // Placeholder ID
-			m.metadata.Append(metadata.InternedDocument{})
-			m.payloads.Append(nil)
+			s.ids.Append(0) // Placeholder ID
+			s.metadata.Append(metadata.InternedDocument{})
+			s.payloads.Append(nil)
 		}
 	} else if uint64(idx) < expected {
 		// This implies HNSW reused an ID we already have committed. Critical failure.
@@ -267,14 +265,14 @@ func (m *shard) finishInsert(rowID model.RowID, id model.ID, md metadata.Documen
 	}
 
 	// Append to Paged Stores (O(1))
-	m.ids.Append(id)
-	m.metadata.Append(interned)
-	m.payloads.Append(payload)
+	s.ids.Append(id)
+	s.metadata.Append(interned)
+	s.payloads.Append(payload)
 
 	// Sync columnar metadata
 	// 1. Sync existing columns
 	targetLen := idx + 1
-	for key, col := range m.columns {
+	for key, col := range s.columns {
 		val, hasVal := md[key]
 		var v metadata.Value
 		if hasVal {
@@ -294,18 +292,16 @@ func (m *shard) finishInsert(rowID model.RowID, id model.ID, md metadata.Documen
 	}
 
 	// 2. Handle new columns
-	if md != nil {
-		for key, val := range md {
-			if _, exists := m.columns[key]; !exists {
-				// Create new column with initial capacity hint
-				col, err := createColumn(val.Kind, 1024)
-				if err == nil {
-					// Grow to current index (fill nulls)
-					col.Grow(idx)
-					// Append current value
-					col.Append(val)
-					m.columns[key] = col
-				}
+	for key, val := range md {
+		if _, exists := s.columns[key]; !exists {
+			// Create new column with initial capacity hint
+			col, err := createColumn(val.Kind, 1024)
+			if err == nil {
+				// Grow to current index (fill nulls)
+				col.Grow(idx)
+				// Append current value
+				col.Append(val)
+				s.columns[key] = col
 			}
 		}
 	}
@@ -363,7 +359,7 @@ func (s *shard) Search(ctx context.Context, q []float32, k int, filter segment.F
 	}
 
 	// Map segment.Filter to HNSW filter
-	var hnswFilter segment.Filter = filter
+	hnswFilter := filter
 
 	// Handle user metadata filter
 	if opts.Filter != nil {
@@ -588,7 +584,7 @@ func (s *shard) Iterate(fn func(rowID uint32, id model.ID, vec []float32, md met
 
 	// Iterate 0..Count
 	for i := uint32(0); i < total; i++ {
-		rowID := uint32(i)
+		rowID := i
 
 		// Check if deleted in HNSW
 		if !s.idx.ContainsID(uint64(rowID)) {

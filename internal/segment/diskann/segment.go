@@ -46,11 +46,10 @@ type Segment struct {
 	payloadOffsets []uint64
 
 	// Helpers
-	pq          *quantization.ProductQuantizer
-	rq          *quantization.RaBitQuantizer
-	iq          *quantization.Int4Quantizer
-	raBitQBytes int
-	distFunc    distance.Func
+	pq       *quantization.ProductQuantizer
+	rq       *quantization.RaBitQuantizer
+	iq       *quantization.Int4Quantizer
+	distFunc distance.Func
 }
 
 // GetID returns the external ID for a given internal row ID.
@@ -165,7 +164,7 @@ func (s *Segment) load() error {
 	if s.verifyChecksum && s.header.Checksum != 0 {
 		// Verify checksum (CRC32C of body)
 		// Only verify if we have data in memory or if explicitly requested (TODO: streaming check)
-		if s.data != nil && len(s.data) > HeaderSize {
+		if len(s.data) > HeaderSize {
 			body := s.data[HeaderSize:]
 			sum := crc32.Checksum(body, crc32.MakeTable(crc32.Castagnoli))
 			if sum != s.header.Checksum {
@@ -498,10 +497,6 @@ func (s *Segment) Search(ctx context.Context, q []float32, k int, filter segment
 }
 
 func (s *Segment) searchInternal(query []float32, k int, l int, filter segment.Filter, metadataFilter interface{}, searcherCtx *searcher.Searcher) error {
-	if l < k {
-		l = k
-	}
-
 	// Metadata filter
 	var metadataFilterFn func(model.RowID) bool
 	if s.index != nil && metadataFilter != nil {
@@ -826,7 +821,7 @@ func (s *Segment) Fetch(ctx context.Context, rows []uint32, cols []string) (segm
 		}
 
 		// Fetch Payload
-		if fetchPayloads && s.payloadBlob != nil && uint32(rowID) < s.payloadCount {
+		if fetchPayloads && s.payloadBlob != nil && rowID < s.payloadCount {
 			start := s.payloadOffsets[rowID]
 			end := s.payloadOffsets[rowID+1]
 			size := end - start
@@ -974,8 +969,8 @@ func (s *Segment) readBlock(offset int64, size int, kind cache.CacheKind) ([]byt
 			// Read aligned page
 			pageStart := page * pageSize
 			readBuf := make([]byte, pageSize)
-			n, err := s.blob.ReadAt(readBuf, int64(pageStart))
-			if err != nil && err != io.EOF {
+			n, err := s.blob.ReadAt(readBuf, pageStart)
+			if err != nil && !errors.Is(err, io.EOF) {
 				return nil, err
 			}
 			if n == 0 {
@@ -989,7 +984,7 @@ func (s *Segment) readBlock(offset int64, size int, kind cache.CacheKind) ([]byt
 		}
 
 		// Calculate overlap
-		pageStart := int64(page * pageSize)
+		pageStart := page * pageSize
 
 		// Intersection of [offset, offset+size) and [pageStart, pageStart+len(pageData))
 
