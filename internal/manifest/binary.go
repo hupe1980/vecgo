@@ -12,7 +12,7 @@ import (
 
 const (
 	binaryMagic   = 0x56454347 // "VECG"
-	binaryVersion = 3
+	binaryVersion = 1          // Version 1: Complete binary format (not released yet)
 )
 
 // WriteBinary writes the manifest in binary format.
@@ -34,12 +34,16 @@ const (
 //	  ID (8 bytes)
 //	  Level (4 bytes)
 //	  RowCount (4 bytes)
+//	  Size (8 bytes)
+//	  MinID (8 bytes)
+//	  MaxID (8 bytes)
 //	  PathLen (2 bytes)
 //	  Path (bytes)
+//	PKIndex.Path (string)
 func (m *Manifest) WriteBinary(w io.Writer) error {
 	// Buffer for payload
-	// Estimate size: 8*5 + 4 + N*(8+4+4+2+64) ~ 44 + N*82
-	payloadSize := 44 + len(m.Segments)*100
+	// Estimate size: 8*5 + 4 + N*(8+4+4+8+8+8+2+64) + 2+64 ~ 50 + N*102 + 66
+	payloadSize := 120 + len(m.Segments)*110
 	buf := make([]byte, 0, payloadSize)
 	pb := newPayloadBuffer(buf)
 
@@ -55,8 +59,13 @@ func (m *Manifest) WriteBinary(w io.Writer) error {
 		pb.writeUint64(uint64(s.ID))
 		pb.writeUint32(uint32(s.Level))
 		pb.writeUint32(s.RowCount)
+		pb.writeUint64(uint64(s.Size))
+		pb.writeUint64(uint64(s.MinID))
+		pb.writeUint64(uint64(s.MaxID))
 		pb.writeString(s.Path)
 	}
+
+	pb.writeString(m.PKIndex.Path)
 
 	payload := pb.buf
 	checksum := crc32.ChecksumIEEE(payload)
@@ -89,7 +98,7 @@ func ReadBinary(r io.Reader) (*Manifest, error) {
 		return nil, fmt.Errorf("invalid magic: %x", magic)
 	}
 	version := binary.LittleEndian.Uint32(header[4:8])
-	if version != 2 && version != 3 {
+	if version != 1 {
 		return nil, fmt.Errorf("unsupported version: %d", version)
 	}
 	checksum := binary.LittleEndian.Uint32(header[8:12])
@@ -108,9 +117,7 @@ func ReadBinary(r io.Reader) (*Manifest, error) {
 	m := &Manifest{Version: int(version)}
 
 	m.ID = pb.readUint64()
-	if version >= 3 {
-		m.CreatedAt = time.Unix(0, int64(pb.readUint64()))
-	}
+	m.CreatedAt = time.Unix(0, int64(pb.readUint64()))
 	m.Dim = int(pb.readUint64())
 	m.Metric = pb.readString()
 	m.NextSegmentID = model.SegmentID(pb.readUint64())
@@ -122,8 +129,13 @@ func ReadBinary(r io.Reader) (*Manifest, error) {
 		m.Segments[i].ID = model.SegmentID(pb.readUint64())
 		m.Segments[i].Level = int(pb.readUint32())
 		m.Segments[i].RowCount = pb.readUint32()
+		m.Segments[i].Size = int64(pb.readUint64())
+		m.Segments[i].MinID = model.ID(pb.readUint64())
+		m.Segments[i].MaxID = model.ID(pb.readUint64())
 		m.Segments[i].Path = pb.readString()
 	}
+
+	m.PKIndex.Path = pb.readString()
 
 	if pb.err != nil {
 		return nil, pb.err

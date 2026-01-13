@@ -20,10 +20,8 @@ const (
 	ManifestFileName = "MANIFEST"
 	CurrentFileName  = "CURRENT"
 	// CurrentVersion is the version of the manifest format.
-	// Version 1: JSON
-	// Version 2: Binary
-	// Version 3: Binary + CreatedAt
-	CurrentVersion = 3
+	// Version 1: Binary format with all fields
+	CurrentVersion = 1
 )
 
 // Manifest describes the state of the engine at a specific point in time.

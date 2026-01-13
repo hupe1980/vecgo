@@ -1815,7 +1815,6 @@ func (e *Engine) Commit(ctx context.Context) (err error) {
 	// --- Phase 1: Rotate (Holding Lock) ---
 	e.mu.Lock()
 
-	currentLSN := e.lsn.Load()
 	snap := e.current.Load()
 	if snap.active.RowCount() == 0 {
 		e.mu.Unlock()
@@ -2071,7 +2070,7 @@ func (e *Engine) Commit(ctx context.Context) (err error) {
 		e.logger.Info("Manifest updated", "total_segments", len(e.manifest.Segments))
 	}
 
-	e.manifest.MaxLSN = currentLSN
+	e.manifest.MaxLSN = flushLSN
 
 	mStore := manifest.NewStore(e.manifestStore)
 	if err := mStore.Save(e.manifest); err != nil {
