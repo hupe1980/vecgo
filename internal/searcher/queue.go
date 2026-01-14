@@ -128,34 +128,68 @@ func NewPriorityQueue(isMaxHeap bool) *PriorityQueue {
 }
 
 // siftUp moves the element at index i up the heap until the heap invariant is restored.
+// Inlined comparison for performance (avoids method call overhead in hot path).
 func (pq *PriorityQueue) siftUp(i int) {
-	for i > 0 {
-		parent := (i - 1) / 2
-		if !pq.Less(i, parent) {
-			break
+	item := pq.items[i]
+	if pq.isMaxHeap {
+		for i > 0 {
+			parent := (i - 1) / 2
+			if item.Distance <= pq.items[parent].Distance {
+				break
+			}
+			pq.items[i] = pq.items[parent]
+			i = parent
 		}
-		pq.Swap(i, parent)
-		i = parent
+	} else {
+		for i > 0 {
+			parent := (i - 1) / 2
+			if item.Distance >= pq.items[parent].Distance {
+				break
+			}
+			pq.items[i] = pq.items[parent]
+			i = parent
+		}
 	}
+	pq.items[i] = item
 }
 
 // siftDown moves the element at index i down the heap until the heap invariant is restored.
+// Inlined comparison for performance (avoids method call overhead in hot path).
 func (pq *PriorityQueue) siftDown(i int) {
 	n := len(pq.items)
-	for {
-		left := 2*i + 1
-		if left >= n {
-			break
+	item := pq.items[i]
+	if pq.isMaxHeap {
+		for {
+			left := 2*i + 1
+			if left >= n {
+				break
+			}
+			child := left
+			if right := left + 1; right < n && pq.items[right].Distance > pq.items[left].Distance {
+				child = right
+			}
+			if item.Distance >= pq.items[child].Distance {
+				break
+			}
+			pq.items[i] = pq.items[child]
+			i = child
 		}
-		child := left
-		right := left + 1
-		if right < n && pq.Less(right, left) {
-			child = right
+	} else {
+		for {
+			left := 2*i + 1
+			if left >= n {
+				break
+			}
+			child := left
+			if right := left + 1; right < n && pq.items[right].Distance < pq.items[left].Distance {
+				child = right
+			}
+			if item.Distance <= pq.items[child].Distance {
+				break
+			}
+			pq.items[i] = pq.items[child]
+			i = child
 		}
-		if !pq.Less(child, i) {
-			break
-		}
-		pq.Swap(i, child)
-		i = child
 	}
+	pq.items[i] = item
 }

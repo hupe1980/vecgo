@@ -220,4 +220,88 @@ func TestCandidateHeap(t *testing.T) {
 			t.Error("same score, smaller SegmentID should be better")
 		}
 	})
+
+	t.Run("TryPeek", func(t *testing.T) {
+		h := NewCandidateHeap(10, false)
+
+		// Empty heap
+		if _, ok := h.TryPeek(); ok {
+			t.Error("TryPeek on empty heap should return false")
+		}
+
+		// Non-empty heap
+		h.Push(InternalCandidate{Score: 1.0, RowID: 10})
+		h.Push(InternalCandidate{Score: 2.0, RowID: 20})
+
+		c, ok := h.TryPeek()
+		if !ok {
+			t.Error("TryPeek on non-empty heap should return true")
+		}
+		if c.Score != 2.0 { // Worst (max) is at top for ascending heap
+			t.Errorf("TryPeek returned wrong element: got score %v, want 2.0", c.Score)
+		}
+
+		// Verify TryPeek doesn't remove element
+		if h.Len() != 2 {
+			t.Error("TryPeek should not remove element")
+		}
+	})
+
+	t.Run("TryReplaceTop", func(t *testing.T) {
+		h := NewCandidateHeap(10, false)
+
+		// Empty heap
+		if h.TryReplaceTop(InternalCandidate{Score: 1.0}) {
+			t.Error("TryReplaceTop on empty heap should return false")
+		}
+
+		// Non-empty heap
+		h.Push(InternalCandidate{Score: 1.0, RowID: 10})
+		h.Push(InternalCandidate{Score: 2.0, RowID: 20})
+
+		if !h.TryReplaceTop(InternalCandidate{Score: 0.5, RowID: 5}) {
+			t.Error("TryReplaceTop on non-empty heap should return true")
+		}
+
+		// Verify heap property restored
+		if h.Len() != 2 {
+			t.Error("TryReplaceTop should maintain heap size")
+		}
+
+		// New worst should be 1.0 (0.5 is better, so it sinks down)
+		c, _ := h.TryPeek()
+		if c.Score != 1.0 {
+			t.Errorf("After TryReplaceTop, top should be 1.0, got %v", c.Score)
+		}
+	})
+
+	t.Run("InternalCandidateWorse", func(t *testing.T) {
+		c1 := InternalCandidate{Score: 10}
+		c2 := InternalCandidate{Score: 20}
+
+		// L2 (Ascending): larger is worse
+		if !InternalCandidateWorse(c2, c1, false) {
+			t.Error("20 should be worse than 10 for L2")
+		}
+		if InternalCandidateWorse(c1, c2, false) {
+			t.Error("10 should not be worse than 20 for L2")
+		}
+
+		// Dot (Descending): smaller is worse
+		if !InternalCandidateWorse(c1, c2, true) {
+			t.Error("10 should be worse than 20 for Dot")
+		}
+		if InternalCandidateWorse(c2, c1, true) {
+			t.Error("20 should not be worse than 10 for Dot")
+		}
+
+		// Tie-breaking for Worse (opposite of Better)
+		c3 := InternalCandidate{Score: 10, SegmentID: 1, RowID: 5}
+		c4 := InternalCandidate{Score: 10, SegmentID: 1, RowID: 10}
+
+		// Worse = larger ID
+		if !InternalCandidateWorse(c4, c3, false) {
+			t.Error("same score, larger ID should be worse")
+		}
+	})
 }

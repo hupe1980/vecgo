@@ -183,3 +183,60 @@ func TestPriorityQueue(t *testing.T) {
 		}
 	})
 }
+
+// BenchmarkPriorityQueue measures heap operation performance.
+func BenchmarkPriorityQueue(b *testing.B) {
+	b.Run("Push1000", func(b *testing.B) {
+		pq := NewPriorityQueue(false)
+		rng := rand.New(rand.NewSource(42))
+		items := make([]PriorityQueueItem, 1000)
+		for i := range items {
+			items[i] = PriorityQueueItem{Node: model.RowID(i), Distance: rng.Float32()}
+		}
+
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			pq.Reset()
+			for _, item := range items {
+				pq.PushItem(item)
+			}
+		}
+	})
+
+	b.Run("PushPop1000", func(b *testing.B) {
+		pq := NewPriorityQueue(false)
+		rng := rand.New(rand.NewSource(42))
+		items := make([]PriorityQueueItem, 1000)
+		for i := range items {
+			items[i] = PriorityQueueItem{Node: model.RowID(i), Distance: rng.Float32()}
+		}
+
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			pq.Reset()
+			for _, item := range items {
+				pq.PushItem(item)
+			}
+			for pq.Len() > 0 {
+				pq.PopItem()
+			}
+		}
+	})
+
+	b.Run("PushBounded100", func(b *testing.B) {
+		pq := NewPriorityQueue(true) // MaxHeap for bounded
+		rng := rand.New(rand.NewSource(42))
+		items := make([]PriorityQueueItem, 1000)
+		for i := range items {
+			items[i] = PriorityQueueItem{Node: model.RowID(i), Distance: rng.Float32()}
+		}
+
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			pq.Reset()
+			for _, item := range items {
+				pq.PushItemBounded(item, 100)
+			}
+		}
+	})
+}

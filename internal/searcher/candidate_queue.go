@@ -80,42 +80,73 @@ func (h *CandidateHeap) Pop() InternalCandidate {
 	h.Candidates = h.Candidates[0:n]
 	return x
 }
+
+// Peek returns the top element without removing it.
+// Panics if the heap is empty - caller should check Len() > 0.
 func (h *CandidateHeap) Peek() InternalCandidate {
 	return h.Candidates[0]
 }
+
+// TryPeek returns the top element and true, or zero value and false if empty.
+func (h *CandidateHeap) TryPeek() (InternalCandidate, bool) {
+	if h.Len() == 0 {
+		return InternalCandidate{}, false
+	}
+	return h.Candidates[0], true
+}
+
+// ReplaceTop replaces the top element and restores heap invariant.
+// Panics if the heap is empty - caller should check Len() > 0.
 func (h *CandidateHeap) ReplaceTop(x InternalCandidate) {
 	h.Candidates[0] = x
 	h.down(0, h.Len())
 }
 
-func (h *CandidateHeap) up(j int) {
-	for {
-		i := (j - 1) / 2 // parent
-		if i == j || !h.Less(j, i) {
-			break
-		}
-		h.Swap(i, j)
-		j = i
+// TryReplaceTop replaces the top element if heap is non-empty.
+// Returns true if replacement occurred, false if heap was empty.
+func (h *CandidateHeap) TryReplaceTop(x InternalCandidate) bool {
+	if h.Len() == 0 {
+		return false
 	}
+	h.Candidates[0] = x
+	h.down(0, h.Len())
+	return true
 }
 
+// up moves element at j up the heap. Optimized with inline comparison and single final write.
+func (h *CandidateHeap) up(j int) {
+	item := h.Candidates[j]
+	for j > 0 {
+		i := (j - 1) / 2 // parent
+		if !InternalCandidateWorse(item, h.Candidates[i], h.descending) {
+			break
+		}
+		h.Candidates[j] = h.Candidates[i]
+		j = i
+	}
+	h.Candidates[j] = item
+}
+
+// down moves element at i0 down the heap. Optimized with inline moves and single final write.
 func (h *CandidateHeap) down(i0, n int) {
 	i := i0
+	item := h.Candidates[i]
 	for {
 		j1 := 2*i + 1
 		if j1 >= n || j1 < 0 { // j1 < 0 after int overflow
 			break
 		}
 		j := j1 // left child
-		if j2 := j1 + 1; j2 < n && h.Less(j2, j1) {
-			j = j2 // = 2*i + 2  // right child
+		if j2 := j1 + 1; j2 < n && InternalCandidateWorse(h.Candidates[j2], h.Candidates[j1], h.descending) {
+			j = j2 // right child
 		}
-		if !h.Less(j, i) {
+		if !InternalCandidateWorse(h.Candidates[j], item, h.descending) {
 			break
 		}
-		h.Swap(i, j)
+		h.Candidates[i] = h.Candidates[j]
 		i = j
 	}
+	h.Candidates[i] = item
 }
 
 // Candidates returns the underlying slice.

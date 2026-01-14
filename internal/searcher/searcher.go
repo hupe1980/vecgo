@@ -37,12 +37,6 @@ type Searcher struct {
 	// ScratchResults is a reusable buffer for collecting intermediate results (e.g. DiskANN beam search).
 	ScratchResults []PriorityQueueItem
 
-	// ScratchScores is a reusable buffer for batch distance calculations.
-	ScratchScores []float32
-
-	// BQBuffer is a reusable buffer for Binary Quantization codes.
-	BQBuffer []uint64
-
 	// CandidateHeap is a reusable heap for model.Candidate (used by flat search).
 	Heap *CandidateHeap
 
@@ -64,7 +58,7 @@ type Searcher struct {
 	// ScratchIDs is a reusable buffer for RowIDs.
 	ScratchIDs []uint32
 
-	// ScratchIDs is a reusable buffer for PrimaryKeys.
+	// ScratchForeignIDs is a reusable buffer for PrimaryKeys.
 	ScratchForeignIDs []model.ID
 	// ParallelResults is a reusable buffer for collecting results from parallel segment searches.
 	ParallelResults []InternalCandidate
@@ -132,11 +126,17 @@ func (s *Searcher) Reset() {
 	s.ScratchResults = s.ScratchResults[:0]
 	s.Heap.Reset(false)
 	clear(s.ScratchMap)
+
+	// Reset all slice buffers to zero length (preserving capacity)
+	s.Results = s.Results[:0]
+	s.CandidateBuffer = s.CandidateBuffer[:0]
+	s.ModelScratch = s.ModelScratch[:0]
+	s.ScratchIDs = s.ScratchIDs[:0]
+	s.ScratchForeignIDs = s.ScratchForeignIDs[:0]
+	s.ParallelResults = s.ParallelResults[:0]
 	s.ParallelSlices = s.ParallelSlices[:0]
-	// Note: We don't shrink ParallelResults or SegmentFilters capacity,
-	// just let them be overwritten/re-sliced by the caller.
-	// But resetting length to 0 is safer for avoiding stale references if they held pointers (but they are internal/any).
-	// SegmentFilters holds references to objects, so we SHOULD clear it to avoid memory leaks (holding onto filters).
+
+	// SegmentFilters holds references to objects, clear to avoid memory leaks
 	clear(s.SegmentFilters) // Go 1.21 generic clear for slices
 	s.SegmentFilters = s.SegmentFilters[:0]
 
