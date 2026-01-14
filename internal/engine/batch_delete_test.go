@@ -11,7 +11,7 @@ import (
 
 func TestBatchDelete(t *testing.T) {
 	dir := t.TempDir()
-	e, err := Open(dir, 2, distance.MetricL2)
+	e, err := OpenLocal(context.Background(), dir, WithDimension(2), WithMetric(distance.MetricL2))
 	require.NoError(t, err)
 	defer e.Close()
 

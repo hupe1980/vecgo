@@ -684,11 +684,6 @@ func (w *Writer) Flush() error {
 		return err
 	}
 
-	// Suppress unused variable warnings - these are used for offset calculation
-	_ = vectorSize
-	_ = graphSize
-	_ = compressedVectorsSize
-
 	// Calculate Checksum of the body
 	crc := hash.NewCRC32C()
 	mw := io.MultiWriter(bw, crc)

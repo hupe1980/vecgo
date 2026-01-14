@@ -14,7 +14,7 @@ func TestStructuredLogging(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, nil))
 
-	e, err := Open(t.TempDir(), 128, distance.MetricL2, WithLogger(logger))
+	e, err := OpenLocal(context.Background(), t.TempDir(), WithDimension(128), WithMetric(distance.MetricL2), WithLogger(logger))
 	require.NoError(t, err)
 	defer e.Close()
 

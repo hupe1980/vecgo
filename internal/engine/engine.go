@@ -347,16 +347,6 @@ func WithMetric(m distance.Metric) Option {
 	}
 }
 
-// Open opens or creates a new Engine with explicit dimension and metric.
-//
-// Deprecated: Use OpenLocal with WithDimension and WithMetric options instead,
-// or preferably use the unified vecgo.Open() API.
-func Open(dir string, dim int, metric distance.Metric, opts ...Option) (*Engine, error) {
-	// Combine explicit dim/metric with opts
-	allOpts := append([]Option{WithDimension(dim), WithMetric(metric)}, opts...)
-	return OpenLocal(context.Background(), dir, allOpts...)
-}
-
 // OpenLocal opens or creates an Engine using local storage.
 // If dim/metric are not provided via options, they are loaded from an existing manifest.
 // The ctx parameter is used for initialization I/O (loading manifest, segments, etc.).

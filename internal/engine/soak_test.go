@@ -29,7 +29,7 @@ func TestSoak(t *testing.T) {
 	// Use a custom observer to track metrics
 	obs := &testObserver{}
 
-	e, err := Open(dir, dim, metric, WithMetricsObserver(obs))
+	e, err := OpenLocal(context.Background(), dir, WithDimension(dim), WithMetric(metric), WithMetricsObserver(obs))
 	require.NoError(t, err)
 	defer e.Close()
 

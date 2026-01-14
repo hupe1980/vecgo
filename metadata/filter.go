@@ -88,13 +88,6 @@ func (f *Filter) matchesInternedWithHandle(doc InternedDocument, keyHandle uniqu
 	}
 }
 
-// MatchesInterned checks if the provided interned metadata matches this filter.
-//
-// Deprecated: Use FilterSet.MatchesInterned for better performance with cached keys.
-func (f *Filter) MatchesInterned(doc InternedDocument) bool {
-	return f.matchesInternedWithHandle(doc, unique.Make(f.Key))
-}
-
 // Matches checks if the provided metadata matches all filters in the set.
 func (fs *FilterSet) Matches(doc Document) bool {
 	for _, filter := range fs.Filters {

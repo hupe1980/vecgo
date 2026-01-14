@@ -19,7 +19,7 @@ func TestCompactionConfig_Quantization(t *testing.T) {
 		FlatQuantizationType: flat.QuantizationSQ8,
 	}
 
-	e, err := Open(dir, 4, distance.MetricL2,
+	e, err := OpenLocal(context.Background(), dir, WithDimension(4), WithMetric(distance.MetricL2),
 		WithCompactionConfig(cfg),
 		WithCompactionThreshold(2), // Trigger compaction after 2 segments
 	)

@@ -11,7 +11,7 @@ import (
 )
 
 func TestConsistency_Churn(t *testing.T) {
-	eng, err := Open(t.TempDir(), 128, distance.MetricL2)
+	eng, err := OpenLocal(context.Background(), t.TempDir(), WithDimension(128), WithMetric(distance.MetricL2))
 	require.NoError(t, err)
 	defer eng.Close()
 

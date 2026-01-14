@@ -19,7 +19,7 @@ func TestTimeTravel(t *testing.T) {
 
 	// Phase 1: Create History
 	// Version 1: Insert 10 items
-	// Open(dir, dim, metric, opts...)
+	// OpenLocal(context.Background(), dir, WithDimension(dim), WithMetric(metric), opts...)
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
 	// Use a compaction policy that never triggers to avoid concurrent manifest saves
@@ -31,7 +31,7 @@ func TestTimeTravel(t *testing.T) {
 		WithLogger(logger),
 		WithCompactionPolicy(noCompactionPolicy),
 	}
-	e, err := Open(dir, 128, distance.MetricL2, opts...)
+	e, err := OpenLocal(context.Background(), dir, opts...)
 	require.NoError(t, err)
 
 	for i := 0; i < 10; i++ {

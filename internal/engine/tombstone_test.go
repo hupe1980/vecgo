@@ -15,7 +15,7 @@ func TestTombstonePersistence(t *testing.T) {
 	ctx := context.Background()
 
 	// 1. Open Engine
-	e, err := Open(dir, 2, distance.MetricL2)
+	e, err := OpenLocal(context.Background(), dir, WithDimension(2), WithMetric(distance.MetricL2))
 	require.NoError(t, err)
 
 	// 2. Insert data
@@ -46,7 +46,7 @@ func TestTombstonePersistence(t *testing.T) {
 	require.NotEmpty(t, matches, "tombstone file should exist")
 
 	// 6. Reopen Engine
-	e2, err := Open(dir, 2, distance.MetricL2)
+	e2, err := OpenLocal(context.Background(), dir, WithDimension(2), WithMetric(distance.MetricL2))
 	require.NoError(t, err)
 	defer e2.Close()
 

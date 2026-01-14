@@ -49,9 +49,7 @@ func TestFilterMatchesInterned(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.expected, tt.filter.MatchesInterned(doc), "Filter.MatchesInterned")
-
-			// Test FilterSet as well
+			// Test FilterSet
 			fs := NewFilterSet(tt.filter)
 			assert.Equal(t, tt.expected, fs.MatchesInterned(doc), "FilterSet.MatchesInterned")
 		})
@@ -66,9 +64,9 @@ func TestFilterInternedKeyPerformance(t *testing.T) {
 	doc := make(InternedDocument)
 	doc[h] = Bool(true)
 
-	f := Filter{Key: k, Operator: OpEqual, Value: Bool(true)}
+	fs := NewFilterSet(Filter{Key: k, Operator: OpEqual, Value: Bool(true)})
 
-	assert.True(t, f.MatchesInterned(doc))
+	assert.True(t, fs.MatchesInterned(doc))
 }
 
 func TestFilterSetInternedKeyCaching(t *testing.T) {

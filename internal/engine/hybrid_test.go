@@ -15,7 +15,7 @@ func TestHybridSearch(t *testing.T) {
 	dir := t.TempDir()
 	lexIdx := bm25.New()
 
-	e, err := Open(dir, 2, distance.MetricL2, WithLexicalIndex(lexIdx, "text"))
+	e, err := OpenLocal(context.Background(), dir, WithDimension(2), WithMetric(distance.MetricL2), WithLexicalIndex(lexIdx, "text"))
 	require.NoError(t, err)
 	defer e.Close()
 

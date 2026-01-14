@@ -14,7 +14,7 @@ func TestPayloadSurvivesFlushAndCompaction(t *testing.T) {
 	dir := t.TempDir()
 	ctx := context.Background()
 
-	e, err := Open(dir, 2, distance.MetricL2)
+	e, err := OpenLocal(context.Background(), dir, WithDimension(2), WithMetric(distance.MetricL2))
 	require.NoError(t, err)
 	defer e.Close()
 
@@ -30,7 +30,7 @@ func TestPayloadSurvivesFlushAndCompaction(t *testing.T) {
 
 	require.NoError(t, e.Close())
 
-	e2, err := Open(dir, 2, distance.MetricL2)
+	e2, err := OpenLocal(context.Background(), dir, WithDimension(2), WithMetric(distance.MetricL2))
 	require.NoError(t, err)
 	defer e2.Close()
 
@@ -69,7 +69,7 @@ func TestPayloadSurvivesFlushAndCompaction(t *testing.T) {
 func TestOpenIgnoresOrphanTmpFiles(t *testing.T) {
 	dir := t.TempDir()
 
-	e, err := Open(dir, 2, distance.MetricL2)
+	e, err := OpenLocal(context.Background(), dir, WithDimension(2), WithMetric(distance.MetricL2))
 	require.NoError(t, err)
 
 	_, err = e.Insert(context.Background(), []float32{1, 0}, nil, []byte("p1"))
@@ -82,7 +82,7 @@ func TestOpenIgnoresOrphanTmpFiles(t *testing.T) {
 	require.NoError(t, os.WriteFile(dir+"/segment_999.payload.tmp", []byte("junk"), 0o644))
 	require.NoError(t, os.WriteFile(dir+"/segment_999.tmp", []byte("junk"), 0o644))
 
-	e2, err := Open(dir, 2, distance.MetricL2)
+	e2, err := OpenLocal(context.Background(), dir, WithDimension(2), WithMetric(distance.MetricL2))
 	require.NoError(t, err)
 	require.NoError(t, e2.Close())
 }

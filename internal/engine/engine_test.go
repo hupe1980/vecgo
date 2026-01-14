@@ -17,7 +17,7 @@ func TestEngine(t *testing.T) {
 	dir := t.TempDir()
 
 	// 1. Open Engine
-	e, err := Open(dir, 2, distance.MetricL2)
+	e, err := OpenLocal(context.Background(), dir, WithDimension(2), WithMetric(distance.MetricL2))
 	require.NoError(t, err)
 
 	// 2. Insert
@@ -39,7 +39,7 @@ func TestEngine(t *testing.T) {
 	require.NoError(t, err)
 
 	// 5. Reopen (Persistence Check)
-	e2, err := Open(dir, 2, distance.MetricL2)
+	e2, err := OpenLocal(context.Background(), dir, WithDimension(2), WithMetric(distance.MetricL2))
 	require.NoError(t, err)
 	defer e2.Close()
 
@@ -74,7 +74,7 @@ func TestEngine(t *testing.T) {
 	err = e2.Close()
 	require.NoError(t, err)
 
-	e3, err := Open(dir, 2, distance.MetricL2)
+	e3, err := OpenLocal(context.Background(), dir, WithDimension(2), WithMetric(distance.MetricL2))
 	require.NoError(t, err)
 	defer e3.Close()
 

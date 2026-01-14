@@ -493,13 +493,11 @@ func (s *Segment) Search(ctx context.Context, q []float32, k int, filter segment
 	return s.searchInternal(ctx, q, k, l, filter, opts.Filter, searcherCtx)
 }
 
-func (s *Segment) searchInternal(ctx context.Context, query []float32, k int, l int, filter segment.Filter, metadataFilter interface{}, searcherCtx *searcher.Searcher) error {
+func (s *Segment) searchInternal(ctx context.Context, query []float32, k int, l int, filter segment.Filter, metadataFilter *metadata.FilterSet, searcherCtx *searcher.Searcher) error {
 	// Metadata filter
 	var metadataFilterFn func(model.RowID) bool
 	if s.index != nil && metadataFilter != nil {
-		if fs, ok := metadataFilter.(*metadata.FilterSet); ok {
-			metadataFilterFn = s.index.CreateStreamingFilter(ctx, fs)
-		}
+		metadataFilterFn = s.index.CreateStreamingFilter(ctx, metadataFilter)
 	}
 
 	// Distance function wrapper

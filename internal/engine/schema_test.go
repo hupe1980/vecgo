@@ -18,7 +18,7 @@ func TestSchemaValidation(t *testing.T) {
 		"tags":   metadata.FieldTypeArray,
 	}
 
-	e, err := Open(t.TempDir(), 128, distance.MetricL2, WithSchema(schema))
+	e, err := OpenLocal(context.Background(), t.TempDir(), WithDimension(128), WithMetric(distance.MetricL2), WithSchema(schema))
 	require.NoError(t, err)
 	defer e.Close()
 
@@ -97,7 +97,7 @@ func TestBatchInsertSchemaValidation(t *testing.T) {
 		"age": metadata.FieldTypeInt,
 	}
 
-	e, err := Open(t.TempDir(), 128, distance.MetricL2, WithSchema(schema))
+	e, err := OpenLocal(context.Background(), t.TempDir(), WithDimension(128), WithMetric(distance.MetricL2), WithSchema(schema))
 	require.NoError(t, err)
 	defer e.Close()
 

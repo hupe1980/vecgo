@@ -60,16 +60,6 @@ func PutPooledBitmap(b *LocalBitmap) {
 	bitmapPool.Put(b)
 }
 
-// Deprecated: GetBitmap is deprecated, use GetPooledBitmap instead.
-func GetBitmap() *LocalBitmap {
-	return GetPooledBitmap()
-}
-
-// Deprecated: PutBitmap is deprecated, use PutPooledBitmap instead.
-func PutBitmap(b *LocalBitmap) {
-	PutPooledBitmap(b)
-}
-
 // Add adds a RowID to the bitmap.
 func (b *LocalBitmap) Add(id uint32) {
 	b.rb.Add(id)
