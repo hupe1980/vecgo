@@ -2,6 +2,7 @@ package flat
 
 import (
 	"bufio"
+	"context"
 	"encoding/binary"
 	"errors"
 	"hash/crc32"
@@ -77,7 +78,8 @@ func (w *Writer) Add(id model.ID, vec []float32, md metadata.Document, payload [
 }
 
 // Flush writes the segment to the underlying writer.
-func (w *Writer) Flush() error {
+// The context can be used for cancellation during kmeans training.
+func (w *Writer) Flush(ctx context.Context) error {
 	rowCount := uint32(len(w.ids))
 	var centroids []float32
 	var partitionOffsets []uint32
@@ -87,7 +89,7 @@ func (w *Writer) Flush() error {
 		// 1. Train Centroids
 		// Use all vectors for training for now (can sample later if too slow)
 		var err error
-		centroids, err = kmeans.TrainKMeans(w.vectors, w.dim, w.k, w.metric, 10)
+		centroids, err = kmeans.TrainKMeans(ctx, w.vectors, w.dim, w.k, w.metric, 10)
 		if err != nil {
 			return err
 		}

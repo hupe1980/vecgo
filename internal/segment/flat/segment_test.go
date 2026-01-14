@@ -29,7 +29,7 @@ func TestFlatSegment(t *testing.T) {
 	err = w.Add(model.ID(2), []float32{0.0, 1.0}, nil, nil)
 	require.NoError(t, err)
 
-	err = w.Flush()
+	err = w.Flush(context.Background())
 	require.NoError(t, err)
 	f.Close()
 

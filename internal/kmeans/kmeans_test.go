@@ -1,6 +1,7 @@
 package kmeans
 
 import (
+	"context"
 	"testing"
 
 	"github.com/hupe1980/vecgo/distance"
@@ -9,6 +10,7 @@ import (
 )
 
 func TestTrainKMeans(t *testing.T) {
+	ctx := context.Background()
 	// 2 clusters: (0,0) and (10,10)
 	vecs := []float32{
 		0, 0, 0, 1, 1, 0, // near 0,0
@@ -17,7 +19,7 @@ func TestTrainKMeans(t *testing.T) {
 	k := 2
 	dim := 2
 
-	centroids, err := TrainKMeans(vecs, dim, k, distance.MetricL2, 100)
+	centroids, err := TrainKMeans(ctx, vecs, dim, k, distance.MetricL2, 100)
 	require.NoError(t, err)
 	assert.Len(t, centroids, k*dim)
 
@@ -32,15 +34,31 @@ func TestTrainKMeans(t *testing.T) {
 }
 
 func TestTrainKMeans_NotEnoughVectors(t *testing.T) {
+	ctx := context.Background()
 	vecs := []float32{0, 0}
-	centroids, err := TrainKMeans(vecs, 2, 2, distance.MetricL2, 10)
+	centroids, err := TrainKMeans(ctx, vecs, 2, 2, distance.MetricL2, 10)
 	require.NoError(t, err)
 	assert.Nil(t, centroids)
 }
 
 func TestTrainKMeans_Error(t *testing.T) {
-	_, err := TrainKMeans([]float32{0, 0}, 2, 1, distance.Metric(999), 10)
+	ctx := context.Background()
+	_, err := TrainKMeans(ctx, []float32{0, 0}, 2, 1, distance.Metric(999), 10)
 	assert.Error(t, err)
+}
+
+func TestTrainKMeans_Cancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
+
+	// Large enough to require iteration
+	vecs := make([]float32, 1000*2)
+	for i := range vecs {
+		vecs[i] = float32(i)
+	}
+
+	_, err := TrainKMeans(ctx, vecs, 2, 10, distance.MetricL2, 1000)
+	assert.ErrorIs(t, err, context.Canceled)
 }
 
 func TestFindClosestCentroids(t *testing.T) {

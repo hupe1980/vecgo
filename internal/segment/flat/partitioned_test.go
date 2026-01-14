@@ -39,7 +39,7 @@ func TestPartitionedSegment(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	err = w.Flush()
+	err = w.Flush(context.Background())
 	require.NoError(t, err)
 	f.Close()
 

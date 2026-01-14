@@ -170,7 +170,7 @@ func (e *Engine) CompactWithContext(ctx context.Context, segmentIDs []model.Segm
 
 		addFunc = w.Add
 		flushFunc = func() error {
-			if err := w.Flush(); err != nil {
+			if err := w.Flush(ctx); err != nil {
 				return err
 			}
 			return nil

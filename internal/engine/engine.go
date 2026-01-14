@@ -1917,7 +1917,7 @@ func (e *Engine) Commit(ctx context.Context) (err error) {
 		return err
 	}
 
-	if err := w.Flush(); err != nil {
+	if err := w.Flush(ctx); err != nil {
 		return err
 	}
 	// Ensure durability

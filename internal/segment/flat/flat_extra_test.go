@@ -73,7 +73,7 @@ func TestFlatSegment_Extra_Coverage(t *testing.T) {
 	err = w.Add(id1, vec1, md1, payload1)
 	require.NoError(t, err)
 
-	err = w.Flush()
+	err = w.Flush(context.Background())
 	require.NoError(t, err)
 
 	// Create Blobs
@@ -172,7 +172,7 @@ func TestFlatSegment_SQ8_Coverage(t *testing.T) {
 	err := w.Add(id1, vec1, md1, nil)
 	require.NoError(t, err)
 
-	err = w.Flush()
+	err = w.Flush(context.Background())
 	require.NoError(t, err)
 
 	mainBlob := &bytesBlob{data: buf.Bytes()}
@@ -205,7 +205,7 @@ func TestFlatSegment_ErrorCases(t *testing.T) {
 	w := NewWriter(buf, payloadBuf, model.SegmentID(3), dim, distance.MetricL2, 1, 0)
 	// Add one item
 	_ = w.Add(model.ID(1), []float32{1, 1}, nil, nil)
-	_ = w.Flush()
+	_ = w.Flush(context.Background())
 
 	mainBlob := &bytesBlob{data: buf.Bytes()}
 	payloadBlob := &bytesBlob{data: payloadBuf.Bytes()}
@@ -249,7 +249,7 @@ func TestFlatSegment_Large_Coverage(t *testing.T) {
 		_ = w.Add(id, vec, md, nil)
 	}
 
-	require.NoError(t, w.Flush())
+	require.NoError(t, w.Flush(context.Background()))
 
 	mainBlob := &bytesBlob{data: buf.Bytes()}
 	payloadBlob := &bytesBlob{data: payloadBuf.Bytes()}

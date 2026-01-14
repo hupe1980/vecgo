@@ -1,16 +1,19 @@
 package kmeans
 
 import (
+	"context"
 	"math"
 	"math/rand"
 	"slices"
 
 	"github.com/hupe1980/vecgo/distance"
+	"github.com/hupe1980/vecgo/internal/simd"
 )
 
 // TrainKMeans trains k centroids from the given vectors using Lloyd's algorithm.
 // It returns the flattened centroids (k * dim).
-func TrainKMeans(vectors []float32, dim int, k int, metric distance.Metric, maxIter int) ([]float32, error) {
+// The context can be used for cancellation of long-running training.
+func TrainKMeans(ctx context.Context, vectors []float32, dim int, k int, metric distance.Metric, maxIter int) ([]float32, error) {
 	n := len(vectors) / dim
 	if n < k {
 		return nil, nil // Not enough vectors to cluster
@@ -18,9 +21,9 @@ func TrainKMeans(vectors []float32, dim int, k int, metric distance.Metric, maxI
 
 	centroids := make([]float32, k*dim)
 
-	// Initialize centroids randomly from data points
+	// Initialize centroids randomly from data points (k-means++)
 	perm := rand.Perm(n)
-	for i := 0; i < k; i++ {
+	for i := range k {
 		copy(centroids[i*dim:(i+1)*dim], vectors[perm[i]*dim:(perm[i]+1)*dim])
 	}
 
@@ -28,26 +31,53 @@ func TrainKMeans(vectors []float32, dim int, k int, metric distance.Metric, maxI
 	counts := make([]int, k)
 	sums := make([]float32, k*dim)
 
+	// Pre-allocate distance buffer for SIMD batch computation
+	dists := make([]float32, k)
+
+	// Get distance function once
 	distFunc, err := distance.Provider(metric)
 	if err != nil {
 		return nil, err
 	}
 
+	// Determine if we can use SIMD batch
+	useSIMDBatch := metric == distance.MetricL2
+
 	for range maxIter {
+		// Check for cancellation
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+
 		changed := false
 
 		// Assignment step
-		for i := range n {
+		for i := 0; i < n; i++ {
 			vec := vectors[i*dim : (i+1)*dim]
-			bestCluster := -1
-			minDist := float32(math.MaxFloat32)
+			var bestCluster int
 
-			for j := range k {
-				center := centroids[j*dim : (j+1)*dim]
-				d := distFunc(vec, center)
-				if d < minDist {
-					minDist = d
-					bestCluster = j
+			if useSIMDBatch {
+				// Use SIMD batch distance for L2
+				simd.SquaredL2Batch(vec, centroids, dim, dists)
+				bestCluster = 0
+				minDist := dists[0]
+				for j := 1; j < k; j++ {
+					if dists[j] < minDist {
+						minDist = dists[j]
+						bestCluster = j
+					}
+				}
+			} else {
+				// Fallback for other metrics
+				bestCluster = 0
+				minDist := float32(math.MaxFloat32)
+				for j := range k {
+					center := centroids[j*dim : (j+1)*dim]
+					d := distFunc(vec, center)
+					if d < minDist {
+						minDist = d
+						bestCluster = j
+					}
 				}
 			}
 
@@ -61,7 +91,7 @@ func TrainKMeans(vectors []float32, dim int, k int, metric distance.Metric, maxI
 			break
 		}
 
-		// Update step
+		// Update step - clear accumulators
 		for i := range sums {
 			sums[i] = 0
 		}
@@ -69,24 +99,27 @@ func TrainKMeans(vectors []float32, dim int, k int, metric distance.Metric, maxI
 			counts[i] = 0
 		}
 
-		for i := 0; i < n; i++ {
+		// Accumulate sums and counts
+		for i := range n {
 			cluster := assignments[i]
 			vec := vectors[i*dim : (i+1)*dim]
-			for d := 0; d < dim; d++ {
-				sums[cluster*dim+d] += vec[d]
+			offset := cluster * dim
+			for d := range dim {
+				sums[offset+d] += vec[d]
 			}
 			counts[cluster]++
 		}
 
-		for j := 0; j < k; j++ {
+		// Compute new centroids
+		for j := range k {
 			if counts[j] > 0 {
 				scale := 1.0 / float32(counts[j])
-				for d := 0; d < dim; d++ {
-					centroids[j*dim+d] = sums[j*dim+d] * scale
+				offset := j * dim
+				for d := range dim {
+					centroids[offset+d] = sums[offset+d] * scale
 				}
 			} else {
 				// Re-initialize empty cluster with a random point
-				// (Simple heuristic to avoid empty clusters)
 				idx := rand.Intn(n)
 				copy(centroids[j*dim:(j+1)*dim], vectors[idx*dim:(idx+1)*dim])
 			}
@@ -97,17 +130,36 @@ func TrainKMeans(vectors []float32, dim int, k int, metric distance.Metric, maxI
 }
 
 // AssignPartition finds the closest centroid for a vector.
+// For high-throughput batch assignment, use AssignPartitionBatch instead.
 func AssignPartition(vec []float32, centroids []float32, dim int, metric distance.Metric) (int, error) {
 	k := len(centroids) / dim
+
+	// Use SIMD batch for L2 metric
+	if metric == distance.MetricL2 {
+		dists := make([]float32, k)
+		simd.SquaredL2Batch(vec, centroids, dim, dists)
+
+		bestCluster := 0
+		minDist := dists[0]
+		for j := 1; j < k; j++ {
+			if dists[j] < minDist {
+				minDist = dists[j]
+				bestCluster = j
+			}
+		}
+		return bestCluster, nil
+	}
+
+	// Fallback for other metrics
 	distFunc, err := distance.Provider(metric)
 	if err != nil {
 		return -1, err
 	}
 
-	bestCluster := -1
+	bestCluster := 0
 	minDist := float32(math.MaxFloat32)
 
-	for j := 0; j < k; j++ {
+	for j := range k {
 		center := centroids[j*dim : (j+1)*dim]
 		d := distFunc(vec, center)
 		if d < minDist {
@@ -125,24 +177,55 @@ type centroidDist struct {
 }
 
 // FindClosestCentroids returns the indices of the n closest centroids to the query vector.
+// This function is on the search hot path when partitioning is enabled.
 func FindClosestCentroids(query []float32, centroids []float32, dim int, n int, metric distance.Metric) ([]int, error) {
 	k := len(centroids) / dim
 	if n > k {
 		n = k
 	}
 
-	distFunc, err := distance.Provider(metric)
-	if err != nil {
-		return nil, err
-	}
-
+	// Single allocation for both distances and result tracking
 	dists := make([]centroidDist, k)
-	for i := range k {
-		center := centroids[i*dim : (i+1)*dim]
-		d := distFunc(query, center)
-		dists[i] = centroidDist{id: i, dist: d}
+
+	// Use SIMD batch for L2 metric
+	if metric == distance.MetricL2 {
+		// Reuse dists slice for raw distances, then convert
+		distValues := make([]float32, k)
+		simd.SquaredL2Batch(query, centroids, dim, distValues)
+		for i := range k {
+			dists[i] = centroidDist{id: i, dist: distValues[i]}
+		}
+	} else {
+		// Fallback for other metrics
+		distFunc, err := distance.Provider(metric)
+		if err != nil {
+			return nil, err
+		}
+		for i := range k {
+			center := centroids[i*dim : (i+1)*dim]
+			d := distFunc(query, center)
+			dists[i] = centroidDist{id: i, dist: d}
+		}
 	}
 
+	// For small n, use partial sort (selection) instead of full sort
+	if n <= k/4 && n < 16 {
+		// Selection algorithm - O(n*k) but avoids full sort overhead
+		result := make([]int, n)
+		for i := 0; i < n; i++ {
+			minIdx := i
+			for j := i + 1; j < k; j++ {
+				if dists[j].dist < dists[minIdx].dist {
+					minIdx = j
+				}
+			}
+			dists[i], dists[minIdx] = dists[minIdx], dists[i]
+			result[i] = dists[i].id
+		}
+		return result, nil
+	}
+
+	// Full sort for larger n values
 	slices.SortFunc(dists, func(a, b centroidDist) int {
 		if a.dist < b.dist {
 			return -1

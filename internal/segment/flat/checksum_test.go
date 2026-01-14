@@ -25,7 +25,7 @@ func TestChecksum(t *testing.T) {
 	w := NewWriter(f, nil, 1, 2, distance.MetricL2, 0, QuantizationNone)
 	err = w.Add(model.ID(1), []float32{1.0, 0.0}, nil, nil)
 	require.NoError(t, err)
-	err = w.Flush()
+	err = w.Flush(context.Background())
 	require.NoError(t, err)
 	f.Close()
 
