@@ -12,6 +12,7 @@ func init() {
 	if cpu.X86.HasAVX512F { // Use HasAVX512F as baseline for AVX-512
 		dotImpl = dotAVX512
 		squaredL2Impl = squaredL2AVX512
+		scaleImpl = scaleAVX512
 		pqAdcImpl = pqAdcAVX512
 
 		squaredL2BatchImpl = squaredL2BatchAVX512
@@ -26,12 +27,14 @@ func init() {
 	if cpu.X86.HasAVX {
 		dotImpl = dotAVX
 		squaredL2Impl = squaredL2AVX
+		scaleImpl = scaleAVX
 		pqAdcImpl = pqAdcAVX
 
 		squaredL2BatchImpl = squaredL2BatchAVX
 		dotBatchImpl = dotBatchAVX
 		f16ToF32Impl = f16ToF32AVX
 		sq8L2BatchImpl = sq8L2BatchAVX
+		sq8uL2BatchPerDimensionImpl = sq8uL2BatchPerDimensionAVX
 		popcountImpl = popcountAVX
 		hammingImpl = hammingAVX
 	}
@@ -143,11 +146,30 @@ func sq8L2BatchAVX(query []float32, codes []int8, scales []float32, biases []flo
 	}
 }
 
+func scaleAVX(a []float32, scalar float32) {
+	if len(a) > 0 {
+		scaleAvx(unsafe.Pointer(&a[0]), int64(len(a)), unsafe.Pointer(&scalar))
+	}
+}
+
+func scaleAVX512(a []float32, scalar float32) {
+	if len(a) > 0 {
+		scaleAvx512(unsafe.Pointer(&a[0]), int64(len(a)), unsafe.Pointer(&scalar))
+	}
+}
+
 func sq8L2BatchAVX512(query []float32, codes []int8, scales []float32, biases []float32, dim int, out []float32) {
 	if len(out) > 0 {
 		sq8L2BatchAvx512(unsafe.Pointer(&query[0]), unsafe.Pointer(&codes[0]), unsafe.Pointer(&scales[0]), unsafe.Pointer(&biases[0]), int64(dim), int64(len(out)), unsafe.Pointer(&out[0]))
 	}
 }
+
+func sq8uL2BatchPerDimensionAVX(query []float32, codes []byte, mins []float32, invScales []float32, dim int, out []float32) {
+	if len(query) > 0 {
+		sq8uL2BatchPerDimensionAvx(unsafe.Pointer(&query[0]), unsafe.Pointer(&codes[0]), unsafe.Pointer(&mins[0]), unsafe.Pointer(&invScales[0]), int64(dim), int64(len(out)), unsafe.Pointer(&out[0]))
+	}
+}
+
 func sq8uL2BatchPerDimensionAVX512(query []float32, codes []byte, mins []float32, invScales []float32, dim int, out []float32) {
 	if len(query) > 0 {
 		sq8uL2BatchPerDimensionAvx512(unsafe.Pointer(&query[0]), unsafe.Pointer(&codes[0]), unsafe.Pointer(&mins[0]), unsafe.Pointer(&invScales[0]), int64(dim), int64(len(out)), unsafe.Pointer(&out[0]))
