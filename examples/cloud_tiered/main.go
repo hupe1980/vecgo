@@ -57,14 +57,14 @@ type SimulatedS3Blob struct {
 	latency time.Duration
 }
 
-func (b *SimulatedS3Blob) ReadAt(p []byte, off int64) (int, error) {
+func (b *SimulatedS3Blob) ReadAt(ctx context.Context, p []byte, off int64) (int, error) {
 	time.Sleep(b.latency)
-	return b.Blob.ReadAt(p, off)
+	return b.Blob.ReadAt(ctx, p, off)
 }
 
-func (b *SimulatedS3Blob) ReadRange(off, len int64) (io.ReadCloser, error) {
+func (b *SimulatedS3Blob) ReadRange(ctx context.Context, off, len int64) (io.ReadCloser, error) {
 	time.Sleep(b.latency)
-	return b.Blob.ReadRange(off, len)
+	return b.Blob.ReadRange(ctx, off, len)
 }
 
 func main() {

@@ -29,7 +29,7 @@ type mockCountingBlob struct {
 	size  int64
 }
 
-func (b *mockCountingBlob) ReadAt(p []byte, off int64) (int, error) {
+func (b *mockCountingBlob) ReadAt(ctx context.Context, p []byte, off int64) (int, error) {
 	b.store.readCount++
 	// Simulate reading zeros
 	for i := range p {
@@ -37,7 +37,7 @@ func (b *mockCountingBlob) ReadAt(p []byte, off int64) (int, error) {
 	}
 	return len(p), nil
 }
-func (b *mockCountingBlob) ReadRange(off, len int64) (io.ReadCloser, error) {
+func (b *mockCountingBlob) ReadRange(ctx context.Context, off, len int64) (io.ReadCloser, error) {
 	return nil, nil
 }
 func (b *mockCountingBlob) Size() int64  { return b.size }
@@ -48,11 +48,12 @@ func TestCachingStore_Coalescing(t *testing.T) {
 	// 1KB blocks
 	cachingStore := NewCachingStore(inner, cache.NewLRUBlockCache(1024*1024, nil), 1024)
 
-	blob, _ := cachingStore.Open(context.Background(), "test")
+	ctx := context.Background()
+	blob, _ := cachingStore.Open(ctx, "test")
 
 	// Read 10KB (10 blocks)
 	buf := make([]byte, 10*1024)
-	blob.ReadAt(buf, 0)
+	blob.ReadAt(ctx, buf, 0)
 
 	// In current implementation, this should be 10 reads (serial).
 	// We want it to be 1 read.

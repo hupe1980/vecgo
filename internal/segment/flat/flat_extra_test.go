@@ -23,7 +23,7 @@ type bytesBlob struct {
 var _ blobstore.Blob = (*bytesBlob)(nil)
 var _ blobstore.Mappable = (*bytesBlob)(nil)
 
-func (b *bytesBlob) ReadAt(p []byte, off int64) (int, error) {
+func (b *bytesBlob) ReadAt(_ context.Context, p []byte, off int64) (int, error) {
 	if off >= int64(len(b.data)) {
 		return 0, io.EOF
 	}
@@ -42,7 +42,7 @@ func (b *bytesBlob) Close() error {
 	return nil
 }
 
-func (b *bytesBlob) ReadRange(off, length int64) (io.ReadCloser, error) {
+func (b *bytesBlob) ReadRange(_ context.Context, off, length int64) (io.ReadCloser, error) {
 	if off+length > int64(len(b.data)) {
 		return nil, io.EOF
 	}

@@ -531,10 +531,11 @@ func (ui *UnifiedIndex) queryInLocked(f metadata.Filter) (*LocalBitmap, error) {
 func (ui *UnifiedIndex) createFallbackCheck(filter metadata.Filter) func(model.RowID) bool {
 	// Fallback for unsupported operators: check document
 	// This is slow but necessary
+	fs := metadata.NewFilterSet(filter)
 	return func(id model.RowID) bool {
 		doc, ok := ui.documents[id]
 		if ok {
-			return filter.MatchesInterned(doc)
+			return fs.MatchesInterned(doc)
 		}
 		if ui.provider != nil {
 			d, ok := ui.provider(id)

@@ -45,14 +45,14 @@ func TestLocalBlobStore_Lifecycle(t *testing.T) {
 	require.Equal(t, int64(len(data)), blob.Size())
 
 	buf := make([]byte, 5)
-	n, err = blob.ReadAt(buf, 6) // "world"
+	n, err = blob.ReadAt(ctx, buf, 6) // "world"
 	require.NoError(t, err)
 	require.Equal(t, 5, n)
 	require.Equal(t, "world", string(buf))
 
 	// 3. ReadRange
 	// Read "this" (offset 13, length 4)
-	rangeReader, err := blob.ReadRange(13, 4)
+	rangeReader, err := blob.ReadRange(ctx, 13, 4)
 	require.NoError(t, err)
 	defer rangeReader.Close()
 
@@ -108,14 +108,14 @@ func TestLocalBlobStore_ReadRange_Boundaries(t *testing.T) {
 	defer blob.Close()
 
 	// Case 1: Read full range
-	r, err := blob.ReadRange(0, 10)
+	r, err := blob.ReadRange(ctx, 0, 10)
 	require.NoError(t, err)
 	content, _ := io.ReadAll(r)
 	r.Close()
 	require.True(t, bytes.Equal(data, content))
 
 	// Case 2: Read past end
-	r, err = blob.ReadRange(8, 5) // Request 5 bytes starting at 8 (only 2 available: 8, 9)
+	r, err = blob.ReadRange(ctx, 8, 5) // Request 5 bytes starting at 8 (only 2 available: 8, 9)
 	require.NoError(t, err)
 	content, err = io.ReadAll(r)
 	require.NoError(t, err)
@@ -123,7 +123,7 @@ func TestLocalBlobStore_ReadRange_Boundaries(t *testing.T) {
 	r.Close()
 
 	// Case 3: Offset past EOF
-	r, err = blob.ReadRange(20, 5)
+	r, err = blob.ReadRange(ctx, 20, 5)
 	require.ErrorIs(t, err, io.EOF)
 	if r != nil {
 		r.Close()

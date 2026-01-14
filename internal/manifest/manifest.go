@@ -101,7 +101,7 @@ func (s *Store) LoadVersion(ctx context.Context, versionID uint64) (*Manifest, e
 			return nil, err
 		}
 		defer b.Close()
-		content, err := io.ReadAll(io.NewSectionReader(b, 0, b.Size()))
+		content, err := io.ReadAll(io.NewSectionReader(blobstore.ReaderAt(b), 0, b.Size()))
 		if err != nil {
 			return nil, err
 		}
@@ -119,7 +119,7 @@ func (s *Store) LoadVersion(ctx context.Context, versionID uint64) (*Manifest, e
 	var m *Manifest
 	if filepath.Ext(manifestFilename) == ".json" {
 		m = &Manifest{}
-		content, err := io.ReadAll(io.NewSectionReader(b, 0, b.Size()))
+		content, err := io.ReadAll(io.NewSectionReader(blobstore.ReaderAt(b), 0, b.Size()))
 		if err != nil {
 			return nil, err
 		}
@@ -129,7 +129,7 @@ func (s *Store) LoadVersion(ctx context.Context, versionID uint64) (*Manifest, e
 	} else {
 		// Expect ReadBinary to be available (helper in binary.go)
 		// Assuming signature: func ReadBinary(r io.Reader) (*Manifest, error)
-		m, err = ReadBinary(io.NewSectionReader(b, 0, b.Size()))
+		m, err = ReadBinary(io.NewSectionReader(blobstore.ReaderAt(b), 0, b.Size()))
 		if err != nil {
 			return nil, err
 		}
@@ -163,7 +163,7 @@ func (s *Store) ListVersions(ctx context.Context) ([]*Manifest, error) {
 		var m *Manifest
 		if filepath.Ext(f) == ".json" {
 			m = &Manifest{}
-			content, err := io.ReadAll(io.NewSectionReader(b, 0, b.Size()))
+			content, err := io.ReadAll(io.NewSectionReader(blobstore.ReaderAt(b), 0, b.Size()))
 			if err != nil {
 				b.Close()
 				continue // Skip on read error
@@ -173,7 +173,7 @@ func (s *Store) ListVersions(ctx context.Context) ([]*Manifest, error) {
 				continue
 			}
 		} else {
-			m, err = ReadBinary(io.NewSectionReader(b, 0, b.Size()))
+			m, err = ReadBinary(io.NewSectionReader(blobstore.ReaderAt(b), 0, b.Size()))
 			if err != nil {
 				b.Close()
 				continue // Skip corrupted binary manifests

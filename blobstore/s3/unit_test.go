@@ -111,8 +111,9 @@ func TestBlob_ReadAt(t *testing.T) {
 		Body: io.NopCloser(strings.NewReader("hello")),
 	}, nil).Once()
 
+	ctx := context.Background()
 	buf := make([]byte, 5)
-	n, err := blob.ReadAt(buf, 0)
+	n, err := blob.ReadAt(ctx, buf, 0)
 	assert.Equal(t, 5, n)
 	assert.NoError(t, err)
 	assert.Equal(t, "hello", string(buf))
@@ -133,7 +134,8 @@ func TestBlob_ReadRange(t *testing.T) {
 		Body: io.NopCloser(strings.NewReader("llo W")),
 	}, nil).Once()
 
-	r, err := blob.ReadRange(2, 5)
+	ctx := context.Background()
+	r, err := blob.ReadRange(ctx, 2, 5)
 	assert.NoError(t, err)
 	defer r.Close()
 

@@ -132,7 +132,7 @@ type localBlob struct {
 	m *mmap.Mapping
 }
 
-func (b *localBlob) ReadAt(p []byte, off int64) (n int, err error) {
+func (b *localBlob) ReadAt(ctx context.Context, p []byte, off int64) (n int, err error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
@@ -147,7 +147,7 @@ func (b *localBlob) ReadAt(p []byte, off int64) (n int, err error) {
 	return n, nil
 }
 
-func (b *localBlob) ReadRange(off, length int64) (io.ReadCloser, error) {
+func (b *localBlob) ReadRange(ctx context.Context, off, length int64) (io.ReadCloser, error) {
 	data := b.m.Bytes()
 	if off < 0 || off >= int64(cap(data)) {
 		return io.NopCloser(bytes.NewReader(nil)), io.EOF

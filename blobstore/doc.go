@@ -28,4 +28,11 @@
 //	    Size() int64
 //	    ReadRange(off, len int64) (io.ReadCloser, error)
 //	}
+//
+// # Context Handling
+//
+// Context is passed to Open(), Create(), Put(), Delete(), and List() methods.
+// Note that io.ReaderAt (ReadAt) doesn't accept context by design - this is
+// a Go standard library limitation. For context-aware reads, cloud implementations
+// may provide additional methods like ReadAtContext() or ReadRangeContext().
 package blobstore

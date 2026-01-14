@@ -87,9 +87,10 @@ func (s *Store) Create(ctx context.Context, name string) (blobstore.WritableBlob
 		uploader: manager.NewUploader(s.client),
 	}
 
-	// Start upload in background
+	// Start upload in background using the provided context.
+	// The upload will be cancelled if the context is cancelled.
 	go func() {
-		_, err := blob.uploader.Upload(context.Background(), &s3.PutObjectInput{
+		_, err := blob.uploader.Upload(ctx, &s3.PutObjectInput{
 			Bucket: aws.String(s.bucket),
 			Key:    aws.String(key),
 			Body:   pr,
@@ -158,9 +159,14 @@ func (b *s3Blob) Size() int64 {
 	return b.size
 }
 
-func (b *s3Blob) ReadAt(p []byte, off int64) (int, error) {
+func (b *s3Blob) ReadAt(ctx context.Context, p []byte, off int64) (int, error) {
 	if off >= b.size {
 		return 0, io.EOF
+	}
+
+	// Check context before making network call
+	if err := ctx.Err(); err != nil {
+		return 0, err
 	}
 
 	end := off + int64(len(p)) - 1
@@ -170,7 +176,7 @@ func (b *s3Blob) ReadAt(p []byte, off int64) (int, error) {
 
 	rangeHeader := fmt.Sprintf("bytes=%d-%d", off, end)
 
-	resp, err := b.client.GetObject(context.Background(), &s3.GetObjectInput{
+	resp, err := b.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(b.bucket),
 		Key:    aws.String(b.key),
 		Range:  aws.String(rangeHeader),
@@ -196,9 +202,14 @@ func (b *s3Blob) ReadAt(p []byte, off int64) (int, error) {
 	return n, err
 }
 
-func (b *s3Blob) ReadRange(off, lenReq int64) (io.ReadCloser, error) {
+func (b *s3Blob) ReadRange(ctx context.Context, off, lenReq int64) (io.ReadCloser, error) {
 	if off >= b.size {
 		return nil, io.EOF
+	}
+
+	// Check context before making network call
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 
 	end := off + lenReq - 1
@@ -208,7 +219,7 @@ func (b *s3Blob) ReadRange(off, lenReq int64) (io.ReadCloser, error) {
 
 	rangeHeader := fmt.Sprintf("bytes=%d-%d", off, end)
 
-	resp, err := b.client.GetObject(context.Background(), &s3.GetObjectInput{
+	resp, err := b.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(b.bucket),
 		Key:    aws.String(b.key),
 		Range:  aws.String(rangeHeader),
@@ -246,6 +257,9 @@ func (b *s3WritableBlob) Close() error {
 	return err
 }
 
+// Sync is a no-op for S3 uploads.
+// The upload is only finalized when Close() is called and the background
+// goroutine completes the multipart upload.
 func (b *s3WritableBlob) Sync() error {
 	return nil
 }

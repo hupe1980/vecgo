@@ -37,13 +37,15 @@ type BlobStore interface {
 
 // Blob is a read-only handle to a data blob.
 type Blob interface {
-	io.ReaderAt
+	// ReadAt reads len(p) bytes starting at offset off.
+	// Context is used for cancellation (especially important for cloud storage).
+	ReadAt(ctx context.Context, p []byte, off int64) (n int, err error)
 	io.Closer
 	// Size returns the size of the blob in bytes.
 	Size() int64
 	// ReadRange reads a range of bytes from the blob.
 	// This makes it easier to optimize for range requests (e.g. S3 Range header).
-	ReadRange(off, length int64) (io.ReadCloser, error)
+	ReadRange(ctx context.Context, off, length int64) (io.ReadCloser, error)
 }
 
 // Mappable is an optional interface for Blobs that support memory mapping.
@@ -52,4 +54,19 @@ type Mappable interface {
 	// The slice is valid until the Blob is closed.
 	// This is a zero-copy operation if supported.
 	Bytes() ([]byte, error)
+}
+
+// ReaderAt returns an io.ReaderAt that wraps the given Blob.
+// The returned reader uses context.Background() for each read.
+// For context-aware reads, use Blob.ReadAt directly.
+func ReaderAt(b Blob) io.ReaderAt {
+	return &blobReaderAt{blob: b}
+}
+
+type blobReaderAt struct {
+	blob Blob
+}
+
+func (r *blobReaderAt) ReadAt(p []byte, off int64) (int, error) {
+	return r.blob.ReadAt(context.Background(), p, off)
 }

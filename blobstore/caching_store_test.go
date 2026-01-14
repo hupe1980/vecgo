@@ -19,7 +19,7 @@ type mockBlob struct {
 
 func (m *mockBlob) Close() error { return nil }
 func (m *mockBlob) Size() int64  { return int64(len(m.data)) }
-func (m *mockBlob) ReadAt(p []byte, off int64) (int, error) {
+func (m *mockBlob) ReadAt(ctx context.Context, p []byte, off int64) (int, error) {
 	m.reads++
 	if off >= int64(len(m.data)) {
 		return 0, io.EOF
@@ -31,7 +31,7 @@ func (m *mockBlob) ReadAt(p []byte, off int64) (int, error) {
 	}
 	return n, nil
 }
-func (m *mockBlob) ReadRange(off, len int64) (io.ReadCloser, error) {
+func (m *mockBlob) ReadRange(ctx context.Context, off, len int64) (io.ReadCloser, error) {
 	return io.NopCloser(bytes.NewReader(m.data[off : off+len])), nil
 }
 
@@ -74,13 +74,15 @@ func TestCachingStore_ReadAt(t *testing.T) {
 	c := cache.NewLRUBlockCache(1024*1024, nil) // 1MB cache
 	store := NewCachingStore(inner, c, 256)     // 256 bytes block size
 
+	ctx := context.Background()
+
 	// Open
-	blob, err := store.Open(context.Background(), "test")
+	blob, err := store.Open(ctx, "test")
 	require.NoError(t, err)
 
 	// 1. Read first block (bytes 0-100)
 	buf := make([]byte, 100)
-	n, err := blob.ReadAt(buf, 0)
+	n, err := blob.ReadAt(ctx, buf, 0)
 	require.NoError(t, err)
 	assert.Equal(t, 100, n)
 	assert.Equal(t, data[:100], buf)
@@ -91,7 +93,7 @@ func TestCachingStore_ReadAt(t *testing.T) {
 	assert.Equal(t, 256, mBlob.readBytes) // Read full block 0 (256 bytes)
 
 	// 2. Read same range again -> Should hit cache
-	n, err = blob.ReadAt(buf, 0)
+	n, err = blob.ReadAt(ctx, buf, 0)
 	require.NoError(t, err)
 	assert.Equal(t, 100, n)
 	assert.Equal(t, 1, mBlob.reads) // Reads count unchanged
@@ -99,7 +101,7 @@ func TestCachingStore_ReadAt(t *testing.T) {
 	// 3. Read spanning two blocks (bytes 200-300). Block 0 (0-255) and Block 1 (256-511)
 	// Block 0 is cached. Block 1 is not.
 	buf2 := make([]byte, 100)
-	n, err = blob.ReadAt(buf2, 200)
+	n, err = blob.ReadAt(ctx, buf2, 200)
 	require.NoError(t, err)
 	assert.Equal(t, 100, n)
 	assert.Equal(t, data[200:300], buf2)
@@ -109,7 +111,7 @@ func TestCachingStore_ReadAt(t *testing.T) {
 	assert.Equal(t, 256+256, mBlob.readBytes) // +256 for Block 1
 
 	// 4. Read Block 1 again -> cache hit
-	n, err = blob.ReadAt(buf2, 260)
+	n, err = blob.ReadAt(ctx, buf2, 260)
 	require.NoError(t, err)
 	assert.Equal(t, 2, mBlob.reads)
 }
@@ -124,11 +126,12 @@ func TestCachingStore_SmallFile(t *testing.T) {
 	c := cache.NewLRUBlockCache(1024, nil)
 	store := NewCachingStore(inner, c, 256)
 
-	blob, err := store.Open(context.Background(), "small")
+	ctx := context.Background()
+	blob, err := store.Open(ctx, "small")
 	require.NoError(t, err)
 
 	buf := make([]byte, 10)
-	n, err := blob.ReadAt(buf, 0)
+	n, err := blob.ReadAt(ctx, buf, 0)
 	// Expect partial read? Or just data length
 	assert.Equal(t, 5, n)
 	// io.ReaderAt allows returning EOF or nil if n < len(p)?

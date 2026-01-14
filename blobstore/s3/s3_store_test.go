@@ -56,13 +56,13 @@ func TestIntegration_S3Store(t *testing.T) {
 
 		// ReadAt
 		buf := make([]byte, 100)
-		n2, err := r.ReadAt(buf, 0)
+		n2, err := r.ReadAt(ctx, buf, 0)
 		require.NoError(t, err)
 		assert.Equal(t, 100, n2)
 		assert.Equal(t, data[:100], buf)
 
 		// ReadAt Offset
-		n3, err := r.ReadAt(buf, 1024)
+		n3, err := r.ReadAt(ctx, buf, 1024)
 		require.NoError(t, err)
 		assert.Equal(t, 100, n3)
 		assert.Equal(t, data[1024:1124], buf)

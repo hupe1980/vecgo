@@ -41,7 +41,7 @@ func (s *ShardedLRUBlockCache) shard(key CacheKey) *LRUBlockCache {
 	// splitmix64 finalizer for excellent distribution
 	h = (h ^ (h >> 30)) * 0xbf58476d1ce4e5b9
 	h = (h ^ (h >> 27)) * 0x94d049bb133111eb
-	h = h ^ (h >> 31)
+	h ^= h >> 31
 	return s.shards[h&(numShards-1)] // Faster than modulo for power-of-2
 }
 

@@ -21,7 +21,7 @@ type memoryBlob struct {
 	data []byte
 }
 
-func (m *memoryBlob) ReadAt(p []byte, off int64) (n int, err error) {
+func (m *memoryBlob) ReadAt(_ context.Context, p []byte, off int64) (n int, err error) {
 	if off >= int64(len(m.data)) {
 		return 0, io.EOF
 	}
@@ -42,7 +42,7 @@ func (m *memoryBlob) Bytes() ([]byte, error) {
 	return m.data, nil
 }
 
-func (m *memoryBlob) ReadRange(off, length int64) (io.ReadCloser, error) {
+func (m *memoryBlob) ReadRange(_ context.Context, off, length int64) (io.ReadCloser, error) {
 	if off < 0 {
 		return nil, io.EOF
 	}
@@ -60,7 +60,7 @@ type nonMappableBlob struct {
 	data []byte
 }
 
-func (m *nonMappableBlob) ReadAt(p []byte, off int64) (n int, err error) {
+func (m *nonMappableBlob) ReadAt(_ context.Context, p []byte, off int64) (n int, err error) {
 	if off >= int64(len(m.data)) {
 		return 0, io.EOF
 	}
@@ -77,7 +77,7 @@ func (m *nonMappableBlob) Size() int64 {
 
 func (m *nonMappableBlob) Close() error { return nil }
 
-func (m *nonMappableBlob) ReadRange(off, length int64) (io.ReadCloser, error) {
+func (m *nonMappableBlob) ReadRange(_ context.Context, off, length int64) (io.ReadCloser, error) {
 	if off < 0 {
 		return nil, io.EOF
 	}

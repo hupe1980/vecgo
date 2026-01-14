@@ -2,6 +2,7 @@ package engine
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"testing"
 
@@ -15,7 +16,7 @@ type bytesBlob struct {
 	data []byte
 }
 
-func (b *bytesBlob) ReadAt(p []byte, off int64) (n int, err error) {
+func (b *bytesBlob) ReadAt(_ context.Context, p []byte, off int64) (n int, err error) {
 	if off >= int64(len(b.data)) {
 		return 0, io.EOF
 	}
@@ -28,7 +29,7 @@ func (b *bytesBlob) ReadAt(p []byte, off int64) (n int, err error) {
 
 func (b *bytesBlob) Close() error { return nil }
 func (b *bytesBlob) Size() int64  { return int64(len(b.data)) }
-func (b *bytesBlob) ReadRange(off, length int64) (io.ReadCloser, error) {
+func (b *bytesBlob) ReadRange(_ context.Context, off, length int64) (io.ReadCloser, error) {
 	if off < 0 || off >= int64(len(b.data)) {
 		return io.NopCloser(bytes.NewReader(nil)), io.EOF
 	}

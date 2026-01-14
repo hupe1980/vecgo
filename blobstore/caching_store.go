@@ -86,9 +86,14 @@ func (b *CachingBlob) Size() int64 {
 	return b.inner.Size()
 }
 
-func (b *CachingBlob) ReadAt(p []byte, off int64) (int, error) {
+func (b *CachingBlob) ReadAt(ctx context.Context, p []byte, off int64) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
+	}
+
+	// Check context before starting
+	if err := ctx.Err(); err != nil {
+		return 0, err
 	}
 
 	totalRead := 0
@@ -98,7 +103,7 @@ func (b *CachingBlob) ReadAt(p []byte, off int64) (int, error) {
 	endBlock := (off + int64(len(p)) - 1) / b.blockSize
 
 	// Prefetch/Coalesce missing blocks
-	if err := b.fillCache(startBlock, endBlock); err != nil {
+	if err := b.fillCache(ctx, startBlock, endBlock); err != nil {
 		return 0, err
 	}
 
@@ -129,7 +134,7 @@ func (b *CachingBlob) ReadAt(p []byte, off int64) (int, error) {
 		dstOffset := intersectStart - off
 
 		// Get block data (either from cache or read from inner)
-		blockData, err := b.dofetchBlock(blk)
+		blockData, err := b.dofetchBlock(ctx, blk)
 		if err != nil {
 			// If EOF on a block read, it might be partial?
 			// But specific block logic handles boundaries.
@@ -157,8 +162,12 @@ func (b *CachingBlob) ReadAt(p []byte, off int64) (int, error) {
 
 // fillCache ensures that the blocks in the given range are loaded into the cache.
 // It optimizes by fetching contiguous runs of missing blocks in single backend requests.
-func (b *CachingBlob) fillCache(startBlock, endBlock int64) error {
-	ctx := context.Background()
+func (b *CachingBlob) fillCache(ctx context.Context, startBlock, endBlock int64) error {
+	// Check context before starting
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	var missingRuns []struct {
 		start, count int64
 	}
@@ -215,7 +224,7 @@ func (b *CachingBlob) fillCache(startBlock, endBlock int64) error {
 			// Read from backend
 			// Use a new buffer for each read
 			buf := make([]byte, byteSize)
-			n, err := b.inner.ReadAt(buf, byteStart)
+			n, err := b.inner.ReadAt(ctx, buf, byteStart)
 			if err != nil && !errors.Is(err, io.EOF) {
 				return err
 			}
@@ -257,7 +266,7 @@ func (b *CachingBlob) fillCache(startBlock, endBlock int64) error {
 	return g.Wait()
 }
 
-func (b *CachingBlob) dofetchBlock(blkIdx int64) ([]byte, error) {
+func (b *CachingBlob) dofetchBlock(ctx context.Context, blkIdx int64) ([]byte, error) {
 	key := cache.CacheKey{
 		Kind:   cache.CacheKindBlob,
 		Path:   b.name,
@@ -265,7 +274,7 @@ func (b *CachingBlob) dofetchBlock(blkIdx int64) ([]byte, error) {
 	}
 
 	// 1. Try Cache
-	if data, ok := b.cache.Get(context.Background(), key); ok {
+	if data, ok := b.cache.Get(ctx, key); ok {
 		return data, nil
 	}
 
@@ -275,7 +284,7 @@ func (b *CachingBlob) dofetchBlock(blkIdx int64) ([]byte, error) {
 	offset := blkIdx * b.blockSize
 
 	// ReadAt might return fewer bytes if EOF is reached
-	n, err := b.inner.ReadAt(buf, offset)
+	n, err := b.inner.ReadAt(ctx, buf, offset)
 	if err != nil && !errors.Is(err, io.EOF) {
 		return nil, err
 	}
@@ -284,12 +293,7 @@ func (b *CachingBlob) dofetchBlock(blkIdx int64) ([]byte, error) {
 
 	// 3. Cache it (only if we got data)
 	if n > 0 {
-		// Make a copy to ensure ownership?
-		// ReadAt usually copies into buf.
-		// We cache 'validData'.
-		// Note: We might want to shrink capacity if n < blockSize?
-		// For simplicity, just cache validData.
-		b.cache.Set(context.Background(), key, validData)
+		b.cache.Set(ctx, key, validData)
 	}
 
 	return validData, nil
@@ -298,8 +302,28 @@ func (b *CachingBlob) dofetchBlock(blkIdx int64) ([]byte, error) {
 // ReadRange optimizes for larger reads by bypassing cache or pre-warming?
 // For now, simpler implementation: utilize the generic ReadRange which usually calls ReadAt.
 // OR, we can just use the default implementation or delegate to ReadAt loop.
-func (b *CachingBlob) ReadRange(off, length int64) (io.ReadCloser, error) {
+func (b *CachingBlob) ReadRange(ctx context.Context, off, length int64) (io.ReadCloser, error) {
 	// TODO: For very large ranges, we might bypass cache to avoid thrashing?
 	// For now, just use SectionReader which calls ReadAt.
-	return io.NopCloser(io.NewSectionReader(b, off, length)), nil
+	return io.NopCloser(&contextSectionReader{blob: b, ctx: ctx, off: off, limit: off + length}), nil
+}
+
+// contextSectionReader wraps CachingBlob to implement io.Reader with context.
+type contextSectionReader struct {
+	blob  *CachingBlob
+	ctx   context.Context
+	off   int64
+	limit int64
+}
+
+func (r *contextSectionReader) Read(p []byte) (n int, err error) {
+	if r.off >= r.limit {
+		return 0, io.EOF
+	}
+	if remaining := r.limit - r.off; int64(len(p)) > remaining {
+		p = p[:remaining]
+	}
+	n, err = r.blob.ReadAt(r.ctx, p, r.off)
+	r.off += int64(n)
+	return
 }

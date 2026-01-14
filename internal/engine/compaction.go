@@ -458,7 +458,7 @@ func openSegment(ctx context.Context, st blobstore.BlobStore, name string, c cac
 
 	// Read magic
 	b := make([]byte, 4)
-	if _, err := blob.ReadAt(b, 0); err != nil {
+	if _, err := blob.ReadAt(ctx, b, 0); err != nil {
 		_ = blob.Close() // Intentionally ignore: cleanup path
 		return nil, err
 	}

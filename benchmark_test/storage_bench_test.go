@@ -59,14 +59,14 @@ type LatencyBlob struct {
 	latency time.Duration
 }
 
-func (b *LatencyBlob) ReadAt(p []byte, off int64) (n int, err error) {
+func (b *LatencyBlob) ReadAt(ctx context.Context, p []byte, off int64) (n int, err error) {
 	time.Sleep(b.latency)
-	return b.base.ReadAt(p, off)
+	return b.base.ReadAt(ctx, p, off)
 }
 
-func (b *LatencyBlob) ReadRange(off, len int64) (io.ReadCloser, error) {
+func (b *LatencyBlob) ReadRange(ctx context.Context, off, len int64) (io.ReadCloser, error) {
 	time.Sleep(b.latency)
-	return b.base.ReadRange(off, len)
+	return b.base.ReadRange(ctx, off, len)
 }
 
 func (b *LatencyBlob) Size() int64 {
@@ -122,12 +122,13 @@ func BenchmarkStorage_ReadRandom(b *testing.B) {
 		}
 		defer blob.Close()
 
+		ctx := context.Background()
 		buf := make([]byte, 1024)
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			// Random read
 			off := int64(i*1024) % (size - 1024)
-			if _, err := blob.ReadAt(buf, off); err != nil {
+			if _, err := blob.ReadAt(ctx, buf, off); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -140,11 +141,12 @@ func BenchmarkStorage_ReadRandom(b *testing.B) {
 		}
 		defer blob.Close()
 
+		ctx := context.Background()
 		buf := make([]byte, 1024)
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			off := int64(i*1024) % (size - 1024)
-			if _, err := blob.ReadAt(buf, off); err != nil {
+			if _, err := blob.ReadAt(ctx, buf, off); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -158,10 +160,11 @@ func BenchmarkStorage_ReadRandom(b *testing.B) {
 		}
 		defer blob.Close()
 
+		ctx := context.Background()
 		buf := make([]byte, 4096) // Match block size
 		// Pre-warm the first few blocks
 		for i := 0; i < 10; i++ {
-			blob.ReadAt(buf, int64(i*4096))
+			blob.ReadAt(ctx, buf, int64(i*4096))
 		}
 
 		b.ResetTimer()
@@ -169,7 +172,7 @@ func BenchmarkStorage_ReadRandom(b *testing.B) {
 			// Read from the warmed up region
 			idx := i % 10
 			off := int64(idx * 4096)
-			if _, err := blob.ReadAt(buf, off); err != nil {
+			if _, err := blob.ReadAt(ctx, buf, off); err != nil {
 				b.Fatal(err)
 			}
 		}

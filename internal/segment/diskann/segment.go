@@ -128,7 +128,7 @@ func (s *Segment) load() error {
 	} else {
 		// Lazy load: read only header
 		headerBytes := make([]byte, HeaderSize)
-		if _, err := s.blob.ReadAt(headerBytes, 0); err != nil {
+		if _, err := s.blob.ReadAt(context.Background(), headerBytes, 0); err != nil {
 			return fmt.Errorf("failed to read header: %w", err)
 		}
 		s.header, err = DecodeHeader(headerBytes)
@@ -142,7 +142,7 @@ func (s *Segment) load() error {
 		// Format: [Count uint32][Offsets uint64...]
 		// Read header
 		header := make([]byte, 4)
-		if _, err := s.payloadBlob.ReadAt(header, 0); err != nil {
+		if _, err := s.payloadBlob.ReadAt(context.Background(), header, 0); err != nil {
 			return fmt.Errorf("failed to read payload header: %w", err)
 		}
 		count := binary.LittleEndian.Uint32(header)
@@ -151,7 +151,7 @@ func (s *Segment) load() error {
 		// Read offsets
 		offsetsSize := int(count+1) * 8
 		offsetsBytes := make([]byte, offsetsSize)
-		if _, err := s.payloadBlob.ReadAt(offsetsBytes, 4); err != nil {
+		if _, err := s.payloadBlob.ReadAt(context.Background(), offsetsBytes, 4); err != nil {
 			return fmt.Errorf("failed to read payload offsets: %w", err)
 		}
 
@@ -245,7 +245,7 @@ func (s *Segment) load() error {
 				end = uint64(s.blob.Size())
 			}
 			size := int64(end - s.header.MetadataIndexOffset)
-			r = io.NewSectionReader(s.blob, int64(s.header.MetadataIndexOffset), size)
+			r = io.NewSectionReader(blobstore.ReaderAt(s.blob), int64(s.header.MetadataIndexOffset), size)
 		}
 
 		s.index = imetadata.NewUnifiedIndex()
@@ -328,7 +328,7 @@ func (s *Segment) loadPQ() error {
 			return s.data[off : off+size], nil
 		}
 		buf := make([]byte, size)
-		if _, err := s.blob.ReadAt(buf, int64(off)); err != nil {
+		if _, err := s.blob.ReadAt(context.Background(), buf, int64(off)); err != nil {
 			return nil, err
 		}
 		return buf, nil
@@ -399,7 +399,7 @@ func (s *Segment) loadINT4() error {
 		}
 		copy(params, s.data[s.header.PQCodebookOffset:][:size])
 	} else {
-		if _, err := s.blob.ReadAt(params, int64(s.header.PQCodebookOffset)); err != nil {
+		if _, err := s.blob.ReadAt(context.Background(), params, int64(s.header.PQCodebookOffset)); err != nil {
 			return err
 		}
 	}
@@ -723,7 +723,7 @@ func (s *Segment) readMetadata(rowID uint32) (metadata.Document, error) {
 		// Read offsets from blob
 		offsetPos := int64(s.header.MetadataOffset) + int64(rowID)*8
 		buf := make([]byte, 16)
-		if _, err := s.blob.ReadAt(buf, offsetPos); err != nil {
+		if _, err := s.blob.ReadAt(context.Background(), buf, offsetPos); err != nil {
 			return nil, err
 		}
 		start = binary.LittleEndian.Uint64(buf[0:8])
@@ -745,7 +745,7 @@ func (s *Segment) readMetadata(rowID uint32) (metadata.Document, error) {
 		blob = s.data[dataStart+start : dataStart+end]
 	} else {
 		blob = make([]byte, end-start)
-		if _, err := s.blob.ReadAt(blob, int64(dataStart+start)); err != nil {
+		if _, err := s.blob.ReadAt(context.Background(), blob, int64(dataStart+start)); err != nil {
 			return nil, err
 		}
 	}
@@ -848,7 +848,7 @@ func (s *Segment) Fetch(ctx context.Context, rows []uint32, cols []string) (segm
 			dataOffset := 4 + uint64(s.payloadCount+1)*8 + start
 
 			p := make([]byte, size)
-			if _, err := s.payloadBlob.ReadAt(p, int64(dataOffset)); err != nil {
+			if _, err := s.payloadBlob.ReadAt(ctx, p, int64(dataOffset)); err != nil {
 				return nil, err
 			}
 			batch.Payloads[i] = p
@@ -907,7 +907,7 @@ func (s *Segment) Iterate(fn func(rowID uint32, id model.ID, vec []float32, md m
 				// Header: 4 bytes
 				// Offsets: (count + 1) * 8 bytes
 				dataStart := 4 + int64(s.payloadCount+1)*8
-				if _, err := s.payloadBlob.ReadAt(payload, dataStart+int64(start)); err != nil {
+				if _, err := s.payloadBlob.ReadAt(context.Background(), payload, dataStart+int64(start)); err != nil {
 					return err
 				}
 			}
@@ -987,7 +987,7 @@ func (s *Segment) Advise(pattern segment.AccessPattern) error {
 func (s *Segment) readBlock(offset int64, size int, kind cache.CacheKind) ([]byte, error) {
 	if s.cache == nil {
 		buf := make([]byte, size)
-		if _, err := s.blob.ReadAt(buf, offset); err != nil {
+		if _, err := s.blob.ReadAt(context.Background(), buf, offset); err != nil {
 			return nil, err
 		}
 		return buf, nil
@@ -1014,7 +1014,7 @@ func (s *Segment) readBlock(offset int64, size int, kind cache.CacheKind) ([]byt
 			// Read aligned page
 			pageStart := page * pageSize
 			readBuf := make([]byte, pageSize)
-			n, err := s.blob.ReadAt(readBuf, pageStart)
+			n, err := s.blob.ReadAt(context.Background(), readBuf, pageStart)
 			if err != nil && !errors.Is(err, io.EOF) {
 				return nil, err
 			}

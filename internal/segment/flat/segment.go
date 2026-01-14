@@ -112,7 +112,7 @@ func Open(blob blobstore.Blob, opts ...Option) (*Segment, error) {
 		// Fallback: read fully into memory
 		size := blob.Size()
 		data = make([]byte, size)
-		if _, err := blob.ReadAt(data, 0); err != nil {
+		if _, err := blob.ReadAt(context.Background(), data, 0); err != nil {
 			return nil, err
 		}
 	}
@@ -140,7 +140,7 @@ func Open(blob blobstore.Blob, opts ...Option) (*Segment, error) {
 		// Format: [Count uint32][Offsets uint64...]
 		// Read header
 		header := make([]byte, 4)
-		if _, err := s.payloadBlob.ReadAt(header, 0); err != nil {
+		if _, err := s.payloadBlob.ReadAt(context.Background(), header, 0); err != nil {
 			blob.Close()
 			s.payloadBlob.Close()
 			return nil, fmt.Errorf("failed to read payload header: %w", err)
@@ -151,7 +151,7 @@ func Open(blob blobstore.Blob, opts ...Option) (*Segment, error) {
 		// Read offsets
 		offsetsSize := int(count+1) * 8
 		offsetsBytes := make([]byte, offsetsSize)
-		if _, err := s.payloadBlob.ReadAt(offsetsBytes, 4); err != nil {
+		if _, err := s.payloadBlob.ReadAt(context.Background(), offsetsBytes, 4); err != nil {
 			blob.Close()
 			s.payloadBlob.Close()
 			return nil, fmt.Errorf("failed to read payload offsets: %w", err)
@@ -818,7 +818,7 @@ func (s *Segment) Fetch(ctx context.Context, rows []uint32, cols []string) (segm
 			dataOffset := 4 + uint64(s.payloadCount+1)*8 + start
 
 			p := make([]byte, size)
-			if _, err := s.payloadBlob.ReadAt(p, int64(dataOffset)); err != nil {
+			if _, err := s.payloadBlob.ReadAt(ctx, p, int64(dataOffset)); err != nil {
 				return nil, err
 			}
 			batch.Payloads[i] = p
@@ -868,7 +868,7 @@ func (s *Segment) Iterate(fn func(rowID uint32, id model.ID, vec []float32, md m
 			dataOffset := 4 + uint64(s.payloadCount+1)*8 + start
 
 			payload = make([]byte, size)
-			if _, err := s.payloadBlob.ReadAt(payload, int64(dataOffset)); err != nil {
+			if _, err := s.payloadBlob.ReadAt(context.Background(), payload, int64(dataOffset)); err != nil {
 				return err
 			}
 		}
