@@ -14,7 +14,6 @@ import (
 	"github.com/hupe1980/vecgo/distance"
 	"github.com/hupe1980/vecgo/internal/arena"
 	"github.com/hupe1980/vecgo/internal/bitset"
-	"github.com/hupe1980/vecgo/internal/conv"
 	"github.com/hupe1980/vecgo/internal/searcher"
 	"github.com/hupe1980/vecgo/internal/segment"
 	"github.com/hupe1980/vecgo/internal/vectorstore"
@@ -226,11 +225,8 @@ func New(optFns ...func(o *Options)) (*HNSW, error) {
 
 	h.initPools()
 
-	dimI32, err := conv.IntToInt32(opts.Dimension)
-	if err != nil {
-		return nil, err
-	}
-	h.dimensionAtomic.Store(dimI32)
+	// Dimension is validated to be > 0 above, and realistic dimensions fit in int32
+	h.dimensionAtomic.Store(int32(opts.Dimension))
 	if h.vectors == nil {
 		var err error
 		h.vectors, err = vectorstore.New(opts.Dimension, opts.MemoryAcquirer)
@@ -1613,7 +1609,7 @@ func (h *HNSW) BruteSearch(ctx context.Context, query []float32, k int, filter f
 			if seg == nil {
 				continue
 			}
-			if err := h.scanSegment(seg, i, query, k, filter, pq, distFunc); err != nil {
+			if err := h.scanSegment(seg, i, k, filter, pq, distFunc); err != nil {
 				return nil, err
 			}
 		}
@@ -1627,27 +1623,15 @@ func (h *HNSW) BruteSearch(ctx context.Context, query []float32, k int, filter f
 	return res, nil
 }
 
-func (h *HNSW) scanSegment(seg *NodeSegment, segIdx int, query []float32, k int, filter func(id model.RowID) bool, pq *searcher.PriorityQueue, distFunc DistFunc) error {
+func (h *HNSW) scanSegment(seg *NodeSegment, segIdx int, k int, filter func(id model.RowID) bool, pq *searcher.PriorityQueue, distFunc DistFunc) error {
+	baseID := uint32(segIdx) * nodeSegmentSize
 	for j := range seg {
 		val := seg[j].Load()
 		node := Node{ref: nodeRef(val)}
 		if node.IsZero() {
 			continue
 		}
-		iU64, err := conv.IntToUint64(segIdx)
-		if err != nil {
-			return err
-		}
-		jU64, err := conv.IntToUint64(j)
-		if err != nil {
-			return err
-		}
-		nodeID := iU64*nodeSegmentSize + jU64
-		nodeIDU32, err := conv.Uint64ToUint32(nodeID)
-		if err != nil {
-			return err
-		}
-		id := model.RowID(nodeIDU32)
+		id := model.RowID(baseID + uint32(j))
 		if filter != nil && !filter(id) {
 			continue
 		}
@@ -1698,10 +1682,8 @@ func (h *HNSW) Size() int64 {
 // ContainsID checks if an ID exists in the index.
 func (h *HNSW) ContainsID(id uint64) bool {
 	g := h.currentGraph.Load()
-	idU32, err := conv.Uint64ToUint32(id)
-	if err != nil {
-		return false
-	}
+	// Node IDs are uint32 internally, so truncate is safe (high bits unused)
+	idU32 := uint32(id)
 	if g.tombstones.Test(idU32) {
 		return false
 	}
@@ -1773,22 +1755,11 @@ func (g *graph) checkAndSetEntryPoint(node Node, i, j int) bool {
 	if node.IsZero() {
 		return false
 	}
-	iU64, err := conv.IntToUint64(i)
-	if err != nil {
-		return false
-	}
-	jU64, err := conv.IntToUint64(j)
-	if err != nil {
-		return false
-	}
-	id := iU64*nodeSegmentSize + jU64
-	idU32, err := conv.Uint64ToUint32(id)
-	if err != nil {
-		return false
-	}
+	// i and j are segment/offset indices, always positive and fit in uint32
+	id := uint32(i)*nodeSegmentSize + uint32(j)
 
-	if !g.tombstones.Test(idU32) {
-		g.entryPointAtomic.Store(idU32)
+	if !g.tombstones.Test(id) {
+		g.entryPointAtomic.Store(id)
 		g.maxLevelAtomic.Store(int32(node.Level(g.arena)))
 		return true
 	}

@@ -8,7 +8,6 @@ import (
 	"unsafe"
 
 	"github.com/hupe1980/vecgo/internal/arena"
-	"github.com/hupe1980/vecgo/internal/conv"
 	"github.com/hupe1980/vecgo/model"
 )
 
@@ -89,11 +88,7 @@ func (n Node) Level(a *arena.Arena) int {
 		// Stale reference or invalid offset
 		return -1
 	}
-	lvl, err := conv.Uint32ToInt(*(*uint32)(ptr))
-	if err != nil {
-		return -1 // Should not happen for valid levels
-	}
-	return lvl
+	return int(*(*uint32)(ptr))
 }
 
 func (n Node) setLevel(a *arena.Arena, level int) {
@@ -102,11 +97,7 @@ func (n Node) setLevel(a *arena.Arena, level int) {
 	if ptr == nil {
 		return
 	}
-	lvlU32, err := conv.IntToUint32(level)
-	if err != nil {
-		return
-	}
-	*(*uint32)(ptr) = lvlU32
+	*(*uint32)(ptr) = uint32(level)
 }
 
 // GetConnectionListPtr returns the offset to the connection list for the given layer.
@@ -157,12 +148,7 @@ func (n Node) GetConnectionsRaw(a *arena.Arena, layer int, m, m0 int) []uint64 {
 
 	count := atomic.LoadUint32((*uint32)(ptr))
 	neighborsPtr := unsafe.Pointer(uintptr(ptr) + 8)
-
-	countInt, err := conv.Uint32ToInt(count)
-	if err != nil {
-		return nil
-	}
-	return unsafe.Slice((*uint64)(neighborsPtr), countInt)
+	return unsafe.Slice((*uint64)(neighborsPtr), int(count))
 }
 
 // GetConnection returns the neighbor at the given index for the given layer.
@@ -213,11 +199,7 @@ func (n Node) SetCount(a *arena.Arena, layer int, count int, m, m0 int) {
 	if ptr == nil {
 		return
 	}
-	countU32, err := conv.IntToUint32(count)
-	if err != nil {
-		return
-	}
-	atomic.StoreUint32((*uint32)(ptr), countU32)
+	atomic.StoreUint32((*uint32)(ptr), uint32(count))
 }
 
 // GetCount returns the number of connections for the given layer.
@@ -232,11 +214,7 @@ func (n Node) GetCount(a *arena.Arena, layer int, m, m0 int) int {
 	if ptr == nil {
 		return 0
 	}
-	count, err := conv.Uint32ToInt(atomic.LoadUint32((*uint32)(ptr)))
-	if err != nil {
-		return 0
-	}
-	return count
+	return int(atomic.LoadUint32((*uint32)(ptr)))
 }
 
 // ReplaceConnections replaces the connection list for the given layer with a new list (COW).
