@@ -113,6 +113,7 @@ func (ui *UnifiedIndex) SetDocumentProvider(provider DocumentProvider) {
 // This method supports all operators, including numeric comparisons like OpLessThan.
 // For operators not directly supported by the inverted index (e.g. OpLessThan),
 // it falls back to scanning all unique values in the index.
+// NOTE: The returned bitmap is from a pool. Caller should call PutBitmap when done.
 func (ui *UnifiedIndex) EvaluateFilter(fs *metadata.FilterSet) *LocalBitmap {
 	if fs == nil || len(fs.Filters) == 0 {
 		return nil // All matches
@@ -130,13 +131,14 @@ func (ui *UnifiedIndex) EvaluateFilter(fs *metadata.FilterSet) *LocalBitmap {
 		case metadata.OpEqual:
 			b := ui.getBitmapLocked(f.Key, f.Value)
 			if b != nil {
-				current = b.Clone()
+				current = GetBitmap()
+				current.Or(b) // Copy via Or
 			} else {
-				return NewLocalBitmap() // No match for this filter
+				return GetBitmap() // Empty bitmap - no match for this filter
 			}
 
 		case metadata.OpIn:
-			current = NewLocalBitmap()
+			current = GetBitmap()
 			arr, ok := f.Value.AsArray()
 			if ok {
 				for _, v := range arr {
@@ -152,13 +154,14 @@ func (ui *UnifiedIndex) EvaluateFilter(fs *metadata.FilterSet) *LocalBitmap {
 
 		default:
 			// Unsupported operator - fall back to empty (will fail filter)
-			return NewLocalBitmap()
+			return GetBitmap()
 		}
 
 		if result == nil {
 			result = current
 		} else {
 			result.And(current)
+			PutBitmap(current) // Return intermediate bitmap to pool
 		}
 
 		if result.IsEmpty() {
@@ -171,7 +174,7 @@ func (ui *UnifiedIndex) EvaluateFilter(fs *metadata.FilterSet) *LocalBitmap {
 
 // evaluateNumericFilter handles comparison operators by scanning the inverted index.
 func (ui *UnifiedIndex) evaluateNumericFilter(f metadata.Filter) *LocalBitmap {
-	result := NewLocalBitmap()
+	result := GetBitmap() // Use pooled bitmap
 
 	valueMap, ok := ui.inverted[unique.Make(f.Key)]
 	if !ok {

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/hupe1980/vecgo/distance"
+	imetadata "github.com/hupe1980/vecgo/internal/metadata"
 	"github.com/hupe1980/vecgo/internal/searcher"
 	"github.com/hupe1980/vecgo/internal/segment"
 	"github.com/hupe1980/vecgo/model"
@@ -185,8 +186,11 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 				bitmapsPtr := segBitmapPool.Get().(*[]segBitmap)
 				bitmaps := (*bitmapsPtr)[:0]
 				defer func() {
-					// Avoid retaining references to segments/bitmaps/filters across searches.
+					// Return bitmaps to pool and clear references
 					for i := range bitmaps {
+						if lb, ok := bitmaps[i].bitmap.(*imetadata.LocalBitmap); ok {
+							imetadata.PutBitmap(lb)
+						}
 						bitmaps[i] = segBitmap{}
 					}
 					*bitmapsPtr = bitmaps[:0]

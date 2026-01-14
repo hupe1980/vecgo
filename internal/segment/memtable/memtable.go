@@ -377,11 +377,12 @@ func (m *MemTable) EvaluateFilter(ctx context.Context, filter *metadata.FilterSe
 		return nil, nil // All matches
 	}
 
-	result := imetadata.NewLocalBitmap()
+	result := imetadata.GetBitmap() // Use pooled bitmap
 
 	for i, s := range m.shards {
 		shardBitmap, err := s.EvaluateFilter(ctx, filter)
 		if err != nil {
+			imetadata.PutBitmap(result)
 			return nil, err
 		}
 
@@ -393,6 +394,8 @@ func (m *MemTable) EvaluateFilter(ctx context.Context, filter *metadata.FilterSe
 				result.Add(id | shardOffset)
 				return true
 			})
+			// Return shard bitmap to pool
+			imetadata.PutBitmap(shardBitmap)
 		}
 	}
 	return result, nil

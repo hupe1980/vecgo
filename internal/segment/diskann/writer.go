@@ -57,6 +57,16 @@ type Writer struct {
 	bqCodes            [][]uint64
 	distFunc           distance.Func
 	index              *imetadata.UnifiedIndex
+
+	// Scratch buffers to reduce allocations in hot paths
+	scratchVisited  map[uint32]bool // Reused in greedySearch
+	scratchExpanded map[uint32]bool // Reused in greedySearch
+	scratchPool     []distNode      // Reused in greedySearch
+	scratchUnique   map[uint32]bool // Reused in robustPrune
+	scratchCands    []distNode      // Reused in robustPrune
+	scratchSelected []uint32        // Reused in robustPrune
+	scratchResult   []uint32        // Reused for results
+	scratchBuf      [8]byte         // Reused for binary writes
 }
 
 // Options for the DiskANN writer.
@@ -111,10 +121,41 @@ func NewWriter(w io.Writer, payloadW io.Writer, segID uint64, dim int, metric di
 		alpha:            opts.Alpha,
 		quantizationType: opts.QuantizationType,
 		pqSubvectors:     opts.PQSubvectors,
-		pqCentroids:      opts.PQCentroids, compressionType: opts.CompressionType, vectors: make([][]float32, 0),
-		ids:   make([]model.ID, 0),
-		index: imetadata.NewUnifiedIndex(),
+		pqCentroids:      opts.PQCentroids,
+		compressionType:  opts.CompressionType,
+		vectors:          make([][]float32, 0),
+		ids:              make([]model.ID, 0),
+		index:            imetadata.NewUnifiedIndex(),
+		// Pre-allocate scratch buffers for graph building
+		scratchVisited:  make(map[uint32]bool, opts.L*2),
+		scratchExpanded: make(map[uint32]bool, opts.L),
+		scratchPool:     make([]distNode, 0, opts.L*2),
+		scratchUnique:   make(map[uint32]bool, opts.R*2),
+		scratchCands:    make([]distNode, 0, opts.R*2),
+		scratchSelected: make([]uint32, 0, opts.R),
+		scratchResult:   make([]uint32, 0, opts.L),
 	}
+}
+
+// writeUint32 writes a uint32 without allocating.
+func (w *Writer) writeUint32(wr io.Writer, v uint32) error {
+	binary.LittleEndian.PutUint32(w.scratchBuf[:4], v)
+	_, err := wr.Write(w.scratchBuf[:4])
+	return err
+}
+
+// writeFloat32 writes a float32 without allocating.
+func (w *Writer) writeFloat32(wr io.Writer, v float32) error {
+	binary.LittleEndian.PutUint32(w.scratchBuf[:4], math.Float32bits(v))
+	_, err := wr.Write(w.scratchBuf[:4])
+	return err
+}
+
+// writeUint64 writes a uint64 without allocating.
+func (w *Writer) writeUint64(wr io.Writer, v uint64) error {
+	binary.LittleEndian.PutUint64(w.scratchBuf[:8], v)
+	_, err := wr.Write(w.scratchBuf[:8])
+	return err
 }
 
 // Add adds a vector and its ID to the segment.
@@ -423,7 +464,11 @@ func (w *Writer) dist(v1, v2 []float32) float32 {
 
 func (w *Writer) greedySearch(query []float32, startNode uint32, l int) []uint32 {
 	// Simple greedy search implementation
-	visited := make(map[uint32]bool)
+	// Reuse scratch buffers to avoid allocations
+	visited := w.scratchVisited
+	for k := range visited {
+		delete(visited, k)
+	}
 	visited[startNode] = true
 
 	// Use a heap for best candidates
@@ -441,11 +486,14 @@ func (w *Writer) greedySearch(query []float32, startNode uint32, l int) []uint32
 
 	// Using a simple slice and sorting for now (can be optimized with heaps)
 
-	// Initial set
-	pool := make([]distNode, 0, l*2)
+	// Initial set - reuse scratch pool
+	pool := w.scratchPool[:0]
 	pool = append(pool, distNode{id: startNode, dist: w.dist(w.vectors[startNode], query)})
 
-	expanded := make(map[uint32]bool)
+	expanded := w.scratchExpanded
+	for k := range expanded {
+		delete(expanded, k)
+	}
 
 	for {
 		// Linear Scan for best unexpanded
@@ -496,16 +544,25 @@ func (w *Writer) greedySearch(query []float32, startNode uint32, l int) []uint32
 		}
 	}
 
+	// Store pool back for potential reallocation
+	w.scratchPool = pool
+
 	sortDistNodes(pool)
 	if len(pool) > l {
 		pool = pool[:l]
 	}
 
-	res := make([]uint32, len(pool))
-	for i, p := range pool {
-		res[i] = p.id
+	// Reuse scratch result buffer
+	res := w.scratchResult[:0]
+	for _, p := range pool {
+		res = append(res, p.id)
 	}
-	return res
+	w.scratchResult = res
+
+	// Return a copy since caller may modify
+	result := make([]uint32, len(res))
+	copy(result, res)
+	return result
 }
 
 func (w *Writer) robustPrune(node uint32, candidates []uint32, r int, alpha float32) []uint32 {
@@ -514,7 +571,11 @@ func (w *Writer) robustPrune(node uint32, candidates []uint32, r int, alpha floa
 	// The candidates passed here should already include them or we add them.
 	// In buildGraph, I passed search results. I should merge with existing neighbors.
 
-	unique := make(map[uint32]bool)
+	// Reuse scratch unique map
+	unique := w.scratchUnique
+	for k := range unique {
+		delete(unique, k)
+	}
 	for _, c := range candidates {
 		unique[c] = true
 	}
@@ -523,15 +584,18 @@ func (w *Writer) robustPrune(node uint32, candidates []uint32, r int, alpha floa
 	}
 	delete(unique, node) // Remove self
 
-	cands := make([]distNode, 0, len(unique))
+	// Reuse scratch candidates slice
+	cands := w.scratchCands[:0]
 	nodeVec := w.vectors[node]
 	for id := range unique {
 		cands = append(cands, distNode{id: id, dist: w.dist(w.vectors[id], nodeVec)})
 	}
+	w.scratchCands = cands
 
 	sortDistNodes(cands)
 
-	selected := make([]uint32, 0, r)
+	// Reuse scratch selected slice
+	selected := w.scratchSelected[:0]
 	for _, c := range cands {
 		if len(selected) >= r {
 			break
@@ -551,7 +615,12 @@ func (w *Writer) robustPrune(node uint32, candidates []uint32, r int, alpha floa
 			selected = append(selected, c.id)
 		}
 	}
-	return selected
+	w.scratchSelected = selected
+
+	// Return a copy since graph stores the result
+	result := make([]uint32, len(selected))
+	copy(result, selected)
+	return result
 }
 
 func (w *Writer) addBackEdge(src, dst uint32, r int, alpha float32) {
@@ -567,9 +636,8 @@ func (w *Writer) addBackEdge(src, dst uint32, r int, alpha float32) {
 		// Prune
 		// Note: robustPrune needs candidates. Here we just have the current graph.
 		// We treat the current graph as the candidate set.
-		candidates := make([]uint32, len(w.graph[src]))
-		copy(candidates, w.graph[src])
-		w.graph[src] = w.robustPrune(src, candidates, r, alpha)
+		// Pass the graph slice directly - robustPrune copies what it needs
+		w.graph[src] = w.robustPrune(src, w.graph[src], r, alpha)
 	}
 }
 
@@ -632,7 +700,7 @@ func (w *Writer) Flush() error {
 
 	for _, vec := range w.vectors {
 		for _, v := range vec {
-			if err := binary.Write(mw, binary.LittleEndian, v); err != nil {
+			if err := w.writeFloat32(mw, v); err != nil {
 				return err
 			}
 		}
@@ -652,7 +720,7 @@ func (w *Writer) Flush() error {
 			if j < len(neighbors) {
 				val = neighbors[j]
 			}
-			if err := binary.Write(mw, binary.LittleEndian, val); err != nil {
+			if err := w.writeUint32(mw, val); err != nil {
 				return err
 			}
 		}
@@ -714,12 +782,13 @@ func (w *Writer) Flush() error {
 	// Write IDs
 	h.PKOffset = bytesWritten
 
-	// Calculate blob
+	// Calculate blob - use scratchBuf to avoid per-write allocations
 	var pkBlob bytes.Buffer
 	pkBlob.Grow(len(w.ids) * 8)
 
 	for _, id := range w.ids {
-		_ = binary.Write(&pkBlob, binary.LittleEndian, uint64(id)) // bytes.Buffer.Write never fails
+		binary.LittleEndian.PutUint64(w.scratchBuf[:8], uint64(id))
+		_, _ = pkBlob.Write(w.scratchBuf[:8]) // bytes.Buffer.Write never fails
 	}
 
 	// Write Blob
@@ -791,20 +860,20 @@ func (w *Writer) Flush() error {
 	// Write payloads
 	if w.payloadW != nil {
 		// 1. Count
-		if err := binary.Write(w.payloadW, binary.LittleEndian, uint32(len(w.payloads))); err != nil {
+		if err := w.writeUint32(w.payloadW, uint32(len(w.payloads))); err != nil {
 			return err
 		}
 
 		// 2. Offsets
 		offset := uint64(0)
 		for _, p := range w.payloads {
-			if err := binary.Write(w.payloadW, binary.LittleEndian, offset); err != nil {
+			if err := w.writeUint64(w.payloadW, offset); err != nil {
 				return err
 			}
 			offset += uint64(len(p))
 		}
 		// Write total size as last offset (so we can calculate size of last element)
-		if err := binary.Write(w.payloadW, binary.LittleEndian, offset); err != nil {
+		if err := w.writeUint64(w.payloadW, offset); err != nil {
 			return err
 		}
 

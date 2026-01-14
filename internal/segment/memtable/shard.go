@@ -649,15 +649,15 @@ func (s *shard) EvaluateFilter(ctx context.Context, filter *metadata.FilterSet) 
 	}
 
 	count := int(s.ids.Count())
-	result := imetadata.NewLocalBitmap()
+	result := imetadata.GetBitmap() // Use pooled bitmap
 
 	first := true
 
 	for _, f := range filter.Filters {
 		col, ok := s.columns[f.Key]
 		if !ok {
-			// Column doesn't exist.
-			return imetadata.NewLocalBitmap(), nil
+			// Column doesn't exist - return empty pooled bitmap
+			return imetadata.GetBitmap(), nil
 		}
 
 		// Type-specific optimizations to avoid per-row overhead (e.g. handle resolution)
@@ -683,8 +683,8 @@ func (s *shard) EvaluateFilter(ctx context.Context, filter *metadata.FilterSet) 
 			}
 			first = false
 		} else {
-			// Intersect with existing result
-			newResult := imetadata.NewLocalBitmap()
+			// Intersect with existing result - use pooled temp bitmap
+			newResult := imetadata.GetBitmap()
 
 			result.ForEach(func(id uint32) bool {
 				idx := int(id)
@@ -697,6 +697,8 @@ func (s *shard) EvaluateFilter(ctx context.Context, filter *metadata.FilterSet) 
 				}
 				return true
 			})
+			// Return old result to pool and use new one
+			imetadata.PutBitmap(result)
 			result = newResult
 		}
 

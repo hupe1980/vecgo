@@ -3,6 +3,7 @@ package imetadata
 import (
 	"io"
 	"iter"
+	"sync"
 
 	"github.com/RoaringBitmap/roaring/v2"
 	"github.com/hupe1980/vecgo/model"
@@ -15,11 +16,38 @@ type LocalBitmap struct {
 	rb *roaring.Bitmap
 }
 
+// bitmapPool is a sync.Pool for reusing LocalBitmap instances.
+// This reduces allocations in filtered search hot paths.
+var bitmapPool = sync.Pool{
+	New: func() any {
+		return &LocalBitmap{
+			rb: roaring.New(),
+		}
+	},
+}
+
 // NewLocalBitmap creates a new empty local bitmap.
 func NewLocalBitmap() *LocalBitmap {
 	return &LocalBitmap{
 		rb: roaring.New(),
 	}
+}
+
+// GetBitmap gets a bitmap from the pool. Call PutBitmap when done.
+func GetBitmap() *LocalBitmap {
+	b := bitmapPool.Get().(*LocalBitmap)
+	b.rb.Clear()
+	return b
+}
+
+// PutBitmap returns a bitmap to the pool.
+func PutBitmap(b *LocalBitmap) {
+	if b == nil {
+		return
+	}
+	// Clear before returning to pool to release container memory
+	b.rb.Clear()
+	bitmapPool.Put(b)
 }
 
 // Add adds a RowID to the bitmap.

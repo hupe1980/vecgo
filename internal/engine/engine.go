@@ -1128,123 +1128,59 @@ func (e *Engine) BatchInsertDeferred(ctx context.Context, vectors [][]float32, m
 	lsnStart := e.lsn.Add(uint64(n)) - uint64(n) + 1   // Reserve n LSNs, get first one
 	idStart := e.nextID.Add(uint64(n)) - uint64(n) + 1 // Reserve n IDs, get first one
 
-	// Shard-aware batching:
-	// 1. Group items by shard (id % 16) - single pass O(n)
-	// 2. Process each shard's batch in parallel (16 goroutines max)
-	// 3. Each shard processes its items sequentially (no lock contention within shard)
-	//
-	// This is optimal because:
-	// - Minimizes goroutine overhead (16 goroutines vs N)
-	// - Maximizes parallelism across shards
-	// - No lock contention within shard (sequential within each shard goroutine)
+	// FAST PATH: Sequential processing without goroutines.
+	// Deferred insert is extremely fast (no graph building), so goroutine
+	// overhead and lock contention dominate. Sequential is ~4x faster.
+	hasLexical := e.lexicalIndex != nil && e.lexicalField != ""
 
-	const shardCount = 16
-	type shardItem struct {
-		idx int // Original index in vectors slice
-		id  model.ID
-		lsn uint64
-	}
-	shardBatches := make([][]shardItem, shardCount)
-
-	// Pre-allocate shard batches (assume uniform distribution)
-	avgPerShard := (n + shardCount - 1) / shardCount
-	for i := 0; i < shardCount; i++ {
-		shardBatches[i] = make([]shardItem, 0, avgPerShard)
-	}
-
-	// Group items by shard (single pass)
 	for i := 0; i < n; i++ {
 		id := model.ID(idStart + uint64(i))
 		ids[i] = id
-		shardIdx := id & (shardCount - 1)
-		shardBatches[shardIdx] = append(shardBatches[shardIdx], shardItem{
-			idx: i,
-			id:  id,
-			lsn: lsnStart + uint64(i),
-		})
-	}
+		lsn := lsnStart + uint64(i)
 
-	// Process all shards in parallel
-	var wg sync.WaitGroup
-	var errMu sync.Mutex
-	var firstErr error
-
-	for shardIdx := 0; shardIdx < shardCount; shardIdx++ {
-		batch := shardBatches[shardIdx]
-		if len(batch) == 0 {
-			continue
+		var md metadata.Document
+		if mds != nil {
+			md = mds[i]
 		}
 
-		wg.Add(1)
-		go func(batch []shardItem) {
-			defer wg.Done()
+		var payload []byte
+		if payloads != nil {
+			payload = payloads[i]
+		}
 
-			// Check for early exit
-			errMu.Lock()
-			if firstErr != nil {
-				errMu.Unlock()
-				return
+		// Insert into Active MemTable using DEFERRED mode (no graph)
+		rowID, err := snap.active.InsertDeferred(ctx, id, vectors[i], md, payload)
+		if err != nil {
+			e.mu.RUnlock()
+			return nil, err
+		}
+
+		// Update PK Index (concurrent-safe)
+		oldLoc, exists := e.pkIndex.Upsert(id, model.Location{
+			SegmentID: snap.active.ID(),
+			RowID:     rowID,
+		}, lsn)
+
+		if exists {
+			e.tombstonesMu.RLock()
+			if vt, ok := e.tombstones[oldLoc.SegmentID]; ok {
+				vt.MarkDeleted(uint32(oldLoc.RowID), lsn)
 			}
-			errMu.Unlock()
+			e.tombstonesMu.RUnlock()
+		}
 
-			// Process this shard's items sequentially (no lock contention)
-			for _, item := range batch {
-				var md metadata.Document
-				if mds != nil {
-					md = mds[item.idx]
-				}
-
-				var payload []byte
-				if payloads != nil {
-					payload = payloads[item.idx]
-				}
-
-				// Insert into Active MemTable using DEFERRED mode (no graph) - pass ctx
-				rowID, err := snap.active.InsertDeferred(ctx, item.id, vectors[item.idx], md, payload)
-				if err != nil {
-					errMu.Lock()
-					if firstErr == nil {
-						firstErr = err
-					}
-					errMu.Unlock()
-					return
-				}
-
-				// Update PK Index (concurrent-safe)
-				oldLoc, exists := e.pkIndex.Upsert(item.id, model.Location{
-					SegmentID: snap.active.ID(),
-					RowID:     rowID,
-				}, item.lsn)
-
-				if exists {
-					e.tombstonesMu.RLock()
-					if vt, ok := e.tombstones[oldLoc.SegmentID]; ok {
-						vt.MarkDeleted(uint32(oldLoc.RowID), item.lsn)
-					}
-					e.tombstonesMu.RUnlock()
-				}
-
-				// Update Lexical Index (skip if not configured - common for bulk load)
-				if e.lexicalIndex != nil && e.lexicalField != "" && md != nil {
-					if val, ok := md[e.lexicalField]; ok {
-						if str := val.StringValue(); str != "" {
-							if err := e.lexicalIndex.Add(item.id, str); err != nil {
-								if e.logger != nil {
-									e.logger.Error("failed to update lexical index", "id", item.id, "error", err)
-								}
-							}
+		// Update Lexical Index (skip if not configured - common for bulk load)
+		if hasLexical && md != nil {
+			if val, ok := md[e.lexicalField]; ok {
+				if str := val.StringValue(); str != "" {
+					if err := e.lexicalIndex.Add(id, str); err != nil {
+						if e.logger != nil {
+							e.logger.Error("failed to update lexical index", "id", id, "error", err)
 						}
 					}
 				}
 			}
-		}(batch)
-	}
-
-	wg.Wait()
-
-	if firstErr != nil {
-		e.mu.RUnlock()
-		return nil, firstErr
+		}
 	}
 
 	// Check triggers

@@ -34,6 +34,30 @@ type Writer struct {
 
 	// Block stats
 	// Computed at Flush time
+
+	// Scratch buffer to avoid allocations in binary.Write
+	scratchBuf [8]byte
+}
+
+// writeUint32 writes a uint32 without allocating.
+func (w *Writer) writeUint32(wr io.Writer, v uint32) error {
+	binary.LittleEndian.PutUint32(w.scratchBuf[:4], v)
+	_, err := wr.Write(w.scratchBuf[:4])
+	return err
+}
+
+// writeFloat32 writes a float32 without allocating.
+func (w *Writer) writeFloat32(wr io.Writer, v float32) error {
+	binary.LittleEndian.PutUint32(w.scratchBuf[:4], math.Float32bits(v))
+	_, err := wr.Write(w.scratchBuf[:4])
+	return err
+}
+
+// writeUint64 writes a uint64 without allocating.
+func (w *Writer) writeUint64(wr io.Writer, v uint64) error {
+	binary.LittleEndian.PutUint64(w.scratchBuf[:8], v)
+	_, err := wr.Write(w.scratchBuf[:8])
+	return err
 }
 
 // NewWriter creates a new segment writer.
@@ -359,14 +383,14 @@ func (w *Writer) Flush(ctx context.Context) error {
 
 	// 2. Write Centroids
 	for _, v := range centroids {
-		if err := binary.Write(mw, binary.LittleEndian, math.Float32bits(v)); err != nil {
+		if err := w.writeFloat32(mw, v); err != nil {
 			return err
 		}
 	}
 
 	// 3. Write Partition Offsets
 	for _, o := range partitionOffsets {
-		if err := binary.Write(mw, binary.LittleEndian, o); err != nil {
+		if err := w.writeUint32(mw, o); err != nil {
 			return err
 		}
 	}
@@ -374,38 +398,39 @@ func (w *Writer) Flush(ctx context.Context) error {
 	// 4. Write Quantization Metadata
 	if w.quantType == QuantizationSQ8 {
 		for _, v := range mins {
-			if err := binary.Write(mw, binary.LittleEndian, math.Float32bits(v)); err != nil {
+			if err := w.writeFloat32(mw, v); err != nil {
 				return err
 			}
 		}
 		for _, v := range maxs {
-			if err := binary.Write(mw, binary.LittleEndian, math.Float32bits(v)); err != nil {
+			if err := w.writeFloat32(mw, v); err != nil {
 				return err
 			}
 		}
 	} else if w.quantType == QuantizationPQ {
 		// Write m, k
-		if err := binary.Write(mw, binary.LittleEndian, uint32(w.pqM)); err != nil {
+		if err := w.writeUint32(mw, uint32(w.pqM)); err != nil {
 			return err
 		}
-		if err := binary.Write(mw, binary.LittleEndian, uint32(256)); err != nil {
+		if err := w.writeUint32(mw, uint32(256)); err != nil {
 			return err
 		}
 		// Write scales
 		for _, v := range pqScales {
-			if err := binary.Write(mw, binary.LittleEndian, math.Float32bits(v)); err != nil {
+			if err := w.writeFloat32(mw, v); err != nil {
 				return err
 			}
 		}
 		// Write offsets
 		for _, v := range pqOffsets {
-			if err := binary.Write(mw, binary.LittleEndian, math.Float32bits(v)); err != nil {
+			if err := w.writeFloat32(mw, v); err != nil {
 				return err
 			}
 		}
-		// Write codebooks
+		// Write codebooks (int8 values as bytes)
 		for _, v := range pqCodebooks {
-			if err := binary.Write(mw, binary.LittleEndian, v); err != nil {
+			w.scratchBuf[0] = byte(v)
+			if _, err := mw.Write(w.scratchBuf[:1]); err != nil {
 				return err
 			}
 		}
@@ -420,7 +445,7 @@ func (w *Writer) Flush(ctx context.Context) error {
 
 	// 6. Write Vectors
 	for _, v := range w.vectors {
-		if err := binary.Write(mw, binary.LittleEndian, math.Float32bits(v)); err != nil {
+		if err := w.writeFloat32(mw, v); err != nil {
 			return err
 		}
 	}
@@ -434,7 +459,7 @@ func (w *Writer) Flush(ctx context.Context) error {
 
 	// 8. Write Metadata
 	for _, o := range metadataOffsets {
-		if err := binary.Write(mw, binary.LittleEndian, o); err != nil {
+		if err := w.writeUint32(mw, o); err != nil {
 			return err
 		}
 	}
@@ -467,10 +492,10 @@ func (w *Writer) Flush(ctx context.Context) error {
 		payloadOffsets[rowCount] = currentOffset
 
 		// Write Count
-		if err := binary.Write(w.payloadW, binary.LittleEndian, rowCount); err != nil {
+		if err := w.writeUint32(w.payloadW, rowCount); err != nil {
 			return err
 		}
-		// Write Offsets
+		// Write Offsets (use binary.Write for slice - efficient for bulk writes)
 		if err := binary.Write(w.payloadW, binary.LittleEndian, payloadOffsets); err != nil {
 			return err
 		}
