@@ -3,6 +3,7 @@ package resource
 import (
 	"context"
 	"sync/atomic"
+	"time"
 
 	"golang.org/x/sync/semaphore"
 	"golang.org/x/time/rate"
@@ -118,29 +119,58 @@ func (c *Controller) ReleaseMemory(bytes int64) {
 
 // MemoryUsage returns the current memory usage in bytes.
 func (c *Controller) MemoryUsage() int64 {
+	if c == nil {
+		return 0
+	}
 	return c.memUsed.Load()
+}
+
+// MemoryLimit returns the configured memory limit in bytes (0 if unlimited).
+func (c *Controller) MemoryLimit() int64 {
+	if c == nil {
+		return 0
+	}
+	return c.cfg.MemoryLimitBytes
 }
 
 // AcquireBackground attempts to reserve a background worker slot.
 // Blocks if all slots are busy.
 func (c *Controller) AcquireBackground(ctx context.Context) error {
+	if c == nil {
+		return nil
+	}
 	return c.bgSem.Acquire(ctx, 1)
 }
 
 // ReleaseBackground releases a background worker slot.
 func (c *Controller) ReleaseBackground() {
+	if c == nil {
+		return
+	}
 	c.bgSem.Release(1)
 }
 
 // AcquireIO waits until the IO limit allows the specified number of bytes.
 func (c *Controller) AcquireIO(ctx context.Context, bytes int) error {
-	if c.ioLimiter == nil {
+	if c == nil || c.ioLimiter == nil {
 		return nil
 	}
 	return c.ioLimiter.WaitN(ctx, bytes)
 }
 
+// TryAcquireIO attempts to acquire IO tokens without blocking.
+// Returns true if tokens were acquired, false otherwise.
+func (c *Controller) TryAcquireIO(bytes int) bool {
+	if c == nil || c.ioLimiter == nil {
+		return true
+	}
+	return c.ioLimiter.AllowN(time.Now(), bytes)
+}
+
 // TryAcquireBackground attempts to reserve a background worker slot without blocking.
 func (c *Controller) TryAcquireBackground() bool {
+	if c == nil {
+		return true
+	}
 	return c.bgSem.TryAcquire(1)
 }
