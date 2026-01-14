@@ -70,7 +70,7 @@ func NewOptimizedProductQuantizer(dimension, numSubvectors, numCentroids, numIte
 		numIterations: numIterations,
 		trained:       false,
 		vecPool: &sync.Pool{
-			New: func() interface{} {
+			New: func() any {
 				s := make([]float32, dimension)
 				return &s
 			},

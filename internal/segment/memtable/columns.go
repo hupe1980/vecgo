@@ -2,6 +2,7 @@ package memtable
 
 import (
 	"fmt"
+	"slices"
 	"unique"
 
 	"github.com/hupe1980/vecgo/metadata"
@@ -31,9 +32,10 @@ func newIntColumn(capacity int) *intColumn {
 func (c *intColumn) Len() int { return len(c.data) }
 
 func (c *intColumn) Grow(n int) {
-	// Pad with nulls - extend slice in single allocation
-	c.data = append(c.data, make([]int64, n)...)
-	c.valid = append(c.valid, make([]bool, n)...)
+	// Pad with nulls - extend slice without temporary allocation
+	oldLen := len(c.data)
+	c.data = slices.Grow(c.data, n)[:oldLen+n]
+	c.valid = slices.Grow(c.valid, n)[:oldLen+n]
 }
 
 func (c *intColumn) Append(v metadata.Value) {
@@ -111,9 +113,10 @@ func newFloatColumn(capacity int) *floatColumn {
 func (c *floatColumn) Len() int { return len(c.data) }
 
 func (c *floatColumn) Grow(n int) {
-	// Extend slice in single allocation
-	c.data = append(c.data, make([]float64, n)...)
-	c.valid = append(c.valid, make([]bool, n)...)
+	// Extend slice without temporary allocation
+	oldLen := len(c.data)
+	c.data = slices.Grow(c.data, n)[:oldLen+n]
+	c.valid = slices.Grow(c.valid, n)[:oldLen+n]
 }
 
 func (c *floatColumn) Append(v metadata.Value) {
@@ -205,9 +208,10 @@ func newStringColumn(capacity int) *stringColumn {
 func (c *stringColumn) Len() int { return len(c.data) }
 
 func (c *stringColumn) Grow(n int) {
-	// Extend slice in single allocation
-	c.data = append(c.data, make([]unique.Handle[string], n)...)
-	c.valid = append(c.valid, make([]bool, n)...)
+	// Extend slice without temporary allocation
+	oldLen := len(c.data)
+	c.data = slices.Grow(c.data, n)[:oldLen+n]
+	c.valid = slices.Grow(c.valid, n)[:oldLen+n]
 }
 
 func (c *stringColumn) Append(v metadata.Value) {
@@ -276,9 +280,10 @@ func newBoolColumn(capacity int) *boolColumn {
 func (c *boolColumn) Len() int { return len(c.data) }
 
 func (c *boolColumn) Grow(n int) {
-	// Extend slice in single allocation
-	c.data = append(c.data, make([]bool, n)...)
-	c.valid = append(c.valid, make([]bool, n)...)
+	// Extend slice without temporary allocation
+	oldLen := len(c.data)
+	c.data = slices.Grow(c.data, n)[:oldLen+n]
+	c.valid = slices.Grow(c.valid, n)[:oldLen+n]
 }
 
 func (c *boolColumn) Append(v metadata.Value) {

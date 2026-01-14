@@ -38,7 +38,7 @@ func NewRaBitQuantizer(dimension int) *RaBitQuantizer {
 		dimension: dimension,
 		threshold: 0.0,
 		uint64Pool: &sync.Pool{
-			New: func() interface{} {
+			New: func() any {
 				s := make([]uint64, numWords)
 				return &s
 			},

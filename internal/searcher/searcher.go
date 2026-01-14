@@ -73,7 +73,7 @@ type Searcher struct {
 }
 
 var searcherPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		return NewSearcher(1024, 128) // Default initial capacity
 	},
 }

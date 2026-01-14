@@ -38,7 +38,7 @@ func NewBinaryQuantizer(dimension int) *BinaryQuantizer {
 		threshold: 0.0,
 		trained:   false,
 		uint64Pool: &sync.Pool{
-			New: func() interface{} {
+			New: func() any {
 				s := make([]uint64, numWords)
 				return &s
 			},
