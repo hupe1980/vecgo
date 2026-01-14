@@ -863,7 +863,7 @@ func (s *Segment) EvaluateFilter(ctx context.Context, filter *metadata.FilterSet
 
 	// Fast path: use inverted index if available
 	if s.metadataIndex != nil {
-		return s.metadataIndex.EvaluateFilter(filter, s.header.RowCount), nil
+		return s.metadataIndex.EvaluateFilter(filter), nil
 	}
 
 	// Slow path: scan all documents (fallback when index not built)

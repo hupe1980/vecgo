@@ -50,6 +50,15 @@ func NewUnifiedIndex() *UnifiedIndex {
 	}
 }
 
+// internDocument converts a public Document to an InternedDocument.
+func internDocument(doc metadata.Document) metadata.InternedDocument {
+	iDoc := make(metadata.InternedDocument, len(doc))
+	for k, v := range doc {
+		iDoc[unique.Make(k)] = v
+	}
+	return iDoc
+}
+
 // Set stores metadata for an ID and updates the inverted index.
 // This replaces any existing metadata for the ID.
 func (ui *UnifiedIndex) Set(id model.RowID, doc metadata.Document) {
@@ -57,11 +66,7 @@ func (ui *UnifiedIndex) Set(id model.RowID, doc metadata.Document) {
 		return
 	}
 
-	// Convert to interned format
-	iDoc := make(metadata.InternedDocument, len(doc))
-	for k, v := range doc {
-		iDoc[unique.Make(k)] = v
-	}
+	iDoc := internDocument(doc)
 
 	ui.mu.Lock()
 	defer ui.mu.Unlock()
@@ -86,11 +91,7 @@ func (ui *UnifiedIndex) AddInvertedIndex(id model.RowID, doc metadata.Document) 
 		return
 	}
 
-	// Convert to interned format
-	iDoc := make(metadata.InternedDocument, len(doc))
-	for k, v := range doc {
-		iDoc[unique.Make(k)] = v
-	}
+	iDoc := internDocument(doc)
 
 	ui.mu.Lock()
 	defer ui.mu.Unlock()
@@ -110,8 +111,7 @@ func (ui *UnifiedIndex) SetDocumentProvider(provider DocumentProvider) {
 // This method supports all operators, including numeric comparisons like OpLessThan.
 // For operators not directly supported by the inverted index (e.g. OpLessThan),
 // it falls back to scanning all unique values in the index.
-// The rowCount parameter specifies the maximum row ID for iteration.
-func (ui *UnifiedIndex) EvaluateFilter(fs *metadata.FilterSet, rowCount uint32) *LocalBitmap {
+func (ui *UnifiedIndex) EvaluateFilter(fs *metadata.FilterSet) *LocalBitmap {
 	if fs == nil || len(fs.Filters) == 0 {
 		return nil // All matches
 	}
