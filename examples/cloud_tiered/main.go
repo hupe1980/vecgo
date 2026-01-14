@@ -134,7 +134,7 @@ func main() {
 
 	fmt.Println("\n🔎 Executing Query 2 (Warm Cache)...")
 	start = time.Now()
-	_, err = eng.Search(context.Background(), vector, 10, vecgo.WithNProbes(10))
+	_, _ = eng.Search(context.Background(), vector, 10, vecgo.WithNProbes(10))
 	fmt.Printf("⏱️  Warm Search Time: %v\n", time.Since(start))
 
 	hits, misses := eng.CacheStats()
@@ -147,7 +147,7 @@ func main() {
 	eng, _ = vecgo.Open(ctx, vecgo.Remote(s3Store), opts...)
 
 	start = time.Now()
-	_, err = eng.Search(context.Background(), vector, 10, vecgo.WithNProbes(10))
+	_, _ = eng.Search(context.Background(), vector, 10, vecgo.WithNProbes(10))
 	fmt.Printf("⏱️  Disk Cache Search Time: %v\n", time.Since(start))
 
 	fmt.Println("\n✅ Demo Complete")

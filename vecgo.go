@@ -213,9 +213,7 @@ type SearchOption = func(*model.SearchOptions)
 
 // WithRefineFactor sets the refinement factor for reranking.
 func WithRefineFactor(factor float32) SearchOption {
-	return func(o *model.SearchOptions) {
-		o.RefineFactor = factor
-	}
+	return engine.WithRefineFactor(factor)
 }
 
 // WithFilter sets a typed metadata filter for the search.

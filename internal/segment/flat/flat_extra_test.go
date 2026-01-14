@@ -115,7 +115,7 @@ func TestFlatSegment_Extra_Coverage(t *testing.T) {
 		assert.Equal(t, id1, id)
 		assert.Equal(t, vec1, vec)
 		assert.Equal(t, payload1, payload)
-		v, _ := md["color"]
+		v := md["color"]
 		assert.Equal(t, "red", v.StringValue())
 		return nil
 	})

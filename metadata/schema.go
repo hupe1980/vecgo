@@ -106,13 +106,12 @@ func checkType(v any, expected FieldType) bool {
 	case FieldTypeAny:
 		return true
 	case FieldTypeInt:
-		switch v.(type) {
+		switch val := v.(type) {
 		case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
 			return true
 		case float64:
 			// JSON unmarshals numbers as float64. Check if it's an integer.
-			f := v.(float64)
-			return f == float64(int64(f))
+			return val == float64(int64(val))
 		}
 	case FieldTypeFloat:
 		switch v.(type) {

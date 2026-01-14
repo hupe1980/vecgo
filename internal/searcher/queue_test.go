@@ -44,7 +44,7 @@ func TestPriorityQueue(t *testing.T) {
 		}
 
 		item, ok = pq.PopItem()
-		if item.Distance != 20.0 {
+		if !ok || item.Distance != 20.0 {
 			t.Errorf("pop 3: expected 20.0, got %v", item.Distance)
 		}
 	})

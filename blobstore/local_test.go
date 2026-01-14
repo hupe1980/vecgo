@@ -71,10 +71,7 @@ func TestLocalBlobStore_Lifecycle(t *testing.T) {
 	require.NoError(t, err)
 
 	// Sort for deterministic assertion
-	var names []string
-	for _, b := range blobs {
-		names = append(names, b)
-	}
+	names := append([]string(nil), blobs...)
 	sort.Strings(names)
 
 	require.Equal(t, []string{blobName, blobName2}, names)

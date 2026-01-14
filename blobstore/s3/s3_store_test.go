@@ -2,8 +2,8 @@ package s3
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
-	"math/rand"
 	"os"
 	"testing"
 	"time"

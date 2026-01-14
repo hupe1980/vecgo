@@ -94,7 +94,7 @@ func TestBinarySerialization(t *testing.T) {
 		assert.Error(t, err, "Expected error on truncated uvarint")
 
 		// Truncated MetadataMap
-		_, err = UnmarshalMetadataMap([]byte{0x00}) // Valid count 0?
+		_, _ = UnmarshalMetadataMap([]byte{0x00}) // Valid count 0?
 		// 0x00 is Uvarint(0). Valid empty map.
 
 		_, err = UnmarshalMetadataMap([]byte{0x01}) // Count 1, but no data

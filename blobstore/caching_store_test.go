@@ -111,7 +111,7 @@ func TestCachingStore_ReadAt(t *testing.T) {
 	assert.Equal(t, 256+256, mBlob.readBytes) // +256 for Block 1
 
 	// 4. Read Block 1 again -> cache hit
-	n, err = blob.ReadAt(ctx, buf2, 260)
+	_, err = blob.ReadAt(ctx, buf2, 260)
 	require.NoError(t, err)
 	assert.Equal(t, 2, mBlob.reads)
 }
@@ -131,7 +131,7 @@ func TestCachingStore_SmallFile(t *testing.T) {
 	require.NoError(t, err)
 
 	buf := make([]byte, 10)
-	n, err := blob.ReadAt(ctx, buf, 0)
+	n, _ := blob.ReadAt(ctx, buf, 0)
 	// Expect partial read? Or just data length
 	assert.Equal(t, 5, n)
 	// io.ReaderAt allows returning EOF or nil if n < len(p)?

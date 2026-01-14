@@ -20,6 +20,10 @@ type posting struct {
 	count uint32
 }
 
+// Pointer wrapper types for sync.Pool to avoid allocation on Put (SA6002).
+type tokenBuf struct{ buf []byte }
+type termIterators struct{ iters []termIterator }
+
 // MemoryIndex is a simple in-memory BM25 index using DAAT (Document-At-A-Time) scoring.
 type MemoryIndex struct {
 	mu sync.RWMutex
@@ -56,7 +60,7 @@ func New() *MemoryIndex {
 		inverted:   make(map[string][]posting),
 		iteratorPool: sync.Pool{
 			New: func() any {
-				return make([]termIterator, 0, 8)
+				return &termIterators{iters: make([]termIterator, 0, 8)}
 			},
 		},
 		heapPool: sync.Pool{
@@ -67,7 +71,7 @@ func New() *MemoryIndex {
 		},
 		tokenBufPool: sync.Pool{
 			New: func() any {
-				return make([]byte, 0, 64)
+				return &tokenBuf{buf: make([]byte, 0, 64)}
 			},
 		},
 	}
@@ -79,9 +83,9 @@ var _ lexical.Index = (*MemoryIndex)(nil)
 // forEachToken iterates over whitespace-separated tokens in text.
 // Uses in-place lowercasing to avoid allocation.
 func (idx *MemoryIndex) forEachToken(text string, fn func(token string)) {
-	buf := idx.tokenBufPool.Get().([]byte)
-	buf = buf[:0]
-	defer idx.tokenBufPool.Put(buf)
+	wrap := idx.tokenBufPool.Get().(*tokenBuf)
+	buf := wrap.buf[:0]
+	defer func() { wrap.buf = buf; idx.tokenBufPool.Put(wrap) }()
 
 	start := -1
 	for i := 0; i < len(text); i++ {
@@ -119,9 +123,9 @@ func (idx *MemoryIndex) forEachToken(text string, fn func(token string)) {
 
 // forEachTokenUnicode handles non-ASCII text properly.
 func (idx *MemoryIndex) forEachTokenUnicode(text string, fn func(token string)) {
-	buf := idx.tokenBufPool.Get().([]byte)
-	buf = buf[:0]
-	defer idx.tokenBufPool.Put(buf)
+	wrap := idx.tokenBufPool.Get().(*tokenBuf)
+	buf := wrap.buf[:0]
+	defer func() { wrap.buf = buf; idx.tokenBufPool.Put(wrap) }()
 
 	start := -1
 	for i, r := range text {
@@ -277,9 +281,9 @@ func (idx *MemoryIndex) Search(ctx context.Context, text string, k int) ([]model
 	}
 
 	// 1. Create Iterators
-	iterators := idx.iteratorPool.Get().([]termIterator)
-	iterators = iterators[:0]
-	defer idx.iteratorPool.Put(iterators)
+	wrap := idx.iteratorPool.Get().(*termIterators)
+	iterators := wrap.iters[:0]
+	defer func() { wrap.iters = iterators; idx.iteratorPool.Put(wrap) }()
 
 	idx.tokenize(text, func(t string) {
 		postings, ok := idx.inverted[t]
