@@ -24,7 +24,7 @@
 //	+----------------+
 //	|  VersionData   |  count * 8 bytes - vector versions (optional)
 //	+----------------+
-//	|   Checksum     |  4 bytes - CRC32 of entire file
+//	|   Checksum     |  4 bytes - CRC32C of entire file (hardware-accelerated)
 //	+----------------+
 //
 // # Usage

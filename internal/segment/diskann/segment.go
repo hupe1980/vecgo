@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"hash/crc32"
 	"io"
 	"math"
 	"unsafe"
@@ -14,6 +13,7 @@ import (
 	"github.com/hupe1980/vecgo/blobstore"
 	"github.com/hupe1980/vecgo/distance"
 	"github.com/hupe1980/vecgo/internal/cache"
+	"github.com/hupe1980/vecgo/internal/hash"
 	imetadata "github.com/hupe1980/vecgo/internal/metadata"
 	"github.com/hupe1980/vecgo/internal/quantization"
 	"github.com/hupe1980/vecgo/internal/searcher"
@@ -166,7 +166,7 @@ func (s *Segment) load() error {
 		// Only verify if we have data in memory or if explicitly requested (TODO: streaming check)
 		if len(s.data) > HeaderSize {
 			body := s.data[HeaderSize:]
-			sum := crc32.Checksum(body, crc32.MakeTable(crc32.Castagnoli))
+			sum := hash.CRC32C(body)
 			if sum != s.header.Checksum {
 				return fmt.Errorf("checksum mismatch: expected %x, got %x", s.header.Checksum, sum)
 			}

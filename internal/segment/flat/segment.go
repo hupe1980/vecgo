@@ -5,12 +5,12 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"hash/crc32"
 	"unsafe"
 
 	"github.com/hupe1980/vecgo/blobstore"
 	"github.com/hupe1980/vecgo/distance"
 	"github.com/hupe1980/vecgo/internal/cache"
+	"github.com/hupe1980/vecgo/internal/hash"
 	"github.com/hupe1980/vecgo/internal/kmeans"
 	imetadata "github.com/hupe1980/vecgo/internal/metadata"
 	"github.com/hupe1980/vecgo/internal/quantization"
@@ -170,7 +170,7 @@ func Open(blob blobstore.Blob, opts ...Option) (*Segment, error) {
 		// Body starts after HeaderSize
 		if len(data) > HeaderSize {
 			body := data[HeaderSize:]
-			sum := crc32.Checksum(body, crc32.MakeTable(crc32.Castagnoli))
+			sum := hash.CRC32C(body)
 			if sum != header.Checksum {
 				blob.Close()
 				return nil, fmt.Errorf("checksum mismatch: expected %x, got %x", header.Checksum, sum)

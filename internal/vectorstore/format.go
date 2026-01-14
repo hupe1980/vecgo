@@ -3,8 +3,9 @@ package vectorstore
 import (
 	"encoding/binary"
 	"errors"
-	"hash/crc32"
 	"io"
+
+	"github.com/hupe1980/vecgo/internal/hash"
 )
 
 const (
@@ -116,7 +117,7 @@ func (h *FileHeader) WriteTo(w io.Writer) (int64, error) {
 	binary.LittleEndian.PutUint64(buf[48:56], h.VersionOff)
 
 	// Compute checksum over first 56 bytes (excludes checksum + reserved)
-	h.Checksum = crc32.ChecksumIEEE(buf[:56])
+	h.Checksum = hash.CRC32C(buf[:56])
 	binary.LittleEndian.PutUint32(buf[56:60], h.Checksum)
 	// Reserved bytes remain zero
 
@@ -144,7 +145,7 @@ func (h *FileHeader) ReadFrom(r io.Reader) (int64, error) {
 	h.Checksum = binary.LittleEndian.Uint32(buf[56:60])
 
 	// Validate checksum
-	expectedChecksum := crc32.ChecksumIEEE(buf[:56])
+	expectedChecksum := hash.CRC32C(buf[:56])
 	if h.Checksum != expectedChecksum {
 		return int64(n), ErrCorrupted
 	}

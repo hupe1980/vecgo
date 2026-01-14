@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"hash/crc32"
 	"io"
 	"sync"
 	"sync/atomic"
@@ -13,6 +12,7 @@ import (
 	"github.com/hupe1980/vecgo/distance"
 	"github.com/hupe1980/vecgo/internal/arena"
 	"github.com/hupe1980/vecgo/internal/conv"
+	"github.com/hupe1980/vecgo/internal/hash"
 	"github.com/hupe1980/vecgo/internal/mem"
 	"github.com/hupe1980/vecgo/model"
 )
@@ -697,7 +697,7 @@ func (s *ColumnarStore) WriteTo(w io.Writer) (int64, error) {
 	}
 
 	// Create checksummer
-	crc := crc32.NewIEEE()
+	crc := hash.NewCRC32C()
 	mw := io.MultiWriter(w, crc)
 
 	// Write vector data as raw bytes
@@ -763,7 +763,7 @@ func (s *ColumnarStore) ReadFrom(r io.Reader) (int64, error) {
 	s.live = header.LiveCount
 
 	// Create checksummer
-	crc := crc32.NewIEEE()
+	crc := hash.NewCRC32C()
 	tr := io.TeeReader(r, crc)
 
 	// Read vector data

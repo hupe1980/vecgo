@@ -7,12 +7,12 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"hash/crc32"
 	"io"
 	"math"
 	"math/rand"
 
 	"github.com/hupe1980/vecgo/distance"
+	"github.com/hupe1980/vecgo/internal/hash"
 	imetadata "github.com/hupe1980/vecgo/internal/metadata"
 	"github.com/hupe1980/vecgo/internal/quantization"
 	"github.com/hupe1980/vecgo/internal/resource"
@@ -622,7 +622,7 @@ func (w *Writer) Flush() error {
 	_ = compressedVectorsSize
 
 	// Calculate Checksum of the body
-	crc := crc32.New(crc32.MakeTable(crc32.Castagnoli))
+	crc := hash.NewCRC32C()
 	mw := io.MultiWriter(bw, crc)
 
 	// Write Vectors

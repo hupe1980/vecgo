@@ -5,11 +5,11 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
-	"hash/crc32"
 	"io"
 	"math"
 
 	"github.com/hupe1980/vecgo/distance"
+	"github.com/hupe1980/vecgo/internal/hash"
 	"github.com/hupe1980/vecgo/internal/kmeans"
 	"github.com/hupe1980/vecgo/internal/quantization"
 	"github.com/hupe1980/vecgo/internal/segment"
@@ -354,7 +354,7 @@ func (w *Writer) Flush(ctx context.Context) error {
 	}
 
 	// Calculate Checksum of the body
-	crc := crc32.New(crc32.MakeTable(crc32.Castagnoli))
+	crc := hash.NewCRC32C()
 	mw := io.MultiWriter(bw, crc)
 
 	// 2. Write Centroids

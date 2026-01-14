@@ -13,7 +13,7 @@
 //	Header (16 bytes):
 //	  Magic    (4 bytes) - 0x56454347 ("VECG")
 //	  Version  (4 bytes) - Format version (currently 1)
-//	  Checksum (4 bytes) - CRC32-IEEE of payload
+//	  Checksum (4 bytes) - CRC32C of payload (hardware-accelerated)
 //	  Length   (4 bytes) - Payload length in bytes
 //
 //	Payload:

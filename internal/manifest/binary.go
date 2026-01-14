@@ -3,10 +3,10 @@ package manifest
 import (
 	"encoding/binary"
 	"fmt"
-	"hash/crc32"
 	"io"
 	"time"
 
+	"github.com/hupe1980/vecgo/internal/hash"
 	"github.com/hupe1980/vecgo/model"
 )
 
@@ -73,7 +73,7 @@ func (m *Manifest) WriteBinary(w io.Writer) error {
 	}
 
 	payload := pb.buf
-	checksum := crc32.ChecksumIEEE(payload)
+	checksum := hash.CRC32C(payload)
 
 	// Write header
 	header := make([]byte, 16)
@@ -114,7 +114,7 @@ func ReadBinary(r io.Reader) (*Manifest, error) {
 		return nil, err
 	}
 
-	if crc32.ChecksumIEEE(payload) != checksum {
+	if hash.CRC32C(payload) != checksum {
 		return nil, fmt.Errorf("checksum mismatch")
 	}
 
