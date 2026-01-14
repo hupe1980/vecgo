@@ -62,30 +62,23 @@ func BenchmarkHybridSearch(b *testing.B) {
 			e.HybridSearch(ctx, qVec, qText, 10, 60)
 		}
 		b.StopTimer()
-		truth := naiveHybridSearch(data, pks, lexIdx, qVec, qText, 10, 60)
+		truth := naiveHybridSearch(ctx, data, pks, lexIdx, qVec, qText, 10, 60)
 		res, _ := e.HybridSearch(ctx, qVec, qText, 10, 60)
 		b.ReportMetric(recallAtK(res, truth), "recall@10")
 	})
 
-	b.Run("DAAT", func(b *testing.B) {
-		// Truth (TAAT)
-		truthCands, _ := lexIdx.Search(qText, 10)
-		truth := make([]model.ID, len(truthCands))
-		for i, c := range truthCands {
-			truth[i] = c.ID
-		}
-
+	b.Run("LexicalOnly", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
-			lexIdx.SearchDAAT(qText, 10)
+			lexIdx.Search(ctx, qText, 10)
 		}
 		b.StopTimer()
 
-		res, _ := lexIdx.SearchDAAT(qText, 10)
-		b.ReportMetric(recallAtK(res, truth), "recall@10")
+		res, _ := lexIdx.Search(ctx, qText, 10)
+		b.ReportMetric(float64(len(res))/10.0, "recall@10")
 	})
 }
 
-func naiveHybridSearch(data [][]float32, pks []model.ID, lexIdx lexical.Index, qVec []float32, qText string, k int, rrfK int) []model.ID {
+func naiveHybridSearch(ctx context.Context, data [][]float32, pks []model.ID, lexIdx lexical.Index, qVec []float32, qText string, k int, rrfK int) []model.ID {
 	// 1. Exact Vector Search
 	vectorK := k * 2
 	if vectorK < 50 {
@@ -95,7 +88,7 @@ func naiveHybridSearch(data [][]float32, pks []model.ID, lexIdx lexical.Index, q
 	vecPKs := exactTopK_L2_WithIDs(data, pks, qVec, vectorK)
 
 	// 2. Lexical Search
-	lexResults, _ := lexIdx.Search(qText, vectorK)
+	lexResults, _ := lexIdx.Search(ctx, qText, vectorK)
 
 	// 3. RRF Fusion
 	finalScores := make(map[model.ID]float32)

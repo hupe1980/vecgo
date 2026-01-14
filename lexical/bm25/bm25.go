@@ -1,8 +1,8 @@
 package bm25
 
 import (
+	"context"
 	"math"
-	"strings"
 	"sync"
 	"unicode"
 
@@ -20,7 +20,7 @@ type posting struct {
 	count uint32
 }
 
-// MemoryIndex is a simple in-memory BM25 index.
+// MemoryIndex is a simple in-memory BM25 index using DAAT (Document-At-A-Time) scoring.
 type MemoryIndex struct {
 	mu sync.RWMutex
 
@@ -35,12 +35,15 @@ type MemoryIndex struct {
 	// Inverted Index
 	inverted map[string][]posting
 
+	// Reverse index: docID -> terms (for efficient delete)
+	docTerms [][]string
+
 	totalLength int64
 	docCount    int
 
-	scorePool    sync.Pool
 	iteratorPool sync.Pool
 	heapPool     sync.Pool
+	tokenBufPool sync.Pool
 }
 
 // New creates a new MemoryIndex.
@@ -49,12 +52,8 @@ func New() *MemoryIndex {
 		pkToDocID:  make(map[model.ID]uint32),
 		docIDToPK:  make([]model.ID, 0),
 		docLengths: make([]uint32, 0),
+		docTerms:   make([][]string, 0),
 		inverted:   make(map[string][]posting),
-		scorePool: sync.Pool{
-			New: func() interface{} {
-				return make([]float32, 1024)
-			},
-		},
 		iteratorPool: sync.Pool{
 			New: func() any {
 				return make([]termIterator, 0, 8)
@@ -62,8 +61,13 @@ func New() *MemoryIndex {
 		},
 		heapPool: sync.Pool{
 			New: func() any {
-				h := make(candidateHeap, 0, 16)
+				h := make(candidateHeap, 0, 64)
 				return &h
+			},
+		},
+		tokenBufPool: sync.Pool{
+			New: func() any {
+				return make([]byte, 0, 64)
 			},
 		},
 	}
@@ -72,22 +76,93 @@ func New() *MemoryIndex {
 // Ensure MemoryIndex implements lexical.Index
 var _ lexical.Index = (*MemoryIndex)(nil)
 
+// forEachToken iterates over whitespace-separated tokens in text.
+// Uses in-place lowercasing to avoid allocation.
 func (idx *MemoryIndex) forEachToken(text string, fn func(token string)) {
+	buf := idx.tokenBufPool.Get().([]byte)
+	buf = buf[:0]
+	defer idx.tokenBufPool.Put(buf)
+
+	start := -1
+	for i := 0; i < len(text); i++ {
+		c := text[i]
+		if c <= ' ' { // Fast ASCII whitespace check
+			if start >= 0 {
+				// Emit token
+				buf = buf[:0]
+				for j := start; j < i; j++ {
+					ch := text[j]
+					if ch >= 'A' && ch <= 'Z' {
+						ch += 32 // ASCII lowercase
+					}
+					buf = append(buf, ch)
+				}
+				fn(string(buf))
+				start = -1
+			}
+		} else if start < 0 {
+			start = i
+		}
+	}
+	if start >= 0 {
+		buf = buf[:0]
+		for j := start; j < len(text); j++ {
+			ch := text[j]
+			if ch >= 'A' && ch <= 'Z' {
+				ch += 32
+			}
+			buf = append(buf, ch)
+		}
+		fn(string(buf))
+	}
+}
+
+// forEachTokenUnicode handles non-ASCII text properly.
+func (idx *MemoryIndex) forEachTokenUnicode(text string, fn func(token string)) {
+	buf := idx.tokenBufPool.Get().([]byte)
+	buf = buf[:0]
+	defer idx.tokenBufPool.Put(buf)
+
 	start := -1
 	for i, r := range text {
 		if unicode.IsSpace(r) {
 			if start >= 0 {
-				fn(strings.ToLower(text[start:i]))
+				buf = buf[:0]
+				for _, c := range text[start:i] {
+					buf = append(buf, string(unicode.ToLower(c))...)
+				}
+				fn(string(buf))
 				start = -1
 			}
-		} else {
-			if start < 0 {
-				start = i
-			}
+		} else if start < 0 {
+			start = i
 		}
 	}
 	if start >= 0 {
-		fn(strings.ToLower(text[start:]))
+		buf = buf[:0]
+		for _, c := range text[start:] {
+			buf = append(buf, string(unicode.ToLower(c))...)
+		}
+		fn(string(buf))
+	}
+}
+
+// isASCII returns true if text contains only ASCII characters.
+func isASCII(text string) bool {
+	for i := 0; i < len(text); i++ {
+		if text[i] >= 128 {
+			return false
+		}
+	}
+	return true
+}
+
+// tokenize calls fn for each token, choosing fast ASCII or Unicode path.
+func (idx *MemoryIndex) tokenize(text string, fn func(token string)) {
+	if isASCII(text) {
+		idx.forEachToken(text, fn)
+	} else {
+		idx.forEachTokenUnicode(text, fn)
 	}
 }
 
@@ -97,7 +172,7 @@ func (idx *MemoryIndex) Add(id model.ID, text string) error {
 
 	// If exists, delete first
 	if _, ok := idx.pkToDocID[id]; ok {
-		_ = idx.deleteLocked(id) // Error ignored: deleteLocked only returns nil for existing IDs
+		idx.deleteLocked(id)
 	}
 
 	// Allocate DocID
@@ -105,7 +180,6 @@ func (idx *MemoryIndex) Add(id model.ID, text string) error {
 	if len(idx.freeIDs) > 0 {
 		docID = idx.freeIDs[len(idx.freeIDs)-1]
 		idx.freeIDs = idx.freeIDs[:len(idx.freeIDs)-1]
-		// Update mappings
 		idx.pkToDocID[id] = docID
 		idx.docIDToPK[docID] = id
 	} else {
@@ -113,11 +187,12 @@ func (idx *MemoryIndex) Add(id model.ID, text string) error {
 		idx.pkToDocID[id] = docID
 		idx.docIDToPK = append(idx.docIDToPK, id)
 		idx.docLengths = append(idx.docLengths, 0)
+		idx.docTerms = append(idx.docTerms, nil)
 	}
 
 	length := 0
 	tf := make(map[string]int)
-	idx.forEachToken(text, func(t string) {
+	idx.tokenize(text, func(t string) {
 		length++
 		tf[t]++
 	})
@@ -126,9 +201,13 @@ func (idx *MemoryIndex) Add(id model.ID, text string) error {
 	idx.totalLength += int64(length)
 	idx.docCount++
 
+	// Store terms for efficient delete
+	terms := make([]string, 0, len(tf))
 	for t, count := range tf {
+		terms = append(terms, t)
 		idx.inverted[t] = append(idx.inverted[t], posting{docID: docID, count: uint32(count)})
 	}
+	idx.docTerms[docID] = terms
 
 	return nil
 }
@@ -136,26 +215,33 @@ func (idx *MemoryIndex) Add(id model.ID, text string) error {
 func (idx *MemoryIndex) Delete(id model.ID) error {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
-	return idx.deleteLocked(id)
+	idx.deleteLocked(id)
+	return nil
 }
 
-func (idx *MemoryIndex) deleteLocked(id model.ID) error {
+func (idx *MemoryIndex) deleteLocked(id model.ID) {
 	docID, ok := idx.pkToDocID[id]
 	if !ok {
-		return nil
+		return
 	}
 
 	length := idx.docLengths[docID]
+	terms := idx.docTerms[docID]
 
-	// Remove from inverted index (Slow!)
-	for t := range idx.inverted {
+	// Remove from inverted index - only scan terms this doc has
+	for _, t := range terms {
 		postings := idx.inverted[t]
 		for i, p := range postings {
 			if p.docID == docID {
-				// Remove
-				idx.inverted[t] = append(postings[:i], postings[i+1:]...)
+				// Swap-remove for O(1) removal
+				postings[i] = postings[len(postings)-1]
+				idx.inverted[t] = postings[:len(postings)-1]
 				break
 			}
+		}
+		// Clean up empty posting lists
+		if len(idx.inverted[t]) == 0 {
+			delete(idx.inverted, t)
 		}
 	}
 
@@ -165,18 +251,19 @@ func (idx *MemoryIndex) deleteLocked(id model.ID) error {
 
 	// Clear dense data
 	idx.docLengths[docID] = 0
-	idx.docIDToPK[docID] = 0 // Sentinel for deleted
+	idx.docIDToPK[docID] = 0
+	idx.docTerms[docID] = nil
 
 	// Remove mapping
 	delete(idx.pkToDocID, id)
 
 	// Add to free list
 	idx.freeIDs = append(idx.freeIDs, docID)
-
-	return nil
 }
 
-func (idx *MemoryIndex) Search(text string, k int) ([]model.Candidate, error) {
+// Search performs a keyword search using DAAT scoring.
+// Implements lexical.Index interface.
+func (idx *MemoryIndex) Search(ctx context.Context, text string, k int) ([]model.Candidate, error) {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 
@@ -184,74 +271,91 @@ func (idx *MemoryIndex) Search(text string, k int) ([]model.Candidate, error) {
 		return nil, nil
 	}
 
-	// Get score buffer
-	maxDocID := len(idx.docIDToPK)
-	scoreBuf := idx.scorePool.Get().([]float32)
-	if cap(scoreBuf) < maxDocID {
-		scoreBuf = make([]float32, maxDocID*2)
-	} else {
-		scoreBuf = scoreBuf[:maxDocID]
-		// Zero out used range
-		for i := range scoreBuf {
-			scoreBuf[i] = 0
-		}
+	// Check context before starting
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	defer idx.scorePool.Put(scoreBuf)
+
+	// 1. Create Iterators
+	iterators := idx.iteratorPool.Get().([]termIterator)
+	iterators = iterators[:0]
+	defer idx.iteratorPool.Put(iterators)
+
+	idx.tokenize(text, func(t string) {
+		postings, ok := idx.inverted[t]
+		if !ok || len(postings) == 0 {
+			return
+		}
+		df := len(postings)
+		idf := idx.computeIDF(df)
+		iterators = append(iterators, termIterator{postings: postings, idx: 0, idf: idf})
+	})
+
+	if len(iterators) == 0 {
+		return nil, nil
+	}
 
 	avgDL := float64(idx.totalLength) / float64(idx.docCount)
-
-	// Precompute BM25 constants for this query
 	k1_plus_1 := k1 + 1
 	k1_1b := k1 * (1 - b)
 	k1_b_avgDL := k1 * b / avgDL
 
-	// Accumulate scores
-	idx.forEachToken(text, func(t string) {
-		postings, ok := idx.inverted[t]
-		if !ok {
-			return
+	h := idx.heapPool.Get().(*candidateHeap)
+	*h = (*h)[:0]
+	defer idx.heapPool.Put(h)
+
+	// 2. DAAT Loop
+	iterations := 0
+	for {
+		// Periodic context check
+		iterations++
+		if iterations&0xFF == 0 { // Every 256 iterations
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 		}
 
-		// IDF
-		df := len(postings)
-		idf := idx.computeIDF(df)
-
-		for _, p := range postings {
-			tf := float64(p.count)
-			docLen := float64(idx.docLengths[p.docID])
-
-			// BM25 formula
-			num := tf * k1_plus_1
-			denom := tf + k1_1b + k1_b_avgDL*docLen
-			score := idf * (num / denom)
-
-			scoreBuf[p.docID] += float32(score)
-		}
-	})
-
-	// Use a min-heap to keep top k
-	h := &candidateHeap{}
-
-	// Iterate over scoreBuf to find top K
-	for docID, score := range scoreBuf {
-		if score <= 0 {
-			continue
+		// Find min docID
+		minDoc := ^uint32(0)
+		for i := range iterators {
+			doc := iterators[i].doc()
+			if doc < minDoc {
+				minDoc = doc
+			}
 		}
 
-		id := idx.docIDToPK[docID]
-		// Check if deleted (pk == 0 check if 0 is invalid PK, but 0 is valid PK)
-		// However, if we deleted it, we removed it from inverted index, so score should be 0!
-		// So score > 0 implies valid docID.
+		if minDoc == ^uint32(0) {
+			break
+		}
 
-		if len(*h) < k {
-			h.push(model.Candidate{ID: id, Score: score})
-		} else if score > (*h)[0].Score {
-			(*h)[0] = model.Candidate{ID: id, Score: score}
-			h.down(0, len(*h))
+		// Score document
+		var score float64
+		docLen := float64(idx.docLengths[minDoc])
+
+		for i := range iterators {
+			it := &iterators[i]
+			if it.doc() == minDoc {
+				tf := float64(it.count())
+				num := tf * k1_plus_1
+				denom := tf + k1_1b + k1_b_avgDL*docLen
+				score += it.idf * (num / denom)
+				it.next()
+			}
+		}
+
+		// Update Top-K Heap
+		if score > 0 {
+			pk := idx.docIDToPK[minDoc]
+			if len(*h) < k {
+				h.push(model.Candidate{ID: pk, Score: float32(score)})
+			} else if float32(score) > (*h)[0].Score {
+				(*h)[0] = model.Candidate{ID: pk, Score: float32(score)}
+				h.down(0, len(*h))
+			}
 		}
 	}
 
-	// Convert heap to slice (sorted descending)
+	// 3. Convert to Result Slice (sorted descending)
 	candidates := make([]model.Candidate, len(*h))
 	for i := len(*h) - 1; i >= 0; i-- {
 		candidates[i] = h.pop()
@@ -260,6 +364,17 @@ func (idx *MemoryIndex) Search(text string, k int) ([]model.Candidate, error) {
 	return candidates, nil
 }
 
+func (idx *MemoryIndex) computeIDF(df int) float64 {
+	N := float64(idx.docCount)
+	n := float64(df)
+	return math.Log(1 + (N-n+0.5)/(n+0.5))
+}
+
+func (idx *MemoryIndex) Close() error {
+	return nil
+}
+
+// candidateHeap is a min-heap of candidates by score.
 type candidateHeap []model.Candidate
 
 func (h *candidateHeap) push(x model.Candidate) {
@@ -273,14 +388,16 @@ func (h *candidateHeap) pop() model.Candidate {
 	root := old[0]
 	(*h)[0] = old[n-1]
 	*h = old[0 : n-1]
-	h.down(0, n-1)
+	if len(*h) > 0 {
+		h.down(0, len(*h))
+	}
 	return root
 }
 
 func (h *candidateHeap) up(j int) {
 	for {
-		i := (j - 1) / 2 // parent
-		if i == j || !((*h)[j].Score < (*h)[i].Score) {
+		i := (j - 1) / 2
+		if i == j || (*h)[j].Score >= (*h)[i].Score {
 			break
 		}
 		(*h)[j], (*h)[i] = (*h)[i], (*h)[j]
@@ -292,28 +409,17 @@ func (h *candidateHeap) down(i0, n int) {
 	i := i0
 	for {
 		j1 := 2*i + 1
-		if j1 >= n || j1 < 0 { // j1 < 0 after int overflow
+		if j1 >= n || j1 < 0 {
 			break
 		}
-		j := j1 // left child
+		j := j1
 		if j2 := j1 + 1; j2 < n && (*h)[j2].Score < (*h)[j1].Score {
-			j = j2 // = 2*i + 2  // right child
+			j = j2
 		}
-		if !((*h)[j].Score < (*h)[i].Score) {
+		if (*h)[j].Score >= (*h)[i].Score {
 			break
 		}
 		(*h)[i], (*h)[j] = (*h)[j], (*h)[i]
 		i = j
 	}
-}
-
-func (idx *MemoryIndex) computeIDF(df int) float64 {
-	// IDF = log(1 + (N - n + 0.5) / (n + 0.5))
-	N := float64(idx.docCount)
-	n := float64(df)
-	return math.Log(1 + (N-n+0.5)/(n+0.5))
-}
-
-func (idx *MemoryIndex) Close() error {
-	return nil
 }

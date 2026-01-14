@@ -1622,7 +1622,7 @@ func (e *Engine) HybridSearch(ctx context.Context, q []float32, textQuery string
 	}
 
 	// 2. Lexical Search
-	lexResults, err := e.lexicalIndex.Search(textQuery, vectorK)
+	lexResults, err := e.lexicalIndex.Search(ctx, textQuery, vectorK)
 	if err != nil {
 		return nil, fmt.Errorf("lexical search failed: %w", err)
 	}

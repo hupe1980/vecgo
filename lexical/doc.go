@@ -22,7 +22,9 @@
 //	type Index interface {
 //	    Add(id model.ID, text string) error
 //	    Delete(id model.ID) error
-//	    Search(text string, k int) ([]model.Candidate, error)
+//	    Search(ctx context.Context, text string, k int) ([]model.Candidate, error)
 //	    Close() error
 //	}
+//
+// All implementations must support context cancellation in Search().
 package lexical

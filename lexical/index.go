@@ -1,6 +1,10 @@
 package lexical
 
-import "github.com/hupe1980/vecgo/model"
+import (
+	"context"
+
+	"github.com/hupe1980/vecgo/model"
+)
 
 // Index is the interface for a lexical search index.
 type Index interface {
@@ -9,7 +13,8 @@ type Index interface {
 	// Delete removes a document from the index.
 	Delete(id model.ID) error
 	// Search performs a keyword search and returns a list of candidates.
-	Search(text string, k int) ([]model.Candidate, error)
+	// The context can be used for cancellation.
+	Search(ctx context.Context, text string, k int) ([]model.Candidate, error)
 	// Close closes the index.
 	Close() error
 }
