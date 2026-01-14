@@ -585,6 +585,11 @@ func (s *shard) EvaluateFilter(ctx context.Context, filter *metadata.FilterSet) 
 		return nil, nil // All
 	}
 
+	// Check context before potentially expensive filter evaluation
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	count := int(s.ids.Count())
 	result := imetadata.NewLocalBitmap()
 

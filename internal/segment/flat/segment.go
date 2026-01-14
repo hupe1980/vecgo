@@ -311,12 +311,8 @@ func Open(blob blobstore.Blob, opts ...Option) (*Segment, error) {
 		}
 
 		idData := data[pkStart : pkStart+expectedSize]
-		rawIDs := unsafe.Slice((*uint64)(unsafe.Pointer(&idData[0])), header.RowCount)
-
-		s.ids = make([]model.ID, header.RowCount)
-		for i := 0; i < int(header.RowCount); i++ {
-			s.ids[i] = model.ID(rawIDs[i])
-		}
+		// model.ID is uint64, so we can use unsafe.Slice directly
+		s.ids = unsafe.Slice((*model.ID)(unsafe.Pointer(&idData[0])), header.RowCount)
 	}
 
 	// Metadata
@@ -478,9 +474,30 @@ func (s *Segment) Search(ctx context.Context, q []float32, k int, filter segment
 	}
 
 	scan := func(start, end int) error {
+		// Check context cancellation periodically (every ~1000 iterations)
+		checkInterval := 1024
+		lastCheck := start
+
+		// Helper to check context
+		checkCtx := func(i int) error {
+			if i-lastCheck >= checkInterval {
+				lastCheck = i
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				default:
+				}
+			}
+			return nil
+		}
+
 		// Optimization for SQ8 L2
 		if s.sq != nil && s.Metric() == distance.MetricL2 {
 			for i := start; i < end; {
+				// Periodic context check
+				if err := checkCtx(i); err != nil {
+					return err
+				}
 				// Block skipping
 				if i%BlockSize == 0 && i+BlockSize <= end {
 					blockIdx := i / BlockSize
@@ -558,6 +575,11 @@ func (s *Segment) Search(ctx context.Context, q []float32, k int, filter segment
 		}
 
 		for i := start; i < end; {
+			// Periodic context check
+			if err := checkCtx(i); err != nil {
+				return err
+			}
+
 			// Block skipping
 			if i%BlockSize == 0 && i+BlockSize <= end {
 				blockIdx := i / BlockSize
@@ -690,6 +712,7 @@ func (s *Segment) Search(ctx context.Context, q []float32, k int, filter segment
 
 func (s *Segment) Rerank(ctx context.Context, q []float32, cands []model.Candidate, dst []model.Candidate) ([]model.Candidate, error) {
 	dim := int(s.header.Dim)
+	isL2 := s.Metric() == distance.MetricL2
 
 	for _, c := range cands {
 		if c.Loc.SegmentID != s.ID() {
@@ -701,9 +724,11 @@ func (s *Segment) Rerank(ctx context.Context, q []float32, cands []model.Candida
 		}
 
 		vec := s.vectors[rowID*dim : (rowID+1)*dim]
-		dist := distance.Dot(q, vec)
-		if s.Metric() == distance.MetricL2 {
+		var dist float32
+		if isL2 {
 			dist = distance.SquaredL2(q, vec)
+		} else {
+			dist = distance.Dot(q, vec)
 		}
 
 		c.Score = dist
@@ -866,10 +891,29 @@ func (s *Segment) EvaluateFilter(ctx context.Context, filter *metadata.FilterSet
 		return s.metadataIndex.EvaluateFilter(filter), nil
 	}
 
+	// Check context before expensive scan
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	// Slow path: scan all documents (fallback when index not built)
 	result := imetadata.NewLocalBitmap()
 
+	// Periodic cancellation check interval
+	const checkInterval = 1024
+	lastCheck := 0
+
 	for i := 0; i < int(s.header.RowCount); i++ {
+		// Periodic context check
+		if i-lastCheck >= checkInterval {
+			lastCheck = i
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			default:
+			}
+		}
+
 		var md metadata.Document
 		if len(s.metadataOffsets) > 0 {
 			start := s.metadataOffsets[i]

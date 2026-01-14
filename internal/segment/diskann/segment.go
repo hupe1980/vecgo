@@ -199,6 +199,7 @@ func (s *Segment) load() error {
 	}
 
 	// Setup IDs if data is loaded
+	// Zero-copy: model.ID is uint64, so we can directly cast the slice
 	if s.data != nil {
 		idSize := uint64(s.header.RowCount) * 8
 		if s.header.PKOffset+idSize > uint64(len(s.data)) {
@@ -206,11 +207,7 @@ func (s *Segment) load() error {
 		}
 		idBytes := s.data[s.header.PKOffset : s.header.PKOffset+idSize]
 		if len(idBytes) > 0 {
-			rawIDs := unsafe.Slice((*uint64)(unsafe.Pointer(&idBytes[0])), int(s.header.RowCount))
-			s.ids = make([]model.ID, s.header.RowCount)
-			for i, val := range rawIDs {
-				s.ids[i] = model.ID(val)
-			}
+			s.ids = unsafe.Slice((*model.ID)(unsafe.Pointer(&idBytes[0])), int(s.header.RowCount))
 		} else {
 			s.ids = make([]model.ID, 0)
 		}
@@ -493,10 +490,10 @@ func (s *Segment) Search(ctx context.Context, q []float32, k int, filter segment
 		l = k + 50
 	}
 
-	return s.searchInternal(q, k, l, filter, opts.Filter, searcherCtx)
+	return s.searchInternal(ctx, q, k, l, filter, opts.Filter, searcherCtx)
 }
 
-func (s *Segment) searchInternal(query []float32, k int, l int, filter segment.Filter, metadataFilter interface{}, searcherCtx *searcher.Searcher) error {
+func (s *Segment) searchInternal(ctx context.Context, query []float32, k int, l int, filter segment.Filter, metadataFilter interface{}, searcherCtx *searcher.Searcher) error {
 	// Metadata filter
 	var metadataFilterFn func(model.RowID) bool
 	if s.index != nil && metadataFilter != nil {
@@ -640,7 +637,20 @@ func (s *Segment) searchInternal(query []float32, k int, l int, filter segment.F
 
 	pushToHeap(startNode, startDist)
 
+	// Context check interval counter
+	iterations := 0
+
 	for sc.ScratchCandidates.Len() > 0 {
+		// Periodic context check (every 128 iterations)
+		iterations++
+		if iterations&127 == 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+		}
+
 		// Pop closest unexpanded (MinHeap returns smallest distance first)
 		curr, _ := sc.ScratchCandidates.PopItem()
 
@@ -788,6 +798,15 @@ func (s *Segment) Fetch(ctx context.Context, rows []uint32, cols []string) (segm
 	}
 
 	for i, rowID := range rows {
+		// Periodic context check (every 64 rows)
+		if i&63 == 0 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			default:
+			}
+		}
+
 		if rowID >= s.header.RowCount {
 			return nil, fmt.Errorf("rowID %d out of bounds", rowID)
 		}
@@ -844,6 +863,15 @@ func (s *Segment) FetchIDs(ctx context.Context, rows []uint32, dst []model.ID) e
 		return fmt.Errorf("dst length mismatch")
 	}
 	for i, rowID := range rows {
+		// Periodic context check (every 256 rows)
+		if i&255 == 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+		}
+
 		if rowID >= s.header.RowCount {
 			return fmt.Errorf("rowID %d out of bounds", rowID)
 		}
@@ -899,7 +927,16 @@ func (s *Segment) Iterate(fn func(rowID uint32, id model.ID, vec []float32, md m
 
 // Rerank computes exact distances for a candidate set.
 func (s *Segment) Rerank(ctx context.Context, q []float32, cands []model.Candidate, dst []model.Candidate) ([]model.Candidate, error) {
-	for _, c := range cands {
+	for i, c := range cands {
+		// Periodic context check (every 64 candidates)
+		if i&63 == 0 {
+			select {
+			case <-ctx.Done():
+				return dst, ctx.Err()
+			default:
+			}
+		}
+
 		rowID := uint32(c.Loc.RowID)
 		vec, err := s.Get(rowID)
 		if err != nil {
@@ -1056,16 +1093,10 @@ func (s *Segment) readVector(rowID uint32, out []float32) error {
 		return err
 	}
 
-	// Convert to float32
-	// Use unsafe/fast conversion? Or keep it safe for now.
-	// Since we are reading small chunks (dim=128 ~ 512 bytes), binary.LittleEndian is fine.
-	// But unsafe.Slice might be faster if we want "Best-in-Class".
-	// However, `readBlock` returns a copy (totalBuf), so we are safe to cast.
-	// BUT, strict alignment is not guaranteed by `make([]byte)`.
-	// Go's allocator usually aligns to 8 bytes. float32 needs 4. So it's safe.
-	for i := 0; i < dim; i++ {
-		out[i] = math.Float32frombits(binary.LittleEndian.Uint32(buf[i*4:]))
-	}
+	// Zero-copy conversion: readBlock returns a properly aligned buffer.
+	// Go's allocator aligns to 8 bytes, float32 needs 4-byte alignment.
+	src := unsafe.Slice((*float32)(unsafe.Pointer(&buf[0])), dim)
+	copy(out, src)
 	return nil
 }
 
@@ -1095,10 +1126,11 @@ func (s *Segment) readGraphNode(rowID uint32) ([]uint32, error) {
 		return nil, err
 	}
 
+	// Zero-copy conversion: readBlock returns a properly aligned buffer.
+	// Go's allocator aligns to 8 bytes, uint32 needs 4-byte alignment.
 	neighbors := make([]uint32, maxDegree)
-	for i := 0; i < maxDegree; i++ {
-		neighbors[i] = binary.LittleEndian.Uint32(buf[i*4:])
-	}
+	src := unsafe.Slice((*uint32)(unsafe.Pointer(&buf[0])), maxDegree)
+	copy(neighbors, src)
 	return neighbors, nil
 }
 

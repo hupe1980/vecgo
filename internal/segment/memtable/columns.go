@@ -31,11 +31,9 @@ func newIntColumn(capacity int) *intColumn {
 func (c *intColumn) Len() int { return len(c.data) }
 
 func (c *intColumn) Grow(n int) {
-	// Pad with nulls
-	for i := 0; i < n; i++ {
-		c.data = append(c.data, 0)
-		c.valid = append(c.valid, false)
-	}
+	// Pad with nulls - extend slice in single allocation
+	c.data = append(c.data, make([]int64, n)...)
+	c.valid = append(c.valid, make([]bool, n)...)
 }
 
 func (c *intColumn) Append(v metadata.Value) {
@@ -113,10 +111,9 @@ func newFloatColumn(capacity int) *floatColumn {
 func (c *floatColumn) Len() int { return len(c.data) }
 
 func (c *floatColumn) Grow(n int) {
-	for i := 0; i < n; i++ {
-		c.data = append(c.data, 0)
-		c.valid = append(c.valid, false)
-	}
+	// Extend slice in single allocation
+	c.data = append(c.data, make([]float64, n)...)
+	c.valid = append(c.valid, make([]bool, n)...)
 }
 
 func (c *floatColumn) Append(v metadata.Value) {
@@ -208,10 +205,9 @@ func newStringColumn(capacity int) *stringColumn {
 func (c *stringColumn) Len() int { return len(c.data) }
 
 func (c *stringColumn) Grow(n int) {
-	for range n {
-		c.data = append(c.data, unique.Handle[string]{})
-		c.valid = append(c.valid, false)
-	}
+	// Extend slice in single allocation
+	c.data = append(c.data, make([]unique.Handle[string], n)...)
+	c.valid = append(c.valid, make([]bool, n)...)
 }
 
 func (c *stringColumn) Append(v metadata.Value) {
@@ -280,10 +276,9 @@ func newBoolColumn(capacity int) *boolColumn {
 func (c *boolColumn) Len() int { return len(c.data) }
 
 func (c *boolColumn) Grow(n int) {
-	for range n {
-		c.data = append(c.data, false)
-		c.valid = append(c.valid, false)
-	}
+	// Extend slice in single allocation
+	c.data = append(c.data, make([]bool, n)...)
+	c.valid = append(c.valid, make([]bool, n)...)
 }
 
 func (c *boolColumn) Append(v metadata.Value) {

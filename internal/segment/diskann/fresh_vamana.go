@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"runtime"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -408,9 +409,10 @@ func (fv *FreshVamana) Close() error {
 	fv.closed = true
 	fv.closedMu.Unlock()
 
-	// Wait for consolidation to finish
+	// Wait for consolidation to finish with backoff
 	for fv.consolidating.Load() {
-		// Spin wait (could use condition variable for production)
+		// Yield the processor to avoid busy-spinning
+		runtime.Gosched()
 	}
 
 	// Clear data under lock (allow GC)
@@ -522,7 +524,7 @@ func (fv *FreshVamana) isDeleted(nodeID uint32) bool {
 
 // greedySearch performs greedy best-first search using lock-free snapshots.
 func (fv *FreshVamana) greedySearch(ctx context.Context, query []float32, ep uint32, ef int) []searchCandidate {
-	// Check closed state
+	// Check closed state once at the start
 	fv.closedMu.RLock()
 	if fv.closed {
 		fv.closedMu.RUnlock()
@@ -544,20 +546,27 @@ func (fv *FreshVamana) greedySearch(ctx context.Context, query []float32, ep uin
 	results = append(results, searchCandidate{nodeID: ep, dist: startDist})
 	visited[ep] = true
 
-	for len(candidates) > 0 {
-		select {
-		case <-ctx.Done():
-			return results
-		default:
-		}
+	// Counter for periodic closed state check
+	iterations := 0
 
-		// Check closed state
-		fv.closedMu.RLock()
-		if fv.closed {
+	for len(candidates) > 0 {
+		// Periodic checks every 64 iterations
+		iterations++
+		if iterations&63 == 0 {
+			select {
+			case <-ctx.Done():
+				return results
+			default:
+			}
+
+			// Periodic closed state check
+			fv.closedMu.RLock()
+			closed := fv.closed
 			fv.closedMu.RUnlock()
-			return results
+			if closed {
+				return results
+			}
 		}
-		fv.closedMu.RUnlock()
 
 		// Pop closest (min-heap simulation with sorted slice)
 		closest := candidates[0]
