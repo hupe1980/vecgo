@@ -198,7 +198,7 @@ func main() {
 					vec[i] = rand.Float32()
 				}
 
-				if _, err := eng.Insert(vec, nil, nil); err != nil {
+				if _, err := eng.Insert(ctx, vec, nil, nil); err != nil {
 					log.Printf("Insert error: %v", err)
 				}
 			}

@@ -174,8 +174,7 @@ func (n Node) GetConnection(a *arena.Arena, layer int, index int, m, m0 int) Nei
 
 	_, gen := n.ref.unpack()
 	// List layout: [Count u32][Padding u32][Neighbor0 u64][Neighbor1 u64]...
-	indexU64, _ := conv.IntToUint64(index)
-	neighborOffset := listOffset + 8 + indexU64*8
+	neighborOffset := listOffset + 8 + uint64(index)*8
 
 	ptr := a.GetSafe(arena.Ref{Gen: gen, Offset: neighborOffset})
 	if ptr == nil {
@@ -193,8 +192,7 @@ func (n Node) SetConnection(a *arena.Arena, layer int, index int, neighbor Neigh
 	}
 
 	_, gen := n.ref.unpack()
-	indexU64, _ := conv.IntToUint64(index)
-	neighborOffset := listOffset + 8 + indexU64*8
+	neighborOffset := listOffset + 8 + uint64(index)*8
 
 	ptr := a.GetSafe(arena.Ref{Gen: gen, Offset: neighborOffset})
 	if ptr == nil {

@@ -47,7 +47,7 @@ func TestFullLifecycle(t *testing.T) {
 	require.NoError(t, err)
 
 	// 3. Get (Verify Insert)
-	rec, err := e.Get(id1)
+	rec, err := e.Get(ctx, id1)
 	require.NoError(t, err)
 	assert.Equal(t, id1, rec.ID)
 	assert.InDeltaSlice(t, vec1, rec.Vector, 1e-6)
@@ -86,7 +86,7 @@ func TestFullLifecycle(t *testing.T) {
 	require.NoError(t, err)
 
 	// 6. Get (Verify Update - New ID)
-	rec, err = e.Get(id2)
+	rec, err = e.Get(ctx, id2)
 	require.NoError(t, err)
 	assert.InDeltaSlice(t, vec2, rec.Vector, 1e-6) // Use InDeltaSlice for floats
 	assert.Equal(t, "v2", rec.Metadata["tag"].StringValue())
@@ -133,7 +133,7 @@ func TestFullLifecycle(t *testing.T) {
 	require.NoError(t, err)
 
 	// 10. Get (Verify Delete)
-	_, err = e.Get(id2)
+	_, err = e.Get(ctx, id2)
 	assert.Error(t, err)
 	// Currently engine returns ErrInvalidArgument for missing PK
 	assert.True(t, strings.Contains(err.Error(), "invalid argument") || strings.Contains(err.Error(), "not found"),
@@ -153,7 +153,7 @@ func TestFullLifecycle(t *testing.T) {
 	defer e.Close()
 
 	// Verify still deleted
-	_, err = e.Get(id2)
+	_, err = e.Get(ctx, id2)
 	assert.Error(t, err)
 
 	res, err = e.Search(ctx, vec2, 1)
@@ -182,7 +182,7 @@ func TestBatchCRUD(t *testing.T) {
 
 	// Verify all present
 	for i := 0; i < count; i++ {
-		rec, err := e.Get(ids[i])
+		rec, err := e.Get(ctx, ids[i])
 		require.NoError(t, err)
 		assert.Equal(t, float32(i), rec.Vector[0])
 	}
@@ -199,7 +199,7 @@ func TestBatchCRUD(t *testing.T) {
 	// Verify
 	for i := 0; i < count; i++ {
 		id := ids[i]
-		rec, err := e.Get(id)
+		rec, err := e.Get(ctx, id)
 		if i%2 == 0 {
 			// Deleted
 			assert.Error(t, err, "ID %d should be deleted", id)

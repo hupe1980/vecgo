@@ -3,7 +3,6 @@ package hnsw
 import (
 	"fmt"
 
-	"github.com/hupe1980/vecgo/internal/conv"
 	"github.com/hupe1980/vecgo/model"
 )
 
@@ -101,14 +100,11 @@ func (h *HNSW) collectLevelStats(g *graph, nodes *[]*NodeSegment, maxLevel int) 
 				levelStats[level]++
 			}
 
-			iU64, _ := conv.IntToUint64(i)
-			jU64, _ := conv.IntToUint64(j)
-			id := iU64*nodeSegmentSize + jU64
+			id := uint64(i)*nodeSegmentSize + uint64(j)
 
 			// Loop through each connection
 			for i2 := level; i2 >= 0; i2-- {
-				idU32, _ := conv.Uint64ToUint32(id)
-				conns := h.getConnections(g, model.RowID(idU32), i2)
+				conns := h.getConnections(g, model.RowID(id), i2)
 				count := len(conns)
 
 				if count > 0 {

@@ -26,7 +26,7 @@ func TestBatchOperations(t *testing.T) {
 	require.Len(t, ids, 3)
 
 	// Verify with Get
-	rec, err := e.Get(ids[0])
+	rec, err := e.Get(context.Background(), ids[0])
 	require.NoError(t, err)
 	assert.Equal(t, []float32{1.0, 0.0}, rec.Vector)
 	assert.Equal(t, ids[0], rec.ID)

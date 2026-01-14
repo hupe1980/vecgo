@@ -349,8 +349,10 @@ func WithMetric(m distance.Metric) Option {
 	}
 }
 
-// Open opens or creates a new Engine (backward-compatible signature).
-// For new code, prefer OpenLocal or the unified vecgo.Open().
+// Open opens or creates a new Engine with explicit dimension and metric.
+//
+// Deprecated: Use OpenLocal with WithDimension and WithMetric options instead,
+// or preferably use the unified vecgo.Open() API.
 func Open(dir string, dim int, metric distance.Metric, opts ...Option) (*Engine, error) {
 	// Combine explicit dim/metric with opts
 	allOpts := append([]Option{WithDimension(dim), WithMetric(metric)}, opts...)
@@ -421,37 +423,7 @@ func OpenRemote(store blobstore.BlobStore, opts ...Option) (*Engine, error) {
 	return e.init()
 }
 
-// OpenCloud opens an Engine pointing to a remote store (e.g., S3).
-// The local `dir` is used for caching. Dimension and Metric are read from the manifest.
-//
-// Deprecated: Use OpenRemote(store, WithCacheDir(dir)) instead.
-func OpenCloud(dir string, opts ...Option) (*Engine, error) {
-	ctx, cancel := context.WithCancel(context.Background())
-
-	e := &Engine{
-		ctx:          ctx,
-		cancel:       cancel,
-		dir:          dir,
-		policy:       &BoundedSizeTieredPolicy{Threshold: 4},
-		compactionCh: make(chan struct{}, 1),
-		flushCh:      make(chan struct{}, 1),
-		closeCh:      make(chan struct{}),
-		metrics:      &NoopMetricsObserver{},
-	}
-
-	for _, opt := range opts {
-		opt(e)
-	}
-
-	// Cloud mode requires WithRemoteStore to have been set
-	if e.store == nil {
-		return nil, fmt.Errorf("OpenCloud requires WithRemoteStore option")
-	}
-
-	return e.init()
-}
-
-// init completes engine initialization (shared between Open and OpenCloud)
+// init completes engine initialization (shared by OpenLocal and OpenRemote).
 func (e *Engine) init() (*Engine, error) {
 	if e.isCloud {
 		// Cloud Mode Defaults
@@ -1064,9 +1036,11 @@ func (e *Engine) BatchInsert(ctx context.Context, vectors [][]float32, mds []met
 			}, item.lsn)
 
 			if exists {
+				e.tombstonesMu.RLock()
 				if vt, ok := e.tombstones[oldLoc.SegmentID]; ok {
 					vt.MarkDeleted(uint32(oldLoc.RowID), item.lsn)
 				}
+				e.tombstonesMu.RUnlock()
 			}
 
 			// Update Lexical Index
@@ -1393,9 +1367,11 @@ func (e *Engine) BatchDelete(ctx context.Context, ids []model.ID) error {
 		// Update Global PK Index & Tombstones
 		oldLoc, existed := e.pkIndex.Delete(id, lsn)
 		if existed {
+			e.tombstonesMu.RLock()
 			if vt, ok := e.tombstones[oldLoc.SegmentID]; ok {
 				vt.MarkDeleted(uint32(oldLoc.RowID), lsn)
 			}
+			e.tombstonesMu.RUnlock()
 		}
 
 		// Update Lexical Index
@@ -1514,16 +1490,19 @@ func (e *Engine) Scan(ctx context.Context, opts ...ScanOption) iter.Seq2[*model.
 			}
 
 			// Check tombstones (Redundant if PK Index is consistent, but safe)
+			e.tombstonesMu.RLock()
 			if vt, ok := e.tombstones[loc.SegmentID]; ok {
 				if vt.IsDeleted(uint32(loc.RowID), e.lsn.Load()) {
+					e.tombstonesMu.RUnlock()
 					continue
 				}
 			}
+			e.tombstonesMu.RUnlock()
 
 			var rec *model.Record
 
 			if loc.SegmentID == snap.active.ID() {
-				batch, err := snap.active.Fetch(context.Background(), []uint32{uint32(loc.RowID)}, []string{"vector", "metadata", "payload"})
+				batch, err := snap.active.Fetch(ctx, []uint32{uint32(loc.RowID)}, []string{"vector", "metadata", "payload"})
 				if err != nil {
 					if !yield(nil, err) {
 						return
@@ -1542,7 +1521,7 @@ func (e *Engine) Scan(ctx context.Context, opts ...ScanOption) iter.Seq2[*model.
 					yield(nil, fmt.Errorf("segment %d not found in snapshot", loc.SegmentID))
 					return
 				}
-				batch, err := seg.Fetch(context.Background(), []uint32{uint32(loc.RowID)}, []string{"vector", "metadata", "payload"})
+				batch, err := seg.Fetch(ctx, []uint32{uint32(loc.RowID)}, []string{"vector", "metadata", "payload"})
 				if err != nil {
 					if !yield(nil, err) {
 						return
@@ -1728,11 +1707,17 @@ func (e *Engine) HybridSearch(ctx context.Context, q []float32, textQuery string
 }
 
 // Get returns the full record (vector, metadata, payload) for the given primary key.
-func (e *Engine) Get(id model.ID) (rec *model.Record, err error) {
+func (e *Engine) Get(ctx context.Context, id model.ID) (rec *model.Record, err error) {
 	start := time.Now()
 	defer func() {
 		e.metrics.OnGet(time.Since(start), err)
 	}()
+
+	// Check context cancellation first
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	select {
 	case <-e.closeCh:
 		return nil, ErrClosed
@@ -1754,7 +1739,7 @@ func (e *Engine) Get(id model.ID) (rec *model.Record, err error) {
 	// Check if in active memtable
 	if loc.SegmentID == snap.active.ID() {
 		// MemTable fetch
-		batch, err := snap.active.Fetch(context.Background(), []uint32{uint32(loc.RowID)}, []string{"vector", "metadata", "payload"})
+		batch, err := snap.active.Fetch(ctx, []uint32{uint32(loc.RowID)}, []string{"vector", "metadata", "payload"})
 		if err != nil {
 			return nil, err
 		}
@@ -1772,7 +1757,7 @@ func (e *Engine) Get(id model.ID) (rec *model.Record, err error) {
 		return nil, fmt.Errorf("segment %d not found for id %d", loc.SegmentID, id)
 	}
 
-	batch, err := seg.Fetch(context.Background(), []uint32{uint32(loc.RowID)}, []string{"vector", "metadata", "payload"})
+	batch, err := seg.Fetch(ctx, []uint32{uint32(loc.RowID)}, []string{"vector", "metadata", "payload"})
 	if err != nil {
 		return nil, err
 	}

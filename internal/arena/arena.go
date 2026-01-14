@@ -462,8 +462,7 @@ func (a *Arena) Free() {
 
 	// Clear chunk references and unmap memory
 	count := a.chunkCount.Load()
-	countInt, _ := conv.Uint32ToInt(count) // Safe: count <= MaxChunks (65536)
-	for i := 0; i < countInt; i++ {
+	for i := uint32(0); i < count; i++ {
 		chunk := a.chunks[i].Load()
 		if chunk != nil && chunk.mapping != nil {
 			// Unmap off-heap memory
@@ -519,8 +518,7 @@ func (a *Arena) Reset() {
 		firstChunk.offset.Store(0)
 
 		// Free extra chunks (keep first for reuse)
-		countInt, _ := conv.Uint32ToInt(count) // Safe: count <= MaxChunks (65536)
-		for i := 1; i < countInt; i++ {
+		for i := uint32(1); i < count; i++ {
 			chunk := a.chunks[i].Load()
 			if chunk != nil && chunk.mapping != nil {
 				_ = chunk.mapping.Close() // Unmap off-heap memory

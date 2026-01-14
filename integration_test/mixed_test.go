@@ -65,7 +65,7 @@ func TestMixedSegments(t *testing.T) {
 	// Verify IDs 1-10 are accessible after compaction
 	t.Log("Verifying IDs 1-10 via Get:")
 	for id := model.ID(1); id <= 10; id++ {
-		rec, err := db.Get(id)
+		rec, err := db.Get(context.Background(), id)
 		require.NoError(t, err, "Get ID=%d after compaction", id)
 		expectedVal := float32(id - 1)
 		expected := []float32{expectedVal, expectedVal, expectedVal, expectedVal}
@@ -165,7 +165,7 @@ func TestSimpleFlushCompaction(t *testing.T) {
 
 	// Verify each ID maps to correct vector
 	for id := model.ID(1); id <= 15; id++ {
-		rec, err := e.Get(id)
+		rec, err := e.Get(context.Background(), id)
 		require.NoError(t, err, "Get ID=%d", id)
 		expectedVal := float32(id - 1) // ID=1 has vec=[0,0,0,0]
 		expected := []float32{expectedVal, expectedVal, expectedVal, expectedVal}

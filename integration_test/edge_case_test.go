@@ -79,7 +79,7 @@ func TestEdgeCases_EmptyEngine(t *testing.T) {
 	})
 
 	t.Run("Get Non Existent", func(t *testing.T) {
-		_, err := eng.Get(model.ID(99999))
+		_, err := eng.Get(context.Background(), model.ID(99999))
 		assert.Error(t, err)
 		// Should be not found or invalid argument
 	})

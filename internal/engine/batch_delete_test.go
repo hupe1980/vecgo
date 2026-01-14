@@ -53,19 +53,19 @@ func TestBatchDelete(t *testing.T) {
 		if id == model.ID(99) {
 			continue
 		}
-		_, err := e.Get(id)
+		_, err := e.Get(context.Background(), id)
 		require.Error(t, err) // Should be not found
 	}
 
 	// Verify others still exist
 	// Segment: 2-9
 	for i := 2; i < 10; i++ {
-		_, err := e.Get(ids[i])
+		_, err := e.Get(context.Background(), ids[i])
 		require.NoError(t, err)
 	}
 	// MemTable: 12-14
 	for i := 12; i < 15; i++ {
-		_, err := e.Get(moreIDs[i-10])
+		_, err := e.Get(context.Background(), moreIDs[i-10])
 		require.NoError(t, err)
 	}
 
