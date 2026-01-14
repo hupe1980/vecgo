@@ -60,7 +60,8 @@ func (s *Segment) GetID(rowID uint32) (model.ID, bool) {
 	if s.ids != nil {
 		return s.ids[rowID], true
 	}
-	return s.readID(rowID)
+	// TODO: Add context to Segment.GetID interface method
+	return s.readID(context.TODO(), rowID)
 }
 
 // Option configures a Segment.
@@ -88,7 +89,7 @@ func WithPayloadBlob(blob blobstore.Blob) Option {
 }
 
 // Open opens a DiskANN segment from a blob.
-func Open(blob blobstore.Blob, opts ...Option) (*Segment, error) {
+func Open(ctx context.Context, blob blobstore.Blob, opts ...Option) (*Segment, error) {
 	var data []byte
 	// Prefer MMap for local files
 	if m, ok := blob.(blobstore.Mappable); ok {
@@ -110,7 +111,7 @@ func Open(blob blobstore.Blob, opts ...Option) (*Segment, error) {
 		opt(s)
 	}
 
-	if err := s.load(); err != nil {
+	if err := s.load(ctx); err != nil {
 		s.Close()
 		return nil, err
 	}
@@ -118,7 +119,7 @@ func Open(blob blobstore.Blob, opts ...Option) (*Segment, error) {
 	return s, nil
 }
 
-func (s *Segment) load() error {
+func (s *Segment) load(ctx context.Context) error {
 	var err error
 	if s.data != nil {
 		if len(s.data) < HeaderSize {
@@ -128,7 +129,7 @@ func (s *Segment) load() error {
 	} else {
 		// Lazy load: read only header
 		headerBytes := make([]byte, HeaderSize)
-		if _, err := s.blob.ReadAt(context.Background(), headerBytes, 0); err != nil {
+		if _, err := s.blob.ReadAt(ctx, headerBytes, 0); err != nil {
 			return fmt.Errorf("failed to read header: %w", err)
 		}
 		s.header, err = DecodeHeader(headerBytes)
@@ -142,7 +143,7 @@ func (s *Segment) load() error {
 		// Format: [Count uint32][Offsets uint64...]
 		// Read header
 		header := make([]byte, 4)
-		if _, err := s.payloadBlob.ReadAt(context.Background(), header, 0); err != nil {
+		if _, err := s.payloadBlob.ReadAt(ctx, header, 0); err != nil {
 			return fmt.Errorf("failed to read payload header: %w", err)
 		}
 		count := binary.LittleEndian.Uint32(header)
@@ -151,7 +152,7 @@ func (s *Segment) load() error {
 		// Read offsets
 		offsetsSize := int(count+1) * 8
 		offsetsBytes := make([]byte, offsetsSize)
-		if _, err := s.payloadBlob.ReadAt(context.Background(), offsetsBytes, 4); err != nil {
+		if _, err := s.payloadBlob.ReadAt(ctx, offsetsBytes, 4); err != nil {
 			return fmt.Errorf("failed to read payload offsets: %w", err)
 		}
 
@@ -253,8 +254,8 @@ func (s *Segment) load() error {
 		if err := s.index.ReadInvertedIndex(r); err != nil {
 			return fmt.Errorf("failed to read metadata index: %w", err)
 		}
-		s.index.SetDocumentProvider(func(id model.RowID) (metadata.Document, bool) {
-			doc, err := s.readMetadata(uint32(id))
+		s.index.SetDocumentProvider(func(ctx context.Context, id model.RowID) (metadata.Document, bool) {
+			doc, err := s.readMetadata(ctx, uint32(id))
 			if err != nil || doc == nil {
 				return nil, false
 			}
@@ -279,15 +280,15 @@ func (s *Segment) load() error {
 	// Setup Quantization
 	switch quantization.Type(s.header.QuantizationType) {
 	case quantization.TypePQ:
-		if err := s.loadPQ(); err != nil {
+		if err := s.loadPQ(ctx); err != nil {
 			return err
 		}
 	case quantization.TypeRaBitQ:
-		if err := s.loadRaBitQ(); err != nil {
+		if err := s.loadRaBitQ(ctx); err != nil {
 			return err
 		}
 	case quantization.TypeINT4:
-		if err := s.loadINT4(); err != nil {
+		if err := s.loadINT4(ctx); err != nil {
 			return err
 		}
 	}
@@ -302,7 +303,7 @@ func (s *Segment) load() error {
 	return nil
 }
 
-func (s *Segment) loadPQ() error {
+func (s *Segment) loadPQ(ctx context.Context) error {
 	m := int(s.header.PQSubvectors)
 	k := int(s.header.PQCentroids)
 	subDim := int(s.header.Dim) / m
@@ -328,7 +329,7 @@ func (s *Segment) loadPQ() error {
 			return s.data[off : off+size], nil
 		}
 		buf := make([]byte, size)
-		if _, err := s.blob.ReadAt(context.Background(), buf, int64(off)); err != nil {
+		if _, err := s.blob.ReadAt(ctx, buf, int64(off)); err != nil {
 			return nil, err
 		}
 		return buf, nil
@@ -381,7 +382,7 @@ func (s *Segment) loadPQ() error {
 	return nil
 }
 
-func (s *Segment) loadINT4() error {
+func (s *Segment) loadINT4(ctx context.Context) error {
 	// Read Params (CodebookOffset)
 	if s.header.PQCodebookOffset == 0 {
 		return errors.New("missing INT4 params")
@@ -399,7 +400,7 @@ func (s *Segment) loadINT4() error {
 		}
 		copy(params, s.data[s.header.PQCodebookOffset:][:size])
 	} else {
-		if _, err := s.blob.ReadAt(context.Background(), params, int64(s.header.PQCodebookOffset)); err != nil {
+		if _, err := s.blob.ReadAt(ctx, params, int64(s.header.PQCodebookOffset)); err != nil {
 			return err
 		}
 	}
@@ -426,7 +427,7 @@ func (s *Segment) loadINT4() error {
 	return nil
 }
 
-func (s *Segment) readINT4Code(rowID uint32, out []byte) error {
+func (s *Segment) readINT4Code(ctx context.Context, rowID uint32, out []byte) error {
 	dim := uint64(s.header.Dim)
 	codeSize := (dim + 1) / 2
 	if uint64(len(out)) != codeSize {
@@ -434,7 +435,7 @@ func (s *Segment) readINT4Code(rowID uint32, out []byte) error {
 	}
 	offset := int64(s.header.PQCodesOffset) + int64(rowID)*int64(codeSize)
 
-	buf, err := s.readBlock(offset, int(codeSize), cache.CacheKindColumnBlocks)
+	buf, err := s.readBlock(ctx, offset, int(codeSize), cache.CacheKindColumnBlocks)
 	if err != nil {
 		return err
 	}
@@ -470,7 +471,8 @@ func (s *Segment) Get(id uint32) ([]float32, error) {
 	}
 
 	vec := make([]float32, dim)
-	if err := s.readVector(id, vec); err != nil {
+	// TODO: Add context to Segment.Get interface method
+	if err := s.readVector(context.TODO(), id, vec); err != nil {
 		return nil, err
 	}
 	return vec, nil
@@ -522,7 +524,7 @@ func (s *Segment) searchInternal(ctx context.Context, query []float32, k int, l 
 				code = make([]byte, bytesPerVec)
 			}
 			distFn = func(id uint32) (float32, error) {
-				if err := s.readRaBitQCode(id, code); err != nil {
+				if err := s.readRaBitQCode(ctx, id, code); err != nil {
 					return 0, err
 				}
 				return s.rq.Distance(query, code)
@@ -544,7 +546,7 @@ func (s *Segment) searchInternal(ctx context.Context, query []float32, k int, l 
 				code = make([]byte, m)
 			}
 			distFn = func(id uint32) (float32, error) {
-				if err := s.readPQCode(id, code); err != nil {
+				if err := s.readPQCode(ctx, id, code); err != nil {
 					return 0, err
 				}
 				return s.pq.ComputeAsymmetricDistance(query, code)
@@ -567,7 +569,7 @@ func (s *Segment) searchInternal(ctx context.Context, query []float32, k int, l 
 				code = make([]byte, bytesPerVec)
 			}
 			distFn = func(id uint32) (float32, error) {
-				if err := s.readINT4Code(id, code); err != nil {
+				if err := s.readINT4Code(ctx, id, code); err != nil {
 					return 0, err
 				}
 				return s.iq.L2Distance(query, code)
@@ -676,7 +678,7 @@ func (s *Segment) searchInternal(ctx context.Context, query []float32, k int, l 
 			neighbors = s.graph[start : start+r]
 		} else {
 			var err error
-			neighbors, err = s.readGraphNode(uint32(curr.Node))
+			neighbors, err = s.readGraphNode(ctx, uint32(curr.Node))
 			if err != nil {
 				return err
 			}
@@ -707,7 +709,7 @@ func (s *Segment) searchInternal(ctx context.Context, query []float32, k int, l 
 	return nil
 }
 
-func (s *Segment) readMetadata(rowID uint32) (metadata.Document, error) {
+func (s *Segment) readMetadata(ctx context.Context, rowID uint32) (metadata.Document, error) {
 	if s.header.MetadataOffset == 0 {
 		return nil, nil
 	}
@@ -723,7 +725,7 @@ func (s *Segment) readMetadata(rowID uint32) (metadata.Document, error) {
 		// Read offsets from blob
 		offsetPos := int64(s.header.MetadataOffset) + int64(rowID)*8
 		buf := make([]byte, 16)
-		if _, err := s.blob.ReadAt(context.Background(), buf, offsetPos); err != nil {
+		if _, err := s.blob.ReadAt(ctx, buf, offsetPos); err != nil {
 			return nil, err
 		}
 		start = binary.LittleEndian.Uint64(buf[0:8])
@@ -745,7 +747,7 @@ func (s *Segment) readMetadata(rowID uint32) (metadata.Document, error) {
 		blob = s.data[dataStart+start : dataStart+end]
 	} else {
 		blob = make([]byte, end-start)
-		if _, err := s.blob.ReadAt(context.Background(), blob, int64(dataStart+start)); err != nil {
+		if _, err := s.blob.ReadAt(ctx, blob, int64(dataStart+start)); err != nil {
 			return nil, err
 		}
 	}
@@ -832,7 +834,7 @@ func (s *Segment) Fetch(ctx context.Context, rows []uint32, cols []string) (segm
 
 		// Fetch Metadata
 		if fetchMetadata {
-			md, err := s.readMetadata(rowID)
+			md, err := s.readMetadata(ctx, rowID)
 			if err != nil {
 				return nil, err
 			}
@@ -913,7 +915,7 @@ func (s *Segment) Iterate(fn func(rowID uint32, id model.ID, vec []float32, md m
 			}
 		}
 
-		md, err := s.readMetadata(uint32(i))
+		md, err := s.readMetadata(context.Background(), uint32(i))
 		if err != nil {
 			return err
 		}
@@ -984,10 +986,10 @@ func (s *Segment) Advise(pattern segment.AccessPattern) error {
 }
 
 // readBlock reads a aligned block-based chunk from the blob using the cache.
-func (s *Segment) readBlock(offset int64, size int, kind cache.CacheKind) ([]byte, error) {
+func (s *Segment) readBlock(ctx context.Context, offset int64, size int, kind cache.CacheKind) ([]byte, error) {
 	if s.cache == nil {
 		buf := make([]byte, size)
-		if _, err := s.blob.ReadAt(context.Background(), buf, offset); err != nil {
+		if _, err := s.blob.ReadAt(ctx, buf, offset); err != nil {
 			return nil, err
 		}
 		return buf, nil
@@ -1009,12 +1011,12 @@ func (s *Segment) readBlock(offset int64, size int, kind cache.CacheKind) ([]byt
 		var pageData []byte
 		var ok bool
 
-		pageData, ok = s.cache.Get(context.Background(), key)
+		pageData, ok = s.cache.Get(ctx, key)
 		if !ok {
 			// Read aligned page
 			pageStart := page * pageSize
 			readBuf := make([]byte, pageSize)
-			n, err := s.blob.ReadAt(context.Background(), readBuf, pageStart)
+			n, err := s.blob.ReadAt(ctx, readBuf, pageStart)
 			if err != nil && !errors.Is(err, io.EOF) {
 				return nil, err
 			}
@@ -1025,7 +1027,7 @@ func (s *Segment) readBlock(offset int64, size int, kind cache.CacheKind) ([]byt
 				readBuf = readBuf[:n]
 			}
 			pageData = readBuf
-			s.cache.Set(context.Background(), key, pageData)
+			s.cache.Set(ctx, key, pageData)
 		}
 
 		// Calculate overlap
@@ -1067,13 +1069,13 @@ func (s *Segment) EvaluateFilter(ctx context.Context, filter *metadata.FilterSet
 }
 
 // readID reads the ID for the given row from the blob.
-func (s *Segment) readID(rowID uint32) (model.ID, bool) {
+func (s *Segment) readID(ctx context.Context, rowID uint32) (model.ID, bool) {
 	if s.header.PKOffset == 0 {
 		return 0, false
 	}
 	offset := int64(s.header.PKOffset) + int64(rowID)*8
 
-	buf, err := s.readBlock(offset, 8, cache.CacheKindColumnBlocks)
+	buf, err := s.readBlock(ctx, offset, 8, cache.CacheKindColumnBlocks)
 	if err != nil {
 		return 0, false
 	}
@@ -1081,14 +1083,14 @@ func (s *Segment) readID(rowID uint32) (model.ID, bool) {
 }
 
 // readVector reads the vector for the given row from the blob.
-func (s *Segment) readVector(rowID uint32, out []float32) error {
+func (s *Segment) readVector(ctx context.Context, rowID uint32, out []float32) error {
 	dim := int(s.header.Dim)
 	if len(out) != dim {
 		return errors.New("output buffer size mismatch")
 	}
 	offset := int64(s.header.VectorOffset) + int64(rowID)*int64(dim)*4
 
-	buf, err := s.readBlock(offset, dim*4, cache.CacheKindColumnBlocks)
+	buf, err := s.readBlock(ctx, offset, dim*4, cache.CacheKindColumnBlocks)
 	if err != nil {
 		return err
 	}
@@ -1101,14 +1103,14 @@ func (s *Segment) readVector(rowID uint32, out []float32) error {
 }
 
 // readPQCode reads the PQ code for the given row.
-func (s *Segment) readPQCode(rowID uint32, out []byte) error {
+func (s *Segment) readPQCode(ctx context.Context, rowID uint32, out []byte) error {
 	m := int(s.header.PQSubvectors)
 	if len(out) != m {
 		return errors.New("output buffer size mismatch")
 	}
 	offset := int64(s.header.PQCodesOffset) + int64(rowID)*int64(m)
 
-	buf, err := s.readBlock(offset, m, cache.CacheKindColumnBlocks)
+	buf, err := s.readBlock(ctx, offset, m, cache.CacheKindColumnBlocks)
 	if err != nil {
 		return err
 	}
@@ -1117,11 +1119,11 @@ func (s *Segment) readPQCode(rowID uint32, out []byte) error {
 }
 
 // readGraphNode reads the neighbors for the given row.
-func (s *Segment) readGraphNode(rowID uint32) ([]uint32, error) {
+func (s *Segment) readGraphNode(ctx context.Context, rowID uint32) ([]uint32, error) {
 	maxDegree := int(s.header.MaxDegree)
 	offset := int64(s.header.GraphOffset) + int64(rowID)*int64(maxDegree)*4
 
-	buf, err := s.readBlock(offset, maxDegree*4, cache.CacheKindGraph)
+	buf, err := s.readBlock(ctx, offset, maxDegree*4, cache.CacheKindGraph)
 	if err != nil {
 		return nil, err
 	}
@@ -1134,7 +1136,7 @@ func (s *Segment) readGraphNode(rowID uint32) ([]uint32, error) {
 	return neighbors, nil
 }
 
-func (s *Segment) loadRaBitQ() error {
+func (s *Segment) loadRaBitQ(_ context.Context) error {
 	s.rq = quantization.NewRaBitQuantizer(int(s.header.Dim))
 
 	// Calculate size: (Dim/64)*8 + 4 bytes per vector
@@ -1152,14 +1154,14 @@ func (s *Segment) loadRaBitQ() error {
 }
 
 // readRaBitQCode reads the RaBitQ code for the given row.
-func (s *Segment) readRaBitQCode(rowID uint32, out []byte) error {
+func (s *Segment) readRaBitQCode(ctx context.Context, rowID uint32, out []byte) error {
 	size := int(((s.header.Dim+63)/64)*8 + 4)
 	if len(out) != size {
 		return errors.New("output buffer size mismatch for RaBitQ")
 	}
 	offset := int64(s.header.BQCodesOffset) + int64(rowID)*int64(size)
 
-	buf, err := s.readBlock(offset, size, cache.CacheKindColumnBlocks)
+	buf, err := s.readBlock(ctx, offset, size, cache.CacheKindColumnBlocks)
 	if err != nil {
 		return err
 	}

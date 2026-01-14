@@ -1,6 +1,7 @@
 package imetadata
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -14,7 +15,8 @@ import (
 )
 
 // DocumentProvider is a function that retrieves a document by ID.
-type DocumentProvider func(id model.RowID) (metadata.Document, bool)
+// The context should be used for cancellation and timeouts during I/O.
+type DocumentProvider func(ctx context.Context, id model.RowID) (metadata.Document, bool)
 
 // UnifiedIndex combines metadata storage with inverted indexing using Bitmaps.
 // This provides efficient hybrid vector + metadata search with minimal memory overhead.
@@ -281,7 +283,7 @@ func (ui *UnifiedIndex) Get(id model.RowID) (metadata.Document, bool) {
 	}
 
 	if ui.provider != nil {
-		return ui.provider(id)
+		return ui.provider(context.Background(), id)
 	}
 
 	return nil, false
@@ -538,7 +540,8 @@ func (ui *UnifiedIndex) createFallbackCheck(filter metadata.Filter) func(model.R
 			return fs.MatchesInterned(doc)
 		}
 		if ui.provider != nil {
-			d, ok := ui.provider(id)
+			// TODO: Pass context from caller through the filter chain
+			d, ok := ui.provider(context.Background(), id)
 			if ok {
 				return filter.Matches(d)
 			}

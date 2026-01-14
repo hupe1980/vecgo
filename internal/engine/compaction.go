@@ -473,13 +473,13 @@ func openSegment(ctx context.Context, st blobstore.BlobStore, name string, c cac
 		if payloadBlob != nil {
 			opts = append(opts, flat.WithPayloadBlob(payloadBlob))
 		}
-		return flat.Open(blob, opts...)
+		return flat.Open(ctx, blob, opts...)
 	case diskann.MagicNumber:
 		opts := []diskann.Option{diskann.WithBlockCache(c)}
 		if payloadBlob != nil {
 			opts = append(opts, diskann.WithPayloadBlob(payloadBlob))
 		}
-		return diskann.Open(blob, opts...)
+		return diskann.Open(ctx, blob, opts...)
 	default:
 		_ = blob.Close() // Intentionally ignore: cleanup path
 		return nil, fmt.Errorf("unknown segment magic: 0x%x", magic)

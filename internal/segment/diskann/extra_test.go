@@ -101,7 +101,7 @@ func TestOpen_Errors(t *testing.T) {
 
 	t.Run("FileTooSmall", func(t *testing.T) {
 		blob := &memoryBlob{data: make([]byte, HeaderSize-1)}
-		_, err := Open(blob)
+		_, err := Open(context.Background(), blob)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "too small")
 	})
@@ -111,7 +111,7 @@ func TestOpen_Errors(t *testing.T) {
 		copy(badData, headerBytes)
 		badData[0] = 0 // Bad magic
 		blob := &memoryBlob{data: badData}
-		_, err := Open(blob)
+		_, err := Open(context.Background(), blob)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "magic")
 	})
@@ -122,7 +122,7 @@ func TestOpen_Errors(t *testing.T) {
 		data := make([]byte, HeaderSize+100)
 		copy(data, h.Encode())
 		blob := &memoryBlob{data: data}
-		_, err := Open(blob, WithVerifyChecksum(true))
+		_, err := Open(context.Background(), blob, WithVerifyChecksum(true))
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "checksum mismatch")
 	})
@@ -131,7 +131,7 @@ func TestOpen_Errors(t *testing.T) {
 		h := header
 		h.VectorOffset = 1000000
 		blob := &memoryBlob{data: h.Encode()}
-		_, err := Open(blob)
+		_, err := Open(context.Background(), blob)
 		assert.Error(t, err)
 	})
 }
@@ -148,7 +148,7 @@ func TestOpen_NonMappable(t *testing.T) {
 	data := h.Encode()
 
 	blob := &nonMappableBlob{data: data}
-	s, err := Open(blob)
+	s, err := Open(context.Background(), blob)
 	require.NoError(t, err)
 	defer s.Close()
 	assert.Equal(t, int64(len(data)), s.Size())
@@ -164,7 +164,7 @@ func TestSegment_Close(t *testing.T) {
 		VectorOffset: HeaderSize,
 	}
 	blob := &memoryBlob{data: h.Encode()}
-	s, err := Open(blob)
+	s, err := Open(context.Background(), blob)
 	require.NoError(t, err)
 	err = s.Close()
 	assert.NoError(t, err)
@@ -186,7 +186,7 @@ func TestNonMappable_Integration(t *testing.T) {
 	require.NoError(t, err)
 
 	blob := &nonMappableBlob{data: content}
-	s, err := Open(blob)
+	s, err := Open(context.Background(), blob)
 	require.NoError(t, err)
 	defer s.Close()
 
@@ -221,7 +221,7 @@ func TestExtras_Integration(t *testing.T) {
 	require.NoError(t, err)
 
 	blob := &memoryBlob{data: content}
-	s, err := Open(blob)
+	s, err := Open(context.Background(), blob)
 	require.NoError(t, err)
 	defer s.Close()
 
@@ -275,7 +275,7 @@ func TestPQ_Integration(t *testing.T) {
 	require.NoError(t, err)
 
 	blob := &memoryBlob{data: content}
-	s, err := Open(blob)
+	s, err := Open(context.Background(), blob)
 	require.NoError(t, err)
 	defer s.Close()
 
@@ -311,7 +311,7 @@ func TestRaBitQ_Integration(t *testing.T) {
 	require.NoError(t, err)
 
 	blob := &memoryBlob{data: content}
-	s, err := Open(blob)
+	s, err := Open(context.Background(), blob)
 	require.NoError(t, err)
 	defer s.Close()
 

@@ -38,7 +38,7 @@ func TestFlatSegment(t *testing.T) {
 	blob, err := st.Open(context.Background(), "segment.bin")
 	require.NoError(t, err)
 
-	seg, err := Open(blob)
+	seg, err := Open(context.Background(), blob)
 	require.NoError(t, err)
 	defer seg.Close()
 

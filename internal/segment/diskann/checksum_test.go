@@ -35,7 +35,7 @@ func TestChecksum(t *testing.T) {
 	// 2. Open with verification (should pass)
 	blob, err := st.Open(context.Background(), "checksum.bin")
 	require.NoError(t, err)
-	seg, err := Open(blob, WithVerifyChecksum(true))
+	seg, err := Open(context.Background(), blob, WithVerifyChecksum(true))
 	require.NoError(t, err)
 	seg.Close()
 
@@ -59,14 +59,14 @@ func TestChecksum(t *testing.T) {
 	// 4. Open with verification (should fail)
 	blob, err = st.Open(context.Background(), "checksum.bin")
 	require.NoError(t, err)
-	_, err = Open(blob, WithVerifyChecksum(true))
+	_, err = Open(context.Background(), blob, WithVerifyChecksum(true))
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "checksum mismatch")
 
 	// 5. Open without verification (should pass, but might have bad data)
 	blob, err = st.Open(context.Background(), "checksum.bin")
 	require.NoError(t, err)
-	seg2, err := Open(blob, WithVerifyChecksum(false))
+	seg2, err := Open(context.Background(), blob, WithVerifyChecksum(false))
 	require.NoError(t, err)
 	seg2.Close()
 }

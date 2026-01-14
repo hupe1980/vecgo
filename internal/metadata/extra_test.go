@@ -2,6 +2,7 @@ package imetadata
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"testing"
 
@@ -133,7 +134,7 @@ func TestUnifiedIndex_Helpers(t *testing.T) {
 	assert.Len(t, m, 1) // Only doc 1 is in documents map
 
 	// SetDocumentProvider coverage
-	ui.SetDocumentProvider(func(id model.RowID) (metadata.Document, bool) {
+	ui.SetDocumentProvider(func(_ context.Context, id model.RowID) (metadata.Document, bool) {
 		if id == 99 {
 			return metadata.Document{"magic": metadata.String("yes")}, true
 		}

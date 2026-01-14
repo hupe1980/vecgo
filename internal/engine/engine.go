@@ -1963,7 +1963,7 @@ func (e *Engine) Commit(ctx context.Context) (err error) {
 		opts = append(opts, flat.WithPayloadBlob(payloadBlob))
 	}
 
-	newSeg, err := flat.Open(blob, opts...)
+	newSeg, err := flat.Open(ctx, blob, opts...)
 	if err != nil {
 		_ = e.fs.Remove(path)
 		_ = e.fs.Remove(payloadPath)

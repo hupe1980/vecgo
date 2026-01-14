@@ -75,7 +75,7 @@ func TestCachingIntegration(t *testing.T) {
 	blob := &nonMappableBlob{data: buf}
 	c := &mockCache{data: make(map[cache.CacheKey][]byte)}
 
-	s, err := Open(blob, WithBlockCache(c))
+	s, err := Open(context.Background(), blob, WithBlockCache(c))
 	require.NoError(t, err)
 	defer s.Close()
 
@@ -122,7 +122,7 @@ func TestCachingIntegration(t *testing.T) {
 	// readGraphNode(0) -> readBlock
 	// Page 0 -> Hit.
 	c.gets = 0
-	_, err = s.readGraphNode(0)
+	_, err = s.readGraphNode(context.Background(), 0)
 	require.NoError(t, err)
 	assert.Equal(t, 1, c.gets)
 }

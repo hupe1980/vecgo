@@ -81,7 +81,7 @@ func TestFlatSegment_Extra_Coverage(t *testing.T) {
 	payloadBlob := &bytesBlob{data: payloadBuf.Bytes()}
 
 	// Open Segment
-	s, err := Open(mainBlob, WithPayloadBlob(payloadBlob), WithVerifyChecksum(true))
+	s, err := Open(context.Background(), mainBlob, WithPayloadBlob(payloadBlob), WithVerifyChecksum(true))
 	require.NoError(t, err)
 	defer s.Close()
 
@@ -178,7 +178,7 @@ func TestFlatSegment_SQ8_Coverage(t *testing.T) {
 	mainBlob := &bytesBlob{data: buf.Bytes()}
 	payloadBlob := &bytesBlob{data: payloadBuf.Bytes()}
 
-	s, err := Open(mainBlob, WithPayloadBlob(payloadBlob))
+	s, err := Open(context.Background(), mainBlob, WithPayloadBlob(payloadBlob))
 	require.NoError(t, err)
 	defer s.Close()
 
@@ -209,7 +209,7 @@ func TestFlatSegment_ErrorCases(t *testing.T) {
 
 	mainBlob := &bytesBlob{data: buf.Bytes()}
 	payloadBlob := &bytesBlob{data: payloadBuf.Bytes()}
-	s, mdErr := Open(mainBlob, WithPayloadBlob(payloadBlob), WithBlockCache(nil)) // Cover WithBlockCache
+	s, mdErr := Open(context.Background(), mainBlob, WithPayloadBlob(payloadBlob), WithBlockCache(nil)) // Cover WithBlockCache
 	require.NoError(t, mdErr)
 	defer s.Close()
 
@@ -253,7 +253,7 @@ func TestFlatSegment_Large_Coverage(t *testing.T) {
 
 	mainBlob := &bytesBlob{data: buf.Bytes()}
 	payloadBlob := &bytesBlob{data: payloadBuf.Bytes()}
-	s, err := Open(mainBlob, WithPayloadBlob(payloadBlob))
+	s, err := Open(context.Background(), mainBlob, WithPayloadBlob(payloadBlob))
 	require.NoError(t, err)
 	defer s.Close()
 

@@ -47,7 +47,7 @@ func FuzzFlatSegmentOpen(f *testing.F) {
 		blob := &bytesBlob{data: data}
 		// We expect Open to either succeed or return an error, but NOT panic.
 		// We use WithVerifyChecksum(true) to exercise the checksum logic.
-		s, err := flat.Open(blob, flat.WithVerifyChecksum(true))
+		s, err := flat.Open(context.Background(), blob, flat.WithVerifyChecksum(true))
 		if err == nil {
 			// If it opened successfully, we should be able to close it.
 			// We can also try to read from it, but that might be too much for a simple fuzz test.
