@@ -18,7 +18,7 @@ However, Vecgo's presence introduces stateful requirements.
 *   **Configuration**:
     ```go
     store := s3.NewStore(client, "my-bucket", "prefix")
-    engine.Open(..., engine.WithBlobStore(store), engine.WithBlockCacheSize(4*1024*1024*1024))
+    eng, _ := vecgo.Open(ctx, vecgo.Remote(store), vecgo.WithBlockCacheSize(4*1024*1024*1024))
     ```
 *   **Caveat**: Manifest is currently still **local**. Only immutable segments are offloaded.
     *   The PK index is held in memory and is rebuilt at startup by scanning segment PK columns.

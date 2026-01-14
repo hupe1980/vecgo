@@ -28,9 +28,11 @@ func TestEngine_Flush_DiskFull(t *testing.T) {
 
 	opts := []engine.Option{
 		engine.WithFileSystem(faultyFS),
+		engine.WithDimension(128),
+		engine.WithMetric(distance.MetricL2),
 	}
 
-	e, err := engine.Open(dir, 128, distance.MetricL2, opts...)
+	e, err := engine.OpenLocal(context.Background(), dir, opts...)
 	require.NoError(t, err)
 	defer e.Close()
 
@@ -76,9 +78,11 @@ func TestEngine_Compaction_DiskFull(t *testing.T) {
 	opts := []engine.Option{
 		engine.WithFileSystem(faultyFS),
 		engine.WithFlushConfig(engine.FlushConfig{MaxMemTableSize: 1024 * 1024 * 100}), // Large memtable
+		engine.WithDimension(128),
+		engine.WithMetric(distance.MetricL2),
 	}
 
-	e, err := engine.Open(dir, 128, distance.MetricL2, opts...)
+	e, err := engine.OpenLocal(context.Background(), dir, opts...)
 	require.NoError(t, err)
 	defer e.Close()
 
@@ -124,7 +128,10 @@ func TestEngine_Compaction_DiskFull(t *testing.T) {
 
 func TestFault_CorruptSegmentHeader(t *testing.T) {
 	dir := t.TempDir()
-	e, err := engine.Open(dir, 128, distance.MetricL2)
+	e, err := engine.OpenLocal(context.Background(), dir,
+		engine.WithDimension(128),
+		engine.WithMetric(distance.MetricL2),
+	)
 	require.NoError(t, err)
 
 	vec := make([]float32, 128)
@@ -168,7 +175,10 @@ func TestFault_CorruptSegmentHeader(t *testing.T) {
 	f.Close()
 
 	// Open should fail
-	e2, err := engine.Open(dir, 128, distance.MetricL2)
+	e2, err := engine.OpenLocal(context.Background(), dir,
+		engine.WithDimension(128),
+		engine.WithMetric(distance.MetricL2),
+	)
 	assert.Error(t, err)
 	if e2 != nil {
 		e2.Close()
@@ -177,7 +187,10 @@ func TestFault_CorruptSegmentHeader(t *testing.T) {
 
 func TestFault_ConcurrentClose(t *testing.T) {
 	dir := t.TempDir()
-	e, err := engine.Open(dir, 128, distance.MetricL2)
+	e, err := engine.OpenLocal(context.Background(), dir,
+		engine.WithDimension(128),
+		engine.WithMetric(distance.MetricL2),
+	)
 	require.NoError(t, err)
 
 	var wg sync.WaitGroup
