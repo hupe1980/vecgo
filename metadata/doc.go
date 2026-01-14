@@ -1,7 +1,7 @@
 // Package metadata provides efficient metadata storage and filtering for Vecgo.
 //
-// The metadata system uses a Roaring Bitmap-based inverted index for fast
-// filtering during vector search operations.
+// This package defines the typed metadata model (Value, Document, Filter) and
+// comparison logic. The inverted index implementation is in internal/metadata.
 //
 // # Metadata Types
 //
@@ -11,11 +11,11 @@
 //   - Int: metadata.Int(2024)
 //   - Float: metadata.Float(3.14)
 //   - Bool: metadata.Bool(true)
-//   - Slice: metadata.Slice([]string{"a", "b"})
+//   - Slice: metadata.Array([]Value{...})
 //
 // Example:
 //
-//	meta := metadata.Metadata{
+//	meta := metadata.Document{
 //	    "category": metadata.String("tech"),
 //	    "year": metadata.Int(2024),
 //	    "published": metadata.Bool(true),
@@ -23,37 +23,28 @@
 //
 // # Filter Operations
 //
-// Build complex filters with boolean operators:
+// Build filters using the Filter struct:
 //
-//   - Eq(field, value): Equality check
-//   - Neq(field, value): Inequality check
-//   - Gt(field, value): Greater than
-//   - Gte(field, value): Greater than or equal
-//   - Lt(field, value): Less than
-//   - Lte(field, value): Less than or equal
-//   - In(field, values...): Value in set
-//   - And(filters...): Logical AND
-//   - Or(filters...): Logical OR
-//   - Not(filter): Logical NOT
+//   - OpEqual: Equality check
+//   - OpNotEqual: Inequality check
+//   - OpGreaterThan, OpGreaterEqual: Numeric comparisons
+//   - OpLessThan, OpLessEqual: Numeric comparisons
+//   - OpIn: Value in set (array)
+//   - OpContains: String substring match
 //
-// Example:
+// Multiple filters can be combined with FilterSet (AND logic):
 //
-//	filter := metadata.And(
-//	    metadata.Eq("category", "tech"),
-//	    metadata.Gte("year", 2023),
-//	    metadata.Or(
-//	        metadata.Eq("status", "published"),
-//	        metadata.Eq("status", "featured"),
-//	    ),
+//	filter := metadata.NewFilterSet(
+//	    metadata.Filter{Key: "category", Operator: metadata.OpEqual, Value: metadata.String("tech")},
+//	    metadata.Filter{Key: "year", Operator: metadata.OpGreaterEqual, Value: metadata.Int(2023)},
 //	)
 //
-// # Performance
+// # Performance Features
 //
-// The Roaring Bitmap-based index provides:
-//
-//   - 10,000x faster filter compilation vs linear scan
-//   - 50% memory reduction vs duplicated metadata per index
-//   - Efficient set operations (AND/OR/NOT) on millions of IDs
+//   - String interning: unique.Handle[string] reduces memory for repeated strings
+//   - Binary encoding: Compact serialization for persistence
+//   - Cached interned keys: FilterSet caches interned keys for repeated matching
+//   - Short-circuit evaluation: AND logic stops at first non-match
 //
 // # Usage with Search
 //
@@ -61,14 +52,9 @@
 //
 //	results, err := db.Search(query).
 //	    KNN(10).
-//	    Filter(metadata.Eq("category", "tech")).
+//	    Filter(filter).
 //	    Execute(ctx)
 //
-// The filter is compiled to a bitmap and applied during the search,
-// returning only vectors that match both the vector similarity
-// criterion and the metadata filter.
-//
-// # Subpackages
-//
-//   - index: Roaring Bitmap-based inverted index implementation
+// The engine compiles filters to bitmap operations via internal/metadata
+// for efficient set-based filtering on large datasets.
 package metadata

@@ -70,3 +70,51 @@ func TestFilterInternedKeyPerformance(t *testing.T) {
 
 	assert.True(t, f.MatchesInterned(doc))
 }
+
+func TestFilterSetInternedKeyCaching(t *testing.T) {
+	// Verify that FilterSet caches interned keys after first call
+	fs := NewFilterSet(
+		Filter{Key: "category", Operator: OpEqual, Value: String("tech")},
+		Filter{Key: "year", Operator: OpGreaterEqual, Value: Int(2023)},
+	)
+
+	// Before first MatchesInterned, cache should be nil
+	assert.Nil(t, fs.internedKeys)
+
+	doc := Intern(Document{
+		"category": String("tech"),
+		"year":     Int(2024),
+	})
+
+	// First call should initialize cache
+	result := fs.MatchesInterned(doc)
+	assert.True(t, result)
+	assert.NotNil(t, fs.internedKeys)
+	assert.Len(t, fs.internedKeys, 2)
+
+	// Cache should contain correct handles
+	assert.Equal(t, unique.Make("category"), fs.internedKeys[0])
+	assert.Equal(t, unique.Make("year"), fs.internedKeys[1])
+
+	// Second call should reuse cache (no way to directly verify, but coverage)
+	doc2 := Intern(Document{
+		"category": String("science"),
+		"year":     Int(2024),
+	})
+	result2 := fs.MatchesInterned(doc2)
+	assert.False(t, result2) // category mismatch
+
+	// Cache should still be the same
+	assert.Len(t, fs.internedKeys, 2)
+}
+
+func TestEmptyFilterSetMatchesInterned(t *testing.T) {
+	// Empty FilterSet should match everything without initializing cache
+	fs := NewFilterSet()
+
+	doc := Intern(Document{"any": String("value")})
+
+	result := fs.MatchesInterned(doc)
+	assert.True(t, result)
+	assert.Nil(t, fs.internedKeys) // Cache should stay nil for empty FilterSet
+}

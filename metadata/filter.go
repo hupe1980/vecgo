@@ -59,8 +59,9 @@ func (f *Filter) MatchesValue(value Value) bool {
 }
 
 // MatchesInterned checks if the provided interned metadata matches this filter.
-func (f *Filter) MatchesInterned(doc InternedDocument) bool {
-	value, exists := doc[unique.Make(f.Key)]
+// keyHandle is the pre-interned key for efficient lookup.
+func (f *Filter) matchesInternedWithHandle(doc InternedDocument, keyHandle unique.Handle[string]) bool {
+	value, exists := doc[keyHandle]
 	if !exists {
 		return false
 	}
@@ -87,6 +88,13 @@ func (f *Filter) MatchesInterned(doc InternedDocument) bool {
 	}
 }
 
+// MatchesInterned checks if the provided interned metadata matches this filter.
+//
+// Deprecated: Use FilterSet.MatchesInterned for better performance with cached keys.
+func (f *Filter) MatchesInterned(doc InternedDocument) bool {
+	return f.matchesInternedWithHandle(doc, unique.Make(f.Key))
+}
+
 // Matches checks if the provided metadata matches all filters in the set.
 func (fs *FilterSet) Matches(doc Document) bool {
 	for _, filter := range fs.Filters {
@@ -98,9 +106,18 @@ func (fs *FilterSet) Matches(doc Document) bool {
 }
 
 // MatchesInterned checks if the provided interned metadata matches all filters in the set.
+// Uses cached interned keys for efficient repeated matching.
 func (fs *FilterSet) MatchesInterned(doc InternedDocument) bool {
-	for _, filter := range fs.Filters {
-		if !filter.MatchesInterned(doc) {
+	// Lazily initialize interned keys on first call
+	if fs.internedKeys == nil && len(fs.Filters) > 0 {
+		fs.internedKeys = make([]unique.Handle[string], len(fs.Filters))
+		for i := range fs.Filters {
+			fs.internedKeys[i] = unique.Make(fs.Filters[i].Key)
+		}
+	}
+
+	for i := range fs.Filters {
+		if !fs.Filters[i].matchesInternedWithHandle(doc, fs.internedKeys[i]) {
 			return false
 		}
 	}

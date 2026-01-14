@@ -437,6 +437,9 @@ type Filter struct {
 // FilterSet represents a set of filters that must all match (AND logic).
 type FilterSet struct {
 	Filters []Filter
+	// internedKeys caches unique.Handle for each filter key.
+	// Lazily initialized on first MatchesInterned call.
+	internedKeys []unique.Handle[string]
 }
 
 // NewFilterSet creates a new filter set.
