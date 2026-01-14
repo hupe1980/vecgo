@@ -81,7 +81,7 @@ func TestCachingIntegration(t *testing.T) {
 
 	// 1. Read Vector suitable for cache (Lazy load)
 	// access row 0
-	vec, err := s.Get(0)
+	vec, err := s.Get(context.Background(), 0)
 	require.NoError(t, err)
 	assert.Equal(t, float32(1.0), vec[0])
 
@@ -109,7 +109,7 @@ func TestCachingIntegration(t *testing.T) {
 	// 2. Read Again
 	c.sets = 0
 	c.gets = 0
-	vec, err = s.Get(0)
+	vec, err = s.Get(context.Background(), 0)
 	require.NoError(t, err)
 	assert.Equal(t, float32(1.0), vec[0])
 

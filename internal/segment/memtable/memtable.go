@@ -163,12 +163,12 @@ func (m *MemTable) Delete(rowID model.RowID) {
 
 // Read Ops
 
-func (m *MemTable) GetID(rowID uint32) (model.ID, bool) {
+func (m *MemTable) GetID(ctx context.Context, rowID uint32) (model.ID, bool) {
 	shardIdx := int(rowID >> 28)
 	localRowID := rowID & rowIdMask
 
 	if shardIdx < len(m.shards) {
-		return m.shards[shardIdx].GetID(localRowID)
+		return m.shards[shardIdx].GetID(ctx, localRowID)
 	}
 	return 0, false
 }
@@ -355,7 +355,7 @@ func (m *MemTable) FetchIDs(ctx context.Context, rows []uint32, dst []model.ID) 
 			return fmt.Errorf("invalid rowID")
 		}
 		localRowID := r & uint32(rowIdMask)
-		if id, ok := m.shards[sIdx].GetID(localRowID); ok {
+		if id, ok := m.shards[sIdx].GetID(ctx, localRowID); ok {
 			dst[i] = id
 		} else {
 			dst[i] = 0 // Invalid/deleted ID

@@ -59,7 +59,7 @@ type Segment struct {
 }
 
 // GetID returns the external ID for a given internal row ID.
-func (s *Segment) GetID(rowID uint32) (model.ID, bool) {
+func (s *Segment) GetID(_ context.Context, rowID uint32) (model.ID, bool) {
 	if int(rowID) >= len(s.ids) {
 		return 0, false
 	}

@@ -79,7 +79,7 @@ type Segment interface {
 	Search(ctx context.Context, q []float32, k int, filter Filter, opts model.SearchOptions, s *searcher.Searcher) error
 
 	// GetID returns the external ID for a given internal row ID.
-	GetID(rowID uint32) (model.ID, bool)
+	GetID(ctx context.Context, rowID uint32) (model.ID, bool)
 
 	// Rerank computes exact distances for a candidate set.
 	// Implementations MUST optimize for zero-copy access (e.g. unsafe.Pointer to mmap).

@@ -109,7 +109,7 @@ func TestWriter(t *testing.T) {
 	assert.Equal(t, uint32(5), s.header.RowCount)
 
 	// Test Get
-	vec, err := s.Get(0)
+	vec, err := s.Get(context.Background(), 0)
 	require.NoError(t, err)
 	assert.Equal(t, vectors[0], vec)
 
@@ -330,8 +330,8 @@ func TestFilteredSearch(t *testing.T) {
 	c1 := sc.Heap.Pop()
 	c2 := sc.Heap.Pop()
 
-	id1, _ := s.GetID(c1.RowID)
-	id2, _ := s.GetID(c2.RowID)
+	id1, _ := s.GetID(context.Background(), c1.RowID)
+	id2, _ := s.GetID(context.Background(), c2.RowID)
 	ids := []uint64{uint64(id1), uint64(id2)}
 	assert.Contains(t, ids, uint64(0), "ID=0 (type=a) should be in results")
 	assert.Contains(t, ids, uint64(2), "ID=2 (type=a) should be in results")

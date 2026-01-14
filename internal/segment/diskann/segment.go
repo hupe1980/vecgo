@@ -53,15 +53,14 @@ type Segment struct {
 }
 
 // GetID returns the external ID for a given internal row ID.
-func (s *Segment) GetID(rowID uint32) (model.ID, bool) {
+func (s *Segment) GetID(ctx context.Context, rowID uint32) (model.ID, bool) {
 	if int(rowID) >= int(s.header.RowCount) {
 		return 0, false
 	}
 	if s.ids != nil {
 		return s.ids[rowID], true
 	}
-	// TODO: Add context to Segment.GetID interface method
-	return s.readID(context.TODO(), rowID)
+	return s.readID(ctx, rowID)
 }
 
 // Option configures a Segment.
@@ -459,7 +458,7 @@ func (s *Segment) Metric() distance.Metric {
 }
 
 // Get returns the vector for the given ID.
-func (s *Segment) Get(id uint32) ([]float32, error) {
+func (s *Segment) Get(ctx context.Context, id uint32) ([]float32, error) {
 	if id >= s.header.RowCount {
 		return nil, errors.New("id out of bounds")
 	}
@@ -471,8 +470,7 @@ func (s *Segment) Get(id uint32) ([]float32, error) {
 	}
 
 	vec := make([]float32, dim)
-	// TODO: Add context to Segment.Get interface method
-	if err := s.readVector(context.TODO(), id, vec); err != nil {
+	if err := s.readVector(ctx, id, vec); err != nil {
 		return nil, err
 	}
 	return vec, nil
@@ -577,7 +575,7 @@ func (s *Segment) searchInternal(ctx context.Context, query []float32, k int, l 
 		}
 	} else {
 		distFn = func(id uint32) (float32, error) {
-			vec, err := s.Get(id)
+			vec, err := s.Get(ctx, id)
 			if err != nil {
 				return 0, err
 			}
@@ -814,7 +812,7 @@ func (s *Segment) Fetch(ctx context.Context, rows []uint32, cols []string) (segm
 		}
 
 		// Fetch ID
-		if id, ok := s.GetID(rowID); ok {
+		if id, ok := s.GetID(ctx, rowID); ok {
 			batch.IDs[i] = id
 		} else {
 			return nil, fmt.Errorf("failed to get ID for row %d", rowID)
@@ -822,7 +820,7 @@ func (s *Segment) Fetch(ctx context.Context, rows []uint32, cols []string) (segm
 
 		// Fetch Vector
 		if fetchVectors {
-			vec, err := s.Get(rowID)
+			vec, err := s.Get(ctx, rowID)
 			if err != nil {
 				return nil, err
 			}
@@ -877,7 +875,7 @@ func (s *Segment) FetchIDs(ctx context.Context, rows []uint32, dst []model.ID) e
 		if rowID >= s.header.RowCount {
 			return fmt.Errorf("rowID %d out of bounds", rowID)
 		}
-		if id, ok := s.GetID(rowID); ok {
+		if id, ok := s.GetID(ctx, rowID); ok {
 			dst[i] = id
 		} else {
 			return fmt.Errorf("failed to get ID for row %d", rowID)
@@ -899,11 +897,11 @@ func (s *Segment) Iterate(ctx context.Context, fn func(rowID uint32, id model.ID
 			}
 		}
 
-		id, ok := s.GetID(uint32(i))
+		id, ok := s.GetID(ctx, uint32(i))
 		if !ok {
 			return fmt.Errorf("failed to get ID for row %d", i)
 		}
-		vec, err := s.Get(uint32(i))
+		vec, err := s.Get(ctx, uint32(i))
 		if err != nil {
 			return err
 		}
@@ -950,7 +948,7 @@ func (s *Segment) Rerank(ctx context.Context, q []float32, cands []model.Candida
 		}
 
 		rowID := uint32(c.Loc.RowID)
-		vec, err := s.Get(rowID)
+		vec, err := s.Get(ctx, rowID)
 		if err != nil {
 			continue
 		}

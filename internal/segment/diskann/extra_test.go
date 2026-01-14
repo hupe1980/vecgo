@@ -198,7 +198,7 @@ func TestNonMappable_Integration(t *testing.T) {
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, sc.Heap.Len(), 1)
 
-	vec, err := s.Get(0)
+	vec, err := s.Get(context.Background(), 0)
 	require.NoError(t, err)
 	assert.Equal(t, float32(1.0), vec[0])
 }

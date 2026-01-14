@@ -241,7 +241,7 @@ func (s *shard) commitInsert(rowID model.RowID, id model.ID, md metadata.Documen
 
 // GetID returns the external ID for a given internal row ID.
 // Safe for concurrent use without locking.
-func (s *shard) GetID(rowID uint32) (model.ID, bool) {
+func (s *shard) GetID(_ context.Context, rowID uint32) (model.ID, bool) {
 	return s.ids.Get(rowID)
 }
 
