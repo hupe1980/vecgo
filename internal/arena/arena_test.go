@@ -1,7 +1,6 @@
 package arena
 
 import (
-	"context"
 	"fmt"
 	"runtime"
 	"sync"
@@ -479,39 +478,6 @@ func BenchmarkArena_ConcurrentAllocs(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			_, _ = a.AllocUint32Slice(16)
-		}
-	})
-}
-
-func BenchmarkArena_Alloc_vs_AllocContext(b *testing.B) {
-	b.Run("Alloc", func(b *testing.B) {
-		a, err := New(DefaultChunkSize)
-		if err != nil {
-			b.Fatalf("New failed: %v", err)
-		}
-		defer a.Free()
-
-		b.ResetTimer()
-		b.ReportAllocs()
-
-		for b.Loop() {
-			_, _, _ = a.Alloc(64)
-		}
-	})
-
-	b.Run("AllocContext", func(b *testing.B) {
-		a, err := New(DefaultChunkSize)
-		if err != nil {
-			b.Fatalf("New failed: %v", err)
-		}
-		defer a.Free()
-
-		ctx := context.Background()
-		b.ResetTimer()
-		b.ReportAllocs()
-
-		for b.Loop() {
-			_, _, _ = a.AllocContext(ctx, 64)
 		}
 	})
 }

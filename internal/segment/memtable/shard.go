@@ -499,7 +499,8 @@ func (s *shard) FetchIDs(ctx context.Context, rows []uint32, dst []model.ID) err
 }
 
 // Iterate iterates over all valid (non-deleted) vectors in the memtable.
-func (s *shard) Iterate(fn func(rowID uint32, id model.ID, vec []float32, md metadata.Document, payload []byte) error) error {
+// The context is used for cancellation during long iterations.
+func (s *shard) Iterate(ctx context.Context, fn func(rowID uint32, id model.ID, vec []float32, md metadata.Document, payload []byte) error) error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -511,6 +512,15 @@ func (s *shard) Iterate(fn func(rowID uint32, id model.ID, vec []float32, md met
 
 	// Iterate 0..Count
 	for i := range total {
+		// Periodic context check (every 256 rows)
+		if i&255 == 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+		}
+
 		rowID := i
 
 		// Check if deleted in HNSW

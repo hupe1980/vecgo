@@ -94,7 +94,8 @@ type Segment interface {
 	FetchIDs(ctx context.Context, rows []uint32, dst []model.ID) error
 
 	// Iterate iterates over all vectors in the segment.
-	Iterate(fn func(rowID uint32, id model.ID, vec []float32, md metadata.Document, payload []byte) error) error
+	// The context is used for cancellation during long iterations.
+	Iterate(ctx context.Context, fn func(rowID uint32, id model.ID, vec []float32, md metadata.Document, payload []byte) error) error
 
 	// EvaluateFilter returns a bitmap of rows matching the filter.
 	// Returns (nil, nil) if the filter matches all rows (empty filter).

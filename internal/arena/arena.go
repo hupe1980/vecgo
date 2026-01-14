@@ -275,52 +275,6 @@ func (a *Arena) Alloc(size int) (uint64, []byte, error) {
 	}
 }
 
-// AllocContext allocates memory with a context for backpressure control.
-// Use this for paths where timeout/cancellation is needed (e.g., with memory acquirer).
-func (a *Arena) AllocContext(ctx context.Context, size int) (uint64, []byte, error) {
-	if size <= 0 {
-		return 0, nil, nil
-	}
-
-	mask := a.alignment - 1
-	alignedSize := (size + mask) & ^mask
-
-	for {
-		curr := a.current.Load()
-		if curr == nil {
-			return 0, nil, errors.New("arena is closed")
-		}
-
-		offset, data, ok := a.tryAllocInChunk(curr, size, alignedSize)
-		if ok {
-			return offset, data, nil
-		}
-
-		// Check context before expensive operations
-		select {
-		case <-ctx.Done():
-			return 0, nil, ctx.Err()
-		default:
-		}
-
-		if a.current.Load() != curr {
-			continue
-		}
-
-		a.mu.Lock()
-		if a.current.Load() != curr {
-			a.mu.Unlock()
-			continue
-		}
-
-		if err := a.allocateChunkLocked(ctx); err != nil {
-			a.mu.Unlock()
-			return 0, nil, err
-		}
-		a.mu.Unlock()
-	}
-}
-
 // tryAllocInChunk is the fast path for allocation.
 func (a *Arena) tryAllocInChunk(curr *chunk, size, alignedSize int) (uint64, []byte, bool) {
 	oldOffset := curr.offset.Load()

@@ -391,14 +391,21 @@ func (m *MemTable) EvaluateFilter(ctx context.Context, filter *metadata.FilterSe
 	return result, nil
 }
 
-func (m *MemTable) Iterate(fn func(rowID uint32, id model.ID, vec []float32, md metadata.Document, payload []byte) error) error {
+func (m *MemTable) Iterate(ctx context.Context, fn func(rowID uint32, id model.ID, vec []float32, md metadata.Document, payload []byte) error) error {
 	// Iterate all shards
 	for sIdx, s := range m.shards {
+		// Check context between shards
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
 		// We need to yield Global RowIDs
 		// shard.Iterate yields Local RowIds.
 		base := uint32(sIdx) << 28
 
-		err := s.Iterate(func(rid uint32, id model.ID, v []float32, md metadata.Document, p []byte) error {
+		err := s.Iterate(ctx, func(rid uint32, id model.ID, v []float32, md metadata.Document, p []byte) error {
 			globalRID := base | rid
 			return fn(globalRID, id, v, md, p)
 		})

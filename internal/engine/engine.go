@@ -1893,7 +1893,7 @@ func (e *Engine) Commit(ctx context.Context) (err error) {
 	var count uint32
 
 	// Write data
-	err = active.Iterate(func(rowID uint32, id model.ID, vec []float32, md metadata.Document, payload []byte) error {
+	err = active.Iterate(ctx, func(rowID uint32, id model.ID, vec []float32, md metadata.Document, payload []byte) error {
 		if err := w.Add(id, vec, md, payload); err != nil {
 			return err
 		}

@@ -226,7 +226,7 @@ func TestExtras_Integration(t *testing.T) {
 	defer s.Close()
 
 	count := 0
-	err = s.Iterate(func(rowID uint32, id model.ID, vec []float32, md metadata.Document, p []byte) error {
+	err = s.Iterate(context.Background(), func(rowID uint32, id model.ID, vec []float32, md metadata.Document, p []byte) error {
 		count++
 		if rowID == 0 {
 			assert.Equal(t, float32(1.0), vec[0])

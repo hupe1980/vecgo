@@ -109,7 +109,7 @@ func TestFlatSegment_Extra_Coverage(t *testing.T) {
 
 	// 4. Iterate
 	iterCount := 0
-	err = s.Iterate(func(rowID uint32, id model.ID, vec []float32, md metadata.Document, payload []byte) error {
+	err = s.Iterate(context.Background(), func(rowID uint32, id model.ID, vec []float32, md metadata.Document, payload []byte) error {
 		iterCount++
 		assert.Equal(t, uint32(0), rowID)
 		assert.Equal(t, id1, id)

@@ -842,9 +842,19 @@ func (s *Segment) FetchIDs(ctx context.Context, rows []uint32, dst []model.ID) e
 }
 
 // Iterate iterates over all vectors in the segment.
-func (s *Segment) Iterate(fn func(rowID uint32, id model.ID, vec []float32, md metadata.Document, payload []byte) error) error {
+// The context is used for cancellation during long iterations.
+func (s *Segment) Iterate(ctx context.Context, fn func(rowID uint32, id model.ID, vec []float32, md metadata.Document, payload []byte) error) error {
 	dim := int(s.header.Dim)
 	for i := 0; i < int(s.header.RowCount); i++ {
+		// Periodic context check (every 256 rows)
+		if i&255 == 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+		}
+
 		vec := s.vectors[i*dim : (i+1)*dim]
 		id := s.ids[i]
 
@@ -868,7 +878,7 @@ func (s *Segment) Iterate(fn func(rowID uint32, id model.ID, vec []float32, md m
 			dataOffset := 4 + uint64(s.payloadCount+1)*8 + start
 
 			payload = make([]byte, size)
-			if _, err := s.payloadBlob.ReadAt(context.Background(), payload, int64(dataOffset)); err != nil {
+			if _, err := s.payloadBlob.ReadAt(ctx, payload, int64(dataOffset)); err != nil {
 				return err
 			}
 		}

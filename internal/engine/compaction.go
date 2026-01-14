@@ -197,7 +197,7 @@ func (e *Engine) CompactWithContext(ctx context.Context, segmentIDs []model.Segm
 		segID := segmentIDs[i]
 		ts := tombstones[segID]
 
-		err := seg.Iterate(func(rowID uint32, id model.ID, vec []float32, md metadata.Document, payload []byte) error {
+		err := seg.Iterate(ctx, func(rowID uint32, id model.ID, vec []float32, md metadata.Document, payload []byte) error {
 			// Check tombstone (snapshot)
 			if ts != nil && ts.Contains(rowID) {
 				return nil // Skip deleted

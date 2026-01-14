@@ -73,7 +73,7 @@ func TestMemTable_BasicCRUD(t *testing.T) {
 
 	// Iterate
 	count := 0
-	err = mt.Iterate(func(rowID uint32, id model.ID, vec []float32, md metadata.Document, payload []byte) error {
+	err = mt.Iterate(context.Background(), func(rowID uint32, id model.ID, vec []float32, md metadata.Document, payload []byte) error {
 		count++
 		if id == id1User {
 			assert.Equal(t, vec1, vec)
@@ -247,6 +247,6 @@ func TestMemTable_Errors(t *testing.T) {
 	err = mt.FetchIDs(context.Background(), []uint32{0}, nil)
 	assert.Error(t, err)
 
-	err = mt.Iterate(nil)
+	err = mt.Iterate(context.Background(), nil)
 	assert.Error(t, err)
 }

@@ -233,7 +233,7 @@ func TestMetadataPersistence(t *testing.T) {
 
 	// Iterate
 	count := 0
-	err = s.Iterate(func(rowID uint32, id model.ID, vec []float32, md metadata.Document, payload []byte) error {
+	err = s.Iterate(context.Background(), func(rowID uint32, id model.ID, vec []float32, md metadata.Document, payload []byte) error {
 		count++
 		if rowID == 0 {
 			require.NotNil(t, md)
