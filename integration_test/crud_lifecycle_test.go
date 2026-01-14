@@ -27,7 +27,7 @@ func TestFullLifecycle(t *testing.T) {
 	}
 
 	// 1. Open
-	e, err := vecgo.Open(vecgo.Local(dir), opts...)
+	e, err := vecgo.Open(context.Background(), vecgo.Local(dir), opts...)
 	require.NoError(t, err)
 
 	// Context for operations
@@ -148,7 +148,7 @@ func TestFullLifecycle(t *testing.T) {
 	err = e.Close()
 	require.NoError(t, err)
 
-	e, err = vecgo.Open(vecgo.Local(dir), opts...)
+	e, err = vecgo.Open(context.Background(), vecgo.Local(dir), opts...)
 	require.NoError(t, err)
 	defer e.Close()
 
@@ -163,7 +163,7 @@ func TestFullLifecycle(t *testing.T) {
 
 func TestBatchCRUD(t *testing.T) {
 	dir := t.TempDir()
-	e, err := vecgo.Open(vecgo.Local(dir), vecgo.Create(4, vecgo.MetricL2))
+	e, err := vecgo.Open(context.Background(), vecgo.Local(dir), vecgo.Create(4, vecgo.MetricL2))
 	require.NoError(t, err)
 	defer e.Close()
 

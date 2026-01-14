@@ -113,9 +113,6 @@ type Engine struct {
 	logger *slog.Logger
 
 	tombstoneFilterPool sync.Pool
-
-	ctx    context.Context
-	cancel context.CancelFunc
 }
 
 // FlushConfig holds configuration for automatic flushing.
@@ -356,17 +353,14 @@ func WithMetric(m distance.Metric) Option {
 func Open(dir string, dim int, metric distance.Metric, opts ...Option) (*Engine, error) {
 	// Combine explicit dim/metric with opts
 	allOpts := append([]Option{WithDimension(dim), WithMetric(metric)}, opts...)
-	return OpenLocal(dir, allOpts...)
+	return OpenLocal(context.Background(), dir, allOpts...)
 }
 
 // OpenLocal opens or creates an Engine using local storage.
 // If dim/metric are not provided via options, they are loaded from an existing manifest.
-func OpenLocal(dir string, opts ...Option) (*Engine, error) {
-	ctx, cancel := context.WithCancel(context.Background())
-
+// The ctx parameter is used for initialization I/O (loading manifest, segments, etc.).
+func OpenLocal(ctx context.Context, dir string, opts ...Option) (*Engine, error) {
 	e := &Engine{
-		ctx:          ctx,
-		cancel:       cancel,
 		dir:          dir,
 		policy:       &BoundedSizeTieredPolicy{Threshold: 4},
 		compactionCh: make(chan struct{}, 1),
@@ -384,18 +378,15 @@ func OpenLocal(dir string, opts ...Option) (*Engine, error) {
 		e.store = blobstore.NewLocalStore(e.dir)
 	}
 
-	return e.init()
+	return e.init(ctx)
 }
 
 // OpenRemote opens an Engine backed by a remote store (e.g., S3, GCS).
 // The store is the source of truth. A local cache directory is auto-created if not specified.
 // Dim/metric are loaded from the remote manifest (use WithDimension/WithMetric for new indexes).
-func OpenRemote(store blobstore.BlobStore, opts ...Option) (*Engine, error) {
-	ctx, cancel := context.WithCancel(context.Background())
-
+// The ctx parameter is used for initialization I/O (loading manifest, segments, etc.).
+func OpenRemote(ctx context.Context, store blobstore.BlobStore, opts ...Option) (*Engine, error) {
 	e := &Engine{
-		ctx:           ctx,
-		cancel:        cancel,
 		policy:        &BoundedSizeTieredPolicy{Threshold: 4},
 		compactionCh:  make(chan struct{}, 1),
 		flushCh:       make(chan struct{}, 1),
@@ -414,17 +405,17 @@ func OpenRemote(store blobstore.BlobStore, opts ...Option) (*Engine, error) {
 	if e.dir == "" {
 		tmpDir, err := os.MkdirTemp("", "vecgo-cache-*")
 		if err != nil {
-			cancel()
 			return nil, fmt.Errorf("failed to create cache directory: %w", err)
 		}
 		e.dir = tmpDir
 	}
 
-	return e.init()
+	return e.init(ctx)
 }
 
 // init completes engine initialization (shared by OpenLocal and OpenRemote).
-func (e *Engine) init() (*Engine, error) {
+// The ctx parameter is used for initialization I/O only; it is not stored.
+func (e *Engine) init(ctx context.Context) (*Engine, error) {
 	if e.isCloud {
 		// Cloud Mode Defaults
 		if e.blockCacheBlockSize == 0 {
@@ -503,13 +494,13 @@ func (e *Engine) init() (*Engine, error) {
 	var err error
 
 	if e.targetVersion > 0 {
-		m, err = mStore.LoadVersion(e.ctx, e.targetVersion)
+		m, err = mStore.LoadVersion(ctx, e.targetVersion)
 		if err != nil {
 			return nil, fmt.Errorf("failed to load version %d: %w", e.targetVersion, err)
 		}
 	} else if !e.targetTimestamp.IsZero() {
 		// Time Travel by Timestamp
-		versions, lErr := mStore.ListVersions(e.ctx)
+		versions, lErr := mStore.ListVersions(ctx)
 		if lErr != nil {
 			return nil, fmt.Errorf("failed to list versions for timestamp lookup: %w", lErr)
 		}
@@ -538,7 +529,7 @@ func (e *Engine) init() (*Engine, error) {
 			e.logger.Info("TimeTravel selected version", "id", m.ID, "created", m.CreatedAt.Format(time.RFC3339Nano), "segments", len(m.Segments))
 		}
 	} else {
-		m, err = mStore.Load(e.ctx)
+		m, err = mStore.Load(ctx)
 	}
 
 	if err != nil {
@@ -648,13 +639,13 @@ func (e *Engine) init() (*Engine, error) {
 		// Optional payload file.
 		payloadPath := fmt.Sprintf("segment_%d.payload", segMeta.ID)
 		var payloadBlob blobstore.Blob
-		if b, err := e.store.Open(context.Background(), payloadPath); err == nil {
+		if b, err := e.store.Open(ctx, payloadPath); err == nil {
 			payloadBlob = b
 		} else if !errors.Is(err, blobstore.ErrNotFound) {
 			return nil, fmt.Errorf("failed to open payload blob for segment %d: %w", segMeta.ID, err)
 		}
 
-		seg, err := openSegment(context.Background(), e.store, segMeta.Path, e.blockCache, payloadBlob)
+		seg, err := openSegment(ctx, e.store, segMeta.Path, e.blockCache, payloadBlob)
 		if err != nil {
 			if errors.Is(err, flat.ErrInvalidVersion) || errors.Is(err, flat.ErrInvalidMagic) {
 				return nil, fmt.Errorf("%w: segment %d: %w", ErrIncompatibleFormat, segMeta.ID, err)
@@ -696,7 +687,7 @@ func (e *Engine) init() (*Engine, error) {
 
 				// Fetch IDs
 				ids := make([]model.ID, len(rows))
-				if err := seg.FetchIDs(context.Background(), rows, ids); err != nil {
+				if err := seg.FetchIDs(ctx, rows, ids); err != nil {
 					// Fallback or error? If FetchIDs is not implemented by legacy segments, this fails.
 					// But we are assuming compatible segments or new segments.
 					return nil, fmt.Errorf("failed to fetch ids from segment %d: %w", segMeta.ID, err)
@@ -724,7 +715,7 @@ func (e *Engine) init() (*Engine, error) {
 		m.NextSegmentID++
 
 		var err error
-		mt, err = memtable.New(context.Background(), activeID, e.dim, e.metric, e.resourceController)
+		mt, err = memtable.New(ctx, activeID, e.dim, e.metric, e.resourceController)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create memtable: %w", err)
 		}
@@ -749,7 +740,7 @@ func (e *Engine) init() (*Engine, error) {
 		// Let's create a dummy one for now to satisfy the non-nil invariance,
 		// but using a safe ID (e.g. m.NextSegmentID but DO NOT increment manifest).
 		var err error
-		mt, err = memtable.New(context.Background(), m.NextSegmentID, e.dim, e.metric, e.resourceController)
+		mt, err = memtable.New(ctx, m.NextSegmentID, e.dim, e.metric, e.resourceController)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create dummy memtable: %w", err)
 		}
@@ -1959,7 +1950,7 @@ func (e *Engine) Commit(ctx context.Context) (err error) {
 	defer e.mu.Unlock()
 
 	// Open new segment for reading
-	blob, err := e.store.Open(context.Background(), filename)
+	blob, err := e.store.Open(ctx, filename)
 	if err != nil {
 		return err
 	}
@@ -1968,7 +1959,7 @@ func (e *Engine) Commit(ctx context.Context) (err error) {
 		flat.WithBlockCache(e.blockCache),
 		flat.WithMetadataIndex(true), // Enable inverted index for fast filtered search
 	}
-	if payloadBlob, err := e.store.Open(context.Background(), payloadFilename); err == nil {
+	if payloadBlob, err := e.store.Open(ctx, payloadFilename); err == nil {
 		opts = append(opts, flat.WithPayloadBlob(payloadBlob))
 	}
 
@@ -2283,8 +2274,7 @@ func (e *Engine) Close() error {
 		return ErrClosed
 	}
 
-	e.cancel() // Cancel background contexts
-	close(e.closeCh)
+	close(e.closeCh) // Signal background goroutines to stop
 
 	// Wait for background tasks
 	e.wg.Wait()
@@ -2379,7 +2369,7 @@ func (e *Engine) persistPKIndex() error {
 	// If we update MaxLSN, recovery will skip WAL replay for the active MemTable, losing data.
 
 	store := manifest.NewStore(e.manifestStore)
-	if err := store.Save(e.ctx, &newManifest); err != nil {
+	if err := store.Save(context.Background(), &newManifest); err != nil {
 		return err
 	}
 
@@ -2425,7 +2415,7 @@ func (e *Engine) runFlushLoop() {
 		case <-e.closeCh:
 			return
 		case <-e.flushCh:
-			if err := e.Commit(e.ctx); err != nil {
+			if err := e.Commit(context.Background()); err != nil {
 				if e.logger != nil {
 					e.logger.Error("Background flush failed", "error", err)
 				}
@@ -2442,7 +2432,7 @@ func (e *Engine) runCompactionLoop() {
 			return
 		case <-e.compactionCh:
 			e.metrics.OnQueueDepth("compaction_queue", len(e.compactionCh))
-			e.checkCompaction(e.ctx)
+			e.checkCompaction(context.Background())
 		}
 	}
 }

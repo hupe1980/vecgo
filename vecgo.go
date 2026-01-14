@@ -22,14 +22,14 @@ type DB struct {
 // Backend represents a storage backend for the vector database.
 // Use Local() for filesystem storage or Remote() for cloud storage.
 type Backend interface {
-	open(opts ...Option) (*engine.Engine, error)
+	open(ctx context.Context, opts ...Option) (*engine.Engine, error)
 }
 
 // localBackend is a local filesystem backend.
 type localBackend string
 
-func (b localBackend) open(opts ...Option) (*engine.Engine, error) {
-	return engine.OpenLocal(string(b), opts...)
+func (b localBackend) open(ctx context.Context, opts ...Option) (*engine.Engine, error) {
+	return engine.OpenLocal(ctx, string(b), opts...)
 }
 
 // remoteBackend is a remote BlobStore backend (S3, GCS, Azure, etc.).
@@ -37,15 +37,16 @@ type remoteBackend struct {
 	store blobstore.BlobStore
 }
 
-func (b remoteBackend) open(opts ...Option) (*engine.Engine, error) {
-	return engine.OpenRemote(b.store, opts...)
+func (b remoteBackend) open(ctx context.Context, opts ...Option) (*engine.Engine, error) {
+	return engine.OpenRemote(ctx, b.store, opts...)
 }
 
 // Local creates a local filesystem backend.
 //
 // Example:
 //
-//	db, _ := vecgo.Open(vecgo.Local("./data"), vecgo.Create(128, vecgo.MetricL2))
+//	ctx := context.Background()
+//	db, _ := vecgo.Open(ctx, vecgo.Local("./data"), vecgo.Create(128, vecgo.MetricL2))
 func Local(path string) Backend {
 	return localBackend(path)
 }
@@ -55,26 +56,28 @@ func Local(path string) Backend {
 // Example:
 //
 //	s3Store, _ := s3.New(ctx, "my-bucket")
-//	db, _ := vecgo.Open(vecgo.Remote(s3Store), vecgo.WithCacheDir("/fast/nvme"))
+//	db, _ := vecgo.Open(ctx, vecgo.Remote(s3Store), vecgo.WithCacheDir("/fast/nvme"))
 func Remote(store blobstore.BlobStore) Backend {
 	return remoteBackend{store: store}
 }
 
 // Open opens or creates a vector database with the given backend.
+// The context is used for initialization I/O and can be used for timeouts.
 //
 // For new indexes, use the Create option:
 //
-//	db, _ := vecgo.Open(vecgo.Local("./data"), vecgo.Create(128, vecgo.MetricL2))
+//	ctx := context.Background()
+//	db, _ := vecgo.Open(ctx, vecgo.Local("./data"), vecgo.Create(128, vecgo.MetricL2))
 //
 // For existing indexes, dimension and metric are loaded from the manifest:
 //
-//	db, _ := vecgo.Open(vecgo.Local("./data"))
+//	db, _ := vecgo.Open(ctx, vecgo.Local("./data"))
 //
 // For cloud storage:
 //
-//	db, _ := vecgo.Open(vecgo.Remote(s3Store))
-func Open(backend Backend, opts ...Option) (*DB, error) {
-	e, err := backend.open(opts...)
+//	db, _ := vecgo.Open(ctx, vecgo.Remote(s3Store))
+func Open(ctx context.Context, backend Backend, opts ...Option) (*DB, error) {
+	e, err := backend.open(ctx, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -190,7 +193,7 @@ func WithCacheDir(dir string) Option {
 //
 // Example:
 //
-//	db, _ := vecgo.Open(vecgo.Remote(s3Store), vecgo.ReadOnly())
+//	db, _ := vecgo.Open(ctx, vecgo.Remote(s3Store), vecgo.ReadOnly())
 func ReadOnly() Option {
 	return engine.ReadOnly()
 }

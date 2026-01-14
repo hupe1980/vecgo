@@ -16,7 +16,7 @@ func BenchmarkInsertMicro(b *testing.B) {
 	b.Run("Deferred", func(b *testing.B) {
 		dir := b.TempDir()
 		// Use very large memtable (16GB) to prevent any flush
-		e, err := vecgo.Open(vecgo.Local(dir), vecgo.Create(dim, vecgo.MetricL2),
+		e, err := vecgo.Open(context.Background(), vecgo.Local(dir), vecgo.Create(dim, vecgo.MetricL2),
 			vecgo.WithCompactionThreshold(1<<40),
 			vecgo.WithFlushConfig(vecgo.FlushConfig{MaxMemTableSize: 1 << 34}), // 16GB memtable
 			vecgo.WithMemoryLimit(0),

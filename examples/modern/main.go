@@ -29,8 +29,9 @@ func main() {
 	}
 
 	// 3. Open Engine with Modern Options
-	// Unified API: Open(backend, opts...)
-	eng, err := vecgo.Open(vecgo.Local(dir),
+	// Unified API: Open(ctx, backend, opts...)
+	ctx := context.Background()
+	eng, err := vecgo.Open(ctx, vecgo.Local(dir),
 		vecgo.Create(4, vecgo.MetricL2),
 		vecgo.WithLogger(logger),
 		vecgo.WithSchema(schema),
@@ -43,7 +44,6 @@ func main() {
 
 	// 4. Insert Data (Generic PKs + Typed Metadata)
 	logger.Info("Inserting data...")
-	ctx := context.Background()
 	_, err = eng.Insert(
 		ctx,
 		[]float32{1.0, 0.0, 0.0, 0.0},

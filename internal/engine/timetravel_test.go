@@ -98,14 +98,14 @@ func TestTimeTravel(t *testing.T) {
 	// Phase 2: Time Travel
 
 	// Case A: Load Version 1 (10 items)
-	e1, err := OpenLocal(dir, WithTimestamp(t1))
+	e1, err := OpenLocal(context.Background(), dir, WithTimestamp(t1))
 	require.NoError(t, err)
 	stats1 := e1.Stats()
 	assert.Equal(t, 10, stats1.RowCount, "Version 1 should have 10 rows")
 	e1.Close()
 
 	// Case B: Load Version 2 (20 items)
-	e2, err := OpenLocal(dir, WithTimestamp(t2), WithLogger(logger))
+	e2, err := OpenLocal(context.Background(), dir, WithTimestamp(t2), WithLogger(logger))
 	require.NoError(t, err)
 	stats2 := e2.Stats()
 	assert.Equal(t, 20, stats2.RowCount, "Version 2 should have 20 rows")
@@ -113,7 +113,7 @@ func TestTimeTravel(t *testing.T) {
 
 	// Case C: Load Latest (Version 3) (19 items)
 	// Default load
-	e3, err := OpenLocal(dir)
+	e3, err := OpenLocal(context.Background(), dir)
 	require.NoError(t, err)
 	stats3 := e3.Stats()
 	assert.Equal(t, 19, stats3.RowCount, "Version 3 should have 19 rows (1 deleted)")
@@ -144,7 +144,7 @@ func TestTimeTravel(t *testing.T) {
 	// If all versions are newer than target, best remains nil.
 	// So we expect Error: "no version found at or before t1"
 
-	eGone, err := OpenLocal(dir, WithTimestamp(t1))
+	eGone, err := OpenLocal(context.Background(), dir, WithTimestamp(t1))
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "no version found")
 	if eGone != nil {

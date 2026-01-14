@@ -16,7 +16,7 @@ func TestINT4Quantization(t *testing.T) {
 	defer os.RemoveAll(dir)
 
 	// Create DB with INT4 quantization
-	db, err := vecgo.Open(vecgo.Local(dir),
+	db, err := vecgo.Open(context.Background(), vecgo.Local(dir),
 		vecgo.Create(128, vecgo.MetricL2),
 		vecgo.WithQuantization(vecgo.QuantizationTypeINT4),
 		vecgo.WithCompactionThreshold(2), // Compact when 2 segments exist

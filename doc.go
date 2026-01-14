@@ -8,14 +8,15 @@
 //
 // Local mode:
 //
-//	db, _ := vecgo.Open(vecgo.Local("./data"), vecgo.Create(128, vecgo.MetricL2))
-//	db, _ := vecgo.Open(vecgo.Local("./data"))  // re-open existing
+//	ctx := context.Background()
+//	db, _ := vecgo.Open(ctx, vecgo.Local("./data"), vecgo.Create(128, vecgo.MetricL2))
+//	db, _ := vecgo.Open(ctx, vecgo.Local("./data"))  // re-open existing
 //
 // Cloud mode:
 //
 //	s3Store, _ := s3.New(ctx, "my-bucket", s3.WithPrefix("vectors/"))
-//	db, _ := vecgo.Open(vecgo.Remote(s3Store))
-//	db, _ := vecgo.Open(vecgo.Remote(s3Store), vecgo.WithCacheDir("/fast/nvme"))
+//	db, _ := vecgo.Open(ctx, vecgo.Remote(s3Store))
+//	db, _ := vecgo.Open(ctx, vecgo.Remote(s3Store), vecgo.WithCacheDir("/fast/nvme"))
 //
 // # Search with Data
 //

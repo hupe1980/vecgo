@@ -53,7 +53,7 @@ func runFilteredBenchmark(b *testing.B, dim, numVecs int) {
 
 	dir := b.TempDir()
 	// High thresholds prevent background compaction during load
-	e, err := vecgo.Open(vecgo.Local(dir), vecgo.Create(dim, vecgo.MetricL2),
+	e, err := vecgo.Open(context.Background(), vecgo.Local(dir), vecgo.Create(dim, vecgo.MetricL2),
 		vecgo.WithCompactionThreshold(1<<40),                               // ~1TB, effectively disables auto-compaction
 		vecgo.WithFlushConfig(vecgo.FlushConfig{MaxMemTableSize: 1 << 30}), // 1GB memtable
 		vecgo.WithDiskANNThreshold(numVecs+1),                              // disable DiskANN building

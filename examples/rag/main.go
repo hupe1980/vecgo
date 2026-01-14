@@ -31,10 +31,11 @@ func main() {
 	fmt.Printf("Initializing Vecgo RAG engine in %s...\n", dir)
 
 	// 2. Initialize the Engine.
-	// Unified API: Open(backend, opts...)
+	// Unified API: Open(ctx, backend, opts...)
 	// Use Local() for filesystem, Remote() for cloud storage
 	const dim = 128
-	eng, err := vecgo.Open(vecgo.Local(dir), vecgo.Create(dim, vecgo.MetricL2))
+	ctx := context.Background()
+	eng, err := vecgo.Open(ctx, vecgo.Local(dir), vecgo.Create(dim, vecgo.MetricL2))
 	if err != nil {
 		log.Fatalf("Failed to open engine: %v", err)
 	}

@@ -16,7 +16,7 @@ func BenchmarkBatchInsert(b *testing.B) {
 
 	b.Run("Sequential", func(b *testing.B) {
 		dir := b.TempDir()
-		e, _ := vecgo.Open(vecgo.Local(dir), vecgo.Create(dim, vecgo.MetricL2))
+		e, _ := vecgo.Open(context.Background(), vecgo.Local(dir), vecgo.Create(dim, vecgo.MetricL2))
 		defer e.Close()
 
 		vec := make([]float32, dim)
@@ -28,7 +28,7 @@ func BenchmarkBatchInsert(b *testing.B) {
 
 	b.Run("Batch", func(b *testing.B) {
 		dir := b.TempDir()
-		e, _ := vecgo.Open(vecgo.Local(dir), vecgo.Create(dim, vecgo.MetricL2))
+		e, _ := vecgo.Open(context.Background(), vecgo.Local(dir), vecgo.Create(dim, vecgo.MetricL2))
 		defer e.Close()
 
 		vec := make([]float32, dim)
@@ -55,7 +55,7 @@ func BenchmarkBatchSearch(b *testing.B) {
 	batchSize := 10
 
 	dir := b.TempDir()
-	e, _ := vecgo.Open(vecgo.Local(dir), vecgo.Create(dim, vecgo.MetricL2))
+	e, _ := vecgo.Open(context.Background(), vecgo.Local(dir), vecgo.Create(dim, vecgo.MetricL2))
 	defer e.Close()
 
 	rng := testutil.NewRNG(1)

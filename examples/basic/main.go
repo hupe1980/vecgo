@@ -16,9 +16,10 @@ func main() {
 	defer os.RemoveAll(dir)
 
 	// 1. Open the engine
-	// Unified API: Open(backend, opts...)
+	// Unified API: Open(ctx, backend, opts...)
 	// Use Local() for filesystem, Remote() for cloud storage
-	eng, err := vecgo.Open(vecgo.Local(dir), vecgo.Create(4, vecgo.MetricL2))
+	ctx := context.Background()
+	eng, err := vecgo.Open(ctx, vecgo.Local(dir), vecgo.Create(4, vecgo.MetricL2))
 	if err != nil {
 		log.Fatalf("Failed to open engine: %v", err)
 	}
@@ -34,7 +35,6 @@ func main() {
 	}
 
 	fmt.Println("Inserting vectors...")
-	ctx := context.Background()
 	for _, v := range vectors {
 		if _, err := eng.Insert(ctx, v, nil, nil); err != nil {
 			log.Fatalf("Insert failed: %v", err)

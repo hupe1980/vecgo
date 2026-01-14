@@ -163,7 +163,7 @@ func main() {
 	fmt.Printf("Database dir: %s\n", dir)
 
 	obs := NewPrometheusObserver()
-	eng, err := vecgo.Open(vecgo.Local(dir), vecgo.Create(dim, vecgo.MetricL2),
+	eng, err := vecgo.Open(context.Background(), vecgo.Local(dir), vecgo.Create(dim, vecgo.MetricL2),
 		vecgo.WithMetricsObserver(obs),
 	)
 	if err != nil {
