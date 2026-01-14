@@ -165,3 +165,54 @@ void pqAdcLookupAvx512(float *__restrict table, uint8_t *__restrict codes, int64
     
     *result = total;
 }
+
+// ScaleAvx512 scales array a by (*scalar) in place.
+// Processes 64 floats per iteration (4 × 16-wide AVX-512).
+//
+// Note: scalar is passed by pointer to avoid ABI differences for float arguments
+// in the Go assembly generator pipeline.
+void scaleAvx512(float *__restrict a, int64_t n, float *__restrict scalar)
+{
+    if (n <= 0) {
+        return;
+    }
+
+    float s = *scalar;
+    __m512 sv = _mm512_set1_ps(s);
+
+    int64_t epoch = n / 64;
+    int64_t i;
+
+    for (i = 0; i < epoch; i++)
+    {
+        int64_t offset = i * 64;
+
+        // Prefetch next iteration's data
+        _mm_prefetch((const char*)(a + offset + PREFETCH_AHEAD/4), _MM_HINT_T0);
+
+        // Load 64 floats
+        __m512 v1 = _mm512_loadu_ps(a + offset);
+        __m512 v2 = _mm512_loadu_ps(a + offset + 16);
+        __m512 v3 = _mm512_loadu_ps(a + offset + 32);
+        __m512 v4 = _mm512_loadu_ps(a + offset + 48);
+
+        // Multiply by scalar
+        v1 = _mm512_mul_ps(v1, sv);
+        v2 = _mm512_mul_ps(v2, sv);
+        v3 = _mm512_mul_ps(v3, sv);
+        v4 = _mm512_mul_ps(v4, sv);
+
+        // Store back
+        _mm512_storeu_ps(a + offset, v1);
+        _mm512_storeu_ps(a + offset + 16, v2);
+        _mm512_storeu_ps(a + offset + 32, v3);
+        _mm512_storeu_ps(a + offset + 48, v4);
+    }
+
+    // Scalar cleanup for remaining elements
+    int64_t remainder = n % 64;
+    for (i = n - remainder; i < n; i++)
+    {
+        a[i] *= s;
+    }
+}
