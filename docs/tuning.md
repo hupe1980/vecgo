@@ -13,7 +13,7 @@ import (
 ctx := context.Background()
 
 // Create a new index
-db, err := vecgo.Open(vecgo.Local("./data"), vecgo.Create(128, vecgo.MetricL2))
+db, err := vecgo.Open(ctx, vecgo.Local("./data"), vecgo.Create(128, vecgo.MetricL2))
 if err != nil {
     panic(err)
 }
@@ -74,6 +74,7 @@ Compaction runs in the background after commits:
 
 ```go
 db, err := vecgo.Open(
+    ctx,
     vecgo.Local("./data"),
     vecgo.Create(128, vecgo.MetricL2),
     vecgo.WithCompactionThreshold(8), // Trigger after 8 segments
@@ -96,6 +97,7 @@ For cloud storage, configure the block cache:
 
 ```go
 db, err := vecgo.Open(
+    ctx,
     vecgo.Remote(s3Store),
     vecgo.WithCacheDir("/fast/nvme"),           // Disk cache location
     vecgo.WithBlockCacheSize(64 * 1024 * 1024), // 64MB memory cache
@@ -159,6 +161,7 @@ HNSW uses a custom arena allocator for stable heap and reduced GC pressure:
 
 ```go
 db, err := vecgo.Open(
+    ctx,
     vecgo.Local("./data"),
     vecgo.Create(128, vecgo.MetricL2),
     vecgo.WithMemoryLimit(0), // Unlimited (for bulk load)

@@ -43,7 +43,7 @@ Note: legacy execution paths have been removed; the tree reflects the current en
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    Vecgo API Layer                          │
-│   Entry Point: vecgo.Open(...)                              │
+│   Entry Point: vecgo.Open(ctx, ...)                         │
 │   Operations: Insert, BatchInsert, Delete, Search,          │
 │               BatchSearch, SearchThreshold, HybridSearch    │
 └─────────────────────────────────────────────────────────────┘
@@ -107,7 +107,7 @@ Segmented persistence relies on an atomic publish protocol:
 ### 2. Vecgo API (`vecgo.go`)
 
 The main entry point provides:
-- **Entry Point**: `vecgo.Open(dir, dim, metric, ...opts)`
+- **Entry Point**: `vecgo.Open(ctx, backend, ...opts)`
 - **CRUD operations**: `Insert()`, `Delete()`
 - **Search methods**: `Search()`
 - `Get(pk)` point lookup by primary key (**Implemented**; returns vector, metadata, and payload.)
