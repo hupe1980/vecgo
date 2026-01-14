@@ -498,7 +498,7 @@ func (s *Segment) searchInternal(ctx context.Context, query []float32, k int, l 
 	var metadataFilterFn func(model.RowID) bool
 	if s.index != nil && metadataFilter != nil {
 		if fs, ok := metadataFilter.(*metadata.FilterSet); ok {
-			metadataFilterFn = s.index.CreateStreamingFilter(fs)
+			metadataFilterFn = s.index.CreateStreamingFilter(ctx, fs)
 		}
 	}
 

@@ -1,6 +1,7 @@
 package imetadata
 
 import (
+	"context"
 	"testing"
 
 	"github.com/hupe1980/vecgo/metadata"
@@ -22,12 +23,12 @@ func TestUnifiedIndex_SetGet(t *testing.T) {
 	ui.Set(1, doc)
 
 	// Get metadata
-	retrieved, ok := ui.Get(1)
+	retrieved, ok := ui.Get(context.Background(), 1)
 	require.True(t, ok)
 	assert.Equal(t, doc, retrieved)
 
 	// Non-existent ID
-	_, ok = ui.Get(999)
+	_, ok = ui.Get(context.Background(), 999)
 	assert.False(t, ok)
 }
 
@@ -49,7 +50,7 @@ func TestUnifiedIndex_Update(t *testing.T) {
 	ui.Set(1, doc2)
 
 	// Verify update
-	retrieved, ok := ui.Get(1)
+	retrieved, ok := ui.Get(context.Background(), 1)
 	require.True(t, ok)
 	assert.Equal(t, metadata.String("science"), retrieved["category"])
 	assert.Equal(t, metadata.Int(2024), retrieved["year"])
@@ -64,14 +65,14 @@ func TestUnifiedIndex_Delete(t *testing.T) {
 	ui.Set(1, doc)
 
 	// Verify exists
-	_, ok := ui.Get(1)
+	_, ok := ui.Get(context.Background(), 1)
 	require.True(t, ok)
 
 	// Delete
 	ui.Delete(1)
 
 	// Verify deleted
-	_, ok = ui.Get(1)
+	_, ok = ui.Get(context.Background(), 1)
 	assert.False(t, ok)
 }
 

@@ -118,7 +118,7 @@ func TestUnifiedIndex_Helpers(t *testing.T) {
 	ui.AddInvertedIndex(2, metadata.Document{"tag": metadata.String("b")})
 
 	// Verify 2 is in inverted but not documents
-	doc, ok := ui.Get(2)
+	doc, ok := ui.Get(context.Background(), 2)
 	assert.False(t, ok)
 	assert.Nil(t, doc)
 
@@ -141,13 +141,13 @@ func TestUnifiedIndex_Helpers(t *testing.T) {
 		return nil, false
 	})
 
-	doc99, ok := ui.Get(99)
+	doc99, ok := ui.Get(context.Background(), 99)
 	assert.True(t, ok)
 	assert.Equal(t, "yes", doc99["magic"].StringValue())
 
 	// Delete
 	ui.Delete(1)
-	_, ok = ui.Get(1)
+	_, ok = ui.Get(context.Background(), 1)
 	assert.False(t, ok)
 	assert.Equal(t, 0, ui.Len())
 }

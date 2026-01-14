@@ -268,7 +268,8 @@ func matchesComparison(stored, filter metadata.Value, op metadata.Operator) bool
 
 // Get retrieves metadata for an ID.
 // Returns nil if the ID doesn't exist.
-func (ui *UnifiedIndex) Get(id model.RowID) (metadata.Document, bool) {
+// The context is used for provider lookups on fallback paths.
+func (ui *UnifiedIndex) Get(ctx context.Context, id model.RowID) (metadata.Document, bool) {
 	ui.mu.RLock()
 	defer ui.mu.RUnlock()
 
@@ -283,7 +284,7 @@ func (ui *UnifiedIndex) Get(id model.RowID) (metadata.Document, bool) {
 	}
 
 	if ui.provider != nil {
-		return ui.provider(context.Background(), id)
+		return ui.provider(ctx, id)
 	}
 
 	return nil, false
@@ -392,7 +393,8 @@ func (ui *UnifiedIndex) RUnlock() {
 
 // CreateStreamingFilter creates a filter function that checks the index without allocating intermediate bitmaps.
 // The caller MUST hold the read lock (RLock) while using the returned function.
-func (ui *UnifiedIndex) CreateStreamingFilter(fs *metadata.FilterSet) func(model.RowID) bool {
+// The context is used for provider lookups on fallback paths.
+func (ui *UnifiedIndex) CreateStreamingFilter(ctx context.Context, fs *metadata.FilterSet) func(model.RowID) bool {
 	if fs == nil || len(fs.Filters) == 0 {
 		return func(model.RowID) bool { return true }
 	}
@@ -401,7 +403,7 @@ func (ui *UnifiedIndex) CreateStreamingFilter(fs *metadata.FilterSet) func(model
 	checks := make([]func(model.RowID) bool, 0, len(fs.Filters))
 
 	for _, filter := range fs.Filters {
-		checks = append(checks, ui.createFilterCheck(filter))
+		checks = append(checks, ui.createFilterCheck(ctx, filter))
 	}
 
 	return func(id model.RowID) bool {
@@ -414,14 +416,14 @@ func (ui *UnifiedIndex) CreateStreamingFilter(fs *metadata.FilterSet) func(model
 	}
 }
 
-func (ui *UnifiedIndex) createFilterCheck(filter metadata.Filter) func(model.RowID) bool {
+func (ui *UnifiedIndex) createFilterCheck(ctx context.Context, filter metadata.Filter) func(model.RowID) bool {
 	switch filter.Operator {
 	case metadata.OpEqual:
 		return ui.createEqualCheck(filter)
 	case metadata.OpIn:
 		return ui.createInCheck(filter)
 	default:
-		return ui.createFallbackCheck(filter)
+		return ui.createFallbackCheck(ctx, filter)
 	}
 }
 
@@ -530,7 +532,7 @@ func (ui *UnifiedIndex) queryInLocked(f metadata.Filter) (*LocalBitmap, error) {
 	return result, nil
 }
 
-func (ui *UnifiedIndex) createFallbackCheck(filter metadata.Filter) func(model.RowID) bool {
+func (ui *UnifiedIndex) createFallbackCheck(ctx context.Context, filter metadata.Filter) func(model.RowID) bool {
 	// Fallback for unsupported operators: check document
 	// This is slow but necessary
 	fs := metadata.NewFilterSet(filter)
@@ -540,8 +542,7 @@ func (ui *UnifiedIndex) createFallbackCheck(filter metadata.Filter) func(model.R
 			return fs.MatchesInterned(doc)
 		}
 		if ui.provider != nil {
-			// TODO: Pass context from caller through the filter chain
-			d, ok := ui.provider(context.Background(), id)
+			d, ok := ui.provider(ctx, id)
 			if ok {
 				return filter.Matches(d)
 			}

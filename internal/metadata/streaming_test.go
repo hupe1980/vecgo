@@ -1,6 +1,7 @@
 package imetadata
 
 import (
+	"context"
 	"testing"
 
 	"github.com/hupe1980/vecgo/metadata"
@@ -86,7 +87,7 @@ func TestUnifiedIndex_CreateStreamingFilter(t *testing.T) {
 			ui.RLock()
 			defer ui.RUnlock()
 
-			filter := ui.CreateStreamingFilter(tt.filters)
+			filter := ui.CreateStreamingFilter(context.Background(), tt.filters)
 			require.NotNil(t, filter)
 
 			var matches []uint64
