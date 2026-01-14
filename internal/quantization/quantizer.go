@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"math"
-	"sync"
 
 	"github.com/hupe1980/vecgo/internal/simd"
 )
@@ -36,10 +35,6 @@ type ScalarQuantizer struct {
 	invScales []float32 // Precomputed inverse scales: (max - min) / 255
 	dimension int       // Vector dimension
 	trained   bool      // Whether the quantizer has been trained
-
-	// Pools for temporary buffers
-	bytePool  *sync.Pool
-	floatPool *sync.Pool
 }
 
 // Mins returns the per-dimension minimum values.
@@ -128,16 +123,6 @@ func NewScalarQuantizer(dimension int) *ScalarQuantizer {
 	return &ScalarQuantizer{
 		dimension: dimension,
 		trained:   false,
-		bytePool: &sync.Pool{
-			New: func() any {
-				return make([]byte, dimension)
-			},
-		},
-		floatPool: &sync.Pool{
-			New: func() any {
-				return make([]float32, dimension)
-			},
-		},
 	}
 }
 
@@ -335,18 +320,6 @@ func (sq *ScalarQuantizer) UnmarshalBinary(data []byte) error {
 	}
 
 	sq.trained = true
-
-	// Re-initialize pools
-	sq.bytePool = &sync.Pool{
-		New: func() interface{} {
-			return make([]byte, sq.dimension)
-		},
-	}
-	sq.floatPool = &sync.Pool{
-		New: func() any {
-			return make([]float32, sq.dimension)
-		},
-	}
 
 	return nil
 }

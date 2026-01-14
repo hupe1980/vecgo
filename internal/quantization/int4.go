@@ -28,7 +28,7 @@ func NewInt4Quantizer(dim int) *Int4Quantizer {
 // Train calculates min/max ranges for quantization.
 func (q *Int4Quantizer) Train(vectors [][]float32) error {
 	if len(vectors) == 0 {
-		return nil
+		return errors.New("no vectors provided for training")
 	}
 
 	q.dim = len(vectors[0])

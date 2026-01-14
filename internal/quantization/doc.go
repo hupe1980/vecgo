@@ -1,51 +1,87 @@
 // Package quantization provides vector compression techniques for memory reduction.
 //
-// Vecgo supports four quantization methods:
+// Vecgo supports six quantization methods:
 //
-//   - Binary Quantization: 32x compression (1 bit per dimension)
-//   - RaBitQ: Randomized Binary Quantization with Norm Correction (Better Recall)
+//   - Binary Quantization (BQ): 32x compression (1 bit per dimension)
+//   - RaBitQ: Randomized Binary Quantization with Norm Correction (Better Recall than BQ)
+//   - Scalar Quantization (SQ8): 4x compression (1 byte per dimension)
+//   - INT4 Quantization: 8x compression (4 bits per dimension)
 //   - Product Quantization (PQ): 8-64x compression
-//   - Optimized Product Quantization (OPQ): 8-64x compression with better recall
+//   - Optimized Product Quantization (OPQ): 8-64x compression with learned rotation
+//
+// # Architecture
+//
+//	┌────────────────────────────────────────────────────────────────────┐
+//	│                    Quantization Methods                            │
+//	├──────────┬──────────┬──────────┬──────────┬──────────┬────────────┤
+//	│   BQ     │  RaBitQ  │   SQ8    │   INT4   │    PQ    │    OPQ     │
+//	│ (1 bit)  │ (1 bit+) │ (8 bit)  │ (4 bit)  │ (8 bit)  │ (8 bit+R)  │
+//	├──────────┴──────────┴──────────┴──────────┴──────────┴────────────┤
+//	│                      SIMD Distance Functions                       │
+//	│   Hamming (POPCNT)  │  L2/Dot (AVX-512/NEON)  │  ADC Lookup        │
+//	└────────────────────────────────────────────────────────────────────┘
 //
 // # Binary Quantization
 //
 // Compresses vectors to 1 bit per dimension using sign-based encoding:
 //
-//	quantizer := quantization.NewBinaryQuantizer(128)
-//	code := quantizer.Encode(vector)  // 128 floats → 16 bytes
-//	distance := quantizer.Distance(code1, code2)  // Hamming distance
+//	bq := quantization.NewBinaryQuantizer(128)
+//	code, _ := bq.Encode(vector)  // 128 floats → 16 bytes
+//	dist := HammingDistance(code1, code2)  // Hamming distance
 //
 // Performance:
 //   - Compression: 32x (128-dim float32: 512 bytes → 16 bytes)
-//   - Distance: 0.68ns for 128-dim (ultra-fast)
-//   - Accuracy: 70-85% recall (suitable for pre-filtering)
+//   - Distance: Ultra-fast (POPCNT instruction)
+//   - Accuracy: 70-85% recall (best for pre-filtering)
 //
 // # RaBitQ (Randomized Binary Quantization)
 //
 // Improvements over standard BQ by storing the vector norm and using a modified distance estimator:
 //
-//	quantizer := quantization.NewRaBitQuantizer(128)
-//	code := quantizer.Encode(vector) // 128 floats → 16 bytes + 4 bytes norm
-//	dist := quantizer.Distance(query, code)
+//	rq := quantization.NewRaBitQuantizer(128)
+//	code, _ := rq.Encode(vector)       // 128 floats → 20 bytes (16 binary + 4 norm)
+//	dist, _ := rq.Distance(query, code) // Norm-corrected L2 approximation
 //
-// Trade-off: Slightly larger storage (+4 bytes per vector) for significantly better approximate L2 distance.
+// Trade-off: Slightly larger storage (+4 bytes per vector) for significantly better L2 distance approximation.
+//
+// # Scalar Quantization (SQ8)
+//
+// Compresses each dimension to 8 bits using per-dimension min/max normalization:
+//
+//	sq := quantization.NewScalarQuantizer(128)
+//	sq.Train(trainingVectors)
+//	code, _ := sq.Encode(vector)  // 128 floats → 128 bytes
+//	dist, _ := sq.L2Distance(query, code)
+//
+// Performance:
+//   - Compression: 4x (float32 → uint8)
+//   - Accuracy: 95-99% recall (excellent for most use cases)
+//
+// # INT4 Quantization
+//
+// Compresses each dimension to 4 bits (2 dimensions per byte):
+//
+//	iq := quantization.NewInt4Quantizer(128)
+//	iq.Train(trainingVectors)
+//	code, _ := iq.Encode(vector)  // 128 floats → 64 bytes
+//	dist, _ := iq.L2Distance(query, code)
+//
+// Performance:
+//   - Compression: 8x (float32 → 4-bit)
+//   - Accuracy: 90-95% recall
 //
 // # Product Quantization (PQ)
 //
-// Splits vector into subvectors and quantizes each independently:
+// Splits vector into subvectors and quantizes each independently using k-means:
 //
-//	pq, err := quantization.NewPQ(
-//	    vectors,           // Training data
-//	    128,               // Dimension
-//	    8,                 // Number of subvectors
-//	    256,               // Centroids per subvector
-//	    distance.SquaredL2, // Distance type
-//	)
-//	code := pq.Encode(vector)  // 128 floats → 8 bytes
+//	pq, _ := quantization.NewProductQuantizer(128, 8, 256)  // dim=128, M=8, K=256
+//	pq.Train(trainingVectors)
+//	code, _ := pq.Encode(vector)  // 128 floats → 8 bytes
 //
 // Parameters:
-//   - subvectors: How many splits (typically 8-16)
-//   - centroids: Codebook size per subvector (typically 256)
+//   - dimension: Vector dimensionality (must be divisible by numSubvectors)
+//   - numSubvectors (M): How many splits (typically 8-16)
+//   - numCentroids (K): Codebook size per subvector (typically 256 for uint8)
 //
 // Memory reduction:
 //   - 128-dim float32 = 512 bytes
@@ -56,21 +92,16 @@
 //
 // # Optimized Product Quantization (OPQ)
 //
-// Learns a rotation matrix before PQ to improve reconstruction quality:
+// Learns block-diagonal rotation matrices before PQ to improve reconstruction quality:
 //
-//	opq, err := quantization.NewOPQ(
-//	    vectors,           // Training data
-//	    128,               // Dimension
-//	    8,                 // Number of subvectors
-//	    256,               // Centroids per subvector
-//	    distance.SquaredL2, // Distance type
-//	)
-//	code := opq.Encode(vector)  // 128 floats → 8 bytes
+//	opq, _ := quantization.NewOptimizedProductQuantizer(128, 8, 256, 10)  // +10 iterations
+//	opq.Train(trainingVectors)
+//	code, _ := opq.Encode(vector)  // 128 floats → 8 bytes
 //
 // Benefits vs PQ:
 //   - 20-30% better reconstruction quality
 //   - Same compression ratio
-//   - Slightly higher encoding cost (rotation + quantization)
+//   - Higher training cost (alternating optimization with SVD)
 //
 // Accuracy: 93-97% recall
 //
@@ -80,29 +111,19 @@
 //	|---------|-------------|---------|----------|-----------------------|
 //	| None    | 1x          | 100%    | Baseline | Default               |
 //	| Binary  | 32x         | 70-85%  | Fastest  | Pre-filtering         |
-//	| PQ      | 8-64x       | 90-95%  | Fast     | Memory-constrained    |
-//	| OPQ     | 8-64x       | 93-97%  | Medium   | High recall + low mem |
+//	| RaBitQ  | ~30x        | 80-90%  | Fast     | Better BQ alternative |
+//	| SQ8     | 4x          | 95-99%  | Fast     | General purpose       |
+//	| INT4    | 8x          | 90-95%  | Fast     | Memory-constrained    |
+//	| PQ      | 8-64x       | 90-95%  | Medium   | High compression      |
+//	| OPQ     | 8-64x       | 93-97%  | Slower   | High recall + low mem |
 //
-// # Usage in Vecgo (current)
+// # Thread Safety
 //
-// The current engine-first public facade (`vecgo.Open(...)`) does not expose end-user
-// quantization knobs yet. Quantization is used internally by on-disk segment writers/readers
-// (notably `segment/flat`) when producing or reading quantized Flat files.
+// All quantizers are safe for concurrent read operations (Encode, Decode, Distance)
+// after training. Training (Train) must be single-threaded or externally synchronized.
 //
-// Low-level usage (library-style) looks like:
+// # Serialization
 //
-//	// SQ8 (scalar) quantization
-//	sq := quantization.NewScalarQuantizer(128)
-//	_ = sq.Train(trainingVectors)
-//	code := sq.Encode(vec)
-//	_ = code
-//
-//	// PQ / OPQ
-//	pq, _ := quantization.NewProductQuantizer(128, 8, 256)
-//	_ = pq.Train(trainingVectors)
-//
-//	opq, _ := quantization.NewOptimizedProductQuantizer(128, 8, 256, 10)
-//	_ = opq.Train(trainingVectors)
-//
-// See docs/tuning.md and REFACTORING.md for the current integration status.
+// ScalarQuantizer and Int4Quantizer implement encoding.BinaryMarshaler/BinaryUnmarshaler
+// for persistence. ProductQuantizer uses SetCodebooks/Codebooks for manual serialization.
 package quantization
