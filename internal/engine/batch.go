@@ -125,9 +125,11 @@ func (e *Engine) ApplyBatch(ctx context.Context, batch *WriteBatch) ([]model.ID,
 			if exists {
 				// Mark old location as deleted in tombstones
 				// Note: tombstones map is pre-populated for all known segments
+				e.tombstonesMu.RLock()
 				if vt, ok := e.tombstones[oldLoc.SegmentID]; ok {
 					vt.MarkDeleted(uint32(oldLoc.RowID), lsn)
 				}
+				e.tombstonesMu.RUnlock()
 			}
 
 			// Lexical Update
@@ -142,9 +144,11 @@ func (e *Engine) ApplyBatch(ctx context.Context, batch *WriteBatch) ([]model.ID,
 			// Delete logic
 			oldLoc, exists := e.pkIndex.Delete(id, lsn)
 			if exists {
+				e.tombstonesMu.RLock()
 				if vt, ok := e.tombstones[oldLoc.SegmentID]; ok {
 					vt.MarkDeleted(uint32(oldLoc.RowID), lsn)
 				}
+				e.tombstonesMu.RUnlock()
 				// Also remove from lexical index
 				if e.lexicalIndex != nil {
 					_ = e.lexicalIndex.Delete(id)

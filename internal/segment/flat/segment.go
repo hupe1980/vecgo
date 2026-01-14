@@ -404,10 +404,18 @@ func (s *Segment) Size() int64 {
 }
 
 func (s *Segment) Close() error {
+	var errs []error
 	if s.payloadBlob != nil {
-		s.payloadBlob.Close()
+		if err := s.payloadBlob.Close(); err != nil {
+			errs = append(errs, err)
+		}
 	}
-	return s.blob.Close()
+	if s.blob != nil {
+		if err := s.blob.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func (s *Segment) ID() model.SegmentID {

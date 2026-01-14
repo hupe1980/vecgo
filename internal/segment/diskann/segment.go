@@ -923,10 +923,18 @@ func (s *Segment) Size() int64 {
 
 // Close closes the segment.
 func (s *Segment) Close() error {
-	if s.blob != nil {
-		return s.blob.Close()
+	var errs []error
+	if s.payloadBlob != nil {
+		if err := s.payloadBlob.Close(); err != nil {
+			errs = append(errs, err)
+		}
 	}
-	return nil
+	if s.blob != nil {
+		if err := s.blob.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // Advise hints the kernel about access patterns.
