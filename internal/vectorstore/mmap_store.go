@@ -200,10 +200,7 @@ func (s *MmapStore) GetVector(id model.RowID) ([]float32, bool) {
 	}
 
 	dim := int(s.dim)
-	idInt, err := conv.Uint32ToInt(uint32(id))
-	if err != nil {
-		return nil, false
-	}
+	idInt := int(id) // model.RowID is uint32, always fits in int
 	start := idInt * dim
 	end := start + dim
 
@@ -227,10 +224,7 @@ func (s *MmapStore) ComputeDistance(id model.RowID, query []float32, metric dist
 	}
 
 	dim := int(s.dim)
-	idInt, err := conv.Uint32ToInt(uint32(id))
-	if err != nil {
-		return 0, false
-	}
+	idInt := int(id) // model.RowID is uint32, always fits in int
 	start := idInt * dim
 	end := start + dim
 
@@ -259,10 +253,7 @@ func (s *MmapStore) GetVectorUnsafe(id model.RowID) ([]float32, bool) {
 	}
 
 	dim := int(s.dim)
-	idInt, err := conv.Uint32ToInt(uint32(id))
-	if err != nil {
-		return nil, false
-	}
+	idInt := int(id) // model.RowID is uint32, always fits in int
 	start := idInt * dim
 	end := start + dim
 
@@ -291,10 +282,7 @@ func (s *MmapStore) IsDeleted(id model.RowID) bool {
 func (s *MmapStore) isDeleted(id model.RowID) bool {
 	idU32 := uint32(id)
 	bitmapIdx := idU32 / 64
-	bitmapIdxInt, err := conv.Uint32ToInt(bitmapIdx)
-	if err != nil {
-		return false
-	}
+	bitmapIdxInt := int(bitmapIdx) // uint32 / 64 always fits in int
 	if bitmapIdxInt >= len(s.deleted) {
 		return false
 	}
@@ -306,21 +294,19 @@ func (s *MmapStore) isDeleted(id model.RowID) bool {
 func (s *MmapStore) Iterate(fn func(id model.RowID, vec []float32) bool) {
 	dim := int(s.dim)
 
-	for id := uint64(0); id < s.count; id++ {
-		idU32, err := conv.Uint64ToUint32(id)
-		if err != nil {
-			break
-		}
-		rowID := model.RowID(idU32)
+	// Safety: count must fit in uint32 for model.RowID
+	count := s.count
+	if count > uint64(^uint32(0)) {
+		count = uint64(^uint32(0))
+	}
+
+	for id := uint64(0); id < count; id++ {
+		rowID := model.RowID(id) // safe after bounds check above
 		if s.isDeleted(rowID) {
 			continue
 		}
 
-		idInt, err := conv.Uint64ToInt(id)
-		if err != nil {
-			break
-		}
-		start := idInt * dim
+		start := int(id) * dim
 		end := start + dim
 		if end > len(s.data) {
 			break

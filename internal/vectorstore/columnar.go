@@ -261,10 +261,7 @@ func (s *ColumnarStore) GetVector(id model.RowID) ([]float32, bool) {
 	}
 
 	dim := int(s.dim)
-	idInt, err := conv.Uint32ToInt(uint32(id))
-	if err != nil {
-		return nil, false
-	}
+	idInt := int(id) // model.RowID is uint32, always fits in int
 	start := idInt * dim
 	end := start + dim
 
@@ -352,10 +349,7 @@ func (s *ColumnarStore) GetVectorUnsafe(id model.RowID) ([]float32, bool) {
 	}
 
 	dim := int(s.dim)
-	idInt, err := conv.Uint32ToInt(uint32(id))
-	if err != nil {
-		return nil, false
-	}
+	idInt := int(id) // model.RowID is uint32, always fits in int
 	start := idInt * dim
 	end := start + dim
 
@@ -383,10 +377,7 @@ func (s *ColumnarStore) SetVector(ctx context.Context, id model.RowID, v []float
 	// IMPORTANT: do not publish the extended slice (via s.data.Store) until
 	// after the new vector data has been fully written. Otherwise, concurrent
 	// readers can observe partially-written vectors.
-	idInt, err := conv.Uint32ToInt(uint32(id))
-	if err != nil {
-		return err
-	}
+	idInt := int(id) // model.RowID is uint32, always fits in int
 	requiredLen := (idInt + 1) * dim
 	currentData := *data
 
@@ -486,10 +477,7 @@ func (s *ColumnarStore) Append(ctx context.Context, v []float32) (model.RowID, e
 
 	// Extend data slice.
 	// IMPORTANT: publish updated slice only after writing the new vector.
-	idInt, err := conv.Uint32ToInt(uint32(id))
-	if err != nil {
-		return 0, err
-	}
+	idInt := int(id) // model.RowID is uint32, always fits in int
 	requiredLen := (idInt + 1) * dim
 	if requiredLen > cap(currentData) {
 		newCap := max(requiredLen*2, len(currentData)*2)
@@ -611,13 +599,14 @@ func (s *ColumnarStore) Compact() (map[model.RowID]model.RowID, error) {
 	newData = newData[:0]
 	idMap := make(map[model.RowID]model.RowID, s.live)
 
+	// Safety: count must fit in uint32 for model.RowID
+	if s.count > uint64(^uint32(0)) {
+		return nil, fmt.Errorf("columnar: count exceeds uint32 limit")
+	}
+
 	var newID model.RowID
 	for oldID := uint64(0); oldID < s.count; oldID++ {
-		oldIDU32, err := conv.Uint64ToUint32(oldID)
-		if err != nil {
-			return nil, fmt.Errorf("columnar: compact failed: %w", err)
-		}
-		localOldID := model.RowID(oldIDU32)
+		localOldID := model.RowID(oldID) // safe after bounds check above
 		if s.isDeletedLocked(localOldID) {
 			continue
 		}
@@ -651,17 +640,16 @@ func (s *ColumnarStore) Iterate(fn func(id model.RowID, vec []float32) bool) {
 
 	dim := int(s.dim)
 
-	for id := range count {
-		idU32, err := conv.Uint64ToUint32(id)
-		if err != nil {
-			break
-		}
-		rowID := model.RowID(idU32)
-		s.mu.RLock()
-		deleted := s.isDeletedLocked(rowID)
-		s.mu.RUnlock()
+	// Bounds check for count (must fit in uint32 for model.RowID)
+	if count > uint64(^uint32(0)) {
+		count = uint64(^uint32(0))
+	}
 
-		if deleted {
+	for id := uint64(0); id < count; id++ {
+		rowID := model.RowID(id)
+
+		// Lock-free deletion check (isDeleted uses atomic load)
+		if s.isDeleted(rowID) {
 			continue
 		}
 
