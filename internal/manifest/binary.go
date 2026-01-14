@@ -67,6 +67,11 @@ func (m *Manifest) WriteBinary(w io.Writer) error {
 
 	pb.writeString(m.PKIndex.Path)
 
+	// Check for any errors during payload construction (e.g., string too long)
+	if pb.err != nil {
+		return pb.err
+	}
+
 	payload := pb.buf
 	checksum := crc32.ChecksumIEEE(payload)
 
@@ -155,16 +160,25 @@ func newPayloadBuffer(b []byte) *payloadBuffer {
 }
 
 func (p *payloadBuffer) writeUint64(v uint64) {
+	if p.err != nil {
+		return
+	}
 	p.buf = binary.LittleEndian.AppendUint64(p.buf, v)
 }
 
 func (p *payloadBuffer) writeUint32(v uint32) {
+	if p.err != nil {
+		return
+	}
 	p.buf = binary.LittleEndian.AppendUint32(p.buf, v)
 }
 
 func (p *payloadBuffer) writeString(s string) {
+	if p.err != nil {
+		return
+	}
 	if len(s) > 65535 {
-		p.err = fmt.Errorf("string too long")
+		p.err = fmt.Errorf("string too long: %d", len(s))
 		return
 	}
 	p.buf = binary.LittleEndian.AppendUint16(p.buf, uint16(len(s)))

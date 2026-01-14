@@ -352,7 +352,7 @@ func (e *Engine) CompactWithContext(ctx context.Context, segmentIDs []model.Segm
 	tempManifest.PKIndex = manifest.PKIndexInfo{}
 
 	// Save Manifest FIRST
-	if err := manifest.NewStore(e.manifestStore).Save(&tempManifest); err != nil {
+	if err := manifest.NewStore(e.manifestStore).Save(ctx, &tempManifest); err != nil {
 		_ = newSeg.Close()           // Intentionally ignore: cleanup path
 		_ = e.fs.Remove(path)        // Intentionally ignore: best-effort cleanup
 		_ = e.fs.Remove(payloadPath) // Intentionally ignore: best-effort cleanup

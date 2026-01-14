@@ -79,17 +79,14 @@ func NewStore(store blobstore.BlobStore) *Store {
 }
 
 // Load loads the current manifest.
-func (s *Store) Load() (*Manifest, error) {
-	return s.LoadVersion(0)
+func (s *Store) Load(ctx context.Context) (*Manifest, error) {
+	return s.LoadVersion(ctx, 0)
 }
 
 // LoadVersion loads a specific version ID. 0 means latest.
-func (s *Store) LoadVersion(versionID uint64) (*Manifest, error) {
+func (s *Store) LoadVersion(ctx context.Context, versionID uint64) (*Manifest, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
 
 	var manifestFilename string
 	if versionID == 0 {
@@ -142,7 +139,12 @@ func (s *Store) LoadVersion(versionID uint64) (*Manifest, error) {
 }
 
 // ListVersions returns all available manifest versions.
+// Note: This method intentionally skips corrupted or unreadable manifests
+// to provide a best-effort listing of available versions.
 func (s *Store) ListVersions(ctx context.Context) ([]*Manifest, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	files, err := s.store.List(ctx, ManifestFileName)
 	if err != nil {
 		return nil, err
@@ -154,20 +156,28 @@ func (s *Store) ListVersions(ctx context.Context) ([]*Manifest, error) {
 		}
 		b, err := s.store.Open(ctx, f)
 		if err != nil {
-			continue
+			continue // Skip unreadable files
 		}
 		// In a real implementation we would only read the header (metrics, timestamp)
 		// For now we read full for simplicity.
 		var m *Manifest
 		if filepath.Ext(f) == ".json" {
 			m = &Manifest{}
-			content, _ := io.ReadAll(io.NewSectionReader(b, 0, b.Size()))
+			content, err := io.ReadAll(io.NewSectionReader(b, 0, b.Size()))
+			if err != nil {
+				b.Close()
+				continue // Skip on read error
+			}
 			if err := json.Unmarshal(content, m); err != nil {
 				b.Close()
 				continue
 			}
 		} else {
-			m, _ = ReadBinary(io.NewSectionReader(b, 0, b.Size()))
+			m, err = ReadBinary(io.NewSectionReader(b, 0, b.Size()))
+			if err != nil {
+				b.Close()
+				continue // Skip corrupted binary manifests
+			}
 		}
 		b.Close()
 		if m != nil {
@@ -178,12 +188,9 @@ func (s *Store) ListVersions(ctx context.Context) ([]*Manifest, error) {
 }
 
 // Save atomically saves a new manifest.
-func (s *Store) Save(m *Manifest) error {
+func (s *Store) Save(ctx context.Context, m *Manifest) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
 
 	m.Version = CurrentVersion
 	m.ID++
@@ -212,12 +219,7 @@ func (s *Store) DeleteVersion(ctx context.Context, versionID uint64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Only binary format is written by Save(), so only delete .bin
 	filename := fmt.Sprintf("%s-%06d.bin", ManifestFileName, versionID)
-	// Also try JSON if binary doesn't exist?
-	// For now we just try binary as that's what Save writes.
-	// But ListVersions might find .json.
-	// Clean implementation would check what exists.
-	// Simpler: Try deleting both variants.
-	_ = s.store.Delete(ctx, fmt.Sprintf("%s-%06d.json", ManifestFileName, versionID))
 	return s.store.Delete(ctx, filename)
 }

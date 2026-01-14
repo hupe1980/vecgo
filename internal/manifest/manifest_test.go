@@ -15,6 +15,7 @@ import (
 )
 
 func TestManifestVersioning(t *testing.T) {
+	ctx := context.Background()
 	dir := t.TempDir()
 	store := NewStore(blobstore.NewLocalStore(dir))
 
@@ -22,11 +23,11 @@ func TestManifestVersioning(t *testing.T) {
 	m := &Manifest{
 		ID: 0,
 	}
-	err := store.Save(m)
+	err := store.Save(ctx, m)
 	require.NoError(t, err)
 
 	// 2. Load it
-	loaded, err := store.Load()
+	loaded, err := store.Load(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, CurrentVersion, loaded.Version)
 
@@ -54,30 +55,31 @@ func TestManifestVersioning(t *testing.T) {
 	require.NoError(t, err)
 
 	// 4. Load again - should fail
-	_, err = store.Load()
+	_, err = store.Load(ctx)
 	assert.Error(t, err)
 	// Error comes from ReadBinary validation
 	assert.Contains(t, err.Error(), "unsupported version")
 }
 
 func TestStore(t *testing.T) {
+	ctx := context.Background()
 	dir := t.TempDir()
 
 	store := NewStore(blobstore.NewLocalStore(dir))
 
 	// 1. Load on empty -> ErrNotFound (no CURRENT file)
-	_, err := store.Load()
+	_, err := store.Load(ctx)
 	require.ErrorIs(t, err, ErrNotFound)
 
 	// 2. Create and Save a manifest
 	m := New(128, "L2")
 	m.NextSegmentID = 100
-	err = store.Save(m)
+	err = store.Save(ctx, m)
 	require.NoError(t, err)
 	assert.Equal(t, uint64(1), m.ID) // Incremented
 
 	// 3. Load updated
-	m2, err := store.Load()
+	m2, err := store.Load(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, uint64(1), m2.ID)
 	assert.Equal(t, model.SegmentID(100), m2.NextSegmentID)
@@ -87,16 +89,17 @@ func TestStore(t *testing.T) {
 	assert.GreaterOrEqual(t, len(matches), 1)
 
 	// 5. Save another one
-	err = store.Save(m)
+	err = store.Save(ctx, m)
 	require.NoError(t, err)
 	assert.Equal(t, uint64(2), m.ID)
 
-	m3, err := store.Load()
+	m3, err := store.Load(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, uint64(2), m3.ID)
 }
 
 func TestStore_LoadErrors(t *testing.T) {
+	ctx := context.Background()
 	dir := t.TempDir()
 	store := NewStore(blobstore.NewLocalStore(dir))
 
@@ -105,7 +108,7 @@ func TestStore_LoadErrors(t *testing.T) {
 	err := os.WriteFile(currentPath, []byte("MANIFEST-999999.json"), 0644)
 	require.NoError(t, err)
 
-	_, err = store.Load()
+	_, err = store.Load(ctx)
 	assert.Error(t, err) // Should fail to read the manifest file
 }
 
@@ -132,6 +135,7 @@ func (m MockBlobStore) Delete(ctx context.Context, name string) error           
 func (m MockBlobStore) List(ctx context.Context, prefix string) ([]string, error) { return nil, nil }
 
 func TestStore_SaveErrors(t *testing.T) {
+	ctx := context.Background()
 	// Test failure during Put
 	mockStore := MockBlobStore{
 		PutFunc: func(ctx context.Context, name string, data []byte) error {
@@ -140,7 +144,7 @@ func TestStore_SaveErrors(t *testing.T) {
 	}
 
 	store := NewStore(mockStore)
-	err := store.Save(&Manifest{})
+	err := store.Save(ctx, &Manifest{})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "simulated put error")
 }

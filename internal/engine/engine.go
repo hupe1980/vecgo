@@ -503,7 +503,7 @@ func (e *Engine) init() (*Engine, error) {
 	var err error
 
 	if e.targetVersion > 0 {
-		m, err = mStore.LoadVersion(e.targetVersion)
+		m, err = mStore.LoadVersion(e.ctx, e.targetVersion)
 		if err != nil {
 			return nil, fmt.Errorf("failed to load version %d: %w", e.targetVersion, err)
 		}
@@ -538,7 +538,7 @@ func (e *Engine) init() (*Engine, error) {
 			e.logger.Info("TimeTravel selected version", "id", m.ID, "created", m.CreatedAt.Format(time.RFC3339Nano), "segments", len(m.Segments))
 		}
 	} else {
-		m, err = mStore.Load()
+		m, err = mStore.Load(e.ctx)
 	}
 
 	if err != nil {
@@ -548,8 +548,6 @@ func (e *Engine) init() (*Engine, error) {
 				return nil, fmt.Errorf("creating new index requires WithDimension and WithMetric options")
 			}
 			m = manifest.New(e.dim, e.metric.String())
-		} else if errors.Is(err, manifest.ErrIncompatibleVersion) {
-			return nil, fmt.Errorf("%w: %w", ErrIncompatibleFormat, err)
 		} else {
 			return nil, fmt.Errorf("failed to load manifest: %w", err)
 		}
@@ -2058,7 +2056,7 @@ func (e *Engine) Commit(ctx context.Context) (err error) {
 	e.manifest.MaxLSN = flushLSN
 
 	mStore := manifest.NewStore(e.manifestStore)
-	if err := mStore.Save(e.manifest); err != nil {
+	if err := mStore.Save(ctx, e.manifest); err != nil {
 		return err
 	}
 
@@ -2381,7 +2379,7 @@ func (e *Engine) persistPKIndex() error {
 	// If we update MaxLSN, recovery will skip WAL replay for the active MemTable, losing data.
 
 	store := manifest.NewStore(e.manifestStore)
-	if err := store.Save(&newManifest); err != nil {
+	if err := store.Save(e.ctx, &newManifest); err != nil {
 		return err
 	}
 
