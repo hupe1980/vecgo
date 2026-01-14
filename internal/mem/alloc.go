@@ -13,28 +13,28 @@ const Alignment = 64
 // Note: This function allocates slightly more memory than requested to ensure alignment.
 // The underlying array is kept alive by the returned slice.
 func AllocAligned(size int) []byte {
-	if size == 0 {
+	if size <= 0 {
 		return nil
 	}
 
-	// Allocate size + alignment to ensure we can find an aligned offset
+	// Allocate size + alignment-1 to ensure we can find an aligned offset
 	// We need enough space to shift the start pointer up to Alignment-1 bytes
-	totalSize := size + Alignment
+	totalSize := size + Alignment - 1
 	buf := make([]byte, totalSize)
 
 	// Calculate the offset to the first aligned byte
 	ptr := unsafe.Pointer(&buf[0])
 	addr := uintptr(ptr)
-	offset := (Alignment - (addr & (Alignment - 1))) & (Alignment - 1)
+	offset := int((Alignment - (addr & (Alignment - 1))) & (Alignment - 1))
 
 	// Return the slice starting at the aligned offset
-	return buf[offset : offset+uintptr(size)]
+	return buf[offset : offset+size]
 }
 
 // AllocAlignedFloat32 allocates a float32 slice of the given size with 64-byte alignment.
 // The returned slice is guaranteed to start at a memory address divisible by 64.
 func AllocAlignedFloat32(size int) []float32 {
-	if size == 0 {
+	if size <= 0 {
 		return nil
 	}
 
@@ -50,7 +50,7 @@ func AllocAlignedFloat32(size int) []float32 {
 
 // AllocAlignedInt8 allocates an int8 slice of the given size with 64-byte alignment.
 func AllocAlignedInt8(size int) []int8 {
-	if size == 0 {
+	if size <= 0 {
 		return nil
 	}
 	byteSlice := AllocAligned(size)
