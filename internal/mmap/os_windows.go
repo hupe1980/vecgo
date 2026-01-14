@@ -64,8 +64,11 @@ func osMapAnon(size int) ([]byte, func([]byte) error, error) {
 }
 
 func osAdvise(data []byte, pattern AccessPattern) error {
-	// Windows does not have a direct equivalent to madvise for file mappings in the same way.
-	// PrefetchVirtualMemory could be used, but it's more complex.
-	// For now, this is a no-op as per the plan.
+	// Windows does not have a direct equivalent to madvise.
+	// PrefetchVirtualMemory could be used for AccessWillNeed, but requires
+	// Windows 8+ and more complex setup. For now, this is a no-op.
+	// The OS page cache will still work effectively for sequential access.
+	_ = data
+	_ = pattern
 	return nil
 }
