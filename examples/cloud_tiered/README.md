@@ -37,7 +37,7 @@ import (
 s3Store, _ := s3.New(ctx, "my-bucket", s3.WithPrefix("vectors/"))
 
 // Open with remote backend (read-only for search nodes)
-eng, err := vecgo.Open(vecgo.Remote(s3Store),
+eng, err := vecgo.Open(ctx, vecgo.Remote(s3Store),
     vecgo.ReadOnly(),
     vecgo.WithCacheDir("/tmp/cache"),
     vecgo.WithBlockCacheSize(64 * 1024 * 1024),
@@ -82,13 +82,13 @@ import "github.com/hupe1980/vecgo/blobstore/s3"
 
 // Writer node (builds index)
 s3Store, _ := s3.New(ctx, "my-bucket", s3.WithPrefix("vectors/prod/"))
-db, _ := vecgo.Open(vecgo.Remote(s3Store), vecgo.Create(128, vecgo.MetricL2))
+db, _ := vecgo.Open(ctx, vecgo.Remote(s3Store), vecgo.Create(128, vecgo.MetricL2))
 // ... insert vectors ...
 db.Commit(ctx)
 db.Close()
 
 // Reader nodes (stateless search)
-db, _ := vecgo.Open(vecgo.Remote(s3Store),
+db, _ := vecgo.Open(ctx, vecgo.Remote(s3Store),
     vecgo.ReadOnly(),
     vecgo.WithCacheDir("/fast/nvme"),
 )

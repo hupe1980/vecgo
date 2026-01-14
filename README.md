@@ -72,7 +72,7 @@ func main() {
     ctx := context.Background()
 
     // Create a new index (128 dimensions, L2 distance)
-    db, err := vecgo.Open(vecgo.Local("./data"), vecgo.Create(128, vecgo.MetricL2))
+    db, err := vecgo.Open(ctx, vecgo.Local("./data"), vecgo.Create(128, vecgo.MetricL2))
     if err != nil {
         log.Fatal(err)
     }
@@ -120,7 +120,7 @@ func main() {
 
 ```go
 // Dimension and metric are auto-loaded from manifest
-db, err := vecgo.Open(vecgo.Local("./data"))
+db, err := vecgo.Open(ctx, vecgo.Local("./data"))
 ```
 
 ### ☁️ Cloud Storage (S3)
@@ -135,13 +135,13 @@ import (
 store, _ := s3.New(ctx, "my-bucket", s3.WithPrefix("vectors/"))
 
 // Open with remote backend
-db, err := vecgo.Open(vecgo.Remote(store), vecgo.Create(128, vecgo.MetricL2))
+db, err := vecgo.Open(ctx, vecgo.Remote(store), vecgo.Create(128, vecgo.MetricL2))
 
 // Or read-only for search nodes
-db, err := vecgo.Open(vecgo.Remote(store), vecgo.ReadOnly())
+db, err := vecgo.Open(ctx, vecgo.Remote(store), vecgo.ReadOnly())
 
 // With explicit cache directory
-db, err := vecgo.Open(vecgo.Remote(store),
+db, err := vecgo.Open(ctx, vecgo.Remote(store),
     vecgo.WithCacheDir("/fast/nvme"),
     vecgo.WithBlockCacheSize(64 * 1024 * 1024),
 )
@@ -156,7 +156,7 @@ schema := metadata.Schema{
     "price":    metadata.FieldTypeFloat,
 }
 
-db, _ := vecgo.Open(vecgo.Local("./data"),
+db, _ := vecgo.Open(ctx, vecgo.Local("./data"),
     vecgo.Create(128, vecgo.MetricL2),
     vecgo.WithSchema(schema),
 )
