@@ -471,6 +471,54 @@ func (s *shard) Fetch(ctx context.Context, rows []uint32, cols []string) (segmen
 	return batch, nil
 }
 
+// FetchIntoReqs fetches data for the given fetch requests and writes directly into the provided batch.
+// This is an optimized path that avoids allocating intermediate batches and separate rowIDs/indices slices.
+func (s *shard) FetchIntoReqs(ctx context.Context, reqs []fetchReq, batch *segment.SimpleRecordBatch) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.idx == nil {
+		return fmt.Errorf("memtable is closed")
+	}
+
+	fetchVectors := batch.Vectors != nil
+	fetchMetadata := batch.Metadatas != nil
+	fetchPayload := batch.Payloads != nil
+
+	for _, r := range reqs {
+		rowID := r.rowID
+		dstIdx := r.origIdx
+
+		if id, ok := s.ids.Get(rowID); ok {
+			batch.IDs[dstIdx] = id
+		} else {
+			return fmt.Errorf("rowID %d out of bounds (count=%d, shard=%d)", rowID, uint32(s.ids.Count()), s.shardIdx)
+		}
+
+		if fetchVectors {
+			vec, ok := s.vectors.GetVector(model.RowID(rowID))
+			if !ok {
+				return fmt.Errorf("vector not found for rowID %d", rowID)
+			}
+			batch.Vectors[dstIdx] = vec
+		}
+
+		if fetchMetadata {
+			if interned, ok := s.metadata.Get(rowID); ok && interned != nil {
+				batch.Metadatas[dstIdx] = metadata.Unintern(interned)
+			}
+		}
+
+		if fetchPayload {
+			if pl, ok := s.payloads.Get(rowID); ok {
+				batch.Payloads[dstIdx] = pl
+			}
+		}
+	}
+
+	return nil
+}
+
 func (s *shard) FetchIDs(ctx context.Context, rows []uint32, dst []model.ID) error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

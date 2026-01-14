@@ -22,11 +22,28 @@ const (
 	rowIdMask  = (1 << (32 - shardBits)) - 1 // 28 bits
 )
 
+// fetchReq represents a fetch request with the original index and shard-local row ID.
+type fetchReq struct {
+	origIdx int
+	rowID   uint32
+}
+
+// fetchReqSlices is used for sync.Pool to avoid SA6002 allocation issue.
+type fetchReqSlices [][]fetchReq
+
 // Pool for rerank shard dispatch slices to reduce allocations in hot path
 var rerankByShardPool = sync.Pool{
 	New: func() any {
 		// Pre-allocate slice of slices
 		s := make([][]model.Candidate, shardCount)
+		return &s
+	},
+}
+
+// Pool for fetch shard request dispatch slices
+var fetchShardReqPool = sync.Pool{
+	New: func() any {
+		s := make(fetchReqSlices, shardCount)
 		return &s
 	},
 }
@@ -257,14 +274,6 @@ func (m *MemTable) Rerank(ctx context.Context, q []float32, cands []model.Candid
 func (m *MemTable) Fetch(ctx context.Context, rows []uint32, cols []string) (segment.RecordBatch, error) {
 	total := len(rows)
 
-	// We need to hold partial results until merge.
-	// But `segment.RecordBatch` is interface.
-	// `memtable` uses `SimpleRecordBatch`.
-	// We can construct a combined batch.
-
-	resBatch := &segment.SimpleRecordBatch{
-		IDs: make([]model.ID, total),
-	}
 	// Detect columns
 	fetchVectors := cols == nil
 	fetchMetadata := cols == nil
@@ -282,6 +291,11 @@ func (m *MemTable) Fetch(ctx context.Context, rows []uint32, cols []string) (seg
 			}
 		}
 	}
+
+	// Allocate the result batch once - shards write directly into it
+	resBatch := &segment.SimpleRecordBatch{
+		IDs: make([]model.ID, total),
+	}
 	if fetchVectors {
 		resBatch.Vectors = make([][]float32, total)
 	}
@@ -292,53 +306,46 @@ func (m *MemTable) Fetch(ctx context.Context, rows []uint32, cols []string) (seg
 		resBatch.Payloads = make([][]byte, total)
 	}
 
-	type req struct {
-		origIdx int
-		rowID   uint32
-	}
-	shardReqs := make([][]req, shardCount)
+	// Get pooled shard request slices
+	shardReqsPtr := fetchShardReqPool.Get().(*fetchReqSlices)
+	shardReqs := *shardReqsPtr
+
+	// Dispatch rows to shards
 	for i, r := range rows {
 		sIdx := r >> 28
 		if int(sIdx) >= shardCount {
+			// Reset and return to pool before returning error
+			for j := range shardReqs {
+				shardReqs[j] = shardReqs[j][:0]
+			}
+			fetchShardReqPool.Put(shardReqsPtr)
 			return nil, fmt.Errorf("invalid rowID %d", r)
 		}
-		shardReqs[sIdx] = append(shardReqs[sIdx], req{i, r & uint32(rowIdMask)})
+		shardReqs[sIdx] = append(shardReqs[sIdx], fetchReq{i, r & uint32(rowIdMask)})
 	}
 
+	// Process each shard's requests
 	for sIdx, reqs := range shardReqs {
 		if len(reqs) == 0 {
 			continue
 		}
 
-		rowIDs := make([]uint32, len(reqs))
-		for k, r := range reqs {
-			rowIDs[k] = r.rowID
-		}
-
-		subBatch, err := m.shards[sIdx].Fetch(ctx, rowIDs, cols)
-		if err != nil {
+		// Use FetchInto to write directly into resBatch, avoiding intermediate allocation
+		if err := m.shards[sIdx].FetchIntoReqs(ctx, reqs, resBatch); err != nil {
+			// Reset and return to pool before returning error
+			for j := range shardReqs {
+				shardReqs[j] = shardReqs[j][:0]
+			}
+			fetchShardReqPool.Put(shardReqsPtr)
 			return nil, err
 		}
-
-		// Copy back
-		simple, ok := subBatch.(*segment.SimpleRecordBatch)
-		if !ok {
-			return nil, fmt.Errorf("unexpected batch type")
-		}
-
-		for k, r := range reqs {
-			resBatch.IDs[r.origIdx] = simple.IDs[k]
-			if fetchVectors {
-				resBatch.Vectors[r.origIdx] = simple.Vectors[k]
-			}
-			if fetchMetadata {
-				resBatch.Metadatas[r.origIdx] = simple.Metadatas[k]
-			}
-			if fetchPayload {
-				resBatch.Payloads[r.origIdx] = simple.Payloads[k]
-			}
-		}
 	}
+
+	// Reset slices and return to pool
+	for j := range shardReqs {
+		shardReqs[j] = shardReqs[j][:0]
+	}
+	fetchShardReqPool.Put(shardReqsPtr)
 
 	return resBatch, nil
 }

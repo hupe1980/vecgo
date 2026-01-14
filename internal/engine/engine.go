@@ -113,6 +113,7 @@ type Engine struct {
 	logger *slog.Logger
 
 	tombstoneFilterPool sync.Pool
+	batchSearchSem      chan struct{} // Reusable semaphore for BatchSearch
 }
 
 // FlushConfig holds configuration for automatic flushing.
@@ -361,12 +362,13 @@ func Open(dir string, dim int, metric distance.Metric, opts ...Option) (*Engine,
 // The ctx parameter is used for initialization I/O (loading manifest, segments, etc.).
 func OpenLocal(ctx context.Context, dir string, opts ...Option) (*Engine, error) {
 	e := &Engine{
-		dir:          dir,
-		policy:       &BoundedSizeTieredPolicy{Threshold: 4},
-		compactionCh: make(chan struct{}, 1),
-		flushCh:      make(chan struct{}, 1),
-		closeCh:      make(chan struct{}),
-		metrics:      &NoopMetricsObserver{},
+		dir:            dir,
+		policy:         &BoundedSizeTieredPolicy{Threshold: 4},
+		compactionCh:   make(chan struct{}, 1),
+		flushCh:        make(chan struct{}, 1),
+		closeCh:        make(chan struct{}),
+		metrics:        &NoopMetricsObserver{},
+		batchSearchSem: make(chan struct{}, 100), // Reusable semaphore for BatchSearch concurrency
 	}
 
 	for _, opt := range opts {
@@ -387,14 +389,15 @@ func OpenLocal(ctx context.Context, dir string, opts ...Option) (*Engine, error)
 // The ctx parameter is used for initialization I/O (loading manifest, segments, etc.).
 func OpenRemote(ctx context.Context, store blobstore.BlobStore, opts ...Option) (*Engine, error) {
 	e := &Engine{
-		policy:        &BoundedSizeTieredPolicy{Threshold: 4},
-		compactionCh:  make(chan struct{}, 1),
-		flushCh:       make(chan struct{}, 1),
-		closeCh:       make(chan struct{}),
-		metrics:       &NoopMetricsObserver{},
-		isCloud:       true,
-		store:         store,
-		manifestStore: store,
+		policy:         &BoundedSizeTieredPolicy{Threshold: 4},
+		compactionCh:   make(chan struct{}, 1),
+		flushCh:        make(chan struct{}, 1),
+		closeCh:        make(chan struct{}),
+		metrics:        &NoopMetricsObserver{},
+		isCloud:        true,
+		store:          store,
+		manifestStore:  store,
+		batchSearchSem: make(chan struct{}, 100), // Reusable semaphore for BatchSearch concurrency
 	}
 
 	for _, opt := range opts {
@@ -1394,18 +1397,16 @@ func (e *Engine) BatchSearch(ctx context.Context, queries [][]float32, k int, op
 	var errOnce sync.Once
 	var firstErr error
 
-	// Limit concurrency to avoid exploding goroutines
-	sem := make(chan struct{}, 100) // Max 100 concurrent searches
-
 	for i, q := range queries {
 		wg.Add(1)
 		go func(i int, q []float32) {
 			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
+			e.batchSearchSem <- struct{}{}
+			defer func() { <-e.batchSearchSem }()
 
 			next := e.SearchIter(ctx, q, k, opts...)
-			var batch []model.Candidate
+			// Pre-allocate result slice with expected capacity
+			batch := make([]model.Candidate, 0, k)
 			for c, err := range next {
 				if err != nil {
 					errOnce.Do(func() {
