@@ -22,7 +22,7 @@ func TestEngine_Flush_DiskFull(t *testing.T) {
 	// Setup FaultyFS with no initial limit
 	baseFS := fs.LocalFS{}
 	faultyFS := fs.NewFaultyFS(baseFS)
-	faultyFS.Err = fmt.Errorf("fake disk full")
+	faultyFS.SetError(fmt.Errorf("fake disk full"))
 
 	dir := t.TempDir()
 
@@ -68,7 +68,7 @@ func TestEngine_Compaction_DiskFull(t *testing.T) {
 	// Setup FaultyFS
 	baseFS := fs.LocalFS{}
 	faultyFS := fs.NewFaultyFS(baseFS)
-	faultyFS.Err = fmt.Errorf("fake disk full during compaction")
+	faultyFS.SetError(fmt.Errorf("fake disk full during compaction"))
 
 	dir := t.TempDir()
 
