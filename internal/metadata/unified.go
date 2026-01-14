@@ -113,7 +113,7 @@ func (ui *UnifiedIndex) SetDocumentProvider(provider DocumentProvider) {
 // This method supports all operators, including numeric comparisons like OpLessThan.
 // For operators not directly supported by the inverted index (e.g. OpLessThan),
 // it falls back to scanning all unique values in the index.
-// NOTE: The returned bitmap is from a pool. Caller should call PutBitmap when done.
+// NOTE: The returned bitmap is from a pool. Caller should call PutPooledBitmap when done.
 func (ui *UnifiedIndex) EvaluateFilter(fs *metadata.FilterSet) *LocalBitmap {
 	if fs == nil || len(fs.Filters) == 0 {
 		return nil // All matches
@@ -131,14 +131,14 @@ func (ui *UnifiedIndex) EvaluateFilter(fs *metadata.FilterSet) *LocalBitmap {
 		case metadata.OpEqual:
 			b := ui.getBitmapLocked(f.Key, f.Value)
 			if b != nil {
-				current = GetBitmap()
+				current = GetPooledBitmap()
 				current.Or(b) // Copy via Or
 			} else {
-				return GetBitmap() // Empty bitmap - no match for this filter
+				return GetPooledBitmap() // Empty bitmap - no match for this filter
 			}
 
 		case metadata.OpIn:
-			current = GetBitmap()
+			current = GetPooledBitmap()
 			arr, ok := f.Value.AsArray()
 			if ok {
 				for _, v := range arr {
@@ -154,14 +154,14 @@ func (ui *UnifiedIndex) EvaluateFilter(fs *metadata.FilterSet) *LocalBitmap {
 
 		default:
 			// Unsupported operator - fall back to empty (will fail filter)
-			return GetBitmap()
+			return GetPooledBitmap()
 		}
 
 		if result == nil {
 			result = current
 		} else {
 			result.And(current)
-			PutBitmap(current) // Return intermediate bitmap to pool
+			PutPooledBitmap(current) // Return intermediate bitmap to pool
 		}
 
 		if result.IsEmpty() {
@@ -173,8 +173,17 @@ func (ui *UnifiedIndex) EvaluateFilter(fs *metadata.FilterSet) *LocalBitmap {
 }
 
 // evaluateNumericFilter handles comparison operators by scanning the inverted index.
+//
+// Performance note: This scans ALL distinct values for the field, so complexity
+// is O(cardinality) where cardinality is the number of unique values for the field.
+// Best suited for:
+//   - Low-cardinality fields (e.g., status, category)
+//   - Highly selective queries that filter most values
+//
+// For high-cardinality numeric fields (e.g., timestamps, prices with many unique values),
+// consider using pre-filtered candidate sets or range-indexed structures.
 func (ui *UnifiedIndex) evaluateNumericFilter(f metadata.Filter) *LocalBitmap {
-	result := GetBitmap() // Use pooled bitmap
+	result := GetPooledBitmap() // Use pooled bitmap
 
 	valueMap, ok := ui.inverted[unique.Make(f.Key)]
 	if !ok {
@@ -639,13 +648,14 @@ func (ui *UnifiedIndex) applyInFilter(filter metadata.Filter, dst *LocalBitmap, 
 	} else {
 		// We need to intersect dst with (Union of values)
 		// dst = dst AND (v1 OR v2 OR ...)
-		scratch := NewLocalBitmap()
+		scratch := GetPooledBitmap() // Use pooled bitmap
 		for _, v := range arr {
 			if b := ui.getBitmapLocked(filter.Key, v); b != nil {
 				scratch.Or(b)
 			}
 		}
 		dst.And(scratch)
+		PutPooledBitmap(scratch) // Return to pool
 	}
 	return true
 }
@@ -693,7 +703,7 @@ func (ui *UnifiedIndex) ScanFilter(fs *metadata.FilterSet) []model.RowID {
 //
 // Returns:
 //   - Fast path: If compilation succeeds, returns bitmap-based O(1) lookup
-//   - Slow path: Falls back to scanning + evaluating each document
+//   - Slow path: Falls back to scanning + evaluating each document (locks per call)
 func (ui *UnifiedIndex) CreateFilterFunc(fs *metadata.FilterSet) func(model.RowID) bool {
 	if fs == nil || len(fs.Filters) == 0 {
 		return nil
@@ -709,11 +719,11 @@ func (ui *UnifiedIndex) CreateFilterFunc(fs *metadata.FilterSet) func(model.RowI
 	}
 
 	// Slow path: evaluate filter for each ID
-	ui.mu.RLock()
-	defer ui.mu.RUnlock()
-
+	// Lock per call to avoid holding lock across function lifetime
 	return func(id model.RowID) bool {
+		ui.mu.RLock()
 		doc, ok := ui.documents[id]
+		ui.mu.RUnlock()
 		if !ok {
 			return false
 		}

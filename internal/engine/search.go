@@ -189,7 +189,7 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 					// Return bitmaps to pool and clear references
 					for i := range bitmaps {
 						if lb, ok := bitmaps[i].bitmap.(*imetadata.LocalBitmap); ok {
-							imetadata.PutBitmap(lb)
+							imetadata.PutPooledBitmap(lb)
 						}
 						bitmaps[i] = segBitmap{}
 					}

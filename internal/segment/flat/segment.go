@@ -907,7 +907,7 @@ func (s *Segment) EvaluateFilter(ctx context.Context, filter *metadata.FilterSet
 	}
 
 	// Slow path: scan all documents (fallback when index not built)
-	result := imetadata.GetBitmap() // Use pooled bitmap
+	result := imetadata.GetPooledBitmap() // Use pooled bitmap
 
 	// Periodic cancellation check interval
 	const checkInterval = 1024
@@ -919,7 +919,7 @@ func (s *Segment) EvaluateFilter(ctx context.Context, filter *metadata.FilterSet
 			lastCheck = i
 			select {
 			case <-ctx.Done():
-				imetadata.PutBitmap(result)
+				imetadata.PutPooledBitmap(result)
 				return nil, ctx.Err()
 			default:
 			}
@@ -932,7 +932,7 @@ func (s *Segment) EvaluateFilter(ctx context.Context, filter *metadata.FilterSet
 			if start < end {
 				mdBytes := s.metadataBlob[start:end]
 				if err := md.UnmarshalBinary(mdBytes); err != nil {
-					imetadata.PutBitmap(result)
+					imetadata.PutPooledBitmap(result)
 					return nil, err
 				}
 			}
