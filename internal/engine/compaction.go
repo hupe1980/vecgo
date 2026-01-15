@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/hupe1980/vecgo/blobstore"
@@ -79,35 +77,11 @@ func (e *Engine) CompactWithContext(ctx context.Context, segmentIDs []model.Segm
 	// --- Phase 2: Merge (No Lock) ---
 
 	filename := fmt.Sprintf("segment_%d.bin", newSegID)
-	path := filepath.Join(e.dir, filename)
-	tmpPath := path + ".tmp"
-
 	payloadFilename := fmt.Sprintf("segment_%d.payload", newSegID)
-	payloadPath := filepath.Join(e.dir, payloadFilename)
-	payloadTmpPath := payloadPath + ".tmp"
 
-	f, err := e.fs.OpenFile(tmpPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
-	if err != nil {
-		return err
-	}
-	// Defer close in case of error, but we will close explicitly on success
-	defer func() {
-		if f != nil {
-			_ = f.Close()            // Intentionally ignore: cleanup path
-			_ = e.fs.Remove(tmpPath) // Intentionally ignore: best-effort cleanup
-		}
-	}()
-
-	payloadF, err := e.fs.OpenFile(payloadTmpPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if payloadF != nil {
-			_ = payloadF.Close()            // Intentionally ignore: cleanup path
-			_ = e.fs.Remove(payloadTmpPath) // Intentionally ignore: best-effort cleanup
-		}
-	}()
+	// Use SeekableBuffer for DiskANN compatibility (needs Seek to update header)
+	segmentBuf := NewSeekableBuffer()
+	payloadBuf := NewSeekableBuffer()
 
 	// Calculate total rows to estimate k (partitions) or choose segment type
 	var totalRows uint32
@@ -115,9 +89,9 @@ func (e *Engine) CompactWithContext(ctx context.Context, segmentIDs []model.Segm
 		totalRows += seg.RowCount()
 	}
 
-	var writer io.Writer = f
+	var writer io.Writer = segmentBuf
 	if e.resourceController != nil {
-		writer = resource.NewRateLimitedWriter(ctx, f, e.resourceController)
+		writer = resource.NewRateLimitedWriter(ctx, segmentBuf, e.resourceController)
 	}
 
 	var (
@@ -147,7 +121,7 @@ func (e *Engine) CompactWithContext(ctx context.Context, segmentIDs []model.Segm
 		}
 		opts.ResourceController = e.resourceController
 
-		diskannWriter = diskann.NewWriter(writer, payloadF, uint64(newSegID), e.dim, e.metric, opts)
+		diskannWriter = diskann.NewWriter(writer, payloadBuf, uint64(newSegID), e.dim, e.metric, opts)
 
 		addFunc = func(id model.ID, vec []float32, md metadata.Document, payload []byte) error {
 			return diskannWriter.Add(id, vec, md, payload)
@@ -166,7 +140,7 @@ func (e *Engine) CompactWithContext(ctx context.Context, segmentIDs []model.Segm
 		}
 
 		quantType := e.compactionConfig.FlatQuantizationType
-		w := flat.NewWriter(writer, payloadF, newSegID, e.dim, e.metric, k, quantType)
+		w := flat.NewWriter(writer, payloadBuf, newSegID, e.dim, e.metric, k, quantType)
 
 		addFunc = w.Add
 		flushFunc = func() error {
@@ -252,32 +226,21 @@ func (e *Engine) CompactWithContext(ctx context.Context, segmentIDs []model.Segm
 		}
 	}
 
-	if err := payloadF.Sync(); err != nil {
-		return err
+	// Upload segment and payload to store atomically
+	if err := e.store.Put(ctx, filename, segmentBuf.Bytes()); err != nil {
+		return fmt.Errorf("failed to upload compacted segment: %w", err)
 	}
-	if err := f.Sync(); err != nil {
-		return err
-	}
-	if err := payloadF.Close(); err != nil {
-		return err
-	}
-	payloadF = nil // Prevent deferred close/remove
-	if err := f.Close(); err != nil {
-		return err
-	}
-	f = nil // Prevent defer close/remove
 
-	// Atomic Rename (publish) + dir fsync
-	if err := e.fs.Rename(tmpPath, path); err != nil {
-		return err
+	if payloadBuf.Len() > 0 {
+		if err := e.store.Put(ctx, payloadFilename, payloadBuf.Bytes()); err != nil {
+			// Best-effort cleanup of segment
+			_ = e.store.Delete(ctx, filename)
+			return fmt.Errorf("failed to upload compacted payload: %w", err)
+		}
 	}
-	if err := e.fs.Rename(payloadTmpPath, payloadPath); err != nil {
-		_ = e.fs.Remove(path)
-		return err
-	}
-	if err := syncDir(e.fs, e.dir); err != nil {
-		return err
-	}
+
+	newSegSize := int64(segmentBuf.Len())
+	e.metrics.OnThroughput("compaction_write", newSegSize)
 
 	// Open the new segment to verify and have it ready
 	var payloadBlob blobstore.Blob
@@ -285,22 +248,16 @@ func (e *Engine) CompactWithContext(ctx context.Context, segmentIDs []model.Segm
 		payloadBlob = b
 	} else if !errors.Is(err, blobstore.ErrNotFound) {
 		fmt.Printf("Compaction failed: open payload blob: %v\n", err)
-		_ = e.fs.Remove(path)        // Intentionally ignore: best-effort cleanup
-		_ = e.fs.Remove(payloadPath) // Intentionally ignore: best-effort cleanup
+		_ = e.store.Delete(ctx, filename)        // Intentionally ignore: best-effort cleanup
+		_ = e.store.Delete(ctx, payloadFilename) // Intentionally ignore: best-effort cleanup
 		return err
 	}
 
 	newSeg, err := openSegment(ctx, e.store, filename, e.blockCache, payloadBlob)
 	if err != nil {
-		_ = e.fs.Remove(path)        // Intentionally ignore: best-effort cleanup
-		_ = e.fs.Remove(payloadPath) // Intentionally ignore: best-effort cleanup
+		_ = e.store.Delete(ctx, filename)        // Intentionally ignore: best-effort cleanup
+		_ = e.store.Delete(ctx, payloadFilename) // Intentionally ignore: best-effort cleanup
 		return err
-	}
-
-	var newSegSize int64
-	if stat, err := e.fs.Stat(path); err == nil {
-		newSegSize = stat.Size()
-		e.metrics.OnThroughput("compaction_write", newSegSize)
 	}
 
 	// --- Phase 3: Commit (Lock) ---
@@ -314,8 +271,9 @@ func (e *Engine) CompactWithContext(ctx context.Context, segmentIDs []model.Segm
 	for _, id := range segmentIDs {
 		if _, ok := currentSnap.segments[id]; !ok {
 			// Abort! Segments disappeared (maybe another compaction?)
-			_ = newSeg.Close()    // Intentionally ignore: cleanup path
-			_ = e.fs.Remove(path) // Intentionally ignore: best-effort cleanup
+			_ = newSeg.Close()                       // Intentionally ignore: cleanup path
+			_ = e.store.Delete(ctx, filename)        // Intentionally ignore: best-effort cleanup
+			_ = e.store.Delete(ctx, payloadFilename) // Intentionally ignore: best-effort cleanup
 			return fmt.Errorf("compaction aborted: segment %d missing", id)
 		}
 	}
@@ -352,10 +310,10 @@ func (e *Engine) CompactWithContext(ctx context.Context, segmentIDs []model.Segm
 	tempManifest.PKIndex = manifest.PKIndexInfo{}
 
 	// Save Manifest FIRST
-	if err := manifest.NewStore(e.manifestStore).Save(ctx, &tempManifest); err != nil {
-		_ = newSeg.Close()           // Intentionally ignore: cleanup path
-		_ = e.fs.Remove(path)        // Intentionally ignore: best-effort cleanup
-		_ = e.fs.Remove(payloadPath) // Intentionally ignore: best-effort cleanup
+	if err := manifest.NewStore(e.store).Save(ctx, &tempManifest); err != nil {
+		_ = newSeg.Close()                       // Intentionally ignore: cleanup path
+		_ = e.store.Delete(ctx, filename)        // Intentionally ignore: best-effort cleanup
+		_ = e.store.Delete(ctx, payloadFilename) // Intentionally ignore: best-effort cleanup
 		return fmt.Errorf("failed to save manifest: %w", err)
 	}
 
@@ -421,12 +379,12 @@ func (e *Engine) CompactWithContext(ctx context.Context, segmentIDs []model.Segm
 		}
 		delete(newSnap.segments, id)
 
-		oldPath := filepath.Join(e.dir, fmt.Sprintf("segment_%d.bin", id))
-		oldPayloadPath := filepath.Join(e.dir, fmt.Sprintf("segment_%d.payload", id))
+		oldFilename := fmt.Sprintf("segment_%d.bin", id)
+		oldPayloadFilename := fmt.Sprintf("segment_%d.payload", id)
 		if seg, ok := currentSnap.segments[id]; ok {
 			seg.SetOnClose(func() {
-				_ = e.fs.Remove(oldPath)        // Intentionally ignore: best-effort cleanup
-				_ = e.fs.Remove(oldPayloadPath) // Intentionally ignore: best-effort cleanup
+				_ = e.store.Delete(context.Background(), oldFilename)        // Intentionally ignore: best-effort cleanup
+				_ = e.store.Delete(context.Background(), oldPayloadFilename) // Intentionally ignore: best-effort cleanup
 			})
 		}
 	}

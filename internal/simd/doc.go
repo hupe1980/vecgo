@@ -10,10 +10,10 @@
 //
 // # Operations
 //
-//   - Distance: Dot, SquaredL2, Cosine
+//   - Distance: Dot, SquaredL2, Hamming
 //   - Batch: DotBatch, SquaredL2Batch
 //   - Quantized: PQ ADC lookup, SQ8 L2, INT4 L2
-//   - Utility: Scale, F16→F32 conversion
+//   - Utility: ScaleInPlace
 //
 // # Performance
 //

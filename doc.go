@@ -33,7 +33,7 @@
 //
 // # Durability Model
 //
-// Vecgo uses commit-oriented durability (like LanceDB/Git):
+// Vecgo uses commit-oriented durability (append-only versioned commits):
 //
 //	db.Insert(ctx, vec, nil, nil)  // buffered in memory
 //	db.Commit(ctx)                 // durable after this

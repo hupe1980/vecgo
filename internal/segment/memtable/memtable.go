@@ -153,6 +153,192 @@ func (m *MemTable) InsertWithPayload(ctx context.Context, id model.ID, vec []flo
 	return (model.RowID(shardIdx) << 28) | localRowID, nil
 }
 
+// BatchInsertWithPayload inserts multiple vectors efficiently by partitioning by shard
+// and processing each shard in parallel. This minimizes lock contention and amortizes
+// overhead compared to individual inserts.
+func (m *MemTable) BatchInsertWithPayload(ctx context.Context, ids []model.ID, vectors [][]float32, mds []metadata.Document, payloads [][]byte) ([]model.RowID, error) {
+	n := len(ids)
+	if n == 0 {
+		return nil, nil
+	}
+
+	// Pre-allocate result slice
+	rowIDs := make([]model.RowID, n)
+
+	// Partition by shard
+	type shardItem struct {
+		origIdx int
+		id      model.ID
+		vec     []float32
+		md      metadata.Document
+		payload []byte
+	}
+	shardBatches := make([][]shardItem, shardCount)
+	for i := range shardBatches {
+		shardBatches[i] = make([]shardItem, 0, n/shardCount+1)
+	}
+
+	for i, id := range ids {
+		shardIdx := int(id & shardMask)
+		var md metadata.Document
+		var payload []byte
+		if mds != nil && i < len(mds) {
+			md = mds[i]
+		}
+		if payloads != nil && i < len(payloads) {
+			payload = payloads[i]
+		}
+		shardBatches[shardIdx] = append(shardBatches[shardIdx], shardItem{
+			origIdx: i,
+			id:      id,
+			vec:     vectors[i],
+			md:      md,
+			payload: payload,
+		})
+	}
+
+	// Process shards in parallel
+	var wg sync.WaitGroup
+	var errMu sync.Mutex
+	var firstErr error
+
+	for shardIdx := range shardCount {
+		batch := shardBatches[shardIdx]
+		if len(batch) == 0 {
+			continue
+		}
+
+		wg.Add(1)
+		go func(shardIdx int, batch []shardItem) {
+			defer wg.Done()
+
+			s := m.shards[shardIdx]
+
+			// Process all items in this shard under a single lock acquisition
+			s.mu.Lock()
+			defer s.mu.Unlock()
+
+			if s.idx == nil {
+				errMu.Lock()
+				if firstErr == nil {
+					firstErr = fmt.Errorf("memtable shard %d is closed", shardIdx)
+				}
+				errMu.Unlock()
+				return
+			}
+
+			for _, item := range batch {
+				// Check for cancellation
+				if err := ctx.Err(); err != nil {
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = err
+					}
+					errMu.Unlock()
+					return
+				}
+
+				// Check for previous error
+				errMu.Lock()
+				if firstErr != nil {
+					errMu.Unlock()
+					return
+				}
+				errMu.Unlock()
+
+				// Insert into HNSW
+				localRowID, err := s.idx.Insert(ctx, item.vec)
+				if err != nil {
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = err
+					}
+					errMu.Unlock()
+					return
+				}
+
+				// Commit metadata (inlined from commitInsert to avoid lock overhead)
+				var interned metadata.InternedDocument
+				if item.md != nil {
+					interned = metadata.Intern(item.md)
+				}
+
+				idx := int(localRowID)
+				expected := s.ids.Count()
+
+				if uint64(idx) > expected {
+					gap := uint64(idx) - expected
+					for j := range gap {
+						_ = s.idx.Delete(context.Background(), model.RowID(expected+j))
+						s.ids.Append(0)
+						s.metadata.Append(metadata.InternedDocument{})
+						s.payloads.Append(nil)
+					}
+				} else if uint64(idx) < expected {
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = fmt.Errorf("memtable rowID out of sync: expected %d, got %d", expected, idx)
+					}
+					errMu.Unlock()
+					return
+				}
+
+				s.ids.Append(item.id)
+				s.metadata.Append(interned)
+				s.payloads.Append(item.payload)
+
+				// Sync columnar metadata
+				targetLen := idx + 1
+				for key, col := range s.columns {
+					val, hasVal := item.md[key]
+					var v metadata.Value
+					if hasVal {
+						v = val
+					}
+					for col.Len() < targetLen-1 {
+						col.Append(metadata.Value{})
+					}
+					if col.Len() == targetLen {
+						col.Set(idx, v)
+					} else {
+						col.Append(v)
+					}
+				}
+				for key, val := range item.md {
+					if _, exists := s.columns[key]; !exists {
+						col, err := createColumn(val.Kind, 1024)
+						if err == nil {
+							col.Grow(idx)
+							col.Append(val)
+							s.columns[key] = col
+						}
+					}
+				}
+
+				// Encode global RowID
+				if localRowID > rowIdMask {
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = fmt.Errorf("local rowID overflow")
+					}
+					errMu.Unlock()
+					return
+				}
+
+				rowIDs[item.origIdx] = (model.RowID(shardIdx) << 28) | localRowID
+			}
+		}(shardIdx, batch)
+	}
+
+	wg.Wait()
+
+	if firstErr != nil {
+		return nil, firstErr
+	}
+
+	return rowIDs, nil
+}
+
 func (m *MemTable) InsertDeferred(ctx context.Context, id model.ID, vec []float32, md metadata.Document, payload []byte) (model.RowID, error) {
 	shardIdx := int(id & shardMask)
 	s := m.shards[shardIdx]

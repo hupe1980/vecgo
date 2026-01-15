@@ -1,6 +1,6 @@
 # 🧬🔍 Vecgo
 
-![Build Status](https://github.com/hupe1980/vecgo/workflows/build/badge.svg)
+![CI](https://github.com/hupe1980/vecgo/workflows/CI/badge.svg)
 [![Go Reference](https://pkg.go.dev/badge/github.com/hupe1980/vecgo.svg)](https://pkg.go.dev/github.com/hupe1980/vecgo)
 [![goreportcard](https://goreportcard.com/badge/github.com/hupe1980/vecgo)](https://goreportcard.com/report/github.com/hupe1980/vecgo)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
@@ -12,7 +12,7 @@
 - ⚡ **Faster & lighter than external services** — no network overhead, no sidecar, 15MB binary
 - 🔧 **More capable than simple libraries** — durability, MVCC, hybrid search, cloud storage
 - 🎯 **Simpler than CGO wrappers** — pure Go toolchain, static binaries, cross-compilation
-- 🏗️ **Modern architecture** — commit-oriented durability (like LanceDB/Git), no WAL complexity
+- 🏗️ **Modern architecture** — commit-oriented durability (append-only versioned commits), no WAL complexity
 
 ## 🎯 Features
 
@@ -27,19 +27,23 @@
 
 ### 🗜️ Quantization
 
-| Method | Compression | Description |
-|--------|-------------|-------------|
-| **[Product Quantization (PQ)](https://hal.inria.fr/inria-00514462v2/document)** | 8-64× | Learned codebooks for sub-vector encoding |
-| **[Optimized PQ (OPQ)](https://www.microsoft.com/en-us/research/publication/optimized-product-quantization-for-approximate-nearest-neighbor-search/)** | 8-64× | Rotation-optimized PQ (20-30% better reconstruction) |
-| **Scalar Quantization (SQ8)** | 4× | 8-bit per-dimension encoding |
-| **[Binary Quantization](https://arxiv.org/abs/2405.12497)** | 32× | 1-bit per dimension (Hamming distance) |
-| **[RaBitQ](https://arxiv.org/abs/2405.12497)** | 32× | Randomized binary quantization |
-| **INT4** | 8× | 4-bit per dimension |
+Quantization reduces **in-memory index size** for DiskANN segments. Full vectors remain on disk for reranking.
+
+| Method | RAM Reduction | Recall | Best For |
+|--------|---------------|--------|----------|
+| **[Product Quantization (PQ)](https://hal.inria.fr/inria-00514462v2/document)** | 8-64× | 90-95% | Large-scale, high compression |
+| **[Optimized PQ (OPQ)](https://www.microsoft.com/en-us/research/publication/optimized-product-quantization-for-approximate-nearest-neighbor-search/)** | 8-64× | 93-97% | Best recall with compression |
+| **Scalar Quantization (SQ8)** | 4× | 95-99% | General purpose, balanced |
+| **Binary Quantization (BQ)** | 32× | 70-85% | Pre-filtering, coarse search |
+| **[RaBitQ](https://arxiv.org/abs/2405.12497)** | ~30× | 80-90% | Better BQ alternative (SIGMOD '24) |
+| **INT4** | 8× | 90-95% | Memory-constrained |
+
+> 📖 See [Performance Tuning Guide](docs/tuning.md#quantization) for detailed quantization configuration.
 
 ### 🏢 Enterprise Features
 
 - ☁️ **Cloud-Native Storage** — S3/GCS/Azure via pluggable BlobStore interface
-- �� **Commit-Oriented Durability** — Atomic commits with immutable segments
+- 🔒 **Commit-Oriented Durability** — Atomic commits with immutable segments
 - 🔀 **[Hybrid Search](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf)** — BM25 + vector similarity with RRF fusion
 - 📸 **Snapshot Isolation** — Lock-free reads via MVCC
 - ⏰ **Time-Travel** — Query historical snapshots
@@ -123,7 +127,7 @@ func main() {
 db, err := vecgo.Open(ctx, vecgo.Local("./data"))
 ```
 
-### ☁️ Cloud Storage (S3)
+### ☁️ Cloud Storage (Writer/Reader Separation)
 
 ```go
 import (
@@ -131,19 +135,25 @@ import (
     "github.com/hupe1980/vecgo/blobstore/s3"
 )
 
-// Create S3 store
-store, _ := s3.New(ctx, "my-bucket", s3.WithPrefix("vectors/"))
+// === Writer Node (build index locally, then sync to S3) ===
+db, _ := vecgo.Open(ctx, vecgo.Local("/data/vecgo"), vecgo.Create(128, vecgo.MetricL2))
+db.Insert(ctx, vector, nil, nil)
+db.Close()
+// Sync: aws s3 sync /data/vecgo s3://my-bucket/vecgo/
 
-// Open with remote backend
-db, err := vecgo.Open(ctx, vecgo.Remote(store), vecgo.Create(128, vecgo.MetricL2))
+// === Reader Nodes (stateless, horizontally scalable) ===
+store, _ := s3.New(ctx, "my-bucket", s3.WithPrefix("vecgo/"))
 
-// Or read-only for search nodes
-db, err := vecgo.Open(ctx, vecgo.Remote(store), vecgo.ReadOnly())
+// Remote() is automatically read-only
+db, err := vecgo.Open(ctx, vecgo.Remote(store))
 
-// With explicit cache directory
+// Writes return ErrReadOnly
+_, err = db.Insert(ctx, vec, nil, nil)  // err == vecgo.ErrReadOnly
+
+// With explicit cache directory for faster repeated queries
 db, err := vecgo.Open(ctx, vecgo.Remote(store),
     vecgo.WithCacheDir("/fast/nvme"),
-    vecgo.WithBlockCacheSize(64 * 1024 * 1024),
+    vecgo.WithBlockCacheSize(4 << 30),  // 4GB
 )
 ```
 
@@ -202,17 +212,24 @@ err = db.BatchDelete(ctx, ids)
 
 ## 💾 Durability Model
 
-Vecgo uses **commit-oriented durability** — the same model used by LanceDB and Git:
+Vecgo uses **commit-oriented durability** — append-only versioned commits:
 
-```go
-// Insert (buffered in memory, NOT durable)
-db.Insert(ctx, vec1, nil, nil)
-db.Insert(ctx, vec2, nil, nil)
+```mermaid
+sequenceDiagram
+    participant App as Application
+    participant MT as MemTable (RAM)
+    participant Seg as Segment (Disk)
+    participant Man as Manifest
 
-// Commit — this is the durability point
-// Writes immutable segment, updates manifest atomically
-err := db.Commit(ctx)
-// After Commit(), data survives any crash
+    App->>MT: Insert(vector, metadata)
+    Note over MT: Buffered in memory<br/>❌ NOT durable
+    
+    App->>MT: Insert(vector, metadata)
+    
+    App->>Seg: Commit()
+    MT->>Seg: Write immutable segment
+    Seg->>Man: Update manifest atomically
+    Note over Seg,Man: ✅ DURABLE after Commit()
 ```
 
 | State | Survives Crash? |

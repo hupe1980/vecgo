@@ -75,33 +75,18 @@ func main() {
 	os.RemoveAll(baseDir)
 	os.MkdirAll(baseDir, 0755)
 
-	localBuildDir := filepath.Join(baseDir, "builder")
 	s3BucketDir := filepath.Join(baseDir, "s3_bucket")
-	cacheDir := filepath.Join(baseDir, "local_cache")
 	searcherDir := filepath.Join(baseDir, "searcher_state")
 
 	os.MkdirAll(s3BucketDir, 0755)
-	// We don't need cacheDir since the engine manages it inside searcherDir + temp
-	// But in my implementation of Open, I used searcherDir as the root.
-	// If I want to separate cache, I should use WithDiskCache explicit option or let it be in searcherDir.
-	// "Stateless" node usually has one scratch dir.
-	_ = cacheDir
 
-	fmt.Println("🏗️  Building Index locally...")
-	buildIndex(localBuildDir)
-
-	fmt.Println("☁️  Uploading blocks to 'S3'...")
-	copyDir(localBuildDir, s3BucketDir)
+	fmt.Println("🏗️  Building Index directly to 'S3'...")
+	s3Store := NewSimulatedS3Store(s3BucketDir, 20*time.Millisecond)
+	buildIndexRemote(s3Store)
 
 	fmt.Println("🚀 Starting Stateless Search Node...")
 
-	s3Store := NewSimulatedS3Store(s3BucketDir, 20*time.Millisecond)
-
-	// LanceDB-style Read-Only Mode: Truly stateless!
-	// - Commit-oriented durability (no complex WAL)
-	// - No local directory required (uses temp for cache)
-	// - Insert/Delete operations return ErrReadOnly
-	// - Perfect for serverless deployments
+	// Reader nodes: Use Remote() + ReadOnly() for stateless search
 	opts := []vecgo.Option{
 		vecgo.ReadOnly(),                           // Stateless read-only node
 		vecgo.WithCacheDir(searcherDir),            // Optional: specify where to cache blocks
@@ -109,7 +94,7 @@ func main() {
 	}
 
 	startOpen := time.Now()
-	// Open with Remote() backend - the source of truth IS the remote store
+	// Open with Remote() backend - read-only for search nodes
 	ctx := context.Background()
 	eng, err := vecgo.Open(ctx, vecgo.Remote(s3Store), opts...)
 	if err != nil {
@@ -128,17 +113,17 @@ func main() {
 
 	fmt.Println("\n🔎 Executing Query 1 (Cold Cache)...")
 	start := time.Now()
-	_, err = eng.Search(context.Background(), vector, 10, vecgo.WithNProbes(10))
+	results, err := eng.Search(context.Background(), vector, 10, vecgo.WithNProbes(10))
 	if err != nil {
 		log.Printf("Query error (might be expected if index empty): %v", err)
 	} else {
-		fmt.Printf("⏱️  Cold Search Time: %v\n", time.Since(start))
+		fmt.Printf("⏱️  Cold Search Time: %v (found %d results)\n", time.Since(start), len(results))
 	}
 
 	fmt.Println("\n🔎 Executing Query 2 (Warm Cache)...")
 	start = time.Now()
-	_, _ = eng.Search(context.Background(), vector, 10, vecgo.WithNProbes(10))
-	fmt.Printf("⏱️  Warm Search Time: %v\n", time.Since(start))
+	results, _ = eng.Search(context.Background(), vector, 10, vecgo.WithNProbes(10))
+	fmt.Printf("⏱️  Warm Search Time: %v (found %d results)\n", time.Since(start), len(results))
 
 	hits, misses := eng.CacheStats()
 	fmt.Printf("📊 Cache Stats: Hits=%d Misses=%d\n", hits, misses)
@@ -150,16 +135,20 @@ func main() {
 	eng, _ = vecgo.Open(ctx, vecgo.Remote(s3Store), opts...)
 
 	start = time.Now()
-	_, _ = eng.Search(context.Background(), vector, 10, vecgo.WithNProbes(10))
-	fmt.Printf("⏱️  Disk Cache Search Time: %v\n", time.Since(start))
+	results, _ = eng.Search(context.Background(), vector, 10, vecgo.WithNProbes(10))
+	fmt.Printf("⏱️  Disk Cache Search Time: %v (found %d results)\n", time.Since(start), len(results))
 
 	fmt.Println("\n✅ Demo Complete")
 }
 
 func buildIndex(dir string) {
 	// For creating a NEW index, use Local() backend
+	// Use a tiny flush threshold to force memtable to flush to segment files
 	ctx := context.Background()
-	eng, err := vecgo.Open(ctx, vecgo.Local(dir), vecgo.Create(128, vecgo.MetricL2))
+	eng, err := vecgo.Open(ctx, vecgo.Local(dir),
+		vecgo.Create(128, vecgo.MetricL2),
+		vecgo.WithFlushConfig(vecgo.FlushConfig{MaxMemTableSize: 1}), // Force immediate flush
+	)
 	if err != nil {
 		log.Fatalf("Failed to open builder: %v", err)
 	}
@@ -169,7 +158,34 @@ func buildIndex(dir string) {
 	for _, v := range vectors {
 		eng.Insert(context.Background(), v, nil, nil)
 	}
+
+	// Give background flush loop time to persist segments
+	time.Sleep(500 * time.Millisecond)
 	eng.Close()
+}
+
+// buildIndexRemote builds the index directly to the cloud store.
+// This demonstrates direct cloud writes via atomic Put operations.
+func buildIndexRemote(store *SimulatedS3Store) {
+	ctx := context.Background()
+	eng, err := vecgo.Open(ctx, vecgo.Remote(store),
+		vecgo.Create(128, vecgo.MetricL2),
+		vecgo.WithFlushConfig(vecgo.FlushConfig{MaxMemTableSize: 1}), // Force immediate flush
+	)
+	if err != nil {
+		log.Fatalf("Failed to open remote builder: %v", err)
+	}
+
+	// Use testutil for reproducible vector generation
+	vectors := rng.UniformVectors(2000, 128)
+	for _, v := range vectors {
+		eng.Insert(context.Background(), v, nil, nil)
+	}
+
+	// Give background flush loop time to persist segments
+	time.Sleep(500 * time.Millisecond)
+	eng.Close()
+	fmt.Println("✅ Built index directly to cloud store!")
 }
 
 func copyDir(src, dst string) {

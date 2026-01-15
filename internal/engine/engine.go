@@ -1,15 +1,16 @@
 package engine
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"iter"
 	"log/slog"
 	"math"
 	"os"
-	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
@@ -55,7 +56,6 @@ type Engine struct {
 	mu               sync.RWMutex
 	dir              string
 	store            blobstore.BlobStore
-	manifestStore    blobstore.BlobStore
 	dim              int
 	metric           distance.Metric
 	quantizationType quantization.Type
@@ -236,15 +236,6 @@ func WithFileSystem(fs fs.FileSystem) Option {
 	}
 }
 
-// WithManifestStore sets the store used for the manifest file.
-// If unset, defaults to local file system.
-// This is useful for stateless compute nodes that need to read the manifest from S3.
-func WithManifestStore(st blobstore.BlobStore) Option {
-	return func(e *Engine) {
-		e.manifestStore = st
-	}
-}
-
 // WithBlockCacheSize sets the size of the block cache in bytes.
 // If 0, defaults to 256MB.
 func WithBlockCacheSize(size int64) Option {
@@ -321,8 +312,7 @@ func WithRetentionPolicy(p RetentionPolicy) Option {
 //   - No local state is required (pure memory cache)
 //   - Ideal for stateless serverless search nodes
 //
-// This follows LanceDB's model for cloud deployments where the remote
-// store (S3) is the source of truth and search nodes are stateless.
+// Use with OpenRemote() for horizontally scalable search replicas.
 func ReadOnly() Option {
 	return func(e *Engine) {
 		e.readOnly = true
@@ -377,6 +367,16 @@ func OpenLocal(ctx context.Context, dir string, opts ...Option) (*Engine, error)
 // The store is the source of truth. A local cache directory is auto-created if not specified.
 // Dim/metric are loaded from the remote manifest (use WithDimension/WithMetric for new indexes).
 // The ctx parameter is used for initialization I/O (loading manifest, segments, etc.).
+//
+// OpenRemote supports both reads and writes. Segments are written directly to the remote
+// store via atomic Put operations. Segments are built in memory and uploaded
+// as immutable blobs, requiring no local filesystem.
+//
+// For read-only search nodes (e.g., serverless/K8s replicas), use the ReadOnly() option:
+//
+//	vecgo.Open(ctx, vecgo.Remote(store), vecgo.ReadOnly())
+//
+// This enables stateless, horizontally scalable search nodes.
 func OpenRemote(ctx context.Context, store blobstore.BlobStore, opts ...Option) (*Engine, error) {
 	e := &Engine{
 		policy:         &BoundedSizeTieredPolicy{Threshold: 4},
@@ -386,7 +386,6 @@ func OpenRemote(ctx context.Context, store blobstore.BlobStore, opts ...Option) 
 		metrics:        &NoopMetricsObserver{},
 		isCloud:        true,
 		store:          store,
-		manifestStore:  store,
 		batchSearchSem: make(chan struct{}, 100), // Reusable semaphore for BatchSearch concurrency
 	}
 
@@ -471,18 +470,15 @@ func (e *Engine) init(ctx context.Context) (*Engine, error) {
 		e.fs = fs.LocalFS{}
 	}
 
-	if e.manifestStore == nil {
-		// Default to LocalStore in data directory
-		e.manifestStore = blobstore.NewLocalStore(e.dir)
-	}
-
-	// Ensure dir exists
-	if err := e.fs.MkdirAll(e.dir, 0755); err != nil {
-		return nil, err
+	// Ensure dir exists (only needed if we have a local directory)
+	if e.dir != "" {
+		if err := e.fs.MkdirAll(e.dir, 0755); err != nil {
+			return nil, err
+		}
 	}
 
 	// 1. Load Manifest
-	mStore := manifest.NewStore(e.manifestStore)
+	mStore := manifest.NewStore(e.store)
 	var m *manifest.Manifest
 	var err error
 
@@ -582,16 +578,16 @@ func (e *Engine) init(ctx context.Context) (*Engine, error) {
 		for _, segMeta := range m.Segments {
 			validSegIDs[uint64(segMeta.ID)] = struct{}{}
 		}
-		if entries, err := e.fs.ReadDir(e.dir); err == nil {
-			for _, entry := range entries {
-				name := entry.Name()
+		// List all segment files from store (works for both local and cloud)
+		if files, err := e.store.List(ctx, "segment_"); err == nil {
+			for _, name := range files {
 				if strings.HasPrefix(name, "segment_") {
 					parts := strings.Split(name, ".")
 					if len(parts) >= 2 {
 						var id uint64
 						if n, _ := fmt.Sscanf(parts[0], "segment_%d", &id); n == 1 {
 							if _, ok := validSegIDs[id]; !ok {
-								_ = e.fs.Remove(filepath.Join(e.dir, name))
+								_ = e.store.Delete(ctx, name)
 							}
 						}
 					}
@@ -608,12 +604,12 @@ func (e *Engine) init(ctx context.Context) (*Engine, error) {
 	pkIdx := pk.New()
 	var maxID uint64 = 0
 
-	// Try loading valid PK checkpoint
+	// Try loading valid PK checkpoint from store
 	pkLoaded := false
 	if m.PKIndex.Path != "" {
-		pkPath := filepath.Join(e.dir, m.PKIndex.Path)
-		if f, err := e.fs.OpenFile(pkPath, os.O_RDONLY, 0); err == nil {
-			if err := pkIdx.Load(f); err == nil {
+		if blob, err := e.store.Open(ctx, m.PKIndex.Path); err == nil {
+			reader := io.NewSectionReader(blobstore.ReaderAt(blob), 0, blob.Size())
+			if err := pkIdx.Load(reader); err == nil {
 				pkLoaded = true
 				if e.logger != nil {
 					e.logger.Info("Loaded PK Index from checkpoint", "path", m.PKIndex.Path)
@@ -624,7 +620,7 @@ func (e *Engine) init(ctx context.Context) (*Engine, error) {
 					e.logger.Warn("Failed to load PK Index checkpoint, rebuilding", "path", m.PKIndex.Path, "error", err)
 				}
 			}
-			_ = f.Close() // Intentionally ignore: cleanup path
+			_ = blob.Close() // Intentionally ignore: cleanup path
 		}
 	}
 
@@ -653,13 +649,14 @@ func (e *Engine) init(ctx context.Context) (*Engine, error) {
 		// The tombstone file format (bitmap) doesn't preserve LSN information,
 		// so we can't correctly filter tombstones by version.
 		if !e.readOnly {
-			tombPath := filepath.Join(e.dir, fmt.Sprintf("segment_%d.tomb", segMeta.ID))
-			if f, err := e.fs.OpenFile(tombPath, os.O_RDONLY, 0); err == nil {
+			tombFilename := fmt.Sprintf("segment_%d.tomb", segMeta.ID)
+			if blob, err := e.store.Open(ctx, tombFilename); err == nil {
 				bm := imetadata.NewLocalBitmap()
-				if _, err := bm.ReadFrom(f); err == nil {
+				reader := io.NewSectionReader(blobstore.ReaderAt(blob), 0, blob.Size())
+				if _, err := bm.ReadFrom(reader); err == nil {
 					vt.LoadFromBitmap(bm)
 				}
-				_ = f.Close() // Intentionally ignore: cleanup path
+				_ = blob.Close() // Intentionally ignore: cleanup path
 			}
 		}
 		e.tombstones[segMeta.ID] = vt
@@ -816,7 +813,7 @@ func (e *Engine) Insert(ctx context.Context, vec []float32, md metadata.Document
 		return 0, err
 	}
 
-	// Read-only mode check (LanceDB-style stateless deployments)
+	// Read-only mode check (stateless deployments)
 	if e.readOnly {
 		return 0, ErrReadOnly
 	}
@@ -934,117 +931,54 @@ func (e *Engine) BatchInsert(ctx context.Context, vectors [][]float32, mds []met
 
 	snap := e.current.Load()
 	ids := make([]model.ID, n)
-
-	// Prepare batch
-	type batchItem struct {
-		id      model.ID
-		lsn     uint64
-		md      metadata.Document
-		payload []byte
-	}
-	items := make([]batchItem, n)
+	rowIDs := make([]model.RowID, n)
 
 	// Batch allocate LSNs and IDs (single atomic op each instead of N)
 	lsnStart := e.lsn.Add(uint64(n)) - uint64(n) + 1   // Reserve n LSNs, get first one
 	idStart := e.nextID.Add(uint64(n)) - uint64(n) + 1 // Reserve n IDs, get first one
 
-	// Phase 1: Prepare batch items (no atomic ops in loop)
-	for i := range vectors {
-		// Assign pre-allocated ID and LSN
-		id := model.ID(idStart + uint64(i))
-		ids[i] = id
+	// Assign IDs
+	for i := range n {
+		ids[i] = model.ID(idStart + uint64(i))
+	}
 
-		// Serialize metadata
-		var md metadata.Document
-		if mds != nil {
-			md = mds[i]
-		}
+	// Batch insert into MemTable - this handles HNSW + metadata efficiently
+	var err error
+	rowIDs, err = snap.active.BatchInsertWithPayload(ctx, ids, vectors, mds, payloads)
+	if err != nil {
+		e.mu.RUnlock()
+		return nil, err
+	}
 
-		var payload []byte
-		if payloads != nil {
-			payload = payloads[i]
-		}
+	// Batch update PK Index
+	segID := snap.active.ID()
+	for i, id := range ids {
+		lsn := lsnStart + uint64(i)
+		oldLoc, exists := e.pkIndex.Upsert(id, model.Location{
+			SegmentID: segID,
+			RowID:     rowIDs[i],
+		}, lsn)
 
-		items[i] = batchItem{
-			id:      id,
-			lsn:     lsnStart + uint64(i),
-			md:      md,
-			payload: payload,
+		if exists {
+			e.tombstonesMu.RLock()
+			if vt, ok := e.tombstones[oldLoc.SegmentID]; ok {
+				vt.MarkDeleted(uint32(oldLoc.RowID), lsn)
+			}
+			e.tombstonesMu.RUnlock()
 		}
 	}
 
-	// Phase 3: Update MemTable & Indexes in Parallel
-	// Parallelize ingestion to maximize CPU utilization for HNSW construction.
-
-	concurrency := runtime.GOMAXPROCS(0)
-	if n < concurrency {
-		concurrency = n
-	}
-	sem := make(chan struct{}, concurrency)
-	var wg sync.WaitGroup
-	var errMu sync.Mutex
-	var firstErr error
-
-	for i, item := range items {
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(i int, item batchItem) {
-			defer wg.Done()
-			defer func() { <-sem }()
-
-			// Stop processing if an error occurred
-			errMu.Lock()
-			if firstErr != nil {
-				errMu.Unlock()
-				return
-			}
-			errMu.Unlock()
-
-			// Insert into Active MemTable - pass ctx for cancellation
-			rowID, err := snap.active.InsertWithPayload(ctx, item.id, vectors[i], item.md, item.payload)
-			if err != nil {
-				errMu.Lock()
-				if firstErr == nil {
-					firstErr = err
-				}
-				errMu.Unlock()
-				return
-			}
-
-			// Update PK Index
-			oldLoc, exists := e.pkIndex.Upsert(item.id, model.Location{
-				SegmentID: snap.active.ID(),
-				RowID:     rowID,
-			}, item.lsn)
-
-			if exists {
-				e.tombstonesMu.RLock()
-				if vt, ok := e.tombstones[oldLoc.SegmentID]; ok {
-					vt.MarkDeleted(uint32(oldLoc.RowID), item.lsn)
-				}
-				e.tombstonesMu.RUnlock()
-			}
-
-			// Update Lexical Index
-			if e.lexicalIndex != nil && e.lexicalField != "" && item.md != nil {
-				if val, ok := item.md[e.lexicalField]; ok {
+	// Batch update Lexical Index
+	if e.lexicalIndex != nil && e.lexicalField != "" && mds != nil {
+		for i, md := range mds {
+			if md != nil {
+				if val, ok := md[e.lexicalField]; ok {
 					if str := val.StringValue(); str != "" {
-						if err := e.lexicalIndex.Add(item.id, str); err != nil {
-							if e.logger != nil {
-								e.logger.Error("failed to update lexical index", "id", item.id, "error", err)
-							}
-						}
+						_ = e.lexicalIndex.Add(ids[i], str) // Best effort
 					}
 				}
 			}
-		}(i, item)
-	}
-
-	wg.Wait()
-
-	if firstErr != nil {
-		e.mu.RUnlock()
-		return nil, firstErr
+		}
 	}
 
 	// Check triggers
@@ -1777,38 +1711,8 @@ func (e *Engine) Commit(ctx context.Context) (err error) {
 	// --- End of Phase 1 (Inserts can proceed) ---
 
 	// --- Phase 2: Write (No Lock) ---
-	// Data Paths
 	filename := fmt.Sprintf("segment_%d.bin", activeID)
-	path := filepath.Join(e.dir, filename)
-	tmpPath := path + ".tmp"
-
 	payloadFilename := fmt.Sprintf("segment_%d.payload", activeID)
-	payloadPath := filepath.Join(e.dir, payloadFilename)
-	payloadTmpPath := payloadPath + ".tmp"
-
-	f, err := e.fs.OpenFile(tmpPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if f != nil {
-			_ = f.Close() // Intentionally ignore: cleanup path
-			_ = e.fs.Remove(tmpPath)
-		}
-	}()
-
-	payloadF, err := e.fs.OpenFile(payloadTmpPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if payloadF != nil {
-			_ = payloadF.Close() // Intentionally ignore: cleanup path
-			_ = e.fs.Remove(payloadTmpPath)
-		}
-	}()
-
-	w := flat.NewWriter(f, payloadF, activeID, e.dim, e.metric, 0, flat.QuantizationNone)
 
 	// Collect moves for PK update
 	type flushMove struct {
@@ -1819,12 +1723,15 @@ func (e *Engine) Commit(ctx context.Context) (err error) {
 	moves := make([]flushMove, 0, 1024)
 	var count uint32
 
+	// Create segment writer - write to buffer first, then persist
+	var segmentBuf, payloadBuf bytes.Buffer
+	w := flat.NewWriter(&segmentBuf, &payloadBuf, activeID, e.dim, e.metric, 0, flat.QuantizationNone)
+
 	// Write data
 	err = active.Iterate(ctx, func(rowID uint32, id model.ID, vec []float32, md metadata.Document, payload []byte) error {
 		if err := w.Add(id, vec, md, payload); err != nil {
 			return err
 		}
-
 		moves = append(moves, flushMove{id: id, oldRow: rowID, newRow: count})
 		count++
 		return nil
@@ -1836,40 +1743,21 @@ func (e *Engine) Commit(ctx context.Context) (err error) {
 	if err := w.Flush(ctx); err != nil {
 		return err
 	}
-	// Ensure durability
-	if err := f.Sync(); err != nil {
-		return err
-	}
-	if err := payloadF.Sync(); err != nil {
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	f = nil
-	if err := payloadF.Close(); err != nil {
-		return err
-	}
-	payloadF = nil
 
-	// Publish atomically
-	if err := e.fs.Rename(tmpPath, path); err != nil {
-		return err
+	// Persist segment to store (works for both local and cloud)
+	if err := e.store.Put(ctx, filename, segmentBuf.Bytes()); err != nil {
+		return fmt.Errorf("failed to write segment: %w", err)
 	}
-	if info, _ := e.fs.Stat(path); info != nil {
-		bytesFlushed += uint64(info.Size())
-	}
+	bytesFlushed += uint64(segmentBuf.Len())
 
-	if err := e.fs.Rename(payloadTmpPath, payloadPath); err != nil {
-		_ = e.fs.Remove(path)
-		return err
-	}
-	if info, _ := e.fs.Stat(payloadPath); info != nil {
-		bytesFlushed += uint64(info.Size())
-	}
-
-	if err := syncDir(e.fs, e.dir); err != nil {
-		return err
+	// Persist payload if non-empty
+	if payloadBuf.Len() > 0 {
+		if err := e.store.Put(ctx, payloadFilename, payloadBuf.Bytes()); err != nil {
+			// Best effort cleanup
+			_ = e.store.Delete(ctx, filename)
+			return fmt.Errorf("failed to write payload: %w", err)
+		}
+		bytesFlushed += uint64(payloadBuf.Len())
 	}
 
 	// --- Phase 3: Commit (Holding Lock) ---
@@ -1892,14 +1780,13 @@ func (e *Engine) Commit(ctx context.Context) (err error) {
 
 	newSeg, err := flat.Open(ctx, blob, opts...)
 	if err != nil {
-		_ = e.fs.Remove(path)
-		_ = e.fs.Remove(payloadPath)
+		// Best effort cleanup on failure
+		_ = e.store.Delete(ctx, filename)
+		_ = e.store.Delete(ctx, payloadFilename)
 		return err
 	}
 
-	if stat, err := e.fs.Stat(path); err == nil {
-		e.metrics.OnThroughput("flush_write", stat.Size())
-	}
+	e.metrics.OnThroughput("flush_write", int64(bytesFlushed))
 
 	// Update Snapshot
 	snap = e.current.Load()
@@ -1973,7 +1860,7 @@ func (e *Engine) Commit(ctx context.Context) (err error) {
 
 	e.manifest.MaxLSN = flushLSN
 
-	mStore := manifest.NewStore(e.manifestStore)
+	mStore := manifest.NewStore(e.store)
 	if err := mStore.Save(ctx, e.manifest); err != nil {
 		return err
 	}
@@ -2011,7 +1898,7 @@ func (e *Engine) Vacuum(ctx context.Context) error {
 	}
 
 	// 2. Load all available manifest versions
-	mStore := manifest.NewStore(e.manifestStore)
+	mStore := manifest.NewStore(e.store)
 	allVersions, err := mStore.ListVersions(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to list versions: %w", err)
@@ -2106,37 +1993,25 @@ func (e *Engine) Vacuum(ctx context.Context) error {
 	for segID := range candidateSegments {
 		if _, needed := referencedSegments[segID]; !needed {
 			// Safe to delete
-			// Delete segment data file
+			// Delete segment data file via store (works for both local and cloud)
 			dataFilename := fmt.Sprintf("segment_%d.bin", segID)
-			dataPath := filepath.Join(e.dir, dataFilename)
-			if info, err := e.fs.Stat(dataPath); err == nil {
-				reclaimedBytes += info.Size()
-				if err := e.fs.Remove(dataPath); err != nil {
-					e.logger.Warn("Failed to delete segment file", "file", dataPath, "error", err)
-				}
+			if err := e.store.Delete(ctx, dataFilename); err == nil {
+				deletedSegments++
+			} else if e.logger != nil {
+				e.logger.Warn("Failed to delete segment file", "file", dataFilename, "error", err)
 			}
 
 			// Delete payload file
 			payloadFilename := fmt.Sprintf("segment_%d.payload", segID)
-			payloadPath := filepath.Join(e.dir, payloadFilename)
-			if info, err := e.fs.Stat(payloadPath); err == nil {
-				reclaimedBytes += info.Size()
-				if err := e.fs.Remove(payloadPath); err != nil {
-					e.logger.Warn("Failed to delete payload file", "file", payloadPath, "error", err)
-				}
+			if err := e.store.Delete(ctx, payloadFilename); err != nil && e.logger != nil {
+				e.logger.Warn("Failed to delete payload file", "file", payloadFilename, "error", err)
 			}
 
-			// Delete tombstone file?
-			// Tombstones are managed separately in memory/checkpoint,
-			// but if they are persisted as part of segment logic (e.g. bloom filters sidecar), handling needed.
-			// Current arch: Tombstones are in memory map `e.tombstones` and flushed to... where?
-			// `persistTombstones` writes to WAL or separate file?
-			// The flush logic uses `NewVersionedTombstones(1024)`.
-			// If persistent tombstones exist as files (unlikely in current code, they seem WAL-based or memory-only),
-			// we skip.
-			// Re-reading flush: `e.persistTombstones()` is called. Checking that.
-
-			deletedSegments++
+			// Delete tombstone file
+			tombFilename := fmt.Sprintf("segment_%d.tomb", segID)
+			if err := e.store.Delete(ctx, tombFilename); err != nil && e.logger != nil {
+				// Tombstone files may not exist, ignore errors
+			}
 		}
 	}
 
@@ -2248,7 +2123,7 @@ func (e *Engine) CacheStats() (hits, misses int64) {
 	return
 }
 
-// persistPKIndex saves the current PK index to disk and updates the manifest.
+// persistPKIndex saves the current PK index to the store and updates the manifest.
 func (e *Engine) persistPKIndex() error {
 	// Skip for read-only engines (time-travel, etc.)
 	if e.readOnly {
@@ -2256,53 +2131,29 @@ func (e *Engine) persistPKIndex() error {
 	}
 
 	pkIndexFilename := fmt.Sprintf("pkindex_%d.bin", e.lsn.Load())
-	pkIndexPath := filepath.Join(e.dir, pkIndexFilename)
-	pkIndexTmpPath := pkIndexPath + ".tmp"
 
-	// Save to temp file
-	f, err := e.fs.OpenFile(pkIndexTmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		_ = f.Close()                   // Intentionally ignore: cleanup path
-		_ = e.fs.Remove(pkIndexTmpPath) // Intentionally ignore: best-effort cleanup
-	}()
-
-	if err := e.pkIndex.Save(f); err != nil {
+	// Serialize PK index to buffer
+	var buf bytes.Buffer
+	if err := e.pkIndex.Save(&buf); err != nil {
 		return err
 	}
 
-	if err := f.Sync(); err != nil {
-		return err
-	}
-	_ = f.Close() // Close explicit for Windows/FS safety (ignore error, Sync was called)
-
-	// Rename to final
-	if err := e.fs.Rename(pkIndexTmpPath, pkIndexPath); err != nil {
+	// Write to store (works for both local and cloud)
+	if err := e.store.Put(context.Background(), pkIndexFilename, buf.Bytes()); err != nil {
 		return err
 	}
 
 	// Update Manifest
-	// Need to be careful not to introduce race if called outside Close (e.g. background checkpoint).
-	// Here we are in Close, holding mu, so it's safe.
-
-	// Copy manifest to avoid mutating the one in use? We are closing, so it's fine.
-	// But let's follow the pattern of creating a new manifest object for save.
-
 	newManifest := *e.manifest
 	newManifest.PKIndex.Path = pkIndexFilename
-	// Do NOT update MaxLSN here. MaxLSN tracks flushed segments.
-	// If we update MaxLSN, recovery will skip WAL replay for the active MemTable, losing data.
 
-	store := manifest.NewStore(e.manifestStore)
+	store := manifest.NewStore(e.store)
 	if err := store.Save(context.Background(), &newManifest); err != nil {
 		return err
 	}
 
 	// Update in-memory manifest to reflect new state
 	e.manifest.PKIndex.Path = pkIndexFilename
-	// e.manifest.MaxLSN remains as is
 
 	return nil
 }
@@ -2415,24 +2266,17 @@ func (e *Engine) persistTombstones() error {
 		if bm.IsEmpty() {
 			continue // Don't write empty
 		}
-		path := filepath.Join(e.dir, fmt.Sprintf("segment_%d.tomb", id))
-		tmpPath := path + ".tmp"
 
-		f, err := e.fs.OpenFile(tmpPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
-		if err != nil {
+		filename := fmt.Sprintf("segment_%d.tomb", id)
+
+		// Serialize tombstone bitmap to buffer
+		var buf bytes.Buffer
+		if _, err := bm.WriteTo(&buf); err != nil {
 			return err
 		}
-		if _, err := bm.WriteTo(f); err != nil {
-			_ = f.Close()            // Intentionally ignore: cleanup path
-			_ = e.fs.Remove(tmpPath) // Intentionally ignore: best-effort cleanup
-			return err
-		}
-		if err := f.Close(); err != nil {
-			_ = e.fs.Remove(tmpPath) // Intentionally ignore: best-effort cleanup
-			return err
-		}
-		if err := e.fs.Rename(tmpPath, path); err != nil {
-			_ = e.fs.Remove(tmpPath) // Intentionally ignore: best-effort cleanup
+
+		// Write to store (works for both local and cloud)
+		if err := e.store.Put(context.Background(), filename, buf.Bytes()); err != nil {
 			return err
 		}
 	}

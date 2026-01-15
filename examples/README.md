@@ -25,7 +25,7 @@ Demonstrates the fluent API with:
 1. Structured logging (`log/slog`)
 2. Schema-enforced metadata
 3. Typed metadata fields
-4. Scan iterator (Go 1.23+)
+4. Scan iterator
 
 ## [RAG](./rag)
 
@@ -36,11 +36,11 @@ A complete Retrieval-Augmented Generation workflow:
 
 ## [Cloud Tiered](./cloud_tiered)
 
-Demonstrates cloud storage with caching:
-1. Build index locally
-2. Upload to simulated S3
-3. Open in read-only mode with disk cache
-4. Compare cold vs warm cache performance
+Demonstrates **writer/reader separation** architecture:
+1. Build index locally with `Local()` backend
+2. Sync to simulated S3 bucket
+3. Open from S3 with `Remote()` backend (automatically read-only)
+4. Multi-tier caching: RAM → Disk → Remote
 
 ## [Observability](./observability)
 

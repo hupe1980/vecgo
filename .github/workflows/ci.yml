@@ -1,0 +1,320 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: "1.25.x"
+  GO_VERSION_BENCHMARK: "1.25.3"
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────
+  # Code Quality
+  # ─────────────────────────────────────────────────────────────────────
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.7.2
+          args: ./... --config=.golangci.yml --timeout=5m
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Cross-Platform Tests (mmap, OS-specific code)
+  # ─────────────────────────────────────────────────────────────────────
+  test-platforms:
+    name: Test (${{ matrix.os }}, Go ${{ matrix.go }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux x86-64 (AVX2/AVX-512 capable)
+          - os: ubuntu-latest
+            go: "1.24.x"
+            simd: avx2
+          - os: ubuntu-latest
+            go: "1.25.x"
+            simd: avx2
+
+          # Linux ARM64 (NEON/SVE2)
+          - os: ubuntu-24.04-arm
+            go: "1.25.x"
+            simd: neon
+
+          # macOS x86-64 (AVX2)
+          - os: macos-13
+            go: "1.25.x"
+            simd: avx2
+
+          # macOS ARM64 (NEON)
+          - os: macos-latest
+            go: "1.25.x"
+            simd: neon
+
+          # Windows x86-64 (AVX2)
+          - os: windows-latest
+            go: "1.25.x"
+            simd: avx2
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+          cache: true
+
+      - name: Run Tests
+        run: go test -race -v -timeout 300s ./...
+
+      - name: Run Tests (noasm fallback)
+        run: go test -v -timeout 120s -tags noasm ./internal/simd/...
+
+  # ─────────────────────────────────────────────────────────────────────
+  # SIMD Kernel Tests - Exhaustive verification
+  # ─────────────────────────────────────────────────────────────────────
+  test-simd:
+    name: SIMD (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # x86-64: AVX2 (baseline) + AVX-512 (if available)
+          - runner: ubuntu-latest
+            arch: amd64-avx2
+            flags: ""
+
+          # ARM64: NEON (baseline)
+          - runner: ubuntu-24.04-arm
+            arch: arm64-neon
+            flags: ""
+
+          # ARM64 macOS: NEON (Apple Silicon)
+          - runner: macos-latest
+            arch: arm64-neon-macos
+            flags: ""
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: SIMD Kernel Tests
+        run: go test -v -timeout 120s ./internal/simd/...
+
+      - name: SIMD Kernel Tests (Pure Go Fallback)
+        run: go test -v -timeout 120s -tags noasm ./internal/simd/...
+
+      - name: SIMD Equivalence Tests
+        run: |
+          echo "Testing SIMD vs Pure-Go equivalence..."
+          go test -v -run 'Equivalence|Generic' ./internal/simd/...
+
+      - name: SIMD Benchmarks
+        run: |
+          go test -run '^$' -bench 'Dot|SquaredL2|Int4|Hamming|PqAdc' \
+            -benchtime=100ms -benchmem ./internal/simd/...
+
+  # ─────────────────────────────────────────────────────────────────────
+  # mmap Cross-Platform Tests
+  # ─────────────────────────────────────────────────────────────────────
+  test-mmap:
+    name: mmap (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: mmap Unit Tests
+        run: go test -v -timeout 60s ./internal/mmap/...
+
+      - name: mmap Race Detection
+        if: matrix.os != 'windows-latest'
+        run: go test -race -v -timeout 120s ./internal/mmap/...
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Integration Tests
+  # ─────────────────────────────────────────────────────────────────────
+  test-integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Run Integration Tests
+        run: go test -v -race -timeout 300s ./integration_test/...
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Performance Regression Tests
+  # ─────────────────────────────────────────────────────────────────────
+  benchmark:
+    name: Performance Regression
+    runs-on: ubuntu-24.04-arm
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION_BENCHMARK }}
+          cache: true
+
+      - name: Install benchstat
+        run: go install golang.org/x/perf/cmd/benchstat@latest
+
+      - name: Run Benchmarks (Current)
+        run: |
+          go test -run '^$' -bench 'BenchmarkBatch|BenchmarkBulk|BenchmarkHybrid' \
+            -benchtime=2s -count=5 -benchmem ./benchmark_test/... \
+            | tee /tmp/current.txt
+
+      - name: Checkout Base Branch
+        run: git checkout ${{ github.base_ref }}
+
+      - name: Run Benchmarks (Base)
+        run: |
+          go test -run '^$' -bench 'BenchmarkBatch|BenchmarkBulk|BenchmarkHybrid' \
+            -benchtime=2s -count=5 -benchmem ./benchmark_test/... \
+            | tee /tmp/base.txt
+
+      - name: Compare Benchmarks
+        id: benchstat
+        run: |
+          echo "## Performance Comparison" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          benchstat /tmp/base.txt /tmp/current.txt >> $GITHUB_STEP_SUMMARY 2>&1 || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+          # Check for significant regressions (>10%)
+          benchstat /tmp/base.txt /tmp/current.txt 2>&1 | tee /tmp/comparison.txt
+          if grep -E '\+[1-9][0-9]\.[0-9]+%' /tmp/comparison.txt; then
+            echo "⚠️ Potential performance regression detected" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload Benchmark Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: /tmp/*.txt
+          retention-days: 30
+
+  # ─────────────────────────────────────────────────────────────────────
+  # SIMD Microbenchmarks (Nightly)
+  # ─────────────────────────────────────────────────────────────────────
+  simd-benchmark:
+    name: SIMD Benchmarks (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: x86-64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Run SIMD Benchmarks
+        run: |
+          echo "## SIMD Benchmarks (${{ matrix.arch }})" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          go test -run '^$' -bench . -benchtime=500ms -benchmem ./internal/simd/... \
+            | tee -a $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Build Examples
+  # ─────────────────────────────────────────────────────────────────────
+  build-examples:
+    name: Build Examples
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Build Examples
+        run: |
+          go build ./examples/basic/...
+          go build ./examples/modern/...
+          go build ./examples/rag/...
+          go build ./examples/cloud_tiered/...
+          cd examples/observability && go build .
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Release (on tag)
+  # ─────────────────────────────────────────────────────────────────────
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    needs: [lint, test-platforms, test-simd, test-mmap, test-integration]
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: latest
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

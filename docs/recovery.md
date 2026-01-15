@@ -3,7 +3,29 @@
 ## Overview
 
 Vecgo uses a **Commit-Oriented** architecture with **Immutable Segments** to ensure durability.
-This is the same pattern used by LanceDB and Git — append-only versioned commits with atomic manifest updates. Unlike WAL-based databases (PostgreSQL, DuckDB), no write-ahead log is required.
+This pattern uses append-only versioned commits with atomic manifest updates. Unlike WAL-based databases (PostgreSQL, DuckDB), no write-ahead log is required.
+
+```mermaid
+flowchart LR
+    subgraph Memory["🧠 Memory (Volatile)"]
+        MT[MemTable<br/>HNSW Index]
+    end
+    
+    subgraph Disk["💾 Disk (Durable)"]
+        Seg1[Segment 1]
+        Seg2[Segment 2]
+        SegN[Segment N]
+        Man[MANIFEST]
+        Cur[CURRENT]
+    end
+    
+    MT -->|Commit()| Seg1
+    Seg1 & Seg2 & SegN --> Man
+    Man --> Cur
+    
+    style Memory fill:#fff3e0
+    style Disk fill:#e8f5e9
+```
 
 ## Durability Model
 
@@ -20,6 +42,32 @@ This is the same contract as SQLite's explicit transaction mode or Git commits.
 
 ## Storage Hierarchy
 
+```mermaid
+flowchart TB
+    subgraph L0["L0 - Hot Tier"]
+        MT[MemTable<br/>Mutable HNSW]
+    end
+    
+    subgraph L1["L1..Ln - Cold Tier"]
+        Seg1[Immutable Segment]
+        Seg2[Immutable Segment]
+        SegN[Immutable Segment]
+    end
+    
+    subgraph Meta["Metadata"]
+        Tomb[Tombstones<br/>Deletion Markers]
+        PKIdx[PK Index<br/>Checkpoint]
+        Man[Manifest<br/>Source of Truth]
+    end
+    
+    MT -->|Commit| L1
+    L1 --> Meta
+    
+    style L0 fill:#fff3e0
+    style L1 fill:#e8f5e9
+    style Meta fill:#e3f2fd
+```
+
 1.  **MemTable**: In-memory mutable structure (HNSW index). **Not durable until committed.**
 2.  **Immutable Segments**: On-disk segments created by `Commit()`. Source of truth.
 3.  **Tombstones**: Per-segment deletion markers (persisted on close).
@@ -27,6 +75,23 @@ This is the same contract as SQLite's explicit transaction mode or Git commits.
 5.  **Manifest**: Atomic pointer to current database state (segments, PK index path).
 
 ## Crash Scenarios & Recovery
+
+```mermaid
+stateDiagram-v2
+    [*] --> Running: Open()
+    
+    Running --> CrashBeforeCommit: Crash
+    Running --> CrashDuringCommit: Crash
+    Running --> CrashDuringCompaction: Crash
+    Running --> CrashDuringManifest: Crash
+    
+    CrashBeforeCommit --> Running: Restart<br/>Lost uncommitted data
+    CrashDuringCommit --> Running: Restart<br/>Delete orphan .tmp
+    CrashDuringCompaction --> Running: Restart<br/>Delete orphan merged
+    CrashDuringManifest --> Running: Restart<br/>Use CURRENT pointer
+    
+    Running --> [*]: Close()
+```
 
 ### 1. Crash Before Commit
 *   **State**: Data exists only in MemTable (memory).
@@ -82,4 +147,4 @@ The commit-oriented model eliminates:
 - Checkpointing overhead
 - ~500+ lines of recovery code
 
-This is the same approach used by LanceDB (Databricks) and Git — append-only versioned commits without WAL.
+This is the same approach used by Git — append-only versioned commits without WAL.

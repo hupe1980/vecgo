@@ -12,6 +12,14 @@ import (
 // The default maps to `os.ErrNotExist`.
 var ErrNotFound = os.ErrNotExist
 
+// ReadCloser is an io.ReadCloser alias for clarity.
+type ReadCloser = io.ReadCloser
+
+// NopReadCloser wraps an io.Reader with a no-op Close method.
+func NopReadCloser(r io.Reader) ReadCloser {
+	return io.NopCloser(r)
+}
+
 // WritableBlob is a write-only handle to a data blob.
 type WritableBlob interface {
 	io.Writer

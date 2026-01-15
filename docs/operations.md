@@ -2,18 +2,81 @@
 
 This guide covers operational procedures for managing Vecgo in production.
 
+## Quick Health Check
+
+```mermaid
+flowchart TD
+    Start[Health Check] --> Mem{MemTable<br/>< 90%?}
+    Mem -->|Yes| Disk{Disk<br/>< 80%?}
+    Mem -->|No| Alert1[⚠️ High write pressure<br/>Consider Commit]
+    
+    Disk -->|Yes| Latency{p99 Search<br/>< 100ms?}
+    Disk -->|No| Alert2[⚠️ Low disk space<br/>Add storage]
+    
+    Latency -->|Yes| OK[✅ Healthy]
+    Latency -->|No| Alert3[⚠️ High latency<br/>Check CPU/Cache]
+    
+    style OK fill:#e8f5e9
+    style Alert1 fill:#fff3e0
+    style Alert2 fill:#ffebee
+    style Alert3 fill:#fff3e0
+```
+
 ## Monitoring
 
 Key metrics to alert on (via a Prometheus `engine.MetricsObserver` implementation; see `examples/observability`):
 
-| Metric | Threshold | Investigation |
-|--------|-----------|---------------|
-| `vecgo_backpressure_events_total` | > 10 / min | System is overloaded. Increase memory limits or shard writes. |
-| `vecgo_queue_depth{queue="compaction_queue"}` | > 0 (sustained) | Compaction is pending frequently. Check disk IOPS or tune compaction policy. |
-| `vecgo_operation_latency_seconds{op="search", status="success"}` | p99 > 100ms | CPU contention or slow filtered search / segment fanout. |
-| `vecgo_memtable_size_bytes` | > 90% of Limit | High write pressure. Check flush configuration. |
+| Metric | Threshold | Severity | Investigation |
+|--------|-----------|----------|---------------|
+| `vecgo_backpressure_events_total` | > 10 / min | 🔴 Critical | System overloaded. Increase memory limits or shard writes. |
+| `vecgo_queue_depth{queue="compaction_queue"}` | > 0 (sustained) | 🟡 Warning | Compaction falling behind. Check disk IOPS. |
+| `vecgo_operation_latency_seconds{op="search"}` | p99 > 100ms | 🟡 Warning | CPU contention or slow filtered search. |
+| `vecgo_memtable_size_bytes` | > 90% of Limit | 🟡 Warning | High write pressure. Trigger `Commit()`. |
+
+### Prometheus Example
+
+```yaml
+groups:
+  - name: vecgo
+    rules:
+      - alert: VecgoBackpressure
+        expr: rate(vecgo_backpressure_events_total[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Vecgo experiencing backpressure"
+          
+      - alert: VecgoHighLatency
+        expr: histogram_quantile(0.99, vecgo_operation_latency_seconds{op="search"}) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+```
 
 ## Failure Scenarios
+
+```mermaid
+flowchart LR
+    subgraph Failures["⚠️ Common Failures"]
+        DiskFull[Disk Full]
+        OOM[Out of Memory]
+        Corrupt[Corruption]
+    end
+    
+    subgraph Recovery["✅ Recovery Actions"]
+        AddDisk[Add Storage]
+        TuneMem[Tune Limits]
+        Restore[Restore Backup]
+    end
+    
+    DiskFull --> AddDisk
+    OOM --> TuneMem
+    Corrupt --> Restore
+    
+    style Failures fill:#ffebee
+    style Recovery fill:#e8f5e9
+```
 
 ### Disk Full
 
@@ -54,6 +117,14 @@ Key metrics to alert on (via a Prometheus `engine.MetricsObserver` implementatio
 
 ## Capacity Planning
 
+```mermaid
+pie title Memory Budget (10M vectors, 1536d)
+    "BlockCache" : 50
+    "MemTable" : 12
+    "HNSW Overhead" : 8
+    "OS/App" : 30
+```
+
 **Formula**:
 ```
 RAM = (MemTableSize) + (BlockCacheSize) + (IndexOverhead)
@@ -61,10 +132,12 @@ Disk = (RawVectorSize * 1.5) // compaction headroom
 ```
 
 **Example (10M vectors, 1536 dim, float32)**:
-- Raw Data: 10M * 1536 * 4B = ~60GB
-- Disk: 60GB * 1.5 (compaction) = 90GB
-- RAM: 
-  - BlockCache: 4GB (recommended)
-  - MemTable: 1GB
-  - HNSW (L0): ~5% of L0 vectors (if keeping L0 small)
-  - **Total**: ~8GB RAM machine recommended.
+
+| Component | Calculation | Size |
+|-----------|-------------|------|
+| Raw Data | 10M × 1536 × 4B | ~60GB |
+| Disk (with compaction) | 60GB × 1.5 | ~90GB |
+| BlockCache | Recommended | 4GB |
+| MemTable | Configured | 1GB |
+| HNSW Overhead | ~5% of L0 | ~500MB |
+| **Total RAM** | | **~8GB**

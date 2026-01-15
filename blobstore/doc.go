@@ -6,7 +6,20 @@
 // # Built-in Implementations
 //
 //   - LocalStore: Local filesystem with mmap support
+//   - MemoryStore: In-memory store for testing
 //   - s3.Store: Amazon S3 with range reads and parallel uploads
+//   - s3.ExpressStore: S3 Express One Zone for low-latency access
+//   - s3.DDBCommitStore: S3 + DynamoDB for concurrent writers
+//   - minio.Store: MinIO and S3-compatible storage (native client)
+//
+// # Storage Selection Guide
+//
+//	Local Dev/Test:    blobstore.NewLocalStore(dir)
+//	Unit Tests:        blobstore.NewMemoryStore()
+//	AWS S3:            s3.NewStore(client, bucket, prefix)
+//	S3 Express:        s3.NewExpressStore(client, bucket, prefix)
+//	Multi-Writer:      s3.NewDDBCommitStore(s3Store, ddbClient, table, baseURI)
+//	MinIO/Self-Hosted: minio.NewStore(client, bucket, prefix)
 //
 // # Custom Implementations
 //
@@ -23,16 +36,9 @@
 // For cloud backends, implement ReadRange for efficient partial reads:
 //
 //	type Blob interface {
-//	    io.ReaderAt
+//	    ReadAt(ctx, p, off) (int, error)
 //	    io.Closer
 //	    Size() int64
-//	    ReadRange(off, len int64) (io.ReadCloser, error)
+//	    ReadRange(ctx, off, len) (io.ReadCloser, error)
 //	}
-//
-// # Context Handling
-//
-// Context is passed to Open(), Create(), Put(), Delete(), and List() methods.
-// Note that io.ReaderAt (ReadAt) doesn't accept context by design - this is
-// a Go standard library limitation. For context-aware reads, cloud implementations
-// may provide additional methods like ReadAtContext() or ReadRangeContext().
 package blobstore

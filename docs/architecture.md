@@ -19,56 +19,69 @@ This document provides an in-depth look at Vecgo's internal architecture, helpin
 
 Vecgo is designed around a **Shared-Nothing, LSM-Tree Architecture** to maximize performance, concurrency, and durability.
 
-**Current technical concept:** Vecgo is a single **tiered engine** (`engine`) with an in-memory L0 hot tier and immutable on-disk segments. External identity uses a persistent `PK -> Location(SegmentID, RowID)` index. Payload/content is stored separately from vectors and can be read via a BlobStore abstraction. Payload interchange is an *edge concern* and must not introduce a core hot-path dependency.
+```mermaid
+flowchart TB
+    subgraph API["🔌 Vecgo API Layer"]
+        direction LR
+        Open["Open(ctx, backend)"]
+        Insert["Insert / BatchInsert"]
+        Search["Search / HybridSearch"]
+        Commit["Commit / Close"]
+    end
+    
+    subgraph Engine["⚙️ Engine Layer"]
+        MT["MemTable (L0)<br/>Mutable HNSW"]
+        Segs["Immutable Segments<br/>(L1..Ln)"]
+        Snap["Snapshot Manager<br/>MVCC Isolation"]
+        Comp["Compactor<br/>Background Merge"]
+    end
+    
+    subgraph Searcher["🔍 Searcher Context"]
+        Pool["Worker Pool"]
+        Scratch["Reusable Buffers<br/>Heaps, BitSets, IO"]
+    end
+    
+    subgraph Segments["📦 Segment Types"]
+        direction LR
+        MemSeg["MemTable<br/>(Mutable)"]
+        FlatSeg["Flat<br/>(Exact)"]
+        DiskSeg["DiskANN<br/>(Graph+PQ)"]
+    end
+    
+    API --> Engine
+    Engine --> Searcher
+    Searcher --> Segments
+    MT --> |Commit| Segs
+    Comp --> |Merge| Segs
+    
+    style API fill:#e3f2fd
+    style Engine fill:#fff8e1
+    style Searcher fill:#f3e5f5
+    style Segments fill:#e8f5e9
+```
 
-**Cutover plan:** the tiered engine is the default implementation behind the public `vecgo` facade.
+**Architecture:** Vecgo is a single **tiered engine** with an in-memory L0 hot tier and immutable on-disk segments. External identity uses a persistent `PK -> Location(SegmentID, RowID)` index. Payload/content is stored separately from vectors via a BlobStore abstraction.
 
-**Caching (vNext):** caching is a first-class subsystem, not an afterthought. For local mmap segments, the OS page cache does most of the work; for non-mmap readers (e.g., BlobStore/cloud), vNext needs an explicit bounded segment block cache and snapshot-aware cache keys.
+**Caching:** For local mmap segments, the OS page cache handles caching. For cloud storage (S3/GCS), a bounded segment block cache with snapshot-aware cache keys provides efficient data access.
 
-**Code layout (current):**
-- `model`: Shared types (`PrimaryKey`, `SegmentID`, `RowID`, `Location`, `SearchOptions`).
-- `blobstore`: Abstraction for immutable data segments (supports Local/S3).
-- `cache`: Cache primitives/implementations (used where applicable).
-- `engine`: Tiered engine orchestrator (snapshots, commit/flush, compaction scheduling).
-- `internal/segment`: Segment interfaces and implementations (internal-only).
-    - Engine-integrated segment types: `memtable` (L0), `flat` (L1), `diskann` (larger compactions).
-- `blobstore`: Blob IO abstraction used by segments/payload readers (local mmap implementation provided).
-- `vectorstore`: Internal vector storage interface + columnar implementation (including mmap-backed load).
-- `manifest`: Manifest schema and atomic publication.
-- `pk`: Persistent Primary Key index.
-- `resource`: ResourceController.
-
-Note: legacy execution paths have been removed; the tree reflects the current engine-first design.
+### Code Layout
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    Vecgo API Layer                          │
-│   Entry Point: vecgo.Open(ctx, ...)                         │
-│   Operations: Insert, BatchInsert, Delete, Search,          │
-│               BatchSearch, SearchThreshold, HybridSearch    │
-└─────────────────────────────────────────────────────────────┘
-                            │
-┌─────────────────────────────────────────────────────────────┐
-│                   Engine Layer                              │
-│   - MemTable (Mutable, L0)                                  │
-│   - Immutable Segments (L1..Ln)                             │
-│   - Commit-Oriented Durability                              │
-│   - Compaction & Merging                                    │
-│   - Snapshot Isolation                                      │
-└─────────────────────────────────────────────────────────────┘
-                            │
-┌─────────────────────────────────────────────────────────────┐
-│                   Searcher Context                          │
-│   - Reusable Scratch Memory (Heaps, BitSets, Buffers)       │
-│   - Zero-Allocation Execution Path                          │
-└─────────────────────────────────────────────────────────────┘
-                            │
-        ┌───────────────────┼───────────────────┐
-        │                   │                   │
-┌───────▼────────┐  ┌───────▼────────┐  ┌──────▼──────┐
-│   MemTable     │  │   Segment 1    │  │  Segment N  │
-│   (Mutable)    │  │  (Immutable)   │  │ (Immutable) │
-└────────────────┘  └────────────────┘  └─────────────┘
+vecgo/
+├── model/          # Shared types (PrimaryKey, SegmentID, RowID, Location)
+├── blobstore/      # Storage abstraction (Local, S3, GCS)
+├── metadata/       # Typed metadata + filtering
+├── lexical/        # BM25 hybrid search
+├── internal/
+│   ├── engine/     # Core orchestrator (commit, flush, compaction)
+│   ├── segment/    # Segment implementations (memtable, flat, diskann)
+│   ├── hnsw/       # HNSW graph implementation
+│   ├── simd/       # SIMD kernels (AVX-512, NEON, SVE2)
+│   ├── mmap/       # Memory-mapped I/O
+│   ├── manifest/   # Atomic manifest publication
+│   ├── pk/         # Persistent primary key index
+│   └── cache/      # LRU + disk caching
+└── examples/       # Usage examples
 ```
 
 ---
@@ -115,7 +128,7 @@ The main entry point provides:
 
 ### 3. Engine (`engine/engine.go`)
 
-The Engine is the central nervous system of vNext. It manages the lifecycle of data across memory and disk.
+The Engine is the central orchestrator. It manages the lifecycle of data across memory and disk.
 
 **Responsibilities**:
 - **Write Buffer (L0)**: Manages the in-memory `MemTable` for fast writes.
@@ -133,12 +146,12 @@ The Engine is the central nervous system of vNext. It manages the lifecycle of d
 
 For production workloads, the system must have an unambiguous “which version is visible?” rule.
 
-Current design principle:
+
 
 - External identity is `PK`.
 - Physical storage is `Location(SegmentID, RowID)`.
 
-V2 target (breaking changes allowed):
+The design:
 
 - The published read view becomes a single immutable snapshot object, and includes the PK index view.
 - A candidate is visible iff `pkIndex[PK] == (SegmentID, RowID)` in the same snapshot (and it is not deleted).
@@ -158,8 +171,6 @@ Vecgo centralizes all performance-critical math in a dedicated layer to ensure "
     *   **Bounds Checks**: Eliminated inside the kernel (unsafe) for speed.
     *   **Validation**: Callers (Segments) must validate lengths before calling kernels.
     *   **Fallback**: Pure Go implementations provided for `noasm` builds or unsupported architectures.
-
-Float16 note: vNext will treat float16 as a *storage* dtype. SIMD batch conversion (`F16ToF32`) exists in `internal/simd` for fast float16→float32 decoding on AVX2/AVX-512/NEON. Storage integration is planned for a future release.
 
 ## Searcher Context (Internal Optimization)
 
@@ -188,7 +199,7 @@ type Searcher struct {
 }
 ```
 
-The vNext `engine` acquires and releases `Searcher` contexts from a pool during execution, ensuring near-zero-allocation behavior for the search path without exposing complexity to the user.
+The engine acquires and releases `Searcher` contexts from a pool during execution, ensuring near-zero-allocation behavior for the search path without exposing complexity to the user.
 
 ### SIMD Compute Layer
 
@@ -204,11 +215,9 @@ Key properties:
 
 Vecgo employs several advanced techniques to achieve high performance and scalability.
 
-#### A. Legacy: Sharding (Coordinator-era)
+#### A. Sharding
 
-This section described the pre-vNext coordinator-based sharding architecture.
-
-**Current reality (vNext)**: the default stack (`vecgo` → `engine` → `segment/*`) does not implement internal sharding. If you want multi-process or multi-shard behavior, run multiple engine instances and shard/rout at the application level.
+Vecgo does not implement internal sharding. The stack (`vecgo` → `engine` → `segment/*`) is designed as a single-node engine. For multi-process or multi-shard deployments, run multiple engine instances and shard at the application level.
 
 #### B. Update Semantics
 
@@ -311,9 +320,7 @@ Since Vecgo uses manual memory management (Arenas, mmap, unsafe pointers), stric
 
 2.  **Compaction Barrier / Reclamation**:
     -   Compaction MUST NOT reclaim/close memory that can still be observed by readers.
-    -   Enforce via either:
-        -   **Ref-counted snapshots/segments** (simple, correct; current vNext approach), or
-        -   **Epoch barrier (RCU-style)** (lower per-read overhead).
+    -   Enforced via **ref-counted snapshots/segments** for simplicity and correctness.
 
 3.  **GC Visibility Rule**:
     -   Clearing the last Go reference to arena-backed memory does not imply safety.
@@ -325,9 +332,9 @@ Since Vecgo uses manual memory management (Arenas, mmap, unsafe pointers), stric
 
 ---
 
-## Segment Types (vNext)
+## Segment Types
 
-Note: The refactoring plan trends toward a **disk-first segmented engine**, but this does **not** mean “disk-only”. In-memory indexes (Flat/HNSW) remain critical as the L0 write buffer/hot tier and for small datasets where RAM fits.
+Vecgo uses a **disk-first segmented engine**, but this does **not** mean “disk-only”. In-memory indexes (Flat/HNSW) remain critical as the L0 write buffer/hot tier and for small datasets where RAM fits.
 
 ### 1. Flat Segment (`internal/segment/flat`)
 *   **Algorithm**: Brute-force exact search.
@@ -387,7 +394,7 @@ If we add a single-file option, the production-grade version is a **purpose-buil
 - alignment for efficient mmap/range reads
 - optional per-entry compression only for cold payload blobs
 
-Planned direction: keep multi-file mode as default, and optionally support bundle mode for operational simplicity and object-store backends.
+Multi-file mode is the default. Bundle mode is available for operational simplicity and object-store backends.
 
 ### Columnar Storage (`vectorstore/`)
 
@@ -432,9 +439,9 @@ func (c *ColumnarStore) Delete(id model.RowID) {
 }
 ```
 
-### Disk-Resident Storage (legacy path reference)
+### Disk-Resident Storage
 
-Note: historical sections below may mention legacy `index/*` paths. The engine-first implementation uses `internal/segment/diskann` for DiskANN segments.
+DiskANN segments are implemented in `internal/segment/diskann`.
 
 Used by DiskANN for large-scale datasets:
 
@@ -474,7 +481,7 @@ Vecgo persists state via a small set of purpose-built components:
 - `pk/`: persistent PK index (`PK -> Location(SegmentID, RowID)`).
 - `internal/segment/*`: immutable segment files produced by flush/compaction.
 
-> **Note**: WAL has been removed. Vecgo uses commit-oriented durability with append-only versioned commits (like LanceDB/Git).
+> **Note**: WAL has been removed. Vecgo uses commit-oriented durability with append-only versioned commits.
 
 ### Atomic File Operations
 
@@ -525,7 +532,7 @@ func (b *Builder) writeIndexFiles() error {
 
 ## Durability Model
 
-Vecgo uses a **Commit-Oriented** architecture for durability — the same pattern used by LanceDB and Git (append-only versioned commits, not WAL-based).
+Vecgo uses a **Commit-Oriented** architecture for durability (append-only versioned commits, not WAL-based).
 
 ### Architecture
 
@@ -617,7 +624,7 @@ Cloud backends are high-latency. Vecgo implements a **Segment Block Cache**:
 - **Manifest**: Always fetched fresh (with CAS) to ensure strong consistency.
 - **WAL**: Buffered in memory and flushed transactionally (segmented upload).
 
-**Cloud-Native mmap Approximation (LanceDB Pattern)**:
+**Cloud-Native mmap Approximation**:
 
 Object stores (S3/GCS) don't support mmap, but Vecgo approximates mmap semantics via:
 
@@ -687,7 +694,7 @@ Vecgo uses **commit-oriented durability**:
 | `Commit()` | ✅ Yes | Writes segment + updates manifest |
 | `Close()` | ✅ Yes | Auto-commits pending data |
 
-This model matches LanceDB (Databricks) and Git — optimized for batch vector workloads. Unlike WAL-based databases, committed segments are immutable and self-describing.
+This model is optimized for batch vector workloads. Unlike WAL-based databases, committed segments are immutable and self-describing.
 
 ### Recovery Process
 
@@ -761,8 +768,6 @@ func CloneIfNeeded(m Metadata) Metadata {
 ### Unified Metadata Store (metadata filtering)
 
 Vecgo contains a `metadata` package with a **dual-index architecture** for fast predicate evaluation during search.
-
-**Architecture (Jan 2026)**:
 
 The `UnifiedIndex` maintains three synchronized structures:
 
@@ -855,7 +860,7 @@ All indexes support **concurrent reads**:
 
 ### Global MVCC & Lock-Free Search
 
-As of Jan 2026, Vecgo uses a **Global MVCC** architecture optimized for high-throughput search workloads.
+Vecgo uses a **Global MVCC** architecture optimized for high-throughput search workloads.
 
 1.  **Lock-Free Primary Key Index**:
     -   Address mapping (`ID -> Location`) uses **Paged MVCC** with per-entry atomic pointer linked-lists.
@@ -899,7 +904,7 @@ The HNSW implementation uses fine-grained locking and atomic operations to suppo
 - Readers can proceed concurrently
 - Simple but bottlenecks on multi-core inserts
 
-Legacy note: previous versions discussed multi-shard coordinator routing (`.Shards(n)`). The current vNext engine does not implement internal sharding; scale reads via segment-level parallelism and scale writes via the LSM pipeline (fast L0 + async flush/compaction).
+Vecgo does not implement internal sharding. Scale reads via segment-level parallelism and scale writes via the LSM pipeline (fast L0 + async flush/compaction).
 
 ### Search Coordination (Worker Pool)
 
@@ -932,9 +937,9 @@ func (wp *WorkerPool[T]) Submit(ctx context.Context, req WorkRequest[T]) error {
 }
 ```
 
-**Design Notes**:
-- This worker-pool sketch is a vNext idea; it is not currently implemented in the engine.
-- A bounded queue can apply backpressure to callers (submit blocks / respects context) but does not, by itself, prevent memory exhaustion.
+**Notes**:
+- A bounded queue applies backpressure to callers (submit blocks / respects context).
+- This does not, by itself, prevent memory exhaustion — the ResourceController handles global limits.
 ```
 
 ---
@@ -943,67 +948,81 @@ func (wp *WorkerPool[T]) Submit(ctx context.Context, req WorkRequest[T]) error {
 
 ### Insert Operation
 
-```
-User API
-   │
-    ├─> Engine.Insert(ctx, pk, vector)
-    │     │
-    │     ├─> 1. Apply to active MemTable (L0) — NOT durable yet
-    │     ├─> 2. Update PK -> Location
-    │     └─> 3. Commit() writes immutable segment — DURABLE
-    │
-    └─> Return PK to user
+```mermaid
+sequenceDiagram
+    participant App as Application
+    participant API as Vecgo API
+    participant MT as MemTable (L0)
+    participant PK as PK Index
+    participant Seg as Disk Segment
+    participant Man as Manifest
+
+    App->>API: Insert(ctx, vector, metadata)
+    API->>MT: Add to HNSW graph
+    API->>PK: Update PK → Location
+    Note over MT: ❌ NOT durable yet
+
+    App->>API: Commit(ctx)
+    API->>Seg: Write immutable segment
+    Seg->>Man: Atomic manifest update
+    Note over Seg,Man: ✅ DURABLE
+    API-->>App: Return PK
 ```
 
-### Search Operation (vNext)
+### Search Operation
 
-```
-User API
-   │
-    ├─> Engine.Search(ctx, query, k, filter)
-   │     │
-    │     ├─> 1. Acquire snapshot (atomic)
-    │     ├─> 2. Compile filter (bitmap if available, else predicate)
-    │     ├─> 3. Search across (L0 + immutable segments)
-    │     ├─> 4. Exact rerank and merge to global top-k
-    │     └─> 5. Fetch PKs and requested columns
-   │
-   └─> Return results to user
+```mermaid
+flowchart LR
+    Q[Query Vector] --> Snap[Acquire Snapshot]
+    Snap --> Filter[Compile Filter<br/>Bitmap Index]
+    Filter --> Search[Parallel Search<br/>L0 + Segments]
+    Search --> Merge[Merge Top-K<br/>Rerank]
+    Merge --> Fetch[Fetch Metadata<br/>+ Payload]
+    Fetch --> R[Results]
+    
+    style Q fill:#e3f2fd
+    style R fill:#e8f5e9
 ```
 
-**Key Improvements (Jan 2026)**:
-- ✅ **Lock-Free PK Index**: MVCC implemented with atomic pointer linked-lists (CAS) for wait-free reads and lock-free writes.
-- ✅ **Dynamic EF (ACORN-lite)**: HNSW search automatically adapts expansion factor (`ef`) based on filter selectivity to maintain recall.
-- ✅ **Zero-Overhead Distance**: Mmap store uses direct function pointers, bypassing interface overhead for L2/Cosine/Dot.
-- ✅ **Pre-filtering**: Filter applied during graph traversal (100% recall vs ~50% post-filtering)
-- ✅ **Vectorized predicate evaluation (vNext)**: Prefer batch checks (e.g., `MatchesBatch`) to reduce branchy per-row overhead
-- ✅ **Error propagation**: All shard errors surfaced with indices
-- ✅ **Context cancellation**: Gracefully handles timeouts during result collection
+**Key Optimizations:**
+- ✅ **Lock-Free PK Index**: MVCC with atomic pointer linked-lists (CAS) for wait-free reads
+- ✅ **Dynamic EF (ACORN-lite)**: Auto-adapts expansion factor based on filter selectivity
+- ✅ **Zero-Overhead Distance**: Direct function pointers, no interface overhead
+- ✅ **Pre-filtering**: Filter applied during graph traversal (100% recall)
+- ✅ **Vectorized predicates**: Batch checks via `MatchesBatch()`
 
 ### Delete + Compaction
 
-```
-User API
-   │
-    ├─> Engine.Delete(ctx, pk)
-   │     │
-    │     ├─> 1. Update PK index (remove mapping)
-    │     ├─> 2. Mark tombstone (memtable or immutable segment bitmap)
-    │     ├─> 3. Commit() persists tombstones — DURABLE
-    │     └─> 4. Background compaction materializes deletes
-   │
-   └─> Return to user
+```mermaid
+sequenceDiagram
+    participant App as Application
+    participant PK as PK Index
+    participant Tomb as Tombstone Set
+    participant Comp as Compactor
+    participant Seg as New Segment
+
+    App->>PK: Delete(pk)
+    PK->>Tomb: Mark tombstone
+    Note over Tomb: Soft delete (bitmap)
+    
+    App->>App: Commit()
+    Note over Tomb: Tombstones persisted
+    
+    Comp->>Comp: Background trigger
+    Comp->>Seg: Merge segments<br/>Skip tombstoned rows
+    Seg->>Seg: Publish new segment
+    Note over Seg: Space reclaimed
 ```
 
 ---
 
 ## Extension Points
 
-Want to add a new segment type? Implement the vNext segment contract (`segment.Segment`).
+Want to add a new segment type? Implement the `segment.Segment` interface.
 
 High-level rule: segments are immutable once published; the engine owns lifecycle and concurrency.
 
-**Production Requirements (Dec 2024)**:
+**Segment Requirements:**
 - ✅ **Idempotent Close()**: Safe to call multiple times
 - ✅ **Goroutine tracking**: Use `sync.WaitGroup` for all background workers
 - ✅ **Error context**: Include operation details in error messages
@@ -1064,7 +1083,7 @@ To maintain high performance, Vecgo adheres to strict design principles.
 Vecgo's architecture is designed for:
 - **Performance**: SIMD, zero-allocation, sharded writes
 - **Flexibility**: Multiple index types, pluggable storage
-- **Durability**: Commit-oriented (like LanceDB/Git) — append-only versioned commits, no WAL
+- **Durability**: Commit-oriented — append-only versioned commits, no WAL
 - **Scalability**: Sharding for multi-core, DiskANN for billions of vectors
 
 For performance tuning, see [docs/tuning.md](tuning.md).
