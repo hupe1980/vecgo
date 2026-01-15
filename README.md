@@ -7,6 +7,8 @@
 
 **Vecgo** is a **pure Go, embeddable, hybrid vector database** designed for high-performance production workloads. It combines commit-oriented durability with [HNSW](https://arxiv.org/abs/1603.09320) + [DiskANN](https://papers.nips.cc/paper/2019/hash/09853c7fb1d3f8ee67a61b6bf4a7f8e6-Abstract.html) indexing for best-in-class performance.
 
+⚠️ This is experimental and subject to breaking changes.
+
 ## ✨ Key Differentiators
 
 - ⚡ **Faster & lighter than external services** — no network overhead, no sidecar, 15MB binary
