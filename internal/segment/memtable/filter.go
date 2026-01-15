@@ -15,6 +15,10 @@ type columnarFilterWrapper struct {
 
 	once   sync.Once
 	bitmap *bitset.BitSet
+
+	// Cached cardinality (computed cheaply without full bitmap)
+	cardOnce  sync.Once
+	cardCache uint64
 }
 
 type columnCheck struct {
@@ -84,8 +88,18 @@ func (w *columnarFilterWrapper) compute() {
 }
 
 func (w *columnarFilterWrapper) Cardinality() uint64 {
-	w.once.Do(w.compute)
-	return uint64(w.bitmap.Count())
+	// Fast path: compute cardinality without materializing full bitmap
+	// This is O(n) scan but avoids expensive bitmap allocation
+	w.cardOnce.Do(func() {
+		var count uint64
+		for i := uint32(0); i < w.rowCount; i++ {
+			if w.Matches(i) {
+				count++
+			}
+		}
+		w.cardCache = count
+	})
+	return w.cardCache
 }
 
 func (w *columnarFilterWrapper) Contains(id uint32) bool {

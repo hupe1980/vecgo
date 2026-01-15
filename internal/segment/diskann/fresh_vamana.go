@@ -47,6 +47,10 @@ type FreshVamana struct {
 	// Entry point (updated atomically)
 	entryPoint atomic.Uint32
 
+	// ID→nodeID index for O(1) delete lookups (protected by idIndexMu)
+	idIndex   map[model.ID]uint32
+	idIndexMu sync.RWMutex
+
 	// Deletion bitmap
 	deleted      []uint64 // Bitmap words
 	deletedMu    sync.RWMutex
@@ -134,6 +138,7 @@ func NewFreshVamana(dim int, metric distance.Metric, opts FreshVamanaOptions) (*
 		alpha:    opts.Alpha,
 		distFunc: distFunc,
 		deleted:  make([]uint64, (opts.InitialSize+63)/64),
+		idIndex:  make(map[model.ID]uint32, opts.InitialSize),
 	}
 	fv.data.Store(data)
 
@@ -226,22 +231,17 @@ func (fv *FreshVamana) Delete(id model.ID) error {
 	}
 	fv.closedMu.RUnlock()
 
-	// Find node by external ID - use snapshot for lock-free read
-	data := fv.data.Load()
-	count := int(fv.nodeCount.Load())
-	nodeID := -1
-	for i := 0; i < count; i++ {
-		if data.ids[i] == id {
-			nodeID = i
-			break
-		}
-	}
-	if nodeID < 0 {
+	// O(1) lookup via ID index
+	fv.idIndexMu.RLock()
+	nodeID, exists := fv.idIndex[id]
+	fv.idIndexMu.RUnlock()
+
+	if !exists {
 		return fmt.Errorf("ID not found: %d", id)
 	}
 
 	// Set deletion bit
-	wordIdx := nodeID / 64
+	wordIdx := int(nodeID) / 64
 	bitIdx := uint(nodeID % 64)
 
 	fv.deletedMu.Lock()
@@ -424,6 +424,10 @@ func (fv *FreshVamana) Close() error {
 	fv.deleted = nil
 	fv.deletedMu.Unlock()
 
+	fv.idIndexMu.Lock()
+	fv.idIndex = nil
+	fv.idIndexMu.Unlock()
+
 	return nil
 }
 
@@ -451,6 +455,11 @@ func (fv *FreshVamana) allocateNodeLocked(id model.ID, vec []float32, md metadat
 	data.vectors[nodeID] = v
 	data.ids[nodeID] = id
 	data.metas[nodeID] = md
+
+	// Update ID→nodeID index for O(1) lookups
+	fv.idIndexMu.Lock()
+	fv.idIndex[id] = nodeID
+	fv.idIndexMu.Unlock()
 
 	// Initialize empty neighbor list
 	emptyNeighbors := make([]uint32, 0, fv.r)

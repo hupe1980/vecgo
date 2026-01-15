@@ -56,8 +56,7 @@ func PutPooledBitmap(b *LocalBitmap) {
 	if b == nil {
 		return
 	}
-	// Clear before returning to pool to release container memory
-	b.rb.Clear()
+	// No clear needed here - GetPooledBitmap clears on retrieval
 	bitmapPool.Put(b)
 }
 
@@ -673,9 +672,10 @@ func andBitmapBitmap(a, b *roaring.Bitmap, qs *QueryScratch) FilterResult {
 	}
 
 	// Large result: use bitmap mode
-	// AND into Tmp1 (which is cleared by GetQueryScratch)
+	// Copy 'a' into Tmp1, then AND with 'b'
+	// Note: And() on empty bitmap returns empty, so we must copy first
 	qs.Tmp1.rb.Clear()
-	qs.Tmp1.rb.And(a)
+	qs.Tmp1.rb.Or(a) // Copy 'a' into Tmp1
 	qs.Tmp1.rb.And(b)
 	return BitmapResult(qs.Tmp1.rb)
 }

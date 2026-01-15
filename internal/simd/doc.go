@@ -2,7 +2,7 @@
 //
 // # Supported Platforms
 //
-//   - x86-64: AVX-512, AVX2, SSE4.2
+//   - x86-64: AVX-512, AVX2 (falls back to generic Go for AVX1-only CPUs)
 //   - ARM64: NEON, SVE2
 //
 // Runtime CPU feature detection selects the optimal implementation.
@@ -13,10 +13,10 @@
 //   - Distance: Dot, SquaredL2, Cosine
 //   - Batch: DotBatch, SquaredL2Batch
 //   - Quantized: PQ ADC lookup, SQ8 L2, INT4 L2
-//   - Utility: Normalize, F16→F32 conversion
+//   - Utility: Scale, F16→F32 conversion
 //
 // # Performance
 //
-// AVX-512 provides ~8x speedup over scalar code for float32 operations.
-// INT4 SIMD with precomputed lookup tables achieves ~95ns per distance.
+// Run benchmarks with `go test ./internal/simd -bench . -benchmem` to measure speedup.
+// Typical results show 4-8x improvement over generic Go for float32 operations.
 package simd

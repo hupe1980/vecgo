@@ -23,7 +23,7 @@ func (fs *FilterSet) MatchesBinary(data []byte) (bool, error) {
 	// For small N (typical case), a simple bitmask or counter is fine.
 	// But FilterSet stores filters as slice.
 
-	// Create a fast lookup map for filters by key.
+	// Use cached filterMap for O(1) lookup (avoids allocation on each call).
 	// Optimization: If FilterSet has 1 filter, avoid map.
 	var singleFilter *Filter
 	var filterMap map[string]*Filter
@@ -31,10 +31,14 @@ func (fs *FilterSet) MatchesBinary(data []byte) (bool, error) {
 	if len(fs.Filters) == 1 {
 		singleFilter = &fs.Filters[0]
 	} else {
-		filterMap = make(map[string]*Filter, len(fs.Filters))
-		for i := range fs.Filters {
-			filterMap[fs.Filters[i].Key] = &fs.Filters[i]
+		// Lazy-initialize cached filterMap
+		if fs.filterMap == nil {
+			fs.filterMap = make(map[string]*Filter, len(fs.Filters))
+			for i := range fs.Filters {
+				fs.filterMap[fs.Filters[i].Key] = &fs.Filters[i]
+			}
 		}
+		filterMap = fs.filterMap
 	}
 
 	matchedCount := 0

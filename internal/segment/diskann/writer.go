@@ -466,9 +466,7 @@ func (w *Writer) greedySearch(query []float32, startNode uint32, l int) []uint32
 	// Simple greedy search implementation
 	// Reuse scratch buffers to avoid allocations
 	visited := w.scratchVisited
-	for k := range visited {
-		delete(visited, k)
-	}
+	clear(visited)
 	visited[startNode] = true
 
 	// Use a heap for best candidates
@@ -491,9 +489,7 @@ func (w *Writer) greedySearch(query []float32, startNode uint32, l int) []uint32
 	pool = append(pool, distNode{id: startNode, dist: w.dist(w.vectors[startNode], query)})
 
 	expanded := w.scratchExpanded
-	for k := range expanded {
-		delete(expanded, k)
-	}
+	clear(expanded)
 
 	for {
 		// Linear Scan for best unexpanded
@@ -573,9 +569,7 @@ func (w *Writer) robustPrune(node uint32, candidates []uint32, r int, alpha floa
 
 	// Reuse scratch unique map
 	unique := w.scratchUnique
-	for k := range unique {
-		delete(unique, k)
-	}
+	clear(unique)
 	for _, c := range candidates {
 		unique[c] = true
 	}

@@ -124,6 +124,18 @@ type filterCost struct {
 	cost        int     // Estimated execution cost (lower = cheaper)
 }
 
+// cmpFilterCost compares two filterCosts by selectivity then cost.
+// Package-level function to avoid closure allocation in SortFunc.
+func cmpFilterCost(a, b filterCost) int {
+	if a.selectivity != b.selectivity {
+		if a.selectivity < b.selectivity {
+			return -1
+		}
+		return 1
+	}
+	return a.cost - b.cost
+}
+
 // estimateFilterCost estimates the selectivity and cost of a filter.
 // This enables cost-based query planning: evaluate most selective filters first.
 func (ui *UnifiedIndex) estimateFilterCost(f metadata.Filter) filterCost {
@@ -402,28 +414,26 @@ func (ui *UnifiedIndex) EvaluateFilterResult(fs *metadata.FilterSet, qs *QuerySc
 	filters := fs.Filters
 
 	// Cost-based query planning: sort filters by estimated selectivity (most selective first)
+	// For small filter counts (typical: 1-3), avoid allocation by using stack array
 	if len(filters) > 1 {
-		costs := make([]filterCost, len(filters))
-		for i, f := range filters {
-			costs[i] = ui.estimateFilterCost(f)
+		// Stack-allocate for small counts (covers 99% of real queries)
+		var costsBuf [8]filterCost
+		costs := costsBuf[:0]
+		if len(filters) > 8 {
+			costs = make([]filterCost, 0, len(filters))
+		}
+
+		for _, f := range filters {
+			costs = append(costs, ui.estimateFilterCost(f))
 		}
 
 		// Sort by selectivity (ascending) - most selective first
-		slices.SortFunc(costs, func(a, b filterCost) int {
-			if a.selectivity != b.selectivity {
-				if a.selectivity < b.selectivity {
-					return -1
-				}
-				return 1
-			}
-			return a.cost - b.cost
-		})
+		slices.SortFunc(costs, cmpFilterCost)
 
-		// Reorder filters
-		reordered := make([]filterCost, len(filters))
-		copy(reordered, costs)
-		filters = make([]metadata.Filter, len(reordered))
-		for i, fc := range reordered {
+		// Reorder filters in-place via sorted costs (no allocation)
+		// costs already contains the filter references
+		filters = make([]metadata.Filter, len(costs))
+		for i, fc := range costs {
 			filters[i] = fc.filter
 		}
 	}

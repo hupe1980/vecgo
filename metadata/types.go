@@ -440,6 +440,9 @@ type FilterSet struct {
 	// internedKeys caches unique.Handle for each filter key.
 	// Lazily initialized on first MatchesInterned call.
 	internedKeys []unique.Handle[string]
+	// filterMap caches key→*Filter for O(1) lookup in MatchesBinary.
+	// Lazily initialized on first MatchesBinary call with >1 filter.
+	filterMap map[string]*Filter
 }
 
 // NewFilterSet creates a new filter set.

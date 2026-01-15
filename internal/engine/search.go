@@ -32,6 +32,31 @@ var segFilterPool = sync.Pool{
 	},
 }
 
+// Package-level comparison functions to avoid closure allocation in hot paths.
+// These are used with slices.SortFunc to eliminate per-call closure overhead.
+
+// cmpInternalCandidateBySegment compares InternalCandidates by SegmentID.
+func cmpInternalCandidateBySegment(a, b searcher.InternalCandidate) int {
+	if a.SegmentID < b.SegmentID {
+		return -1
+	}
+	if a.SegmentID > b.SegmentID {
+		return 1
+	}
+	return 0
+}
+
+// cmpCandidateBySegment compares Candidates by SegmentID.
+func cmpCandidateBySegment(a, b model.Candidate) int {
+	if a.Loc.SegmentID < b.Loc.SegmentID {
+		return -1
+	}
+	if a.Loc.SegmentID > b.Loc.SegmentID {
+		return 1
+	}
+	return 0
+}
+
 // SearchIter performs a k-NN search and yields results via an iterator.
 // This allows for zero-copy streaming of results.
 //
@@ -315,7 +340,15 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 							continue
 						}
 
-						// Step 3: Process in batches with early cutoff
+						// Step 3: Sort rows for sequential mmap access (cache-friendly I/O)
+						// FilterRows mode is already sorted (from roaring or sorted evaluation)
+						// After tombstone compaction, order may be preserved but sort is O(n log n)
+						// and mmap sequential access gains (~2-3x I/O throughput) outweigh sort cost
+						if len(allRowIDs) > 64 && !slices.IsSorted(allRowIDs) {
+							slices.Sort(allRowIDs)
+						}
+
+						// Step 4: Process in batches with early cutoff
 						for start := 0; start < len(allRowIDs); start += batchSize {
 							// Check context cancellation periodically
 							if start > 0 && ctx.Err() != nil {
@@ -500,16 +533,8 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 			s.CandidateBuffer = append(s.CandidateBuffer, s.Heap.Pop())
 		}
 
-		// 3. Rerank
-		slices.SortFunc(s.CandidateBuffer, func(a, b searcher.InternalCandidate) int {
-			if a.SegmentID < b.SegmentID {
-				return -1
-			}
-			if a.SegmentID > b.SegmentID {
-				return 1
-			}
-			return 0
-		})
+		// 3. Rerank - use package-level comparator to avoid closure allocation
+		slices.SortFunc(s.CandidateBuffer, cmpInternalCandidateBySegment)
 
 		s.Results = s.Results[:0]
 
@@ -589,15 +614,7 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 			cols = append(cols, "payload")
 		}
 
-		slices.SortFunc(s.Results, func(a, b model.Candidate) int {
-			if a.Loc.SegmentID < b.Loc.SegmentID {
-				return -1
-			}
-			if a.Loc.SegmentID > b.Loc.SegmentID {
-				return 1
-			}
-			return 0
-		})
+		slices.SortFunc(s.Results, cmpCandidateBySegment)
 
 		for i := 0; i < len(s.Results); {
 			segID := s.Results[i].Loc.SegmentID

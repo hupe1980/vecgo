@@ -24,7 +24,8 @@ func init() {
 		hammingImpl = hammingAVX512
 		return
 	}
-	if cpu.X86.HasAVX {
+	// AVX2 required for FMA instructions used in kernels
+	if cpu.X86.HasAVX2 {
 		dotImpl = dotAVX
 		squaredL2Impl = squaredL2AVX
 		scaleImpl = scaleAVX

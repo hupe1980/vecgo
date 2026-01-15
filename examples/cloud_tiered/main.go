@@ -161,7 +161,7 @@ func buildIndex(dir string) {
 		log.Fatalf("Failed to open builder: %v", err)
 	}
 
-	for i := 0; i < 2000; i++ {
+	for range 2000 {
 		eng.Insert(context.Background(), randomVector(128), nil, nil)
 	}
 	eng.Close()
