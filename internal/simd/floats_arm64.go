@@ -20,10 +20,7 @@ func init() {
 
 		squaredL2BatchImpl = squaredL2BatchSVE2
 		dotBatchImpl = dotBatchSVE2
-		f16ToF32Impl = f16ToF32SVE2
-		sq8L2BatchImpl = sq8L2BatchSVE2
 		sq8uL2BatchPerDimensionImpl = sq8uL2BatchPerDimensionSVE2
-		popcountImpl = popcountSVE2
 		hammingImpl = hammingSVE2
 		return
 	}
@@ -35,10 +32,7 @@ func init() {
 
 		squaredL2BatchImpl = squaredL2BatchNEON
 		dotBatchImpl = dotBatchNEON
-		f16ToF32Impl = f16ToF32NEON
-		sq8L2BatchImpl = sq8L2BatchNEON
 		sq8uL2BatchPerDimensionImpl = sq8uL2BatchPerDimensionNEON
-		popcountImpl = popcountNEON
 		hammingImpl = hammingNEON
 	}
 }
@@ -89,18 +83,6 @@ func dotBatchNEON(query []float32, targets []float32, dim int, out []float32) {
 	}
 }
 
-func f16ToF32NEON(in []uint16, out []float32) {
-	if len(in) > 0 {
-		f16ToF32Neon(unsafe.Pointer(&in[0]), unsafe.Pointer(&out[0]), int64(len(in)))
-	}
-}
-
-func sq8L2BatchNEON(query []float32, codes []int8, scales []float32, biases []float32, dim int, out []float32) {
-	if len(out) > 0 {
-		sq8L2BatchNeon(unsafe.Pointer(&query[0]), unsafe.Pointer(&codes[0]), unsafe.Pointer(&scales[0]), unsafe.Pointer(&biases[0]), int64(dim), int64(len(out)), unsafe.Pointer(&out[0]))
-	}
-}
-
 func sq8uL2BatchPerDimensionNEON(query []float32, codes []byte, mins []float32, invScales []float32, dim int, out []float32) {
 	if len(out) > 0 {
 		sq8uL2BatchPerDimensionNeon(
@@ -113,14 +95,6 @@ func sq8uL2BatchPerDimensionNEON(query []float32, codes []byte, mins []float32, 
 			unsafe.Pointer(&out[0]),
 		)
 	}
-}
-
-func popcountNEON(a []byte) int64 {
-	n := len(a)
-	if n == 0 {
-		return 0
-	}
-	return popcountNeon(unsafe.Pointer(&a[0]), int64(n))
 }
 
 func hammingNEON(a, b []byte) int64 {
@@ -179,18 +153,6 @@ func dotBatchSVE2(query []float32, targets []float32, dim int, out []float32) {
 	}
 }
 
-func f16ToF32SVE2(in []uint16, out []float32) {
-	if len(in) > 0 {
-		f16ToF32Sve2(unsafe.Pointer(&in[0]), unsafe.Pointer(&out[0]), int64(len(in)))
-	}
-}
-
-func sq8L2BatchSVE2(query []float32, codes []int8, scales []float32, biases []float32, dim int, out []float32) {
-	if len(out) > 0 {
-		sq8L2BatchSve2(unsafe.Pointer(&query[0]), unsafe.Pointer(&codes[0]), unsafe.Pointer(&scales[0]), unsafe.Pointer(&biases[0]), int64(dim), int64(len(out)), unsafe.Pointer(&out[0]))
-	}
-}
-
 func sq8uL2BatchPerDimensionSVE2(query []float32, codes []byte, mins []float32, invScales []float32, dim int, out []float32) {
 	if len(out) > 0 {
 		sq8uL2BatchPerDimensionSve2(
@@ -203,14 +165,6 @@ func sq8uL2BatchPerDimensionSVE2(query []float32, codes []byte, mins []float32, 
 			unsafe.Pointer(&out[0]),
 		)
 	}
-}
-
-func popcountSVE2(a []byte) int64 {
-	n := len(a)
-	if n == 0 {
-		return 0
-	}
-	return popcountSve2(unsafe.Pointer(&a[0]), int64(n))
 }
 
 func hammingSVE2(a, b []byte) int64 {

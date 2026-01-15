@@ -8,7 +8,3 @@ import "unsafe"
 
 //go:noescape
 func hammingAvx512(a unsafe.Pointer, b unsafe.Pointer, n int64) int64
-
-//go:noescape
-func popcountAvx512(a unsafe.Pointer, n int64) int64
-

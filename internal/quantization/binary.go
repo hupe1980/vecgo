@@ -140,10 +140,8 @@ func (bq *BinaryQuantizer) EncodeUint64Into(dst []uint64, v []float32) error {
 	// Assuming caller provides clean or we overwrite.
 	// Since we use |=, we must assume dst is zeroed or we should zero it.
 	// To be safe and correct, we should zero it or assign.
-	// Assigning is better.
-	for i := range dst {
-		dst[i] = 0
-	}
+	// Using Go 1.21+ clear() builtin.
+	clear(dst)
 
 	for i, val := range v {
 		if val >= bq.threshold {

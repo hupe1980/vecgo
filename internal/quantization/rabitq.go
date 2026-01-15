@@ -53,12 +53,9 @@ func (rq *RaBitQuantizer) Encode(v []float32) ([]byte, error) {
 		return nil, errors.New("vector dimension mismatch")
 	}
 
-	// 1. Compute Norm
-	var sumSq float32
-	for _, val := range v {
-		sumSq += val * val
-	}
-	norm := float32(math.Sqrt(float64(sumSq)))
+	// 1. Compute Norm using SIMD dot product (||v||^2 = v · v)
+	sumSq := simd.Dot(v, v)
+	norm := simd.Sqrt(sumSq)
 
 	// 2. Binary Encode
 	numWords := (len(v) + 63) / 64
@@ -130,13 +127,9 @@ func (rq *RaBitQuantizer) Distance(query []float32, code []byte) (float32, error
 	yNormBits := binary.LittleEndian.Uint32(code[numBytes:])
 	yNorm := math.Float32frombits(yNormBits)
 
-	// Compute query norm (can be optimized if caller provides it)
-	// For now, compute it.
-	var qSumSq float32
-	for _, v := range query {
-		qSumSq += v * v
-	}
-	qNorm := float32(math.Sqrt(float64(qSumSq)))
+	// Compute query norm using SIMD dot product (||q||^2 = q · q)
+	qSumSq := simd.Dot(query, query)
+	qNorm := simd.Sqrt(qSumSq)
 
 	// Compute Hamming distance
 	// Map query to binary code locally
@@ -144,10 +137,8 @@ func (rq *RaBitQuantizer) Distance(query []float32, code []byte) (float32, error
 	qCodes := *qCodesPtr
 	defer rq.uint64Pool.Put(qCodesPtr)
 
-	// Zero out
-	for i := range qCodes {
-		qCodes[i] = 0
-	}
+	// Zero out using Go 1.21+ builtin
+	clear(qCodes)
 
 	// Basic sign encoding for query
 	for i, val := range query {

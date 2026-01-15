@@ -176,32 +176,6 @@ func BenchmarkSquaredL2(b *testing.B) {
 	}
 }
 
-func BenchmarkPopcount_128Bytes(b *testing.B) {
-	in := make([]byte, 128)
-	for i := range in {
-		in[i] = byte(i * 131)
-	}
-	var sink int64
-	b.ResetTimer()
-	for b.Loop() {
-		sink = Popcount(in)
-	}
-	_ = sink
-}
-
-func BenchmarkPopcount_768Bytes(b *testing.B) {
-	in := make([]byte, 768)
-	for i := range in {
-		in[i] = byte(i * 131)
-	}
-	var sink int64
-	b.ResetTimer()
-	for b.Loop() {
-		sink = Popcount(in)
-	}
-	_ = sink
-}
-
 func BenchmarkHamming_128Bytes(b *testing.B) {
 	a := make([]byte, 128)
 	bv := make([]byte, 128)
@@ -381,92 +355,6 @@ func TestScaleInPlace_Nil(t *testing.T) {
 	ScaleInPlace(a, 2)
 }
 
-func TestF16ToF32(t *testing.T) {
-	// Known values
-	// 0x3c00 = 1.0
-	// 0x4000 = 2.0
-	// 0xc000 = -2.0
-	// 0x0000 = 0.0
-	in := []uint16{0x3c00, 0x4000, 0xc000, 0x0000}
-	expected := []float32{1.0, 2.0, -2.0, 0.0}
-	out := make([]float32, len(in))
-
-	F16ToF32(in, out)
-	assert.Equal(t, expected, out)
-}
-
-func TestSq8L2Batch(t *testing.T) {
-	rng := rand.New(rand.NewSource(3))
-	dim := 16
-	n := 10
-
-	query := make([]float32, dim)
-	for i := range query {
-		query[i] = rng.Float32()
-	}
-
-	codes := make([]int8, n*dim)
-	scales := make([]float32, n)
-	biases := make([]float32, n)
-
-	for i := 0; i < n; i++ {
-		scales[i] = rng.Float32()
-		biases[i] = rng.Float32()
-		for j := 0; j < dim; j++ {
-			codes[i*dim+j] = int8(rng.Intn(256) - 128)
-		}
-	}
-
-	out := make([]float32, n)
-	Sq8L2Batch(query, codes, scales, biases, dim, out)
-
-	// Verify with generic implementation logic
-	for i := 0; i < n; i++ {
-		var sum float32
-		for j := 0; j < dim; j++ {
-			val := float32(codes[i*dim+j])*scales[i] + biases[i]
-			diff := query[j] - val
-			sum += diff * diff
-		}
-		assert.InDelta(t, sum, out[i], 1e-2)
-	}
-}
-
-func TestSq8L2Batch_EquivalenceBoundaries(t *testing.T) {
-	rng := rand.New(rand.NewSource(7))
-	dims := []int{1, 7, 8, 15, 16, 17, 31, 32, 33}
-	batchSizes := []int{1, 2, 5}
-
-	for _, dim := range dims {
-		for _, n := range batchSizes {
-			query := make([]float32, dim)
-			for i := range query {
-				query[i] = rng.Float32()*2 - 1
-			}
-
-			codes := make([]int8, n*dim)
-			scales := make([]float32, n)
-			biases := make([]float32, n)
-			for i := 0; i < n; i++ {
-				scales[i] = rng.Float32()*2 - 1
-				biases[i] = rng.Float32()*2 - 1
-				for j := 0; j < dim; j++ {
-					codes[i*dim+j] = int8(rng.Intn(256) - 128)
-				}
-			}
-
-			got := make([]float32, n)
-			want := make([]float32, n)
-			Sq8L2Batch(query, codes, scales, biases, dim, got)
-			sq8L2BatchGeneric(query, codes, scales, biases, dim, want)
-
-			for i := 0; i < n; i++ {
-				assert.InDelta(t, want[i], got[i], 1e-2, "sq8L2 mismatch for dim=%d n=%d i=%d", dim, n, i)
-			}
-		}
-	}
-}
-
 func TestSq8uL2BatchPerDimension_EquivalenceBoundaries(t *testing.T) {
 	rng := rand.New(rand.NewSource(9))
 	dims := []int{1, 7, 8, 15, 16, 17, 31, 32, 33}
@@ -497,41 +385,6 @@ func TestSq8uL2BatchPerDimension_EquivalenceBoundaries(t *testing.T) {
 				assert.InDelta(t, want[i], got[i], 5e-2, "sq8uL2 mismatch for dim=%d n=%d i=%d", dim, n, i)
 			}
 		}
-	}
-}
-
-func TestPopcount(t *testing.T) {
-	tests := []struct {
-		name string
-		in   []byte
-		want int64
-	}{
-		{"Empty", []byte{}, 0},
-		{"Nil", nil, 0},
-		{"Zero", []byte{0, 0, 0}, 0},
-		{"All ones", []byte{0xFF, 0xFF}, 16},
-		{"Mixed", []byte{0x0F, 0xF0, 0xAA}, 4 + 4 + 4}, // 12
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := Popcount(tc.in)
-			assert.Equal(t, tc.want, got)
-		})
-	}
-}
-
-func TestPopcount_EquivalenceBoundaries(t *testing.T) {
-	lengths := []int{0, 1, 7, 8, 15, 16, 17, 31, 32, 33, 63, 64, 65}
-	for _, n := range lengths {
-		in := make([]byte, n)
-		for i := range in {
-			// Deterministic, non-trivial bit patterns.
-			in[i] = byte(i*131) ^ byte(i>>1)
-		}
-		want := popcountGeneric(in)
-		got := Popcount(in)
-		assert.Equal(t, want, got, "popcount mismatch for n=%d", n)
 	}
 }
 

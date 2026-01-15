@@ -41,14 +41,6 @@ func randInt8(r *rand.Rand, n int) []int8 {
 	return out
 }
 
-func randU16(r *rand.Rand, n int) []uint16 {
-	out := make([]uint16, n)
-	for i := range out {
-		out[i] = uint16(r.Uint32())
-	}
-	return out
-}
-
 func BenchmarkDot_Dims(b *testing.B) {
 	r := benchRand()
 	for _, dim := range []int{128, 256, 768, 1536} {
@@ -141,34 +133,6 @@ func BenchmarkPqAdcLookup_M(b *testing.B) {
 	}
 }
 
-func BenchmarkF16ToF32(b *testing.B) {
-	r := benchRand()
-	const n = 1 << 20
-	in := randU16(r, n)
-	out := make([]float32, n)
-	b.SetBytes(int64(n * 2))
-	b.ResetTimer()
-	for b.Loop() {
-		F16ToF32(in, out)
-	}
-}
-
-func BenchmarkSq8L2Batch(b *testing.B) {
-	r := benchRand()
-	const dim = 128
-	const n = 256
-	query := randFloats(r, dim)
-	codes := randInt8(r, n*dim)
-	scales := randFloats(r, n)
-	biases := randFloats(r, n)
-	out := make([]float32, n)
-	b.SetBytes(int64(n * dim))
-	b.ResetTimer()
-	for b.Loop() {
-		Sq8L2Batch(query, codes, scales, biases, dim, out)
-	}
-}
-
 func BenchmarkSq8uL2BatchPerDimension(b *testing.B) {
 	r := benchRand()
 	const dim = 128
@@ -182,22 +146,6 @@ func BenchmarkSq8uL2BatchPerDimension(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
 		Sq8uL2BatchPerDimension(query, codes, mins, invScales, dim, out)
-	}
-}
-
-func BenchmarkPopcount_Sizes(b *testing.B) {
-	r := benchRand()
-	for _, n := range []int{128, 768, 4096, 1 << 20} {
-		b.Run("n="+itoa(n), func(b *testing.B) {
-			in := randBytes(r, n)
-			b.SetBytes(int64(n))
-			b.ResetTimer()
-			var sink int64
-			for b.Loop() {
-				sink = Popcount(in)
-			}
-			_ = sink
-		})
 	}
 }
 

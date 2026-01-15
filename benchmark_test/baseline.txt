@@ -2,40 +2,40 @@ goos: darwin
 goarch: arm64
 pkg: github.com/hupe1980/vecgo/benchmark_test
 cpu: Apple M4 Pro
-BenchmarkBatchInsert/Sequential-14         	    4345	    527990 ns/op	   45281 B/op	       4 allocs/op
-BenchmarkBatchInsert/Batch-14              	   15669	     89376 ns/op	   43552 B/op	       7 allocs/op
-BenchmarkBatchSearch/Sequential-14         	    1002	   1125795 ns/op	         1.000 recall@10	   14970 B/op	      80 allocs/op
-BenchmarkBatchSearch/Batch-14              	    5403	    227984 ns/op	         1.000 recall@10	   16934 B/op	     104 allocs/op
-BenchmarkBulkLoad/Standard-14              	   11701	     95485 ns/op	   29167 B/op	       6 allocs/op
-BenchmarkBulkLoad/Deferred-14              	 3604687	      2181 ns/op	    7265 B/op	       3 allocs/op
-BenchmarkCompaction_Pressure-14            	   21876	   1541464 ns/op	  159408 B/op	     117 allocs/op
-BenchmarkFilteredSearchSelectivity/d128_n50k/01pct-14         	    1717	    688206 ns/op	       500.0 matches	         1.000 recall@10	         0.01000 selectivity	   66089 B/op	      80 allocs/op
-BenchmarkFilteredSearchSelectivity/d128_n50k/05pct-14         	      37	  31804304 ns/op	      2500 matches	         1.000 recall@10	         0.05000 selectivity	  263761 B/op	     480 allocs/op
-BenchmarkFilteredSearchSelectivity/d128_n50k/10pct-14         	      34	  33377502 ns/op	      5000 matches	         1.000 recall@10	         0.1000 selectivity	  361905 B/op	     480 allocs/op
-BenchmarkFilteredSearchSelectivity/d128_n50k/50pct-14         	      32	  35939996 ns/op	     25000 matches	         1.000 recall@10	         0.5000 selectivity	 1628254 B/op	     511 allocs/op
-BenchmarkFilteredSearchSelectivity/d128_n50k/90pct-14         	      58	  19847433 ns/op	     45000 matches	         1.000 recall@10	         0.9000 selectivity	 2527311 B/op	     511 allocs/op
-BenchmarkFilteredSearch_768dim_100K/d768_n100k/01pct-14       	      55	  20204101 ns/op	      1000 matches	         1.000 recall@10	         0.01000 selectivity	  101222 B/op	     516 allocs/op
-BenchmarkFilteredSearch_768dim_100K/d768_n100k/05pct-14       	      36	  28322035 ns/op	      5000 matches	         1.000 recall@10	         0.05000 selectivity	  196173 B/op	     501 allocs/op
-BenchmarkFilteredSearch_768dim_100K/d768_n100k/10pct-14       	      33	  33349708 ns/op	     10000 matches	         1.000 recall@10	         0.1000 selectivity	  242985 B/op	     501 allocs/op
-BenchmarkFilteredSearch_768dim_100K/d768_n100k/50pct-14       	      30	  35807069 ns/op	     50000 matches	         1.000 recall@10	         0.5000 selectivity	  839633 B/op	     532 allocs/op
-BenchmarkFilteredSearch_768dim_100K/d768_n100k/90pct-14       	      36	  30760811 ns/op	     90000 matches	         1.000 recall@10	         0.9000 selectivity	 1250296 B/op	     531 allocs/op
-BenchmarkFilteredSearch_1536dim_100K/d1536_n100k/01pct-14     	      10	 100316183 ns/op	      1000 matches	         1.000 recall@10	         0.01000 selectivity	  129356 B/op	     525 allocs/op
-BenchmarkFilteredSearch_1536dim_100K/d1536_n100k/05pct-14     	      10	 101927004 ns/op	      5000 matches	         1.000 recall@10	         0.05000 selectivity	  240204 B/op	     504 allocs/op
-BenchmarkFilteredSearch_1536dim_100K/d1536_n100k/10pct-14     	      10	 106637554 ns/op	     10000 matches	         1.000 recall@10	         0.1000 selectivity	  385331 B/op	     523 allocs/op
-BenchmarkFilteredSearch_1536dim_100K/d1536_n100k/50pct-14     	      10	 107978471 ns/op	     50000 matches	         1.000 recall@10	         0.5000 selectivity	 1476983 B/op	     557 allocs/op
-BenchmarkFilteredSearch_1536dim_100K/d1536_n100k/90pct-14     	      14	  79414116 ns/op	     90000 matches	         1.000 recall@10	         0.9000 selectivity	 2323889 B/op	     532 allocs/op
-BenchmarkFilteredSearch_768dim_500K/d768_n500k/01pct-14       	      72	  18181803 ns/op	      5000 matches	         1.000 recall@10	         0.01000 selectivity	   92406 B/op	     641 allocs/op
-BenchmarkFilteredSearch_768dim_500K/d768_n500k/05pct-14       	      36	  29367601 ns/op	     25000 matches	         1.000 recall@10	         0.05000 selectivity	  184595 B/op	     632 allocs/op
-BenchmarkFilteredSearch_768dim_500K/d768_n500k/10pct-14       	      30	  40229879 ns/op	     50000 matches	         1.000 recall@10	         0.1000 selectivity	  214468 B/op	     633 allocs/op
-BenchmarkFilteredSearch_768dim_500K/d768_n500k/50pct-14       	      15	  74300256 ns/op	    250000 matches	         1.000 recall@10	         0.5000 selectivity	  661095 B/op	     667 allocs/op
-BenchmarkFilteredSearch_768dim_500K/d768_n500k/90pct-14       	      15	  73920089 ns/op	    450000 matches	         1.000 recall@10	         0.9000 selectivity	  873942 B/op	     669 allocs/op
-BenchmarkHybridSearch/VectorOnly-14                           	    5005	    221270 ns/op	         1.000 recall@10	    9489 B/op	      47 allocs/op
-BenchmarkHybridSearch/Hybrid-14                               	    3864	    307116 ns/op	         1.000 recall@10	   51349 B/op	     160 allocs/op
-BenchmarkHybridSearch/LexicalOnly-14                          	   33195	     35964 ns/op	         1.000 recall@10	     912 B/op	       3 allocs/op
-BenchmarkInsertMicro/Deferred-14                              	 3056992	       370.6 ns/op	    1734 B/op	       2 allocs/op
-BenchmarkBinaryQuantizer_Distance-14                          	199350918	         6.025 ns/op	       0 B/op	       0 allocs/op
-BenchmarkStorage_ReadRandom/Local_NVMe-14                     	77784232	        15.37 ns/op	       0 B/op	       0 allocs/op
-BenchmarkStorage_ReadRandom/Simulated_S3_Direct-14            	      38	  30984613 ns/op	       0 B/op	       0 allocs/op
-BenchmarkStorage_ReadRandom/Cached_S3_Warm-14                 	 5081655	       216.2 ns/op	     272 B/op	       4 allocs/op
+BenchmarkBatchInsert/Sequential-14         	    2379	    791079 ns/op	   18180 B/op	       2 allocs/op
+BenchmarkBatchInsert/Batch-14              	   14120	     82656 ns/op	   40455 B/op	       7 allocs/op
+BenchmarkBatchSearch/Sequential-14         	     844	   1197595 ns/op	         1.000 recall@10	   14994 B/op	      80 allocs/op
+BenchmarkBatchSearch/Batch-14              	    5641	    205516 ns/op	         1.000 recall@10	   17071 B/op	     104 allocs/op
+BenchmarkBulkLoad/Standard-14              	   12817	    100935 ns/op	   27166 B/op	       6 allocs/op
+BenchmarkBulkLoad/Deferred-14              	 3436329	       748.9 ns/op	    3420 B/op	       2 allocs/op
+BenchmarkCompaction_Pressure-14            	   20364	   2142210 ns/op	  199545 B/op	     154 allocs/op
+BenchmarkFilteredSearchSelectivity/d128_n50k/01pct-14         	    1741	    685762 ns/op	       500.0 matches	         1.000 recall@10	         0.01000 selectivity	   66087 B/op	      80 allocs/op
+BenchmarkFilteredSearchSelectivity/d128_n50k/05pct-14         	      34	  33954315 ns/op	      2500 matches	         1.000 recall@10	         0.05000 selectivity	  270370 B/op	     483 allocs/op
+BenchmarkFilteredSearchSelectivity/d128_n50k/10pct-14         	      30	  36665158 ns/op	      5000 matches	         1.000 recall@10	         0.1000 selectivity	  361957 B/op	     480 allocs/op
+BenchmarkFilteredSearchSelectivity/d128_n50k/50pct-14         	      31	  37176711 ns/op	     25000 matches	         1.000 recall@10	         0.5000 selectivity	 1628384 B/op	     511 allocs/op
+BenchmarkFilteredSearchSelectivity/d128_n50k/90pct-14         	      55	  21111654 ns/op	     45000 matches	         1.000 recall@10	         0.9000 selectivity	 2532872 B/op	     512 allocs/op
+BenchmarkFilteredSearch_768dim_100K/d768_n100k/01pct-14       	      55	  20206314 ns/op	      1000 matches	         1.000 recall@10	         0.01000 selectivity	   99696 B/op	     515 allocs/op
+BenchmarkFilteredSearch_768dim_100K/d768_n100k/05pct-14       	      37	  29441852 ns/op	      5000 matches	         1.000 recall@10	         0.05000 selectivity	  205727 B/op	     505 allocs/op
+BenchmarkFilteredSearch_768dim_100K/d768_n100k/10pct-14       	      33	  34879660 ns/op	     10000 matches	         1.000 recall@10	         0.1000 selectivity	  253264 B/op	     506 allocs/op
+BenchmarkFilteredSearch_768dim_100K/d768_n100k/50pct-14       	      31	  35801859 ns/op	     50000 matches	         1.000 recall@10	         0.5000 selectivity	  836547 B/op	     531 allocs/op
+BenchmarkFilteredSearch_768dim_100K/d768_n100k/90pct-14       	      36	  30781483 ns/op	     90000 matches	         1.000 recall@10	         0.9000 selectivity	 1250280 B/op	     531 allocs/op
+BenchmarkFilteredSearch_1536dim_100K/d1536_n100k/01pct-14     	      10	 103025612 ns/op	      1000 matches	         1.000 recall@10	         0.01000 selectivity	  108964 B/op	     515 allocs/op
+BenchmarkFilteredSearch_1536dim_100K/d1536_n100k/05pct-14     	      10	 103291967 ns/op	      5000 matches	         1.000 recall@10	         0.05000 selectivity	  240136 B/op	     503 allocs/op
+BenchmarkFilteredSearch_1536dim_100K/d1536_n100k/10pct-14     	      10	 106138942 ns/op	     10000 matches	         1.000 recall@10	         0.1000 selectivity	  341228 B/op	     503 allocs/op
+BenchmarkFilteredSearch_1536dim_100K/d1536_n100k/50pct-14     	      10	 110815804 ns/op	     50000 matches	         1.000 recall@10	         0.5000 selectivity	 1433260 B/op	     536 allocs/op
+BenchmarkFilteredSearch_1536dim_100K/d1536_n100k/90pct-14     	      14	  76315274 ns/op	     90000 matches	         1.000 recall@10	         0.9000 selectivity	 2323786 B/op	     531 allocs/op
+BenchmarkFilteredSearch_768dim_500K/d768_n500k/01pct-14       	      79	  15249480 ns/op	      5000 matches	         1.000 recall@10	         0.01000 selectivity	   92370 B/op	     641 allocs/op
+BenchmarkFilteredSearch_768dim_500K/d768_n500k/05pct-14       	      36	  33283304 ns/op	     25000 matches	         1.000 recall@10	         0.05000 selectivity	  184595 B/op	     632 allocs/op
+BenchmarkFilteredSearch_768dim_500K/d768_n500k/10pct-14       	      27	  44841409 ns/op	     50000 matches	         1.000 recall@10	         0.1000 selectivity	  214627 B/op	     633 allocs/op
+BenchmarkFilteredSearch_768dim_500K/d768_n500k/50pct-14       	      16	  70612995 ns/op	    250000 matches	         1.000 recall@10	         0.5000 selectivity	  654901 B/op	     665 allocs/op
+BenchmarkFilteredSearch_768dim_500K/d768_n500k/90pct-14       	      14	  81152783 ns/op	    450000 matches	         1.000 recall@10	         0.9000 selectivity	  884126 B/op	     672 allocs/op
+BenchmarkHybridSearch/VectorOnly-14                           	    5085	    224895 ns/op	         1.000 recall@10	    9552 B/op	      47 allocs/op
+BenchmarkHybridSearch/Hybrid-14                               	    3990	    298726 ns/op	         1.000 recall@10	   51361 B/op	     160 allocs/op
+BenchmarkHybridSearch/LexicalOnly-14                          	   34161	     35901 ns/op	         1.000 recall@10	     912 B/op	       3 allocs/op
+BenchmarkInsertMicro/Deferred-14                              	 3074304	       342.2 ns/op	    1727 B/op	       2 allocs/op
+BenchmarkBinaryQuantizer_Distance-14                          	207106082	         6.036 ns/op	       0 B/op	       0 allocs/op
+BenchmarkStorage_ReadRandom/Local_NVMe-14                     	77410614	        16.49 ns/op	       0 B/op	       0 allocs/op
+BenchmarkStorage_ReadRandom/Simulated_S3_Direct-14            	      38	  30913667 ns/op	       0 B/op	       0 allocs/op
+BenchmarkStorage_ReadRandom/Cached_S3_Warm-14                 	 5117779	       222.6 ns/op	     272 B/op	       4 allocs/op
 PASS
-ok  	github.com/hupe1980/vecgo/benchmark_test	390.614s
+ok  	github.com/hupe1980/vecgo/benchmark_test	399.436s
