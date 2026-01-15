@@ -105,6 +105,27 @@ func (w *columnarFilterWrapper) ForEach(fn func(id uint32) bool) {
 	}
 }
 
+// ToArrayInto copies all set bits into dst, returning the populated slice.
+func (w *columnarFilterWrapper) ToArrayInto(dst []uint32) []uint32 {
+	w.once.Do(w.compute)
+
+	count := w.bitmap.Count()
+	if cap(dst) < int(count) {
+		dst = make([]uint32, count)
+	} else {
+		dst = dst[:count]
+	}
+
+	idx := 0
+	id, ok := w.bitmap.NextSetBit(0)
+	for ok && idx < len(dst) {
+		dst[idx] = id
+		idx++
+		id, ok = w.bitmap.NextSetBit(id + 1)
+	}
+	return dst[:idx]
+}
+
 func (w *columnarFilterWrapper) AsBitmap() segment.Bitmap {
 	w.once.Do(w.compute)
 	// If selectivity is high, this bitmap is useful.

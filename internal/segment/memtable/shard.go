@@ -683,10 +683,11 @@ func (s *shard) EvaluateFilter(ctx context.Context, filter *metadata.FilterSet) 
 			}
 			first = false
 		} else {
-			// Intersect with existing result - use pooled temp bitmap
+			// Intersect with existing result - use ToArrayInto to avoid Iterator allocation
+			scratch := result.ToArrayInto(nil)
 			newResult := imetadata.GetPooledBitmap()
 
-			result.ForEach(func(id uint32) bool {
+			for _, id := range scratch {
 				idx := int(id)
 				if matchFunc != nil {
 					if matchFunc(idx) {
@@ -695,8 +696,7 @@ func (s *shard) EvaluateFilter(ctx context.Context, filter *metadata.FilterSet) 
 				} else if col.Matches(idx, f.Value, f.Operator) {
 					newResult.Add(id)
 				}
-				return true
-			})
+			}
 			// Return old result to pool and use new one
 			imetadata.PutPooledBitmap(result)
 			result = newResult
@@ -708,6 +708,87 @@ func (s *shard) EvaluateFilter(ctx context.Context, filter *metadata.FilterSet) 
 	}
 
 	return result, nil
+}
+
+// EvaluateFilterResult returns filter results using the zero-alloc FilterResult type.
+// This is the optimized path that avoids roaring bitmaps for low cardinality.
+// Uses QueryScratch for scratch space (zero allocations in steady state).
+func (s *shard) EvaluateFilterResult(ctx context.Context, filter *metadata.FilterSet, qs *imetadata.QueryScratch) (imetadata.FilterResult, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if filter == nil || len(filter.Filters) == 0 {
+		return imetadata.AllResult(), nil // No filter = match all
+	}
+
+	// Check context before potentially expensive filter evaluation
+	if err := ctx.Err(); err != nil {
+		return imetadata.EmptyResult(), err
+	}
+
+	count := int(s.ids.Count())
+
+	// Use TmpRowIDs from scratch as our accumulator
+	out := qs.TmpRowIDs[:0]
+
+	first := true
+
+	for _, f := range filter.Filters {
+		col, ok := s.columns[f.Key]
+		if !ok {
+			// Column doesn't exist - no matches
+			qs.TmpRowIDs = out[:0]
+			return imetadata.EmptyResult(), nil
+		}
+
+		// Type-specific optimizations
+		var matchFunc func(i int) bool
+
+		if ic, ok := col.(*intColumn); ok && f.Value.Kind == metadata.KindInt && f.Operator == metadata.OpEqual {
+			val, _ := f.Value.AsInt64()
+			matchFunc = func(i int) bool {
+				return i < len(ic.data) && ic.valid[i] && ic.data[i] == val
+			}
+		}
+
+		if first {
+			// First filter: scan and collect matching IDs
+			for i := range count {
+				if matchFunc != nil {
+					if matchFunc(i) {
+						out = append(out, uint32(i))
+					}
+				} else if col.Matches(i, f.Value, f.Operator) {
+					out = append(out, uint32(i))
+				}
+			}
+			first = false
+		} else {
+			// Intersect: filter existing IDs in-place
+			writeIdx := 0
+			for _, id := range out {
+				idx := int(id)
+				if matchFunc != nil {
+					if matchFunc(idx) {
+						out[writeIdx] = id
+						writeIdx++
+					}
+				} else if col.Matches(idx, f.Value, f.Operator) {
+					out[writeIdx] = id
+					writeIdx++
+				}
+			}
+			out = out[:writeIdx]
+		}
+
+		if len(out) == 0 {
+			qs.TmpRowIDs = out
+			return imetadata.EmptyResult(), nil
+		}
+	}
+
+	qs.TmpRowIDs = out
+	return imetadata.RowsResult(out), nil
 }
 
 // Advise is a no-op for MemTable.

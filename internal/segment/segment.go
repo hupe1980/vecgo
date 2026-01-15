@@ -93,6 +93,13 @@ type Segment interface {
 	// Results are written to dst.
 	FetchIDs(ctx context.Context, rows []uint32, dst []model.ID) error
 
+	// FetchVectorsInto copies vectors for the given rows into dst.
+	// dst must have len >= len(rows)*dim.
+	// Returns a bitmap indicating which slots in dst contain valid vectors
+	// (some rows may be missing/deleted). Use bit i to check if dst[i*dim:(i+1)*dim] is valid.
+	// Returns nil bitmap if all vectors are valid.
+	FetchVectorsInto(ctx context.Context, rows []uint32, dim int, dst []float32) (validMask []bool, err error)
+
 	// Iterate iterates over all vectors in the segment.
 	// The context is used for cancellation during long iterations.
 	Iterate(ctx context.Context, fn func(rowID uint32, id model.ID, vec []float32, md metadata.Document, payload []byte) error) error
@@ -125,6 +132,11 @@ type Bitmap interface {
 	// ForEach calls fn for each id in the set (ascending order if available).
 	// Stop early if fn returns false.
 	ForEach(fn func(id uint32) bool)
+
+	// ToArrayInto copies all elements into dst, returning the populated slice.
+	// If dst has insufficient capacity, a new slice may be allocated.
+	// This is the zero-alloc bulk extraction path.
+	ToArrayInto(dst []uint32) []uint32
 }
 
 // FieldStats stores min/max values for a numeric field in a block.

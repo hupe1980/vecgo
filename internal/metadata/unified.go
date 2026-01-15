@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"slices"
 	"strconv"
 	"sync"
 	"unique"
@@ -24,10 +25,12 @@ type DocumentProvider func(ctx context.Context, id model.RowID) (metadata.Docume
 // Architecture:
 //   - Primary storage: map[model.RowID]InternedDocument (metadata by RowID, interned keys)
 //   - Inverted index: map[key]map[valueKey]*LocalBitmap (efficient posting lists)
+//   - Numeric index: sorted (value, rowID) pairs for O(log n) range queries
 //
 // Benefits:
 //   - Memory efficient (Bitmap compression + String Interning)
 //   - Fast filter compilation (Bitmap AND/OR operations)
+//   - O(log n) numeric range queries (vs O(cardinality) without NumericIndex)
 //   - Simple API (single unified type)
 type UnifiedIndex struct {
 	mu sync.RWMutex
@@ -40,6 +43,10 @@ type UnifiedIndex struct {
 	// Bitmaps are compressed and support fast set operations
 	inverted map[unique.Handle[string]]map[unique.Handle[string]]*LocalBitmap
 
+	// Numeric index for fast range queries (< > <= >=)
+	// Uses binary search on sorted (value, rowID) pairs
+	numeric *NumericIndex
+
 	// provider is an optional fallback for document retrieval
 	provider DocumentProvider
 }
@@ -49,6 +56,7 @@ func NewUnifiedIndex() *UnifiedIndex {
 	return &UnifiedIndex{
 		documents: make(map[model.RowID]metadata.InternedDocument),
 		inverted:  make(map[unique.Handle[string]]map[unique.Handle[string]]*LocalBitmap),
+		numeric:   NewNumericIndex(),
 	}
 }
 
@@ -109,10 +117,119 @@ func (ui *UnifiedIndex) SetDocumentProvider(provider DocumentProvider) {
 	ui.provider = provider
 }
 
+// filterCost represents the estimated cost and selectivity of a filter.
+type filterCost struct {
+	filter      metadata.Filter
+	selectivity float64 // Lower = more selective (0.0 = matches nothing, 1.0 = matches all)
+	cost        int     // Estimated execution cost (lower = cheaper)
+}
+
+// estimateFilterCost estimates the selectivity and cost of a filter.
+// This enables cost-based query planning: evaluate most selective filters first.
+func (ui *UnifiedIndex) estimateFilterCost(f metadata.Filter) filterCost {
+	fc := filterCost{filter: f, selectivity: 1.0, cost: 100}
+
+	switch f.Operator {
+	case metadata.OpEqual:
+		// Equality is typically very selective
+		// Check if value exists in index
+		if b := ui.getBitmapLocked(f.Key, f.Value); b != nil {
+			cardinality := b.Cardinality()
+			total := ui.totalRowsLocked()
+			if total > 0 {
+				fc.selectivity = float64(cardinality) / float64(total)
+			}
+			fc.cost = 1 // O(1) lookup
+		} else {
+			fc.selectivity = 0.0 // No matches
+			fc.cost = 1
+		}
+
+	case metadata.OpIn:
+		// IN is sum of individual equalities
+		arr, ok := f.Value.AsArray()
+		if ok {
+			var totalCards uint64
+			for _, v := range arr {
+				if b := ui.getBitmapLocked(f.Key, v); b != nil {
+					totalCards += b.Cardinality()
+				}
+			}
+			total := ui.totalRowsLocked()
+			if total > 0 {
+				fc.selectivity = float64(totalCards) / float64(total)
+				if fc.selectivity > 1.0 {
+					fc.selectivity = 1.0 // Cap at 100%
+				}
+			}
+			fc.cost = len(arr) // O(k) lookups
+		}
+
+	case metadata.OpLessThan, metadata.OpLessEqual, metadata.OpGreaterThan, metadata.OpGreaterEqual:
+		// Range queries: estimate based on value position in range
+		if ui.numeric.HasField(f.Key) {
+			minVal, maxVal, card := ui.numeric.GetStats(f.Key)
+			if card > 0 && maxVal > minVal {
+				var filterVal float64
+				switch f.Value.Kind {
+				case metadata.KindInt:
+					filterVal = float64(f.Value.I64)
+				case metadata.KindFloat:
+					filterVal = f.Value.F64
+				}
+
+				// Estimate position in range [0, 1]
+				position := (filterVal - minVal) / (maxVal - minVal)
+				position = max(0, min(1, position))
+
+				switch f.Operator {
+				case metadata.OpLessThan, metadata.OpLessEqual:
+					fc.selectivity = position
+				case metadata.OpGreaterThan, metadata.OpGreaterEqual:
+					fc.selectivity = 1.0 - position
+				}
+			}
+			// Cost depends on cardinality
+			if card <= LowCardinalityThreshold {
+				fc.cost = 1 // O(1) prefix bitmap
+			} else {
+				fc.cost = 10 // O(log n) binary search
+			}
+		} else {
+			fc.cost = 100 // O(k) inverted scan
+		}
+
+	case metadata.OpNotEqual:
+		// NotEqual is typically not selective (matches most rows)
+		fc.selectivity = 0.9 // Conservative estimate
+		fc.cost = 10
+	}
+
+	return fc
+}
+
+// totalRowsLocked returns the total number of rows (requires read lock held).
+func (ui *UnifiedIndex) totalRowsLocked() uint64 {
+	return uint64(len(ui.documents))
+}
+
 // EvaluateFilter evaluates a filter set against the inverted index and returns a bitmap.
 // This method supports all operators, including numeric comparisons like OpLessThan.
-// For operators not directly supported by the inverted index (e.g. OpLessThan),
-// it falls back to scanning all unique values in the index.
+//
+// Query Planning:
+//   - Estimates selectivity for each filter
+//   - Evaluates most selective filters first (cost-based optimization)
+//   - Short-circuits on empty intermediate results
+//
+// Lazy Execution:
+//   - First filter uses zero-copy reference when possible (immutable OpEqual lookups)
+//   - Cloning only occurs when mutation is needed (AND operations)
+//   - This reduces N-1 bitmap allocations to 0-1 for typical multi-filter queries
+//
+// For numeric comparisons (< > <= >= !=):
+//   - Uses NumericIndex with O(log n + matches) binary search if field has numeric entries
+//   - Falls back to O(cardinality) scan only for non-numeric or missing fields
+//
 // NOTE: The returned bitmap is from a pool. Caller should call PutPooledBitmap when done.
 func (ui *UnifiedIndex) EvaluateFilter(fs *metadata.FilterSet) *LocalBitmap {
 	if fs == nil || len(fs.Filters) == 0 {
@@ -122,25 +239,70 @@ func (ui *UnifiedIndex) EvaluateFilter(fs *metadata.FilterSet) *LocalBitmap {
 	ui.mu.RLock()
 	defer ui.mu.RUnlock()
 
-	var result *LocalBitmap
+	filters := fs.Filters
 
-	for _, f := range fs.Filters {
+	// Cost-based query planning: sort filters by estimated selectivity (most selective first)
+	// This reduces intermediate result sizes and enables early termination
+	if len(filters) > 1 {
+		costs := make([]filterCost, len(filters))
+		for i, f := range filters {
+			costs[i] = ui.estimateFilterCost(f)
+		}
+
+		// Sort by selectivity (ascending) - most selective first
+		// For equal selectivity, prefer lower cost
+		slices.SortFunc(costs, func(a, b filterCost) int {
+			if a.selectivity != b.selectivity {
+				if a.selectivity < b.selectivity {
+					return -1
+				}
+				return 1
+			}
+			return a.cost - b.cost
+		})
+
+		// Reorder filters
+		reordered := make([]metadata.Filter, len(filters))
+		for i, fc := range costs {
+			reordered[i] = fc.filter
+		}
+		filters = reordered
+	}
+
+	var result *LocalBitmap
+	resultIsImmutable := false // Track if result is a reference to an immutable bitmap
+
+	for _, f := range filters {
 		var current *LocalBitmap
+		currentIsImmutable := false
 
 		switch f.Operator {
 		case metadata.OpEqual:
 			b := ui.getBitmapLocked(f.Key, f.Value)
-			if b != nil {
-				current = GetPooledBitmap()
-				current.Or(b) // Copy via Or
-			} else {
+			if b == nil {
 				return GetPooledBitmap() // Empty bitmap - no match for this filter
 			}
+			// Zero-copy: reference the immutable bitmap directly
+			current = b
+			currentIsImmutable = true
 
 		case metadata.OpIn:
-			current = GetPooledBitmap()
 			arr, ok := f.Value.AsArray()
-			if ok {
+			if !ok || len(arr) == 0 {
+				return GetPooledBitmap() // Empty - no valid array
+			}
+
+			// Single element: treat as OpEqual (zero-copy)
+			if len(arr) == 1 {
+				b := ui.getBitmapLocked(f.Key, arr[0])
+				if b == nil {
+					return GetPooledBitmap()
+				}
+				current = b
+				currentIsImmutable = true
+			} else {
+				// Multiple elements: must materialize union
+				current = GetPooledBitmap()
 				for _, v := range arr {
 					if b := ui.getBitmapLocked(f.Key, v); b != nil {
 						current.Or(b)
@@ -149,8 +311,23 @@ func (ui *UnifiedIndex) EvaluateFilter(fs *metadata.FilterSet) *LocalBitmap {
 			}
 
 		case metadata.OpLessThan, metadata.OpLessEqual, metadata.OpGreaterThan, metadata.OpGreaterEqual, metadata.OpNotEqual:
-			// For numeric comparisons, scan all values in the inverted index
-			current = ui.evaluateNumericFilter(f)
+			// Dual-index cost-based dispatch:
+			// - Low cardinality (≤512 distinct values): BitmapIndex is faster (OR pre-materialized bitmaps)
+			// - High cardinality (>512 distinct values): ColumnIndex is faster (binary search on sorted values)
+			const lowCardinalityThreshold = 512
+
+			distinctValues := ui.getFieldCardinality(f.Key)
+
+			// Use EvaluateFilterInto to avoid allocating a new bitmap
+			// Get a pooled bitmap but use the Into variant for zero-alloc evaluation
+			current = GetPooledBitmap()
+			if distinctValues > lowCardinalityThreshold && ui.numeric.HasField(f.Key) {
+				// High cardinality: ColumnIndex with O(log n) binary search
+				ui.numeric.EvaluateFilterInto(f, current)
+			} else {
+				// Low cardinality: BitmapIndex with fast bitmap unions
+				ui.evaluateNumericFilterScanInto(f, current)
+			}
 
 		default:
 			// Unsupported operator - fall back to empty (will fail filter)
@@ -158,36 +335,253 @@ func (ui *UnifiedIndex) EvaluateFilter(fs *metadata.FilterSet) *LocalBitmap {
 		}
 
 		if result == nil {
+			// First filter: use directly (may be immutable reference)
 			result = current
+			resultIsImmutable = currentIsImmutable
 		} else {
+			// Subsequent filters: AND with existing result
+
+			// If result is immutable, we must clone before mutating
+			if resultIsImmutable {
+				cloned := GetPooledBitmap()
+				cloned.Or(result)
+				result = cloned
+				resultIsImmutable = false
+			}
+
 			result.And(current)
-			PutPooledBitmap(current) // Return intermediate bitmap to pool
+
+			// Return non-immutable bitmaps to pool
+			if !currentIsImmutable {
+				PutPooledBitmap(current)
+			}
 		}
 
+		// Early termination: if result is empty, no point continuing
 		if result.IsEmpty() {
+			// If result is immutable reference to empty bitmap, return pooled empty
+			if resultIsImmutable {
+				return GetPooledBitmap()
+			}
 			return result
+		}
+	}
+
+	// If final result is still an immutable reference, clone it
+	// (caller expects ownership of the returned bitmap)
+	if resultIsImmutable && result != nil {
+		cloned := GetPooledBitmap()
+		cloned.Or(result)
+		return cloned
+	}
+
+	return result
+}
+
+// EvaluateFilterResult evaluates a filter set using the dual-mode FilterResult.
+// This is the zero-allocation version that avoids roaring bitmaps for low cardinality.
+//
+// Design:
+//   - Low cardinality: returns FilterRows mode (SIMD-friendly []uint32)
+//   - High cardinality: returns FilterBitmap mode (roaring.Bitmap)
+//   - No allocations in hot path (uses QueryScratch)
+//
+// Returns:
+//   - FilterResult with mode indicating the representation
+//   - Caller does NOT need to return anything to pool (memory is query-scoped)
+//
+// Thread-safety: Thread-safe (holds RLock during evaluation)
+func (ui *UnifiedIndex) EvaluateFilterResult(fs *metadata.FilterSet, qs *QueryScratch) FilterResult {
+	if fs == nil || len(fs.Filters) == 0 {
+		return AllResult() // No filter = match all
+	}
+
+	ui.mu.RLock()
+	defer ui.mu.RUnlock()
+
+	filters := fs.Filters
+
+	// Cost-based query planning: sort filters by estimated selectivity (most selective first)
+	if len(filters) > 1 {
+		costs := make([]filterCost, len(filters))
+		for i, f := range filters {
+			costs[i] = ui.estimateFilterCost(f)
+		}
+
+		// Sort by selectivity (ascending) - most selective first
+		slices.SortFunc(costs, func(a, b filterCost) int {
+			if a.selectivity != b.selectivity {
+				if a.selectivity < b.selectivity {
+					return -1
+				}
+				return 1
+			}
+			return a.cost - b.cost
+		})
+
+		// Reorder filters
+		reordered := make([]filterCost, len(filters))
+		copy(reordered, costs)
+		filters = make([]metadata.Filter, len(reordered))
+		for i, fc := range reordered {
+			filters[i] = fc.filter
+		}
+	}
+
+	var result FilterResult
+
+	for i, f := range filters {
+		current := ui.evaluateSingleFilterResult(f, qs)
+
+		if i == 0 {
+			result = current
+		} else {
+			// AND with previous result
+			// Note: For subsequent filters, we need a second scratch buffer
+			// to avoid overwriting the result during AND operation
+			result = ui.filterResultAndWithTemp(result, current, qs)
+		}
+
+		// Early termination
+		if result.IsEmpty() {
+			return EmptyResult()
 		}
 	}
 
 	return result
 }
 
-// evaluateNumericFilter handles comparison operators by scanning the inverted index.
-//
-// Performance note: This scans ALL distinct values for the field, so complexity
-// is O(cardinality) where cardinality is the number of unique values for the field.
-// Best suited for:
-//   - Low-cardinality fields (e.g., status, category)
-//   - Highly selective queries that filter most values
-//
-// For high-cardinality numeric fields (e.g., timestamps, prices with many unique values),
-// consider using pre-filtered candidate sets or range-indexed structures.
-func (ui *UnifiedIndex) evaluateNumericFilter(f metadata.Filter) *LocalBitmap {
-	result := GetPooledBitmap() // Use pooled bitmap
+// evaluateSingleFilterResult evaluates a single filter and returns a FilterResult.
+// Uses zero-alloc patterns where possible.
+func (ui *UnifiedIndex) evaluateSingleFilterResult(f metadata.Filter, qs *QueryScratch) FilterResult {
+	switch f.Operator {
+	case metadata.OpEqual:
+		b := ui.getBitmapLocked(f.Key, f.Value)
+		if b == nil {
+			return EmptyResult()
+		}
+		// For small bitmaps, extract to rows mode for SIMD-friendly iteration
+		const rowsThreshold = 1024
+		if b.Cardinality() <= rowsThreshold {
+			out := qs.TmpRowIDs[:0]
+			out = b.ToArrayInto(out)
+			qs.TmpRowIDs = out
+			return RowsResult(out)
+		}
+		// Large bitmap: return bitmap mode (zero-copy reference)
+		return BitmapResult(b.rb)
 
+	case metadata.OpIn:
+		arr, ok := f.Value.AsArray()
+		if !ok || len(arr) == 0 {
+			return EmptyResult()
+		}
+
+		// Single element: treat as OpEqual
+		if len(arr) == 1 {
+			return ui.evaluateSingleFilterResult(metadata.Filter{
+				Key:      f.Key,
+				Operator: metadata.OpEqual,
+				Value:    arr[0],
+			}, qs)
+		}
+
+		// Multiple elements: collect all matching IDs
+		out := qs.TmpRowIDs[:0]
+		for _, v := range arr {
+			if b := ui.getBitmapLocked(f.Key, v); b != nil {
+				out = b.ToArrayInto(out) // Append to existing
+			}
+		}
+		// Sort for binary search support
+		sortUint32(out)
+		qs.TmpRowIDs = out
+		return RowsResult(out)
+
+	case metadata.OpLessThan, metadata.OpLessEqual, metadata.OpGreaterThan, metadata.OpGreaterEqual, metadata.OpNotEqual:
+		const lowCardinalityThreshold = 512
+
+		distinctValues := ui.getFieldCardinality(f.Key)
+
+		// Use scratch bitmap for evaluation
+		qs.Tmp2.rb.Clear()
+		if distinctValues > lowCardinalityThreshold && ui.numeric.HasField(f.Key) {
+			ui.numeric.EvaluateFilterInto(f, qs.Tmp2)
+		} else {
+			ui.evaluateNumericFilterScanInto(f, qs.Tmp2)
+		}
+
+		// Convert to appropriate mode
+		const rowsThreshold = 1024
+		if qs.Tmp2.Cardinality() <= rowsThreshold {
+			out := qs.TmpRowIDs[:0]
+			out = qs.Tmp2.ToArrayInto(out)
+			qs.TmpRowIDs = out
+			return RowsResult(out)
+		}
+
+		// Large result: keep as bitmap (in Tmp2)
+		return BitmapResult(qs.Tmp2.rb)
+
+	default:
+		return EmptyResult()
+	}
+}
+
+// filterResultAndWithTemp performs AND using a temporary buffer to avoid aliasing.
+// This is needed when the result and current both use TmpRowIDs.
+func (ui *UnifiedIndex) filterResultAndWithTemp(result, current FilterResult, qs *QueryScratch) FilterResult {
+	// If one is empty, return empty
+	if result.IsEmpty() || current.IsEmpty() {
+		return EmptyResult()
+	}
+
+	// If both are rows mode and use the same buffer, we need to be careful
+	if result.mode == FilterRows && current.mode == FilterRows {
+		// Two-pointer intersection can work in-place if result is the destination
+		return ui.andRowsRowsInPlace(result.rows, current.rows, qs)
+	}
+
+	// For other combinations, use the standard AND
+	return FilterResultAnd(result, current, qs)
+}
+
+// andRowsRowsInPlace performs two-pointer intersection, reusing TmpRowIDs.
+func (ui *UnifiedIndex) andRowsRowsInPlace(a, b []uint32, qs *QueryScratch) FilterResult {
+	// Since both may be pointing to TmpRowIDs, we do in-place overwrite
+	// This works because we only write to positions we've already read past
+	out := qs.TmpRowIDs[:0]
+
+	i, j := 0, 0
+	for i < len(a) && j < len(b) {
+		if a[i] == b[j] {
+			out = append(out, a[i])
+			i++
+			j++
+		} else if a[i] < b[j] {
+			i++
+		} else {
+			j++
+		}
+	}
+
+	qs.TmpRowIDs = out
+	return RowsResult(out)
+}
+
+// evaluateNumericFilterScanInto handles comparison operators by scanning the inverted index.
+// This is the SLOW PATH: O(cardinality) where cardinality is the number of unique values.
+//
+// This is only used as a fallback when NumericIndex doesn't have the field.
+// The fast path (NumericIndex.EvaluateFilter) uses binary search for O(log n + matches).
+//
+// When this path is used:
+//   - Field was never added to NumericIndex (non-numeric original value)
+//   - Field added before NumericIndex was introduced (legacy data)
+func (ui *UnifiedIndex) evaluateNumericFilterScanInto(f metadata.Filter, dst *LocalBitmap) {
 	valueMap, ok := ui.inverted[unique.Make(f.Key)]
 	if !ok {
-		return result // Field doesn't exist, no matches
+		return // Field doesn't exist, no matches
 	}
 
 	for valueKey, bitmap := range valueMap {
@@ -196,11 +590,9 @@ func (ui *UnifiedIndex) evaluateNumericFilter(f metadata.Filter) *LocalBitmap {
 		storedValue := parseValueKey(valueKey.Value())
 
 		if matchesComparison(storedValue, f.Value, f.Operator) {
-			result.Or(bitmap)
+			dst.Or(bitmap)
 		}
 	}
-
-	return result
 }
 
 // parseValueKey parses a value key back to a numeric value for comparison.
@@ -341,10 +733,12 @@ func (ui *UnifiedIndex) ToMap() map[model.RowID]metadata.Document {
 	return result
 }
 
-// addToIndexLocked adds a document to the inverted index.
+// addToIndexLocked adds a document to the inverted index and numeric index.
 // Caller must hold ui.mu.Lock().
 func (ui *UnifiedIndex) addToIndexLocked(id model.RowID, doc metadata.InternedDocument) {
 	for key, value := range doc {
+		keyStr := key.Value()
+
 		// Get or create value map for this field
 		valueMap, ok := ui.inverted[key]
 		if !ok {
@@ -362,13 +756,18 @@ func (ui *UnifiedIndex) addToIndexLocked(id model.RowID, doc metadata.InternedDo
 
 		// Add ID to bitmap
 		bitmap.Add(uint32(id))
+
+		// Add to numeric index for fast range queries
+		ui.numeric.Add(keyStr, value, id)
 	}
 }
 
-// removeFromIndexLocked removes a document from the inverted index.
+// removeFromIndexLocked removes a document from the inverted index and numeric index.
 // Caller must hold ui.mu.Lock().
 func (ui *UnifiedIndex) removeFromIndexLocked(id model.RowID, doc metadata.InternedDocument) {
 	for key, value := range doc {
+		keyStr := key.Value()
+
 		valueMap, ok := ui.inverted[key]
 		if !ok {
 			continue
@@ -390,6 +789,9 @@ func (ui *UnifiedIndex) removeFromIndexLocked(id model.RowID, doc metadata.Inter
 				delete(ui.inverted, key)
 			}
 		}
+
+		// Remove from numeric index
+		ui.numeric.Remove(keyStr, value, id)
 	}
 }
 
@@ -674,6 +1076,16 @@ func (ui *UnifiedIndex) getBitmapLocked(key string, value metadata.Value) *Local
 	}
 
 	return bitmap
+}
+
+// getFieldCardinality returns the number of distinct values for a field.
+// This is O(1) - just the map length. Caller must hold ui.mu.RLock().
+func (ui *UnifiedIndex) getFieldCardinality(key string) int {
+	valueMap, ok := ui.inverted[unique.Make(key)]
+	if !ok {
+		return 0
+	}
+	return len(valueMap)
 }
 
 // ScanFilter evaluates a FilterSet by scanning all documents.

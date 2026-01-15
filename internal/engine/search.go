@@ -13,18 +13,21 @@ import (
 	imetadata "github.com/hupe1980/vecgo/internal/metadata"
 	"github.com/hupe1980/vecgo/internal/searcher"
 	"github.com/hupe1980/vecgo/internal/segment"
+	"github.com/hupe1980/vecgo/metadata"
 	"github.com/hupe1980/vecgo/model"
 )
 
-type segBitmap struct {
-	seg    segment.Segment
-	bitmap segment.Bitmap
-	ts     segment.Filter // Tombstone filter
+// segFilter holds filter results for a segment.
+// Uses FilterResult for zero-alloc hot path.
+type segFilter struct {
+	seg segment.Segment
+	fr  imetadata.FilterResult // Zero-alloc filter result
+	ts  segment.Filter         // Tombstone filter
 }
 
-var segBitmapPool = sync.Pool{
+var segFilterPool = sync.Pool{
 	New: func() any {
-		s := make([]segBitmap, 0, 16)
+		s := make([]segFilter, 0, 16)
 		return &s
 	},
 }
@@ -105,10 +108,7 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 		s.Heap.Reset(descending)
 
 		// 1. Gather candidates from all segments
-		searchK := int(float32(k) * options.RefineFactor)
-		if searchK < k {
-			searchK = k
-		}
+		searchK := max(int(float32(k)*options.RefineFactor), k)
 
 		currentLSN := e.lsn.Load()
 
@@ -168,33 +168,27 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 			// For small k and highly selective filters, brute-force is faster.
 			// For large k or low selectivity, HNSW is better.
 			// Heuristic: threshold = max(k * 50, 500) capped at 5000
-			adaptiveThreshold := uint64(k * 50)
-			if adaptiveThreshold < 500 {
-				adaptiveThreshold = 500
-			}
-			if adaptiveThreshold > 5000 {
-				adaptiveThreshold = 5000
-			}
+			adaptiveThreshold := min(max(uint64(k*50), 500), 5000)
 
 			// User can force pre-filtering via WithPreFilter(true) to bypass adaptive heuristic
 			forcePreFilter := options.PreFilter != nil && *options.PreFilter
 
 			if options.Filter != nil {
-				// Try to get bitmaps from all segments
+				// Zero-alloc filter path using FilterResult
+				// Get query scratch for filter evaluation
+				qs := imetadata.GetQueryScratch()
+				defer imetadata.PutQueryScratch(qs)
 
-				// We need bitmaps for Active + Immutable
-				bitmapsPtr := segBitmapPool.Get().(*[]segBitmap)
-				bitmaps := (*bitmapsPtr)[:0]
+				// Collect filter results for each segment
+				filtersPtr := segFilterPool.Get().(*[]segFilter)
+				filters := (*filtersPtr)[:0]
 				defer func() {
-					// Return bitmaps to pool and clear references
-					for i := range bitmaps {
-						if lb, ok := bitmaps[i].bitmap.(*imetadata.LocalBitmap); ok {
-							imetadata.PutPooledBitmap(lb)
-						}
-						bitmaps[i] = segBitmap{}
+					// Clear references (no pool return needed for FilterResult - query-scoped)
+					for i := range filters {
+						filters[i] = segFilter{}
 					}
-					*bitmapsPtr = bitmaps[:0]
-					segBitmapPool.Put(bitmapsPtr)
+					*filtersPtr = filters[:0]
+					segFilterPool.Put(filtersPtr)
 				}()
 
 				totalHits := uint64(0)
@@ -202,25 +196,37 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 
 				// Active Segment (only if not in read-only mode)
 				if snap.active != nil {
-					if b, err := snap.active.EvaluateFilter(ctx, options.Filter); err == nil && b != nil {
-						hits := b.Cardinality()
+					// Use zero-alloc EvaluateFilterResult for memtable
+					fr, err := snap.active.EvaluateFilterResult(ctx, options.Filter, qs)
+					if err != nil {
+						possible = false
+					} else if fr.IsAll() {
+						// FilterAll = matches all = fallback to HNSW for this segment
+						possible = false
+					} else if !fr.IsEmpty() {
+						hits := uint64(fr.Cardinality())
 						totalHits += hits
-						bitmaps = append(bitmaps, segBitmap{seg: snap.active, bitmap: b, ts: activeFilter})
-					} else if err != nil {
-						possible = false
-					} else {
-						// b == nil means match ALL. This is bad for pre-filtering (implies full scan).
-						// Fallback to HNSW if matches all (likely high selectivity).
-						possible = false
+						// Clone to prevent aliasing when qs.TmpRowIDs is reused
+						filters = append(filters, segFilter{seg: snap.active, fr: fr.Clone(), ts: activeFilter})
 					}
+					// else: fr.IsEmpty() = no matches in this segment = skip (valid)
 				}
 
-				// Immutable Segments
+				// Immutable Segments - use EvaluateFilterResult where available
 				if possible {
 					for i, seg := range snap.sortedSegments {
-						b, err := seg.EvaluateFilter(ctx, options.Filter)
-						if err == nil && b != nil {
-							hits := b.Cardinality()
+						// Try zero-alloc path first
+						fr, err := e.evaluateSegmentFilterResult(ctx, seg, options.Filter, qs)
+						if err != nil {
+							// Error - fallback to HNSW
+							possible = false
+							break
+						} else if fr.IsAll() {
+							// FilterAll = matches all = fallback to HNSW for this segment
+							possible = false
+							break
+						} else if !fr.IsEmpty() {
+							hits := uint64(fr.Cardinality())
 							totalHits += hits
 							// Skip threshold check if user forced pre-filtering
 							if !forcePreFilter && totalHits > adaptiveThreshold {
@@ -231,20 +237,18 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 							if f := s.SegmentFilters[i]; f != nil {
 								ts = f.(segment.Filter)
 							}
-							bitmaps = append(bitmaps, segBitmap{seg: seg, bitmap: b, ts: ts})
-						} else {
-							// Error or MatchesAll
-							possible = false
-							break
+							// Clone to prevent aliasing when qs.TmpRowIDs is reused
+							filters = append(filters, segFilter{seg: seg, fr: fr.Clone(), ts: ts})
 						}
+						// else: fr.IsEmpty() = no matches in this segment = skip (valid)
 					}
 				}
 
-				// Use bitmap strategy if below threshold OR user forced pre-filtering
+				// Use FilterResult strategy if below threshold OR user forced pre-filtering
 				if possible && (forcePreFilter || totalHits <= adaptiveThreshold) {
 					usedBitmapStrategy = true
 
-					// Execute Bitmap Brute Force
+					// Execute Brute Force with Early Cutoff using FilterResult
 					var scoreFunc func([]float32, []float32) float32
 					if e.metric == distance.MetricL2 {
 						scoreFunc = distance.SquaredL2
@@ -252,65 +256,119 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 						scoreFunc = distance.Dot
 					}
 
-					for _, sb := range bitmaps {
-						// Collect RowIDs
-						rowIDs := s.ScratchIDs[:0]
-						needed := int(sb.bitmap.Cardinality())
-						if cap(rowIDs) < needed {
-							rowIDs = make([]uint32, 0, needed)
+					// Batch size for processing - balance between I/O batching and early cutoff
+					const batchSize = 64
+
+					for _, sf := range filters {
+						// Step 1: Get row IDs directly from FilterResult
+						// For FilterRows mode, this is zero-copy
+						// For FilterBitmap mode, uses ToArrayInto
+						var allRowIDs []uint32
+						if sf.fr.Mode() == imetadata.FilterRows {
+							// Zero-copy: direct access to rows slice
+							allRowIDs = sf.fr.Rows()
+						} else {
+							// Bitmap mode: extract via ToArrayInto
+							allRowIDs = sf.fr.ToArrayInto(s.ScratchIDs[:0])
 						}
 
-						sb.bitmap.ForEach(func(id uint32) bool {
-							// Apply Tombstone Filter
-							if sb.ts != nil && !sb.ts.Matches(id) {
-								return true // Skip deleted
-							}
-							rowIDs = append(rowIDs, id)
-							return true
-						})
-
-						if len(rowIDs) == 0 {
+						if len(allRowIDs) == 0 {
 							continue
 						}
 
-						// Fetch Vectors
-						batch, err := sb.seg.Fetch(ctx, rowIDs, []string{"vector"})
-						if err != nil {
-							// If fetch fails, we can't search this segment.
-							// Fail query? Or skip?
-							yield(model.Candidate{}, err)
-							return
+						// Step 2: Batch filter tombstones using MatchesBatch (much faster than per-ID)
+						if sf.ts != nil {
+							if cap(s.ScratchBools) < len(allRowIDs) {
+								s.ScratchBools = make([]bool, len(allRowIDs))
+							}
+							s.ScratchBools = s.ScratchBools[:len(allRowIDs)]
+							sf.ts.MatchesBatch(allRowIDs, s.ScratchBools)
+
+							// Compact: keep only alive IDs (may need to copy if FilterRows mode)
+							if sf.fr.Mode() == imetadata.FilterRows {
+								// FilterRows mode: need to copy alive IDs to scratch to avoid mutating original
+								writeIdx := 0
+								scratchCopy := s.ScratchIDs[:0]
+								for i, alive := range s.ScratchBools {
+									if alive {
+										scratchCopy = append(scratchCopy, allRowIDs[i])
+										writeIdx++
+									}
+								}
+								allRowIDs = scratchCopy
+								s.ScratchIDs = scratchCopy
+							} else {
+								// Bitmap mode: allRowIDs is from ScratchIDs, can mutate in place
+								writeIdx := 0
+								for i, alive := range s.ScratchBools {
+									if alive {
+										allRowIDs[writeIdx] = allRowIDs[i]
+										writeIdx++
+									}
+								}
+								allRowIDs = allRowIDs[:writeIdx]
+								s.ScratchIDs = allRowIDs
+							}
 						}
 
-						// Compute Scores
-						for i := 0; i < batch.RowCount(); i++ {
-							vec := batch.Vector(i)
-							if vec == nil {
-								continue
+						if len(allRowIDs) == 0 {
+							continue
+						}
+
+						// Step 3: Process in batches with early cutoff
+						for start := 0; start < len(allRowIDs); start += batchSize {
+							// Check context cancellation periodically
+							if start > 0 && ctx.Err() != nil {
+								yield(model.Candidate{}, ctx.Err())
+								return
 							}
 
-							dist := scoreFunc(qExec, vec)
+							end := min(start+batchSize, len(allRowIDs))
+							batchIDs := allRowIDs[start:end]
 
-							c := searcher.InternalCandidate{
-								SegmentID: uint32(sb.seg.ID()),
-								RowID:     rowIDs[i],
-								Score:     dist,
-								Approx:    false, // Exact
+							// Ensure ScratchVecBuf is large enough for this batch
+							vecBufSize := len(batchIDs) * e.dim
+							if cap(s.ScratchVecBuf) < vecBufSize {
+								s.ScratchVecBuf = make([]float32, vecBufSize)
+							}
+							s.ScratchVecBuf = s.ScratchVecBuf[:vecBufSize]
+
+							// Fetch vectors using zero-alloc path
+							validMask, err := sf.seg.FetchVectorsInto(ctx, batchIDs, e.dim, s.ScratchVecBuf)
+							if err != nil {
+								yield(model.Candidate{}, err)
+								return
 							}
 
-							// Push to heap
-							if s.Heap.Len() < searchK {
-								s.Heap.Push(c)
-							} else {
-								worst := s.Heap.Peek()
-								if searcher.InternalCandidateBetter(c, worst, descending) {
-									s.Heap.Pop()
+							// Compute scores for batch
+							for i := range batchIDs {
+								// Check validity (nil mask means all valid)
+								if len(validMask) > 0 && !validMask[i] {
+									continue
+								}
+
+								vec := s.ScratchVecBuf[i*e.dim : (i+1)*e.dim]
+								dist := scoreFunc(qExec, vec)
+
+								c := searcher.InternalCandidate{
+									SegmentID: uint32(sf.seg.ID()),
+									RowID:     batchIDs[i],
+									Score:     dist,
+									Approx:    false, // Exact
+								}
+
+								// Push to heap
+								if s.Heap.Len() < searchK {
 									s.Heap.Push(c)
+								} else {
+									worst := s.Heap.Peek()
+									if searcher.InternalCandidateBetter(c, worst, descending) {
+										s.Heap.Pop()
+										s.Heap.Push(c)
+									}
 								}
 							}
 						}
-
-						s.ScratchIDs = rowIDs[:0]
 					}
 				}
 			}
@@ -332,7 +390,13 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 				}
 
 				var wg sync.WaitGroup
-				sem := make(chan struct{}, concurrency)
+
+				// OPTIMIZATION: Reuse semaphore channel when capacity is sufficient
+				sem := s.SemChan
+				if cap(sem) < concurrency {
+					sem = make(chan struct{}, concurrency)
+					s.SemChan = sem
+				}
 
 				// Storage for results to avoid locking the main heap
 				// OPTIMIZATION: Use pooled result buffers to avoid allocation
@@ -671,4 +735,62 @@ func (e *Engine) Search(ctx context.Context, q []float32, k int, opts ...func(*m
 		res = append(res, c)
 	}
 	return res, nil
+}
+
+// segmentWithFilterResult is an interface for segments that support zero-alloc filter evaluation.
+type segmentWithFilterResult interface {
+	EvaluateFilterResult(ctx context.Context, filter *metadata.FilterSet, qs *imetadata.QueryScratch) (imetadata.FilterResult, error)
+}
+
+// evaluateSegmentFilterResult tries the zero-alloc EvaluateFilterResult path.
+// Falls back to the bitmap path if the segment doesn't support it.
+func (e *Engine) evaluateSegmentFilterResult(ctx context.Context, seg segment.Segment, filter *metadata.FilterSet, qs *imetadata.QueryScratch) (imetadata.FilterResult, error) {
+	// Try zero-alloc path first
+	if sfr, ok := seg.(segmentWithFilterResult); ok {
+		return sfr.EvaluateFilterResult(ctx, filter, qs)
+	}
+
+	// Fallback: use legacy bitmap path and convert to FilterResult
+	bm, err := seg.EvaluateFilter(ctx, filter)
+	if err != nil {
+		return imetadata.EmptyResult(), err
+	}
+	if bm == nil {
+		return imetadata.AllResult(), nil // matches all - no filtering
+	}
+	if bm.Cardinality() == 0 {
+		// Explicit empty bitmap = no matches
+		if lb, ok := bm.(*imetadata.LocalBitmap); ok {
+			imetadata.PutPooledBitmap(lb)
+		}
+		return imetadata.EmptyResult(), nil
+	}
+
+	// Convert bitmap to FilterResult
+	// For small results, extract to rows mode; for large, wrap bitmap
+	const rowsThreshold = 1024
+	if bm.Cardinality() <= rowsThreshold {
+		out := qs.TmpRowIDs[:0]
+		out = bm.ToArrayInto(out)
+		qs.TmpRowIDs = out
+
+		// Return the bitmap to pool if it's a LocalBitmap
+		if lb, ok := bm.(*imetadata.LocalBitmap); ok {
+			imetadata.PutPooledBitmap(lb)
+		}
+
+		return imetadata.RowsResult(out), nil
+	}
+
+	// Large result: wrap as bitmap (but we need the underlying roaring.Bitmap)
+	// For this fallback case, extract to rows anyway since we need to return the pooled bitmap
+	out := qs.TmpRowIDs[:0]
+	out = bm.ToArrayInto(out)
+	qs.TmpRowIDs = out
+
+	if lb, ok := bm.(*imetadata.LocalBitmap); ok {
+		imetadata.PutPooledBitmap(lb)
+	}
+
+	return imetadata.RowsResult(out), nil
 }

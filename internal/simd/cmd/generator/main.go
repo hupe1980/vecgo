@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -320,6 +321,17 @@ func isPointerType(cType string) bool {
 	return strings.Contains(cType, "*")
 }
 
+// isFloatType checks if a C type is a floating point type.
+func isFloatType(cType string) bool {
+	cType = strings.TrimSpace(cType)
+	// Check for pointer types - pointers are not floats
+	if strings.Contains(cType, "*") {
+		return false
+	}
+	return cType == "float" || cType == "double" ||
+		cType == "float32" || cType == "float64"
+}
+
 func cTypeToGo(cType string) string {
 	cType = strings.TrimSpace(cType)
 
@@ -483,7 +495,7 @@ func (g *Generator) parseAssembly(asmPath string) (map[string]*Function, error) 
 
 	nameLine := regexp.MustCompile(`^(\w+):`)
 	labelLine := regexp.MustCompile(`^\.(\w+):`)
-	codeLine := regexp.MustCompile(`^\s+\w+`)
+	codeLine := regexp.MustCompile(`^\s+[\w\.]`)
 
 	functions := make(map[string]*Function)
 	var current string
@@ -496,6 +508,7 @@ func (g *Generator) parseAssembly(asmPath string) (map[string]*Function, error) 
 		if trim == "" || strings.HasPrefix(trim, "#") {
 			continue
 		}
+		// Skip directives
 		if strings.HasPrefix(trim, ".") && !labelLine.MatchString(line) {
 			continue
 		}
@@ -551,6 +564,7 @@ func (g *Generator) extractBinary(objPath string, functions map[string]*Function
 
 	var fn *Function
 	idx := 0
+	var lastAddr int64 = -1
 
 	sc := bufio.NewScanner(&out)
 	for sc.Scan() {
@@ -562,6 +576,7 @@ func (g *Generator) extractBinary(objPath string, functions map[string]*Function
 		if m := sym.FindStringSubmatch(line); m != nil {
 			fn = functions[m[1]]
 			idx = 0
+			lastAddr = -1
 			continue
 		}
 
@@ -569,56 +584,120 @@ func (g *Generator) extractBinary(objPath string, functions map[string]*Function
 			continue
 		}
 
-		idx = g.processDumpLine(line, fn, idx)
+		// Parse instruction lines: "   offset: bytes..."
+		if (strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t")) && strings.Contains(line, ":") {
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) != 2 {
+				continue
+			}
+
+			// Parse address to check for gaps (padding)
+			addrStr := strings.TrimSpace(parts[0])
+			addr, err := strconv.ParseInt(addrStr, 16, 64)
+			if err == nil {
+				if lastAddr != -1 && addr > lastAddr {
+					gap := addr - lastAddr
+					if gap > 0 {
+						// Detected padding gap
+						// Insert NOPs into the Go assembly structure to maintain alignment
+						// ARM64 NOP is 4 bytes (0xd503201f)
+						// x86 NOP is 1 byte (0x90)
+						var nopBytes []string
+						var stride int64
+
+						if g.Arch == "arm64" {
+							nopBytes = []string{"d503201f"}
+							stride = 4
+						} else {
+							nopBytes = []string{"90"}
+							stride = 1
+						}
+
+						if gap%stride == 0 {
+							count := int(gap / stride)
+							nopLine := AsmLine{
+								Assembly: "// NOP padding",
+								Binary:   nopBytes,
+							}
+
+							if g.Verbose {
+								fmt.Printf("Inserting %d NOPs at idx %d (gap %d)\n", count, idx, gap)
+							}
+
+							for i := 0; i < count; i++ {
+								// Find generic insertion point (skip empty/labels)
+								// Actually, strict insertion at idx is better to keep sync with binary flow
+								// But idx points to next *source* line.
+								// If we skip labels in idx search, we should respect that.
+								// But here we are inserting *before* the current instruction match.
+
+								// We insert at the current consumption cursor 'idx'.
+								// Note: We normally advance idx to skip labels *before* assigning.
+								// But here we interact with the stream.
+
+								// Insert into slice
+								if idx >= len(fn.Lines) {
+									fn.Lines = append(fn.Lines, nopLine)
+								} else {
+									fn.Lines = append(fn.Lines[:idx], append([]AsmLine{nopLine}, fn.Lines[idx:]...)...)
+								}
+								idx++
+							}
+							// Update lastAddr so we don't re-detect this gap or count it wrong
+							lastAddr += gap
+						}
+					}
+				}
+			}
+
+			content := parts[1]
+
+			// If there is a tab, the bytes are before the tab
+			if tabIdx := strings.Index(content, "\t"); tabIdx != -1 {
+				content = content[:tabIdx]
+			}
+
+			// Parse hex bytes or words
+			fields := strings.Fields(content)
+			var bytes []string
+			for _, p := range fields {
+				if (len(p) == 2 || len(p) == 8) && isHex(p) {
+					bytes = append(bytes, p)
+				}
+			}
+
+			if len(bytes) > 0 {
+				if g.Verbose {
+					fmt.Printf("Matched binary: %v for line idx %d\n", bytes, idx)
+				}
+
+				// Update address tracker
+				size := 0
+				for _, b := range bytes {
+					if len(b) == 2 {
+						size++
+					} else if len(b) == 8 {
+						size += 4
+					}
+				}
+				// If we failed parsing address earlier, assume continuity?
+				// But we handle gaps primarily.
+				// If parsing worked, use it. If not, best effort.
+				if err == nil {
+					lastAddr = addr + int64(size)
+				}
+
+				for idx < len(fn.Lines) && (len(fn.Lines[idx].Binary) > 0 || fn.Lines[idx].Assembly == "") {
+					idx++
+				}
+				if idx < len(fn.Lines) {
+					fn.Lines[idx].Binary = bytes
+					idx++
+				}
+			}
+		}
 	}
 	return sc.Err()
-}
-
-func (g *Generator) processDumpLine(line string, fn *Function, idx int) int {
-	// Parse instruction lines: "   offset: bytes..."
-	// We look for lines starting with whitespace and containing a colon
-	if (strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t")) && strings.Contains(line, ":") {
-		return g.parseInstructionLine(line, fn, idx)
-	} else if g.Verbose {
-		fmt.Printf("No match for line: %s\n", line)
-	}
-	return idx
-}
-
-func (g *Generator) parseInstructionLine(line string, fn *Function, idx int) int {
-	parts := strings.SplitN(line, ":", 2)
-	if len(parts) != 2 {
-		return idx
-	}
-	content := parts[1]
-
-	// If there is a tab, the bytes are before the tab
-	if tabIdx := strings.Index(content, "\t"); tabIdx != -1 {
-		content = content[:tabIdx]
-	}
-
-	// Parse hex bytes or words
-	fields := strings.Fields(content)
-	var bytes []string
-	for _, p := range fields {
-		if (len(p) == 2 || len(p) == 8) && isHex(p) {
-			bytes = append(bytes, p)
-		}
-	}
-
-	if len(bytes) > 0 {
-		if g.Verbose {
-			fmt.Printf("Matched binary: %v for line idx %d\n", bytes, idx)
-		}
-		for idx < len(fn.Lines) && (len(fn.Lines[idx].Binary) > 0 || fn.Lines[idx].Assembly == "") {
-			idx++
-		}
-		if idx < len(fn.Lines) {
-			fn.Lines[idx].Binary = bytes
-			idx++
-		}
-	}
-	return idx
 }
 
 func isHex(s string) bool {
@@ -671,28 +750,52 @@ func (g *Generator) generateGoAsm(functions map[string]*Function) error {
 		switch g.Arch {
 		case "arm64":
 			// Generate parameter loads based on actual parameters
-			registers := []string{"R0", "R1", "R2", "R3", "R4", "R5", "R6", "R7"}
+			// ARM64 ABI: integers/pointers in R0-R7, floats/doubles in D0-D7
+			intRegisters := []string{"R0", "R1", "R2", "R3", "R4", "R5", "R6", "R7"}
+			floatRegisters := []string{"F0", "F1", "F2", "F3", "F4", "F5", "F6", "F7"}
+			intRegIdx := 0
+			floatRegIdx := 0
 			for i, param := range fn.Parameters {
-				if i < len(registers) {
-					offset := i * 8
-					if customOffset, ok := fn.ArgOffsets[param.Name]; ok {
-						offset = customOffset
+				offset := i * 8
+				if customOffset, ok := fn.ArgOffsets[param.Name]; ok {
+					offset = customOffset
+				}
+				if isFloatType(param.Type) {
+					if floatRegIdx < len(floatRegisters) {
+						fmt.Fprintf(&buf, "\tFMOVD %s+%d(FP), %s\n", param.Name, offset, floatRegisters[floatRegIdx])
+						floatRegIdx++
 					}
-					fmt.Fprintf(&buf, "\tMOVD %s+%d(FP), %s\n", param.Name, offset, registers[i])
+				} else {
+					if intRegIdx < len(intRegisters) {
+						fmt.Fprintf(&buf, "\tMOVD %s+%d(FP), %s\n", param.Name, offset, intRegisters[intRegIdx])
+						intRegIdx++
+					}
 				}
 			}
 			buf.WriteString("\n")
 		case "amd64":
 			// Generate parameter loads for AMD64 (System V ABI)
-			// Pointers and integers go to DI, SI, DX, CX, R8, R9
-			registers := []string{"DI", "SI", "DX", "CX", "R8", "R9"}
+			// Integers/pointers go to DI, SI, DX, CX, R8, R9
+			// Floats/doubles go to XMM0-XMM7
+			intRegisters := []string{"DI", "SI", "DX", "CX", "R8", "R9"}
+			floatRegisters := []string{"X0", "X1", "X2", "X3", "X4", "X5", "X6", "X7"}
+			intRegIdx := 0
+			floatRegIdx := 0
 			for i, param := range fn.Parameters {
-				if i < len(registers) {
-					offset := i * 8
-					if customOffset, ok := fn.ArgOffsets[param.Name]; ok {
-						offset = customOffset
+				offset := i * 8
+				if customOffset, ok := fn.ArgOffsets[param.Name]; ok {
+					offset = customOffset
+				}
+				if isFloatType(param.Type) {
+					if floatRegIdx < len(floatRegisters) {
+						fmt.Fprintf(&buf, "\tMOVSD %s+%d(FP), %s\n", param.Name, offset, floatRegisters[floatRegIdx])
+						floatRegIdx++
 					}
-					fmt.Fprintf(&buf, "\tMOVQ %s+%d(FP), %s\n", param.Name, offset, registers[i])
+				} else {
+					if intRegIdx < len(intRegisters) {
+						fmt.Fprintf(&buf, "\tMOVQ %s+%d(FP), %s\n", param.Name, offset, intRegisters[intRegIdx])
+						intRegIdx++
+					}
 				}
 			}
 			buf.WriteString("\n")

@@ -53,13 +53,6 @@ func (w *Writer) writeFloat32(wr io.Writer, v float32) error {
 	return err
 }
 
-// writeUint64 writes a uint64 without allocating.
-func (w *Writer) writeUint64(wr io.Writer, v uint64) error {
-	binary.LittleEndian.PutUint64(w.scratchBuf[:8], v)
-	_, err := wr.Write(w.scratchBuf[:8])
-	return err
-}
-
 // NewWriter creates a new segment writer.
 func NewWriter(w io.Writer, payloadW io.Writer, segID model.SegmentID, dim int, metric distance.Metric, k int, quantType int) *Writer {
 	return &Writer{

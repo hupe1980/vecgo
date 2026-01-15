@@ -760,17 +760,71 @@ func CloneIfNeeded(m Metadata) Metadata {
 
 ### Unified Metadata Store (metadata filtering)
 
-Vecgo contains a `metadata` package with a **bitmap-based inverted index** intended for fast predicate evaluation during search.
+Vecgo contains a `metadata` package with a **dual-index architecture** for fast predicate evaluation during search.
 
-**Current implementation (Reality snapshot)**:
+**Architecture (Jan 2026)**:
 
-- `metadata.UnifiedIndex` maintains interned documents and per-field/per-value bitmaps.
-- Bitmap compilation is optimized for:
-  - `OpEqual` (equality)
-  - `OpIn` (membership)
-- Other operators (range compares, not-equals, contains, etc.) currently fall back to per-document checks.
+The `UnifiedIndex` maintains three synchronized structures:
 
-Example: build a conjunction (AND) filter with typed values:
+1. **Document Store**: `map[RowID]InternedDocument` - Primary storage for full metadata documents
+2. **BitmapIndex (Inverted)**: `map[field]map[value]*Bitmap` - Pre-materialized bitmaps per unique value
+3. **NumericIndex (Columnar)**: Sorted `(value, rowID)` pairs for O(log n) range queries
+
+```
+UnifiedIndex
+├── documents map[RowID]InternedDocument  (primary storage)
+├── inverted  map[field]map[value]*Bitmap (BitmapIndex - low cardinality)
+└── numeric   *NumericIndex               (ColumnIndex - high cardinality)
+```
+
+**Cost-Based Query Dispatch**:
+
+For numeric comparisons (`<`, `>`, `<=`, `>=`, `!=`), the index uses adaptive dispatch based on field cardinality:
+
+```go
+const lowCardinalityThreshold = 512  // Aligned with roaring container boundaries
+
+if distinctValues <= 512 {
+    // BitmapIndex: O(cardinality) but with fast bitmap OR
+    // Wins for status (5 values), category (50 values), etc.
+    result = evaluateNumericFilterScan(filter)
+} else {
+    // ColumnIndex: O(log n + matches) binary search
+    // Wins for timestamps, prices, sensor readings, etc.
+    result = numericIndex.EvaluateFilter(filter)
+}
+```
+
+**Performance Characteristics**:
+
+| Field Type | Cardinality | Strategy | Complexity |
+|-----------|-------------|----------|------------|
+| `status` | ~5 | BitmapIndex | O(5) = O(1) |
+| `category` | ~100 | BitmapIndex | O(100) = O(1) |
+| `timestamp` | ~10K | ColumnIndex | O(log 10K) = O(14) |
+| `price` | ~50K | ColumnIndex | O(log 50K) = O(16) |
+
+**Benchmark Results** (Apple M4 Pro, 100K documents):
+
+```
+# High cardinality (10K distinct values) - "timestamp > X"
+NumericIndex:  117μs  (binary search)
+InvertedScan:  716μs  (scan all values)
+Winner: NumericIndex 6.1x faster ✓
+
+# Low cardinality (100 distinct values) - "category >= X"
+NumericIndex:  118μs  (binary search)
+InvertedScan:  8.3μs  (OR 50 bitmaps)
+Winner: InvertedScan 14x faster ✓
+```
+
+**Optimized Operations**:
+
+- `OpEqual`, `OpIn`: Direct bitmap lookup O(1)
+- `OpLessThan`, `OpGreaterThan`, etc.: Adaptive dispatch as above
+- `OpContains`, `OpStartsWith`: Filter scan (not yet optimized)
+
+**Example Usage**:
 
 ```go
 fs := metadata.NewFilterSet(
@@ -779,10 +833,12 @@ fs := metadata.NewFilterSet(
 )
 ```
 
-**Planned**:
+**NumericIndex Implementation Details**:
 
-- End-to-end filter pushdown through the engine/segment search APIs.
-- Better support for numeric range filters (e.g., binned bitmaps or ordered indexes) so predicates like `price < 100` avoid scans.
+- **Columnar Layout**: Separate `values []float64` and `rowIDs []uint32` arrays for cache-optimal binary search
+- **Lazy Sorting**: Online inserts append unsorted; `sortField()` called on first query
+- **Batch Operations**: Uses `AddMany()` for efficient bitmap population from range results
+- **Persistence**: Delta-encoded for compression; lazy rebuilt on load
 
 ---
 

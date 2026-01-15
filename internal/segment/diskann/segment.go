@@ -882,6 +882,39 @@ func (s *Segment) FetchIDs(ctx context.Context, rows []uint32, dst []model.ID) e
 	return nil
 }
 
+// FetchVectorsInto copies vectors for the given rows into dst.
+// dst must have len >= len(rows)*dim.
+// All vectors are always valid for diskann segment (no deletions at segment level).
+func (s *Segment) FetchVectorsInto(ctx context.Context, rows []uint32, dim int, dst []float32) ([]bool, error) {
+	if dim != int(s.header.Dim) {
+		return nil, fmt.Errorf("dimension mismatch: got %d, expected %d", dim, s.header.Dim)
+	}
+	if len(dst) < len(rows)*dim {
+		return nil, fmt.Errorf("dst too small: need %d, got %d", len(rows)*dim, len(dst))
+	}
+
+	for i, rowID := range rows {
+		// Periodic context check (every 256 rows)
+		if i&255 == 0 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			default:
+			}
+		}
+
+		if rowID >= s.header.RowCount {
+			return nil, fmt.Errorf("rowID %d out of bounds", rowID)
+		}
+
+		src := s.vectors[int(rowID)*dim : int(rowID+1)*dim]
+		dstSlice := dst[i*dim : (i+1)*dim]
+		copy(dstSlice, src)
+	}
+
+	return nil, nil // All valid
+}
+
 // Iterate iterates over all vectors in the segment.
 // The context is used for cancellation during long iterations.
 func (s *Segment) Iterate(ctx context.Context, fn func(rowID uint32, id model.ID, vec []float32, md metadata.Document, payload []byte) error) error {
@@ -1072,6 +1105,15 @@ func (s *Segment) EvaluateFilter(ctx context.Context, filter *metadata.FilterSet
 		return nil, errors.New("metadata index not available")
 	}
 	return s.index.Query(filter)
+}
+
+// EvaluateFilterResult returns filter results using the zero-alloc FilterResult type.
+// Uses QueryScratch for scratch space (zero allocations in steady state).
+func (s *Segment) EvaluateFilterResult(ctx context.Context, filter *metadata.FilterSet, qs *imetadata.QueryScratch) (imetadata.FilterResult, error) {
+	if s.index == nil {
+		return imetadata.EmptyResult(), errors.New("metadata index not available")
+	}
+	return s.index.EvaluateFilterResult(filter, qs), nil
 }
 
 // readID reads the ID for the given row from the blob.

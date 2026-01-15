@@ -58,6 +58,9 @@ type Searcher struct {
 	// ScratchIDs is a reusable buffer for RowIDs.
 	ScratchIDs []uint32
 
+	// ScratchBools is a reusable buffer for batch boolean results (e.g., tombstone filtering).
+	ScratchBools []bool
+
 	// ScratchForeignIDs is a reusable buffer for PrimaryKeys.
 	ScratchForeignIDs []model.ID
 	// ParallelResults is a reusable buffer for collecting results from parallel segment searches.
@@ -68,6 +71,18 @@ type Searcher struct {
 
 	// SegmentFilters is a reusable buffer for segment filters.
 	SegmentFilters []any
+
+	// SemChan is a reusable semaphore channel for parallel search.
+	SemChan chan struct{}
+
+	// ScratchVecBuf is a reusable buffer for batch vector fetching (FetchVectors).
+	// Size = batchSize * dim (typically 64 * 1536 = 98,304 floats = 384KB).
+	ScratchVecBuf []float32
+
+	// BitmapBuilder is a zero-alloc bitmap builder for filter evaluation.
+	// Collects rowIDs into slice, builds bitmap once via AddMany.
+	BitmapBuilder *imetadata.BitmapBuilder
+
 	// OpsPerformed tracks the number of distance calculations or node visits.
 	OpsPerformed int
 }
@@ -102,6 +117,8 @@ func NewSearcher(visitedCap, queueCap int) *Searcher {
 		ParallelResults:   make([]InternalCandidate, 0, queueCap*16),
 		ParallelSlices:    make([][]InternalCandidate, 0, 16),
 		SegmentFilters:    make([]any, 0, 16),
+		// BitmapBuilder for zero-alloc filter evaluation
+		BitmapBuilder: imetadata.NewBitmapBuilder(),
 	}
 }
 
@@ -139,6 +156,11 @@ func (s *Searcher) Reset() {
 	// SegmentFilters holds references to objects, clear to avoid memory leaks
 	clear(s.SegmentFilters) // Go 1.21 generic clear for slices
 	s.SegmentFilters = s.SegmentFilters[:0]
+
+	// Reset BitmapBuilder for next query
+	if s.BitmapBuilder != nil {
+		s.BitmapBuilder.Reset(0)
+	}
 
 	s.OpsPerformed = 0
 }

@@ -365,3 +365,112 @@ func BenchmarkUnifiedIndex_ScanFilter(b *testing.B) {
 		_ = len(ids)
 	}
 }
+
+// BenchmarkUnifiedIndex_EvaluateFilter_MultiFilter tests lazy execution with multiple filters.
+// This measures the improvement from zero-copy first filter and deferred cloning.
+func BenchmarkUnifiedIndex_EvaluateFilter_MultiFilter(b *testing.B) {
+	ui := NewUnifiedIndex()
+
+	// Add 10k documents with multiple fields
+	for i := model.RowID(0); i < 10000; i++ {
+		category := "tech"
+		if i%3 == 0 {
+			category = "science"
+		}
+		if i%5 == 0 {
+			category = "art"
+		}
+		status := "active"
+		if i%4 == 0 {
+			status = "inactive"
+		}
+		tier := "free"
+		if i%2 == 0 {
+			tier = "paid"
+		}
+		ui.Set(i, metadata.Document{
+			"category": metadata.String(category),
+			"status":   metadata.String(status),
+			"tier":     metadata.String(tier),
+		})
+	}
+
+	b.Run("SingleFilter", func(b *testing.B) {
+		fs := &metadata.FilterSet{
+			Filters: []metadata.Filter{
+				{Key: "category", Operator: metadata.OpEqual, Value: metadata.String("tech")},
+			},
+		}
+		b.ResetTimer()
+		for b.Loop() {
+			bitmap := ui.EvaluateFilter(fs)
+			_ = bitmap.Cardinality()
+			PutPooledBitmap(bitmap)
+		}
+	})
+
+	b.Run("TwoFilters", func(b *testing.B) {
+		fs := &metadata.FilterSet{
+			Filters: []metadata.Filter{
+				{Key: "category", Operator: metadata.OpEqual, Value: metadata.String("tech")},
+				{Key: "status", Operator: metadata.OpEqual, Value: metadata.String("active")},
+			},
+		}
+		b.ResetTimer()
+		for b.Loop() {
+			bitmap := ui.EvaluateFilter(fs)
+			_ = bitmap.Cardinality()
+			PutPooledBitmap(bitmap)
+		}
+	})
+
+	b.Run("ThreeFilters", func(b *testing.B) {
+		fs := &metadata.FilterSet{
+			Filters: []metadata.Filter{
+				{Key: "category", Operator: metadata.OpEqual, Value: metadata.String("tech")},
+				{Key: "status", Operator: metadata.OpEqual, Value: metadata.String("active")},
+				{Key: "tier", Operator: metadata.OpEqual, Value: metadata.String("paid")},
+			},
+		}
+		b.ResetTimer()
+		for b.Loop() {
+			bitmap := ui.EvaluateFilter(fs)
+			_ = bitmap.Cardinality()
+			PutPooledBitmap(bitmap)
+		}
+	})
+
+	b.Run("InOperator_MultiValue", func(b *testing.B) {
+		fs := &metadata.FilterSet{
+			Filters: []metadata.Filter{
+				{Key: "category", Operator: metadata.OpIn, Value: metadata.Array([]metadata.Value{
+					metadata.String("tech"),
+					metadata.String("science"),
+				})},
+			},
+		}
+		b.ResetTimer()
+		for b.Loop() {
+			bitmap := ui.EvaluateFilter(fs)
+			_ = bitmap.Cardinality()
+			PutPooledBitmap(bitmap)
+		}
+	})
+
+	b.Run("InOperator_SingleValue", func(b *testing.B) {
+		// Single-element In should use zero-copy path
+		fs := &metadata.FilterSet{
+			Filters: []metadata.Filter{
+				{Key: "category", Operator: metadata.OpIn, Value: metadata.Array([]metadata.Value{
+					metadata.String("tech"),
+				})},
+			},
+		}
+		b.ResetTimer()
+		for b.Loop() {
+			bitmap := ui.EvaluateFilter(fs)
+			_ = bitmap.Cardinality()
+			PutPooledBitmap(bitmap)
+		}
+	})
+}

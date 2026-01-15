@@ -371,6 +371,63 @@ func (m *MemTable) FetchIDs(ctx context.Context, rows []uint32, dst []model.ID) 
 	return nil
 }
 
+// FetchVectorsInto copies vectors for the given rows into dst.
+// dst must have len >= len(rows)*dim.
+// Returns validMask indicating which rows have valid vectors (nil if all valid).
+func (m *MemTable) FetchVectorsInto(_ context.Context, rows []uint32, dim int, dst []float32) ([]bool, error) {
+	if len(dst) < len(rows)*dim {
+		return nil, fmt.Errorf("dst too small: need %d, got %d", len(rows)*dim, len(dst))
+	}
+
+	var hasInvalid bool
+	var validMask []bool
+
+	for i, r := range rows {
+		sIdx := r >> 28
+		if int(sIdx) >= shardCount {
+			return nil, fmt.Errorf("invalid rowID")
+		}
+		localRowID := r & uint32(rowIdMask)
+
+		// Directly get vector from shard
+		m.shards[sIdx].mu.RLock()
+		if m.shards[sIdx].idx == nil {
+			m.shards[sIdx].mu.RUnlock()
+			if !hasInvalid {
+				hasInvalid = true
+				validMask = make([]bool, len(rows))
+				for j := 0; j < i; j++ {
+					validMask[j] = true
+				}
+			}
+			continue
+		}
+		vec, ok := m.shards[sIdx].vectors.GetVector(model.RowID(localRowID))
+		if !ok || vec == nil {
+			m.shards[sIdx].mu.RUnlock()
+			if !hasInvalid {
+				hasInvalid = true
+				validMask = make([]bool, len(rows))
+				for j := 0; j < i; j++ {
+					validMask[j] = true
+				}
+			}
+			continue
+		}
+
+		// Copy into caller's buffer
+		dstSlice := dst[i*dim : (i+1)*dim]
+		copy(dstSlice, vec)
+		m.shards[sIdx].mu.RUnlock()
+
+		if hasInvalid {
+			validMask[i] = true
+		}
+	}
+
+	return validMask, nil
+}
+
 // EvaluateFilter returns a bitmap of rows matching the filter.
 func (m *MemTable) EvaluateFilter(ctx context.Context, filter *metadata.FilterSet) (segment.Bitmap, error) {
 	if filter == nil || len(filter.Filters) == 0 {
@@ -378,6 +435,9 @@ func (m *MemTable) EvaluateFilter(ctx context.Context, filter *metadata.FilterSe
 	}
 
 	result := imetadata.GetPooledBitmap() // Use pooled bitmap
+
+	// Scratch buffer for shard rowIDs (avoid Iterator allocation)
+	var scratchIDs []uint32
 
 	for i, s := range m.shards {
 		shardBitmap, err := s.EvaluateFilter(ctx, filter)
@@ -390,15 +450,72 @@ func (m *MemTable) EvaluateFilter(ctx context.Context, filter *metadata.FilterSe
 			// Shard-local offsets need to be shifted
 			shardOffset := uint32(i) << 28
 
-			shardBitmap.ForEach(func(id uint32) bool {
+			// Use ToArrayInto to avoid Iterator allocation
+			scratchIDs = shardBitmap.ToArrayInto(scratchIDs[:0])
+			for _, id := range scratchIDs {
 				result.Add(id | shardOffset)
-				return true
-			})
+			}
 			// Return shard bitmap to pool
 			imetadata.PutPooledBitmap(shardBitmap)
 		}
 	}
 	return result, nil
+}
+
+// EvaluateFilterResult returns filter results using the zero-alloc FilterResult type.
+// This is the optimized path that avoids roaring bitmaps for low cardinality.
+// Uses QueryScratch for scratch space (zero allocations in steady state).
+func (m *MemTable) EvaluateFilterResult(ctx context.Context, filter *metadata.FilterSet, qs *imetadata.QueryScratch) (imetadata.FilterResult, error) {
+	if filter == nil || len(filter.Filters) == 0 {
+		return imetadata.AllResult(), nil // No filter = match all
+	}
+
+	// For memtable with shards, we cannot use QueryScratch directly because
+	// each shard call would overwrite the previous shard's results.
+	// Instead, we use TmpIndices (as int32) to accumulate results separately.
+	// This is a trade-off: we reuse existing scratch but need to copy.
+
+	// Accumulator for global row IDs - use a separate slice
+	// We'll collect into TmpRowIDs after all shards are processed
+	var accumulated []uint32
+
+	for i, s := range m.shards {
+		// Each shard writes to qs.TmpRowIDs, so we need to copy before next shard
+		shardResult, err := s.EvaluateFilterResult(ctx, filter, qs)
+		if err != nil {
+			return imetadata.EmptyResult(), err
+		}
+
+		// Handle FilterAll (shouldn't happen since we checked filter above, but be defensive)
+		if shardResult.IsAll() {
+			// AllResult from shard = match all in that shard
+			// We need to fallback to HNSW for this segment
+			return imetadata.AllResult(), nil
+		}
+
+		if !shardResult.IsEmpty() {
+			// Shard-local offsets need to be shifted to global offsets
+			shardOffset := uint32(i) << 28
+
+			// Copy rows with offset applied
+			shardRows := shardResult.Rows()
+			if accumulated == nil {
+				// First shard with results - estimate capacity
+				accumulated = make([]uint32, 0, len(shardRows)*len(m.shards))
+			}
+			for _, id := range shardRows {
+				accumulated = append(accumulated, id|shardOffset)
+			}
+		}
+	}
+
+	if len(accumulated) == 0 {
+		return imetadata.EmptyResult(), nil
+	}
+
+	// Copy accumulated results into TmpRowIDs for the caller
+	qs.TmpRowIDs = append(qs.TmpRowIDs[:0], accumulated...)
+	return imetadata.RowsResult(qs.TmpRowIDs), nil
 }
 
 func (m *MemTable) Iterate(ctx context.Context, fn func(rowID uint32, id model.ID, vec []float32, md metadata.Document, payload []byte) error) error {
