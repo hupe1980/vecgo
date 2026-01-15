@@ -931,7 +931,6 @@ func (e *Engine) BatchInsert(ctx context.Context, vectors [][]float32, mds []met
 
 	snap := e.current.Load()
 	ids := make([]model.ID, n)
-	rowIDs := make([]model.RowID, n)
 
 	// Batch allocate LSNs and IDs (single atomic op each instead of N)
 	lsnStart := e.lsn.Add(uint64(n)) - uint64(n) + 1   // Reserve n LSNs, get first one
@@ -943,8 +942,7 @@ func (e *Engine) BatchInsert(ctx context.Context, vectors [][]float32, mds []met
 	}
 
 	// Batch insert into MemTable - this handles HNSW + metadata efficiently
-	var err error
-	rowIDs, err = snap.active.BatchInsertWithPayload(ctx, ids, vectors, mds, payloads)
+	rowIDs, err := snap.active.BatchInsertWithPayload(ctx, ids, vectors, mds, payloads)
 	if err != nil {
 		e.mu.RUnlock()
 		return nil, err
@@ -2007,11 +2005,9 @@ func (e *Engine) Vacuum(ctx context.Context) error {
 				e.logger.Warn("Failed to delete payload file", "file", payloadFilename, "error", err)
 			}
 
-			// Delete tombstone file
+			// Delete tombstone file (may not exist, ignore errors)
 			tombFilename := fmt.Sprintf("segment_%d.tomb", segID)
-			if err := e.store.Delete(ctx, tombFilename); err != nil && e.logger != nil {
-				// Tombstone files may not exist, ignore errors
-			}
+			_ = e.store.Delete(ctx, tombFilename)
 		}
 	}
 
