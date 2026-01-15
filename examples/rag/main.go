@@ -6,12 +6,14 @@ import (
 	"log"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/hupe1980/vecgo"
 	"github.com/hupe1980/vecgo/metadata"
 	"github.com/hupe1980/vecgo/testutil"
 )
+
+// Use deterministic RNG for reproducible examples
+var rng = testutil.NewRNG(42)
 
 // Document represents a knowledge chunk in our RAG system.
 type Document struct {
@@ -52,7 +54,6 @@ func main() {
 	}
 
 	fmt.Printf("Ingesting %d documents...\n", len(docs))
-	rng := testutil.NewRNG(time.Now().UnixNano())
 
 	for _, doc := range docs {
 		// Simulate embedding generation.

@@ -6,14 +6,17 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"math/rand"
 	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/hupe1980/vecgo"
 	"github.com/hupe1980/vecgo/blobstore"
+	"github.com/hupe1980/vecgo/testutil"
 )
+
+// Use deterministic RNG for reproducible examples
+var rng = testutil.NewRNG(42)
 
 // SimulatedS3Store wraps a LocalStore but adds latency to ReadAt calls.
 type SimulatedS3Store struct {
@@ -116,12 +119,12 @@ func main() {
 	fmt.Printf("⏱️  Engine Open Time: %v\n", time.Since(startOpen))
 
 	// Try to write (should fail in read-only mode)
-	_, writeErr := eng.Insert(context.Background(), randomVector(128), nil, nil)
+	_, writeErr := eng.Insert(context.Background(), rng.UnitVector(128), nil, nil)
 	if errors.Is(writeErr, vecgo.ErrReadOnly) {
 		fmt.Println("✅ Write correctly rejected in read-only mode")
 	}
 
-	vector := randomVector(128)
+	vector := rng.UnitVector(128)
 
 	fmt.Println("\n🔎 Executing Query 1 (Cold Cache)...")
 	start := time.Now()
@@ -161,8 +164,10 @@ func buildIndex(dir string) {
 		log.Fatalf("Failed to open builder: %v", err)
 	}
 
-	for range 2000 {
-		eng.Insert(context.Background(), randomVector(128), nil, nil)
+	// Use testutil for reproducible vector generation
+	vectors := rng.UniformVectors(2000, 128)
+	for _, v := range vectors {
+		eng.Insert(context.Background(), v, nil, nil)
 	}
 	eng.Close()
 }
@@ -173,12 +178,4 @@ func copyDir(src, dst string) {
 		data, _ := os.ReadFile(filepath.Join(src, entry.Name()))
 		os.WriteFile(filepath.Join(dst, entry.Name()), data, 0644)
 	}
-}
-
-func randomVector(dim int) []float32 {
-	v := make([]float32, dim)
-	for i := range v {
-		v[i] = rand.Float32()
-	}
-	return v
 }

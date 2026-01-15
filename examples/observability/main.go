@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"math/rand"
 	"net/http"
 	"os"
 	"os/signal"
@@ -14,11 +13,15 @@ import (
 	"time"
 
 	"github.com/hupe1980/vecgo"
+	"github.com/hupe1980/vecgo/testutil"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 const dim = 128
+
+// Use deterministic RNG for reproducible examples
+var rng = testutil.NewRNG(42)
 
 // PrometheusObserver implements vecgo.MetricsObserver
 type PrometheusObserver struct {
@@ -193,10 +196,8 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				// Random vector
-				for i := 0; i < dim; i++ {
-					vec[i] = rand.Float32()
-				}
+				// Random vector using testutil RNG
+				rng.FillUniform(vec)
 
 				if _, err := eng.Insert(ctx, vec, nil, nil); err != nil {
 					log.Printf("Insert error: %v", err)
@@ -216,9 +217,7 @@ func main() {
 			case <-ctx.Done():
 				return
 			default:
-				for i := range query {
-					query[i] = rand.Float32()
-				}
+				rng.FillUniform(query)
 				_, err := eng.Search(ctx, query, 10)
 				if err != nil {
 					// Ignore "empty" errors early on

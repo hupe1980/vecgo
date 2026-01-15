@@ -2,6 +2,15 @@
 
 This directory contains examples demonstrating Vecgo usage.
 
+## Best Practices
+
+All examples follow these conventions:
+
+1. **Use `testutil.RNG`** for reproducible random vector generation
+2. **Deterministic seeds** (e.g., seed=42) for consistent results
+3. **Context-first API** with proper timeout handling
+4. **Structured logging** via `log/slog`
+
 ## [Basic](./basic)
 
 A simple example showing:
@@ -33,11 +42,26 @@ Demonstrates cloud storage with caching:
 3. Open in read-only mode with disk cache
 4. Compare cold vs warm cache performance
 
+## [Observability](./observability)
+
+Full Prometheus metrics integration:
+1. `MetricsObserver` implementation
+2. Operation latency histograms
+3. MemTable usage gauges
+4. Backpressure event counters
+
+*Note: Has separate `go.mod` for Prometheus dependency isolation.*
+
 ## Running Examples
 
 ```bash
+# Main module examples
 cd examples/basic && go run main.go
 cd examples/modern && go run main.go
 cd examples/rag && go run main.go
 cd examples/cloud_tiered && go run main.go
+
+# Observability (separate module)
+cd examples/observability && go run main.go
+# View metrics at http://localhost:2112/metrics
 ```
