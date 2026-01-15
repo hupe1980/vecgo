@@ -23,6 +23,7 @@ type posting struct {
 // Pointer wrapper types for sync.Pool to avoid allocation on Put (SA6002).
 type tokenBuf struct{ buf []byte }
 type termIterators struct{ iters []termIterator }
+type tfMap struct{ m map[string]int }
 
 // MemoryIndex is a simple in-memory BM25 index using DAAT (Document-At-A-Time) scoring.
 type MemoryIndex struct {
@@ -48,6 +49,7 @@ type MemoryIndex struct {
 	iteratorPool sync.Pool
 	heapPool     sync.Pool
 	tokenBufPool sync.Pool
+	tfPool       sync.Pool // Pool for term-frequency maps
 }
 
 // New creates a new MemoryIndex.
@@ -72,6 +74,11 @@ func New() *MemoryIndex {
 		tokenBufPool: sync.Pool{
 			New: func() any {
 				return &tokenBuf{buf: make([]byte, 0, 64)}
+			},
+		},
+		tfPool: sync.Pool{
+			New: func() any {
+				return &tfMap{m: make(map[string]int, 32)}
 			},
 		},
 	}
@@ -194,8 +201,13 @@ func (idx *MemoryIndex) Add(id model.ID, text string) error {
 		idx.docTerms = append(idx.docTerms, nil)
 	}
 
+	// Use pooled tf map to avoid allocation per Add call
+	tfWrap := idx.tfPool.Get().(*tfMap)
+	tf := tfWrap.m
+	clear(tf) // Reset for reuse
+	defer func() { idx.tfPool.Put(tfWrap) }()
+
 	length := 0
-	tf := make(map[string]int)
 	idx.tokenize(text, func(t string) {
 		length++
 		tf[t]++
