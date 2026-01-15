@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 
 	"github.com/hupe1980/vecgo/model"
+	"golang.org/x/sync/semaphore"
 )
 
 // DiskCacheConfig holds configuration for the disk cache.
@@ -18,6 +19,9 @@ type DiskCacheConfig struct {
 	RootDir string
 	// MaxSizeBytes is the maximum size of the cache in bytes.
 	MaxSizeBytes int64
+	// MaxConcurrentWrites limits background disk writes to prevent unbounded goroutines.
+	// Defaults to 16 if <= 0.
+	MaxConcurrentWrites int64
 }
 
 // DiskBlockCache implements BlockCache backed by the local filesystem.
@@ -27,6 +31,9 @@ type DiskBlockCache struct {
 	rootDir     string
 	maxSize     int64
 	currentSize int64
+
+	// writeSem limits concurrent background writes to prevent goroutine explosion.
+	writeSem *semaphore.Weighted
 
 	// Index
 	items   map[CacheKey]*lruEntry
@@ -53,10 +60,16 @@ func NewDiskBlockCache(config DiskCacheConfig) (*DiskBlockCache, error) {
 		return nil, err
 	}
 
+	maxWrites := config.MaxConcurrentWrites
+	if maxWrites <= 0 {
+		maxWrites = 16
+	}
+
 	c := &DiskBlockCache{
-		rootDir: config.RootDir,
-		maxSize: config.MaxSizeBytes,
-		items:   make(map[CacheKey]*lruEntry),
+		rootDir:  config.RootDir,
+		maxSize:  config.MaxSizeBytes,
+		items:    make(map[CacheKey]*lruEntry),
+		writeSem: semaphore.NewWeighted(maxWrites),
 	}
 
 	// Synchronous scan for now to ensure consistency,
@@ -172,11 +185,11 @@ func (c *DiskBlockCache) Get(ctx context.Context, key CacheKey) ([]byte, bool) {
 
 func (c *DiskBlockCache) Set(ctx context.Context, key CacheKey, b []byte) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	// 1. Check if exists
 	if ent, ok := c.items[key]; ok {
 		c.moveToFront(ent)
+		c.mu.Unlock()
 		// Assuming immutable blocks, we don't rewrite.
 		// But if size changed (corruption fix?), we might.
 		// For now, ignore overwrite.
@@ -188,11 +201,6 @@ func (c *DiskBlockCache) Set(ctx context.Context, key CacheKey, b []byte) {
 	relPath := c.encodeKeyToRelPath(key)
 	absPath := filepath.Join(c.rootDir, relPath)
 
-	// Create dir if needed
-	if err := os.MkdirAll(filepath.Dir(absPath), 0755); err != nil {
-		return
-	}
-
 	// 3. Evict if needed (Reserve space)
 	for c.currentSize+size > c.maxSize {
 		if c.lruTail == nil {
@@ -202,36 +210,23 @@ func (c *DiskBlockCache) Set(ctx context.Context, key CacheKey, b []byte) {
 		c.evictOne()
 	}
 
-	// 4. Write to disk
-	// To avoid blocking the search path on disk I/O, we could make this async.
-	// But simple goroutines might pile up.
-	// We'll use a semaphore or worker queue if this becomes a bottleneck.
-	// For "Best-in-Class" production, let's just do it in a goroutine but verify no race on index.
-	//
-	// Issue: if we return early, Get() might see it in index but file not ready.
-	// Solution: Update Index *after* write.
-	// But then we might have parallel writes for same key.
-	//
-	// Let's stick to synchronous write for correctness for now, unless profiled.
-	// ACTUALLY: The user asked for "fastest" solution. Blocking 4MB write to disk takes 10-50ms.
-	// This adds 10-50ms to the S3 fetch (which is 50-100ms).
-	// It's significant.
-	//
-	// Proposed Async Flow:
-	// 1. Add to separate "inflight" map (or use index with "writing" state).
-	// 2. Launch goroutine to write.
-	// 3. On complete, update state.
-	// 4. Get() checks index. If "writing", wait or return data from memory if we kept it?
-	//
-	// Simpler: Just allow Set to return.
-	// The caller (CachingStore) holds 'b'.
-	// We can update index immediately pointing to path, but file might be partial.
-	//
-	// Better: Don't update index until write complete.
-	// Parallel Gets will miss cache and hit S3 again. That's acceptable for a "warm up" phase.
+	c.mu.Unlock()
+
+	// 4. Try to acquire semaphore non-blocking
+	// This limits concurrent background writes to prevent goroutine explosion.
+	// If we can't acquire, skip caching this block - it's a cache, not critical.
+	if !c.writeSem.TryAcquire(1) {
+		return
+	}
+
+	// 5. Write to disk in background
+	// Note: We don't update index until write completes to ensure consistency.
+	// Parallel Gets will miss cache and hit backend again during write - acceptable for warm-up.
 	c.wg.Add(1)
 	go func() {
 		defer c.wg.Done()
+		defer c.writeSem.Release(1)
+
 		// Create dir if needed
 		if err := os.MkdirAll(filepath.Dir(absPath), 0755); err != nil {
 			return
@@ -261,7 +256,7 @@ func (c *DiskBlockCache) Set(ctx context.Context, key CacheKey, b []byte) {
 			return
 		}
 
-		// 5. Update Index (Need lock)
+		// 6. Update Index (Need lock)
 		c.mu.Lock()
 		defer c.mu.Unlock()
 

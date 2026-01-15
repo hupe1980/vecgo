@@ -10,8 +10,9 @@ import (
 )
 
 // LRUBlockCache implements a simple LRU BlockCache.
+// Uses RWMutex to allow concurrent reads on cache hits.
 type LRUBlockCache struct {
-	mu        sync.Mutex
+	mu        sync.RWMutex
 	capacity  int64
 	size      int64
 	items     map[CacheKey]*list.Element
@@ -39,17 +40,31 @@ func NewLRUBlockCache(capacity int64, rc *resource.Controller) *LRUBlockCache {
 }
 
 // Get returns a cached block.
+// Uses read lock for lookup, upgrades to write lock only for LRU update on hit.
 func (c *LRUBlockCache) Get(ctx context.Context, key CacheKey) ([]byte, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if ent, ok := c.items[key]; ok {
-		c.hits.Add(1)
-		c.evictList.MoveToFront(ent)
-		return ent.Value.(*entry).value, true
+	// Fast path: read lock for lookup
+	c.mu.RLock()
+	ent, ok := c.items[key]
+	if !ok {
+		c.mu.RUnlock()
+		c.misses.Add(1)
+		return nil, false
 	}
-	c.misses.Add(1)
-	return nil, false
+	// Cache hit - get value before releasing read lock
+	value := ent.Value.(*entry).value
+	c.mu.RUnlock()
+
+	// Upgrade to write lock for LRU update (MoveToFront)
+	// Note: Another goroutine might have evicted this entry between RUnlock and Lock.
+	// We still return the value we read (it's valid), but skip the LRU update if evicted.
+	c.mu.Lock()
+	if _, stillThere := c.items[key]; stillThere {
+		c.evictList.MoveToFront(ent)
+	}
+	c.mu.Unlock()
+
+	c.hits.Add(1)
+	return value, true
 }
 
 // Set caches a block.

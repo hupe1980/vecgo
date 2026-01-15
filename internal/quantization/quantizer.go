@@ -189,21 +189,24 @@ func (sq *ScalarQuantizer) Encode(v []float32) ([]byte, error) {
 		return nil, errors.New("vector dimension mismatch")
 	}
 
-	// Use pooled buffer if possible, but Encode returns a new slice usually.
-	// If we want to return a new slice, we can't pool it unless we change API to EncodeInto.
-	// For now, we allocate. To optimize, we'd need EncodeInto.
-	// However, the user suggestion was "Pool buffers".
-	// If the caller expects to own the returned slice, we must allocate.
-	// Let's stick to allocation for safety unless we change the interface.
-	// But wait, the user said "Pool buffers... quantized := make([]byte, len(v))".
-	// If we return it, we can't pool it easily without a Release() mechanism.
-	// So we will allocate for now to be safe with the interface.
 	quantized := make([]byte, len(v))
+	sq.EncodeInto(v, quantized)
+	return quantized, nil
+}
+
+// EncodeInto quantizes a float32 vector into a pre-allocated byte slice.
+// dst must have length >= len(v). Caller is responsible for dimension validation.
+// This is the zero-allocation hot path for batch encoding.
+func (sq *ScalarQuantizer) EncodeInto(v []float32, dst []byte) {
+	// Bounds check elimination hints
+	mins := sq.mins
+	maxs := sq.maxs
+	scales := sq.scales
 
 	for i, val := range v {
-		minVal := sq.mins[i]
-		maxVal := sq.maxs[i]
-		scale := sq.scales[i]
+		minVal := mins[i]
+		maxVal := maxs[i]
+		scale := scales[i]
 
 		// Clamp to [min, max]
 		if val < minVal {
@@ -214,10 +217,8 @@ func (sq *ScalarQuantizer) Encode(v []float32) ([]byte, error) {
 
 		// Map to [0, 255]
 		normalized := (val - minVal) * scale
-		quantized[i] = uint8(normalized + 0.5) // Round to nearest
+		dst[i] = uint8(normalized + 0.5) // Round to nearest
 	}
-
-	return quantized, nil
 }
 
 // Decode reconstructs a float32 vector from quantized representation.
@@ -230,19 +231,20 @@ func (sq *ScalarQuantizer) Decode(b []byte) ([]float32, error) {
 	}
 
 	decoded := make([]float32, len(b))
+	sq.DecodeInto(b, decoded)
+	return decoded, nil
+}
+
+// DecodeInto reconstructs a float32 vector into a pre-allocated slice.
+// dst must have length >= len(b). Caller is responsible for dimension validation.
+// This is the zero-allocation hot path for batch decoding.
+func (sq *ScalarQuantizer) DecodeInto(b []byte, dst []float32) {
 	invScales := sq.invScales
 	mins := sq.mins
 
-	// Bounds check elimination hint
-	if len(invScales) < len(b) || len(mins) < len(b) {
-		return nil, errors.New("invalid quantizer state")
-	}
-
 	for i, val := range b {
-		decoded[i] = float32(val)*invScales[i] + mins[i]
+		dst[i] = float32(val)*invScales[i] + mins[i]
 	}
-
-	return decoded, nil
 }
 
 // BytesPerDimension returns 1 (uint8 storage).
