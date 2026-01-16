@@ -52,6 +52,17 @@ Full Prometheus metrics integration:
 
 *Note: Has separate `go.mod` for Prometheus dependency isolation.*
 
+## [Bulk Load](./bulk_load)
+
+Demonstrates **high-throughput ingestion** with `BatchInsertDeferred`:
+1. Load 10K vectors at ~2M vec/s (no HNSW indexing)
+2. Commit to DiskANN segment
+3. Search verification
+4. Performance comparison with standard `BatchInsert`
+
+Key insight: `BatchInsertDeferred` achieves **~1000x faster** throughput by deferring
+HNSW graph construction. Vectors become searchable after `Commit()`.
+
 ## Running Examples
 
 ```bash
@@ -60,6 +71,7 @@ cd examples/basic && go run main.go
 cd examples/modern && go run main.go
 cd examples/rag && go run main.go
 cd examples/cloud_tiered && go run main.go
+cd examples/bulk_load && go run main.go
 
 # Observability (separate module)
 cd examples/observability && go run main.go

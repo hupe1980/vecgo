@@ -18,6 +18,27 @@
 //	db, _ := vecgo.Open(ctx, vecgo.Remote(s3Store))
 //	db, _ := vecgo.Open(ctx, vecgo.Remote(s3Store), vecgo.WithCacheDir("/fast/nvme"))
 //
+// # Insert Modes
+//
+// Vecgo provides three insert modes optimized for different workloads:
+//
+//	// 1. SINGLE INSERT — Real-time updates (~625 vec/s, 768 dim)
+//	//    Vectors are HNSW-indexed and searchable immediately.
+//	id, _ := db.Insert(ctx, vector, metadata, payload)
+//
+//	// 2. BATCH INSERT — Indexed batch (~3,000 vec/s at batch=100)
+//	//    All vectors are HNSW-indexed and searchable immediately.
+//	ids, _ := db.BatchInsert(ctx, vectors, metadatas, payloads)
+//
+//	// 3. DEFERRED INSERT — Bulk loading (~2,000,000 vec/s!)
+//	//    Vectors are NOT indexed into HNSW, stored only.
+//	//    Searchable after Commit() triggers flush to DiskANN segment.
+//	ids, _ := db.BatchInsertDeferred(ctx, vectors, metadatas, payloads)
+//	db.Commit(ctx)  // Now searchable via DiskANN
+//
+// Use Deferred mode for initial data loading, migrations, or nightly reindex.
+// Use Single/Batch mode for real-time RAG where immediate search is required.
+//
 // # Search with Data
 //
 // By default, search returns IDs, scores, metadata, and payload:

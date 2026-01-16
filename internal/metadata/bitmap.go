@@ -481,6 +481,41 @@ func (fr FilterResult) Clone() FilterResult {
 	}
 }
 
+// CloneInto copies the FilterResult into the provided buffer, returning a new FilterResult
+// that owns its data. This avoids allocations when the caller provides a buffer with
+// sufficient capacity. The returned FilterResult owns the slice (no aliasing with dst).
+//
+// For FilterRows mode: appends rows to dst and returns a FilterResult pointing to the new slice.
+// For FilterBitmap mode: falls back to Clone() (bitmap cloning always allocates).
+// For FilterNone/FilterAll: returns the same value (no data to copy).
+//
+// Example:
+//
+//	buf := make([]uint32, 0, 1024)
+//	for _, fr := range filterResults {
+//	    cloned, buf = fr.CloneInto(buf)
+//	    collected = append(collected, cloned)
+//	}
+func (fr FilterResult) CloneInto(dst []uint32) (FilterResult, []uint32) {
+	switch fr.mode {
+	case FilterRows:
+		if len(fr.rows) == 0 {
+			return FilterResult{mode: FilterNone}, dst
+		}
+		// Mark start position in dst
+		startIdx := len(dst)
+		// Append rows to dst
+		dst = append(dst, fr.rows...)
+		// Return FilterResult pointing to the newly appended slice
+		return FilterResult{mode: FilterRows, rows: dst[startIdx:]}, dst
+	case FilterBitmap:
+		// Bitmap mode: can't share a buffer, fall back to Clone()
+		return fr.Clone(), dst
+	default:
+		return fr, dst // FilterNone and FilterAll have no data
+	}
+}
+
 // ForEach iterates over all row IDs in the result.
 // The callback should return true to continue, false to stop.
 // Zero allocations (no Iterator created for rows mode).

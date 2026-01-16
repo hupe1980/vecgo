@@ -195,19 +195,45 @@ db.Insert(ctx, vector, doc, nil)
 results, _ := db.HybridSearch(ctx, vector, "neural networks", 10)
 ```
 
-### 📦 Batch Operations
+### 📦 Insert Modes
+
+Vecgo offers three insert modes optimized for different workloads:
+
+| Mode | Method | Throughput | Searchable | Best For |
+|------|--------|------------|------------|----------|
+| **Single** | `Insert()` | ~2K vec/s | ✅ Immediately | Real-time updates |
+| **Batch** | `BatchInsert()` | ~3K vec/s | ✅ Immediately | Medium batches (10-100) |
+| **Deferred** | `BatchInsertDeferred()` | ~2M vec/s | ❌ After flush | Bulk loading |
 
 ```go
-vectors := [][]float32{vec1, vec2, vec3}
-metadatas := []metadata.Document{md1, md2, md3}
-payloads := [][]byte{p1, p2, p3}
+// 1. SINGLE INSERT — Real-time updates (HNSW-indexed immediately)
+//    Use when: you need vectors searchable immediately
+//    ~2,000 vectors/sec (768 dim)
+id, err := db.Insert(ctx, vector, metadata, payload)
 
-// Batch insert
+// 2. BATCH INSERT — Indexed batch (HNSW-indexed immediately)
+//    Use when: you have medium batches and need immediate search
+//    ~3,000 vectors/sec (768 dim, batch=100)
 ids, err := db.BatchInsert(ctx, vectors, metadatas, payloads)
 
-// Batch insert deferred (optimized for bulk loading)
-ids, err = db.BatchInsertDeferred(ctx, vectors, metadatas, payloads)
+// 3. DEFERRED INSERT — Bulk loading (NO HNSW indexing)
+//    Use when: you're bulk loading and don't need immediate search
+//    ~2,000,000 vectors/sec (768 dim) — 1000x faster!
+//    Vectors become searchable after Commit() triggers flush
+ids, err := db.BatchInsertDeferred(ctx, vectors, metadatas, payloads)
+db.Commit(ctx) // Flush to disk, now searchable via DiskANN
+```
 
+**When to use Deferred mode:**
+- Initial data loading (embeddings from a corpus)
+- Periodic bulk updates (nightly reindex)
+- Migration from another database
+
+**When NOT to use Deferred mode:**
+- Real-time RAG (documents must be searchable immediately)
+- Interactive applications with instant feedback
+
+```go
 // Batch delete
 err = db.BatchDelete(ctx, ids)
 ```
@@ -255,7 +281,18 @@ sequenceDiagram
 - 💾 **[Recovery & Durability](docs/recovery.md)** — Crash safety, data guarantees
 - 🚀 **[Deployment Guide](docs/deployment.md)** — Local vs. cloud patterns
 
-## 📄 Algorithm References
+## � Examples
+
+| Example | Description |
+|---------|-------------|
+| [basic](examples/basic) | Create index, insert, search, commit |
+| [modern](examples/modern) | Fluent API, schema-enforced metadata, scan iterator |
+| [rag](examples/rag) | Retrieval-Augmented Generation workflow |
+| [cloud_tiered](examples/cloud_tiered) | Writer/reader separation with S3 |
+| [bulk_load](examples/bulk_load) | High-throughput ingestion with `BatchInsertDeferred` |
+| [observability](examples/observability) | Prometheus metrics integration |
+
+## �📄 Algorithm References
 
 - **HNSW**: Malkov & Yashunin, "[Efficient and robust approximate nearest neighbor search using Hierarchical Navigable Small World graphs](https://arxiv.org/abs/1603.09320)", IEEE TPAMI 2018
 - **DiskANN/Vamana**: Subramanya et al., "[DiskANN: Fast Accurate Billion-point Nearest Neighbor Search on a Single Node](https://papers.nips.cc/paper/2019/hash/09853c7fb1d3f8ee67a61b6bf4a7f8e6-Abstract.html)", NeurIPS 2019

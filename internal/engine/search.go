@@ -32,6 +32,16 @@ var segFilterPool = sync.Pool{
 	},
 }
 
+// rowIDBufferPool provides reusable buffers for collecting row IDs across segments.
+// This avoids per-search allocations when using CloneInto.
+var rowIDBufferPool = sync.Pool{
+	New: func() any {
+		// Start with 4KB capacity (1024 uint32s) - grows as needed
+		buf := make([]uint32, 0, 1024)
+		return &buf
+	},
+}
+
 // Package-level comparison functions to avoid closure allocation in hot paths.
 // These are used with slices.SortFunc to eliminate per-call closure overhead.
 
@@ -207,6 +217,11 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 				// Collect filter results for each segment
 				filtersPtr := segFilterPool.Get().(*[]segFilter)
 				filters := (*filtersPtr)[:0]
+
+				// Get pooled buffer for row ID collection (avoids per-Clone allocations)
+				rowBufPtr := rowIDBufferPool.Get().(*[]uint32)
+				rowBuf := (*rowBufPtr)[:0]
+
 				defer func() {
 					// Clear references (no pool return needed for FilterResult - query-scoped)
 					for i := range filters {
@@ -214,6 +229,10 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 					}
 					*filtersPtr = filters[:0]
 					segFilterPool.Put(filtersPtr)
+
+					// Return row buffer to pool
+					*rowBufPtr = rowBuf[:0]
+					rowIDBufferPool.Put(rowBufPtr)
 				}()
 
 				totalHits := uint64(0)
@@ -231,8 +250,11 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 					} else if !fr.IsEmpty() {
 						hits := uint64(fr.Cardinality())
 						totalHits += hits
-						// Clone to prevent aliasing when qs.TmpRowIDs is reused
-						filters = append(filters, segFilter{seg: snap.active, fr: fr.Clone(), ts: activeFilter})
+						// CloneInto to prevent aliasing when qs.TmpRowIDs is reused
+						// Uses pooled buffer to avoid per-segment allocations
+						var cloned imetadata.FilterResult
+						cloned, rowBuf = fr.CloneInto(rowBuf)
+						filters = append(filters, segFilter{seg: snap.active, fr: cloned, ts: activeFilter})
 					}
 					// else: fr.IsEmpty() = no matches in this segment = skip (valid)
 				}
@@ -262,8 +284,11 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 							if f := s.SegmentFilters[i]; f != nil {
 								ts = f.(segment.Filter)
 							}
-							// Clone to prevent aliasing when qs.TmpRowIDs is reused
-							filters = append(filters, segFilter{seg: seg, fr: fr.Clone(), ts: ts})
+							// CloneInto to prevent aliasing when qs.TmpRowIDs is reused
+							// Uses pooled buffer to avoid per-segment allocations
+							var cloned imetadata.FilterResult
+							cloned, rowBuf = fr.CloneInto(rowBuf)
+							filters = append(filters, segFilter{seg: seg, fr: cloned, ts: ts})
 						}
 						// else: fr.IsEmpty() = no matches in this segment = skip (valid)
 					}

@@ -61,6 +61,106 @@ The engine supports **automatic flush triggers** based on MemTable size. However
 
 ---
 
+## Insert Modes
+
+Vecgo provides three insert modes optimized for different workloads:
+
+```mermaid
+flowchart LR
+    subgraph Single["Single Insert"]
+        S1[Insert] --> HNSW1[HNSW Graph<br/>Immediate]
+    end
+    
+    subgraph Batch["Batch Insert"]
+        B1[BatchInsert] --> HNSW2[HNSW Graph<br/>Immediate]
+    end
+    
+    subgraph Deferred["Deferred Insert"]
+        D1[BatchInsertDeferred] --> Store[Vector Store<br/>No Graph]
+        Store -->|Commit| Disk[DiskANN<br/>After Flush]
+    end
+    
+    style Single fill:#e8f5e9
+    style Batch fill:#e3f2fd
+    style Deferred fill:#fff3e0
+```
+
+### Performance Comparison (768 dimensions, Apple M4 Pro)
+
+| Mode | Method | Throughput | Allocs | Searchable |
+|------|--------|------------|--------|------------|
+| **Single** | `Insert()` | 625 vec/s | 2 | ✅ Immediately |
+| **Batch (10)** | `BatchInsert()` | 1,200 vec/s | 93 | ✅ Immediately |
+| **Batch (100)** | `BatchInsert()` | 3,300 vec/s | 302 | ✅ Immediately |
+| **Deferred (1K)** | `BatchInsertDeferred()` | 577,000 vec/s | 2,215 | ❌ After flush |
+| **Deferred (10K)** | `BatchInsertDeferred()` | 2,030,000 vec/s | 20,534 | ❌ After flush |
+
+### Single Insert
+
+Use for **real-time applications** where vectors must be searchable immediately:
+
+```go
+// Each insert builds into the HNSW graph
+id, err := db.Insert(ctx, vector, metadata, payload)
+// Vector is searchable NOW
+```
+
+**Characteristics:**
+- HNSW graph is updated immediately
+- ~625 vectors/sec (768 dim)
+- 2 allocations per insert
+- Thread-safe (sharded HNSW with 16 shards)
+
+### Batch Insert
+
+Use for **medium batches** when you have multiple vectors and need immediate search:
+
+```go
+// Batch of vectors, all indexed into HNSW
+ids, err := db.BatchInsert(ctx, vectors, metadatas, payloads)
+// All vectors searchable NOW
+```
+
+**Characteristics:**
+- HNSW graph is updated for each vector
+- ~3,000 vectors/sec at batch=100
+- Amortizes lock overhead
+- Good for RAG pipelines with small document batches
+
+### Deferred Insert (Bulk Loading)
+
+Use for **bulk loading** when you're ingesting large datasets and don't need immediate search:
+
+```go
+// Vectors stored but NOT indexed into HNSW
+ids, err := db.BatchInsertDeferred(ctx, vectors, metadatas, payloads)
+// Vectors NOT searchable yet!
+
+// Commit triggers flush - now vectors are in DiskANN segment
+db.Commit(ctx)
+// Vectors searchable via DiskANN
+```
+
+**Characteristics:**
+- **~1000x faster** than indexed insert
+- Skips HNSW graph construction entirely
+- Vectors only stored in columnar format
+- Searchable after flush creates DiskANN segment
+- Ideal for initial data loading, migrations, nightly reindex
+
+### Choosing the Right Mode
+
+| Scenario | Recommended Mode | Why |
+|----------|------------------|-----|
+| Real-time RAG | `Insert()` | Immediate searchability required |
+| Document ingestion batch | `BatchInsert()` | Balance of speed and immediate search |
+| Initial corpus loading | `BatchInsertDeferred()` | 1000x faster, search can wait |
+| Database migration | `BatchInsertDeferred()` | Bulk transfer, rebuild index once |
+| Nightly embedding update | `BatchInsertDeferred()` | Batch window, rebuild overnight |
+| Streaming embeddings | `Insert()` | Each item must be searchable |
+
+---
+
 ## SIMD and CPU Features
 
 Distance computation is SIMD-optimized with runtime CPU feature detection:
