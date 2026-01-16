@@ -32,6 +32,7 @@ var pqAdcOffsets = func() []int32 {
 func setAVX2Kernels() {
 	kernelDot = dotAVX2
 	kernelSquaredL2 = squaredL2AVX2
+	kernelSquaredL2Bounded = squaredL2BoundedAVX2
 	kernelScale = scaleAVX2
 	kernelPqAdc = pqAdcAVX2
 	kernelDotBatch = dotBatchAVX2
@@ -61,6 +62,23 @@ func squaredL2AVX2(a, b []float32) float32 {
 		squaredL2Avx2(unsafe.Pointer(&a[0]), unsafe.Pointer(&b[0]), int64(len(a)), unsafe.Pointer(&ret))
 	}
 	return ret
+}
+
+func squaredL2BoundedAVX2(a, b []float32, bound float32) (float32, bool) {
+	if len(a) == 0 {
+		return 0, false
+	}
+	var result float32
+	var exceeded int32
+	squaredL2BoundedAvx2(
+		unsafe.Pointer(&a[0]),
+		unsafe.Pointer(&b[0]),
+		int64(len(a)),
+		bound,
+		unsafe.Pointer(&result),
+		unsafe.Pointer(&exceeded),
+	)
+	return result, exceeded != 0
 }
 
 func scaleAVX2(a []float32, scalar float32) {
@@ -217,6 +235,7 @@ func gatherU32AVX2(src []uint32, indices []int32, dst []uint32) {
 func setAVX512Kernels() {
 	kernelDot = dotAVX512
 	kernelSquaredL2 = squaredL2AVX512
+	kernelSquaredL2Bounded = squaredL2BoundedAVX512
 	kernelScale = scaleAVX512
 	kernelPqAdc = pqAdcAVX512
 	kernelDotBatch = dotBatchAVX512
@@ -246,6 +265,23 @@ func squaredL2AVX512(a, b []float32) float32 {
 		squaredL2Avx512(unsafe.Pointer(&a[0]), unsafe.Pointer(&b[0]), int64(len(a)), unsafe.Pointer(&ret))
 	}
 	return ret
+}
+
+func squaredL2BoundedAVX512(a, b []float32, bound float32) (float32, bool) {
+	if len(a) == 0 {
+		return 0, false
+	}
+	var result float32
+	var exceeded int32
+	squaredL2BoundedAvx512(
+		unsafe.Pointer(&a[0]),
+		unsafe.Pointer(&b[0]),
+		int64(len(a)),
+		bound,
+		unsafe.Pointer(&result),
+		unsafe.Pointer(&exceeded),
+	)
+	return result, exceeded != 0
 }
 
 func scaleAVX512(a []float32, scalar float32) {

@@ -103,6 +103,46 @@ func BenchmarkSquaredL2Batch(b *testing.B) {
 	}
 }
 
+func BenchmarkSquaredL2Bounded_Dims(b *testing.B) {
+	r := benchRand()
+	for _, dim := range []int{128, 256, 768, 1536} {
+		b.Run("dim="+itoa(dim), func(b *testing.B) {
+			a := randFloats(r, dim)
+			c := randFloats(r, dim)
+			// Compute actual distance to set a bound that sometimes triggers early exit
+			actualDist := SquaredL2(a, c)
+			bound := actualDist * 1.5 // 50% above actual, so some comparisons exit early
+
+			b.SetBytes(int64(dim * 4 * 2))
+			b.ResetTimer()
+			var sink float32
+			for b.Loop() {
+				sink, _ = SquaredL2Bounded(a, c, bound)
+			}
+			_ = sink
+		})
+	}
+}
+
+func BenchmarkSquaredL2Bounded_EarlyExit(b *testing.B) {
+	r := benchRand()
+	const dim = 768
+	a := randFloats(r, dim)
+	c := randFloats(r, dim)
+	// Set a very low bound to force early exit
+	bound := float32(0.1)
+
+	b.SetBytes(int64(dim * 4 * 2))
+	b.ResetTimer()
+	var exceeded bool
+	for b.Loop() {
+		_, exceeded = SquaredL2Bounded(a, c, bound)
+	}
+	if !exceeded {
+		b.Fatal("expected early exit")
+	}
+}
+
 func BenchmarkScaleInPlace(b *testing.B) {
 	r := benchRand()
 	const n = 1 << 20

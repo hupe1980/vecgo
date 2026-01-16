@@ -111,4 +111,99 @@ type SearchOptions struct {
 	IncludeVector   bool
 	IncludeMetadata bool
 	IncludePayload  bool
+
+	// Stats receives detailed query execution statistics when non-nil.
+	// Use this for query debugging, performance analysis, and cost estimation.
+	Stats *QueryStats
+}
+
+// QueryStats provides detailed execution statistics for a search query.
+// This enables query explainability: "Why did this query take 312μs?"
+// All fields are populated after the query completes.
+type QueryStats struct {
+	// TotalDurationMicros is the total query execution time in microseconds.
+	TotalDurationMicros int64
+
+	// SegmentsSearched is the number of segments searched.
+	SegmentsSearched int
+
+	// SegmentStats contains per-segment execution details.
+	SegmentStats []SegmentQueryStats
+
+	// DistanceComputations is the total number of distance calculations performed.
+	DistanceComputations int64
+
+	// DistanceShortCircuits is the number of distance calculations that exited early
+	// due to distance short-circuiting (partial sum exceeded bound).
+	DistanceShortCircuits int64
+
+	// NodesVisited is the total number of HNSW nodes visited (for HNSW segments).
+	NodesVisited int64
+
+	// FilterPassRate is the percentage of candidates that passed the filter (0.0-1.0).
+	// Only populated when a filter is applied.
+	FilterPassRate float64
+
+	// CandidatesEvaluated is the total number of candidates evaluated across all segments.
+	CandidatesEvaluated int64
+
+	// CandidatesReturned is the number of candidates returned (≤ K).
+	CandidatesReturned int
+
+	// Strategy describes the search strategy used (e.g., "hnsw", "brute_force", "hybrid").
+	Strategy string
+}
+
+// SegmentQueryStats contains execution statistics for a single segment.
+type SegmentQueryStats struct {
+	// SegmentID is the unique identifier of the segment.
+	SegmentID SegmentID
+
+	// IndexType is the index type (e.g., "hnsw", "diskann", "flat").
+	IndexType string
+
+	// DurationMicros is the time spent searching this segment in microseconds.
+	DurationMicros int64
+
+	// DistanceComputations is the number of distance calculations in this segment.
+	DistanceComputations int64
+
+	// NodesVisited is the number of nodes visited (for graph indexes).
+	NodesVisited int64
+
+	// CandidatesFound is the number of candidates found from this segment.
+	CandidatesFound int
+}
+
+// EstimatedCost returns an estimated cost score for the query.
+// Higher values indicate more expensive queries.
+// This can be used for query planning and resource allocation.
+func (s *QueryStats) EstimatedCost() float64 {
+	if s == nil {
+		return 0
+	}
+	// Cost model: dominated by distance computations (O(d) SIMD work)
+	// Short-circuits count as 0.3x (partial work) instead of full
+	fullComputations := float64(s.DistanceComputations - s.DistanceShortCircuits)
+	partialComputations := float64(s.DistanceShortCircuits) * 0.3
+	return fullComputations + partialComputations
+}
+
+// Explain returns a human-readable explanation of the query execution.
+func (s *QueryStats) Explain() string {
+	if s == nil {
+		return "no stats collected"
+	}
+	return fmt.Sprintf(
+		"Query took %dμs: searched %d segments, %d distance calcs (%d short-circuited), "+
+			"%d nodes visited, %d candidates evaluated → %d returned. Strategy: %s",
+		s.TotalDurationMicros,
+		s.SegmentsSearched,
+		s.DistanceComputations,
+		s.DistanceShortCircuits,
+		s.NodesVisited,
+		s.CandidatesEvaluated,
+		s.CandidatesReturned,
+		s.Strategy,
+	)
 }

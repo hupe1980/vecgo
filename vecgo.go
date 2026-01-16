@@ -241,6 +241,29 @@ func WithoutData() SearchOption {
 	}
 }
 
+// WithStats enables collection of detailed query execution statistics.
+// Pass a pointer to a QueryStats struct that will be populated after the query.
+// Use this for query debugging, performance analysis, and cost estimation.
+//
+// Example:
+//
+//	stats := &vecgo.QueryStats{}
+//	results, _ := db.Search(ctx, query, 10, vecgo.WithStats(stats))
+//	fmt.Println(stats.Explain()) // Human-readable explanation
+//	fmt.Printf("Distance computations: %d\n", stats.DistanceComputations)
+func WithStats(stats *QueryStats) SearchOption {
+	return func(o *model.SearchOptions) {
+		o.Stats = stats
+	}
+}
+
+// QueryStats provides detailed execution statistics for a search query.
+// Use WithStats to collect these during a search.
+type QueryStats = model.QueryStats
+
+// SegmentQueryStats contains execution statistics for a single segment.
+type SegmentQueryStats = model.SegmentQueryStats
+
 // WithVector requests the vector to be returned in the search results.
 // Vectors are NOT included by default due to their large size.
 func WithVector() SearchOption {

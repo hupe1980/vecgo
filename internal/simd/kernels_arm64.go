@@ -23,6 +23,7 @@ func init() {
 func setNEONKernels() {
 	kernelDot = dotNEON
 	kernelSquaredL2 = squaredL2NEON
+	kernelSquaredL2Bounded = squaredL2BoundedNEON
 	kernelScale = scaleNEON
 	kernelPqAdc = pqAdcNEON
 	kernelDotBatch = dotBatchNEON
@@ -52,6 +53,23 @@ func squaredL2NEON(a, b []float32) float32 {
 		squaredL2Neon(unsafe.Pointer(&a[0]), unsafe.Pointer(&b[0]), int64(len(a)), unsafe.Pointer(&ret))
 	}
 	return ret
+}
+
+func squaredL2BoundedNEON(a, b []float32, bound float32) (float32, bool) {
+	if len(a) == 0 {
+		return 0, false
+	}
+	var result float32
+	var exceeded int32
+	squaredL2BoundedNeon(
+		unsafe.Pointer(&a[0]),
+		unsafe.Pointer(&b[0]),
+		int64(len(a)),
+		bound,
+		unsafe.Pointer(&result),
+		unsafe.Pointer(&exceeded),
+	)
+	return result, exceeded != 0
 }
 
 func scaleNEON(a []float32, scalar float32) {
@@ -205,6 +223,7 @@ func gatherU32NEON(src []uint32, indices []int32, dst []uint32) {
 func setSVE2Kernels() {
 	kernelDot = dotSVE2
 	kernelSquaredL2 = squaredL2SVE2
+	kernelSquaredL2Bounded = squaredL2BoundedSVE2
 	kernelScale = scaleSVE2
 	kernelPqAdc = pqAdcSVE2
 	kernelDotBatch = dotBatchSVE2
@@ -234,6 +253,23 @@ func squaredL2SVE2(a, b []float32) float32 {
 		squaredL2Sve2(unsafe.Pointer(&a[0]), unsafe.Pointer(&b[0]), int64(len(a)), unsafe.Pointer(&ret))
 	}
 	return ret
+}
+
+func squaredL2BoundedSVE2(a, b []float32, bound float32) (float32, bool) {
+	if len(a) == 0 {
+		return 0, false
+	}
+	var result float32
+	var exceeded int32
+	squaredL2BoundedSve2(
+		unsafe.Pointer(&a[0]),
+		unsafe.Pointer(&b[0]),
+		int64(len(a)),
+		bound,
+		unsafe.Pointer(&result),
+		unsafe.Pointer(&exceeded),
+	)
+	return result, exceeded != 0
 }
 
 func scaleSVE2(a []float32, scalar float32) {

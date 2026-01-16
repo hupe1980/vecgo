@@ -73,6 +73,117 @@ func TestSquaredL2(t *testing.T) {
 	}
 }
 
+func TestSquaredL2Bounded(t *testing.T) {
+	tests := []struct {
+		name           string
+		a, b           []float32
+		bound          float32
+		wantDist       float32
+		wantExceeded   bool
+		approxExceeded bool // For early-exit, the exact distance may differ
+	}{
+		{
+			name:         "Below bound",
+			a:            []float32{1, 2, 3},
+			b:            []float32{4, 5, 6},
+			bound:        100.0,
+			wantDist:     27.0,
+			wantExceeded: false,
+		},
+		{
+			name:         "Exactly at bound",
+			a:            []float32{1, 2, 3},
+			b:            []float32{4, 5, 6},
+			bound:        27.0,
+			wantDist:     27.0,
+			wantExceeded: false,
+		},
+		{
+			name:         "Above bound",
+			a:            []float32{1, 2, 3},
+			b:            []float32{4, 5, 6},
+			bound:        10.0,
+			wantDist:     27.0, // Will be >= 10, may early exit
+			wantExceeded: true,
+		},
+		{
+			name:         "Zero bound",
+			a:            []float32{1, 2, 3},
+			b:            []float32{4, 5, 6},
+			bound:        0.0,
+			wantDist:     27.0,
+			wantExceeded: true,
+		},
+		{
+			name:         "Long vector below bound",
+			a:            make([]float32, 768),
+			b:            make([]float32, 768),
+			bound:        1000.0,
+			wantDist:     0.0, // Same vectors = 0 distance
+			wantExceeded: false,
+		},
+	}
+
+	// Initialize long vectors with different values for exceeds test
+	longA := make([]float32, 768)
+	longB := make([]float32, 768)
+	for i := range longA {
+		longA[i] = 1.0
+		longB[i] = 2.0
+	}
+	tests = append(tests, struct {
+		name           string
+		a, b           []float32
+		bound          float32
+		wantDist       float32
+		wantExceeded   bool
+		approxExceeded bool
+	}{
+		name:         "Long vector above bound (early exit)",
+		a:            longA,
+		b:            longB,
+		bound:        100.0, // Total would be 768*1 = 768
+		wantDist:     768.0, // May be partial if early exit
+		wantExceeded: true,
+	})
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dist, exceeded := SquaredL2Bounded(tc.a, tc.b, tc.bound)
+			assert.Equal(t, tc.wantExceeded, exceeded, "exceeded mismatch")
+			if !exceeded {
+				// When not exceeded, distance should be accurate
+				assert.InDelta(t, tc.wantDist, dist, 1e-4, "distance mismatch")
+			} else {
+				// When exceeded via early exit, distance should be >= bound
+				assert.GreaterOrEqual(t, dist, tc.bound, "exceeded distance should be >= bound")
+			}
+		})
+	}
+}
+
+func TestSquaredL2Bounded_EquivalenceWithUnbounded(t *testing.T) {
+	// For bounds that won't trigger early exit, results should match SquaredL2
+	rng := rand.New(rand.NewSource(42))
+	lengths := []int{0, 1, 8, 64, 128, 256, 768}
+
+	for _, n := range lengths {
+		a := make([]float32, n)
+		b := make([]float32, n)
+		for i := 0; i < n; i++ {
+			a[i] = rng.Float32()*2 - 1
+			b[i] = rng.Float32()*2 - 1
+		}
+
+		// Very high bound - should not early exit
+		unbounded := SquaredL2(a, b)
+		bounded, exceeded := SquaredL2Bounded(a, b, 1e10)
+
+		assert.False(t, exceeded, "should not exceed high bound for n=%d", n)
+		assert.InDelta(t, unbounded, bounded, 1e-4, "bounded should match unbounded for n=%d", n)
+	}
+}
+
 func TestSquaredL2_Nil(t *testing.T) {
 	var a []float32
 	var b []float32

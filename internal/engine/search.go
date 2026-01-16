@@ -764,9 +764,17 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 
 // Search performs a k-NN search and returns a slice of candidates.
 // This is a convenience wrapper around SearchIter.
+// If options.Stats is non-nil, it will be populated with query execution statistics.
 func (e *Engine) Search(ctx context.Context, q []float32, k int, opts ...func(*model.SearchOptions)) ([]model.Candidate, error) {
-	// Pre-allocate slice?
-	// We don't know the exact count if error occurs, but k is upper bound.
+	start := time.Now()
+
+	// Parse options to check if stats collection is requested
+	options := model.SearchOptions{}
+	for _, opt := range opts {
+		opt(&options)
+	}
+
+	// Pre-allocate slice
 	res := make([]model.Candidate, 0, k)
 
 	next := e.SearchIter(ctx, q, k, opts...)
@@ -776,6 +784,27 @@ func (e *Engine) Search(ctx context.Context, q []float32, k int, opts ...func(*m
 		}
 		res = append(res, c)
 	}
+
+	// Populate stats if requested
+	if options.Stats != nil {
+		snap, _ := e.loadSnapshot()
+		if snap != nil {
+			segCount := len(snap.sortedSegments)
+			if snap.active != nil {
+				segCount++
+			}
+			options.Stats.SegmentsSearched = segCount
+			snap.DecRef()
+		}
+		options.Stats.TotalDurationMicros = time.Since(start).Microseconds()
+		options.Stats.CandidatesReturned = len(res)
+		if options.Filter == nil {
+			options.Stats.Strategy = "hnsw"
+		} else {
+			options.Stats.Strategy = "hnsw_filtered"
+		}
+	}
+
 	return res, nil
 }
 
