@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/RoaringBitmap/roaring/v2"
+	"github.com/hupe1980/vecgo/internal/bitmap"
 	"github.com/hupe1980/vecgo/model"
 )
 
@@ -262,20 +263,37 @@ func (b *LocalBitmap) ReadFrom(r io.Reader) (int64, error) {
 	return b.rb.ReadFrom(r)
 }
 
+// DefaultUniverseSize is the default size for query-time bitmaps.
+// 1M covers typical segment sizes; larger segments trigger reallocation.
+const DefaultUniverseSize = 1 << 20
+
 // QueryScratch provides reusable scratch space for query-local bitmap operations.
 // This reduces allocations by reusing the same bitmaps across filter stages
 // within a single query, rather than getting/putting from the pool per stage.
+//
+// Architecture:
+//   - Tmp1/Tmp2: QueryBitmap (SIMD, zero-alloc) for execution-time operations
+//   - TmpStorage: LocalBitmap (roaring) for storage-layer bridge operations
+//
+// The separation ensures Roaring never appears in hot execution paths while
+// still supporting storage-layer operations that output to LocalBitmap.
 //
 // Usage:
 //
 //	qs := GetQueryScratch()
 //	defer PutQueryScratch(qs)
-//	// use qs.Tmp1, qs.Tmp2 for intermediate operations
+//	// use qs.Tmp1, qs.Tmp2 for SIMD operations
+//	// use qs.TmpStorage for storage-layer bridge
 type QueryScratch struct {
-	// Tmp1 is a scratch bitmap for intermediate results
-	Tmp1 *LocalBitmap
-	// Tmp2 is a second scratch bitmap for complex operations
-	Tmp2 *LocalBitmap
+	// Tmp1 is a SIMD-friendly scratch bitmap for intermediate results.
+	// This is the execution-time bitmap - NOT roaring.
+	Tmp1 *bitmap.QueryBitmap
+	// Tmp2 is a second SIMD-friendly scratch bitmap for complex operations.
+	Tmp2 *bitmap.QueryBitmap
+	// TmpStorage is a roaring-based bitmap for storage-layer operations.
+	// Used as a bridge between storage (LocalBitmap) and execution (QueryBitmap).
+	// Example: NumericIndex.EvaluateFilterInto outputs here, then convert to QueryBitmap.
+	TmpStorage *LocalBitmap
 	// TmpRowIDs is a reusable buffer for collecting rowIDs
 	TmpRowIDs []uint32
 	// TmpIndices is a reusable buffer for SIMD index operations (int32 for SIMD compatibility)
@@ -286,8 +304,9 @@ type QueryScratch struct {
 var queryScratchPool = sync.Pool{
 	New: func() any {
 		return &QueryScratch{
-			Tmp1:       &LocalBitmap{rb: roaring.New()},
-			Tmp2:       &LocalBitmap{rb: roaring.New()},
+			Tmp1:       bitmap.New(DefaultUniverseSize),
+			Tmp2:       bitmap.New(DefaultUniverseSize),
+			TmpStorage: &LocalBitmap{rb: roaring.New()},
 			TmpRowIDs:  make([]uint32, 0, 1024),
 			TmpIndices: make([]int32, 0, 1024),
 		}
@@ -295,12 +314,13 @@ var queryScratchPool = sync.Pool{
 }
 
 // GetQueryScratch gets a QueryScratch from the pool.
-// Both scratch bitmaps are cleared before being returned.
+// All scratch buffers are cleared before being returned.
 // Caller MUST call PutQueryScratch when done.
 func GetQueryScratch() *QueryScratch {
 	qs := queryScratchPool.Get().(*QueryScratch)
-	qs.Tmp1.rb.Clear()
-	qs.Tmp2.rb.Clear()
+	qs.Tmp1.Clear()
+	qs.Tmp2.Clear()
+	qs.TmpStorage.rb.Clear()
 	qs.TmpRowIDs = qs.TmpRowIDs[:0]
 	qs.TmpIndices = qs.TmpIndices[:0]
 	return qs
@@ -312,9 +332,10 @@ func PutQueryScratch(qs *QueryScratch) {
 	if qs == nil {
 		return
 	}
-	// Clear before returning to release container memory
-	qs.Tmp1.rb.Clear()
-	qs.Tmp2.rb.Clear()
+	// Clear before returning (fast for QueryBitmap - only touches active blocks)
+	qs.Tmp1.Clear()
+	qs.Tmp2.Clear()
+	qs.TmpStorage.rb.Clear()
 	qs.TmpRowIDs = qs.TmpRowIDs[:0]
 	qs.TmpIndices = qs.TmpIndices[:0]
 	queryScratchPool.Put(qs)
@@ -324,9 +345,9 @@ func PutQueryScratch(qs *QueryScratch) {
 // FilterResult: Dual-mode filter result (rows vs bitmap)
 // ==============================================================================
 //
-// FilterResult avoids roaring entirely for low cardinality results and defers
-// bitmap materialization. This is the same pattern used in DuckDB, ClickHouse,
-// and Vespa.
+// FilterResult uses QueryBitmap (SIMD, zero-alloc) for execution-time operations.
+// This is the same pattern used in DuckDB, ClickHouse, and Vespa but with
+// SIMD acceleration.
 //
 // Ownership Model:
 //   - FilterResult does not allocate
@@ -345,21 +366,24 @@ const (
 	FilterAll
 	// FilterRows indicates result is stored as a sorted []uint32.
 	FilterRows
-	// FilterBitmap indicates result is stored as a roaring bitmap.
+	// FilterBitmap indicates result is stored as a QueryBitmap (SIMD, zero-alloc).
 	FilterBitmap
 )
 
 // FilterResult is a dual-mode filter result that avoids allocations.
 // For low cardinality, it stores rows as []uint32 (SIMD-friendly).
-// For high cardinality, it uses roaring bitmap.
+// For high cardinality, it uses QueryBitmap (SIMD-accelerated, zero-alloc).
+//
+// IMPORTANT: FilterResult now uses QueryBitmap instead of roaring.
+// This removes Roaring from all query hot paths.
 //
 // Critical: FilterResult does NOT own its memory.
 // The rows slice and bitmap pointer are borrowed from QueryScratch.
 // Lifetime is query-scoped.
 type FilterResult struct {
-	mode   FilterMode
-	rows   []uint32        // borrowed from QueryScratch.TmpRowIDs
-	bitmap *roaring.Bitmap // borrowed from QueryScratch.Tmp1.rb
+	mode FilterMode
+	rows []uint32            // borrowed from QueryScratch.TmpRowIDs
+	qbm  *bitmap.QueryBitmap // borrowed from QueryScratch.Tmp1 (SIMD, zero-alloc)
 }
 
 // RowsResult creates a FilterResult from a []uint32 slice.
@@ -375,16 +399,16 @@ func RowsResult(rows []uint32) FilterResult {
 	}
 }
 
-// BitmapResult creates a FilterResult from a roaring bitmap.
+// QueryBitmapResult creates a FilterResult from a QueryBitmap.
 // The bitmap is NOT copied - caller must ensure it outlives the FilterResult.
 // Zero allocations.
-func BitmapResult(bm *roaring.Bitmap) FilterResult {
-	if bm == nil || bm.IsEmpty() {
+func QueryBitmapResult(qb *bitmap.QueryBitmap) FilterResult {
+	if qb == nil || qb.IsEmpty() {
 		return FilterResult{mode: FilterNone}
 	}
 	return FilterResult{
-		mode:   FilterBitmap,
-		bitmap: bm,
+		mode: FilterBitmap,
+		qbm:  qb,
 	}
 }
 
@@ -421,7 +445,7 @@ func (fr FilterResult) Cardinality() int {
 	case FilterRows:
 		return len(fr.rows)
 	case FilterBitmap:
-		return int(fr.bitmap.GetCardinality())
+		return fr.qbm.Cardinality()
 	default:
 		return 0
 	}
@@ -433,7 +457,7 @@ func (fr FilterResult) CardinalityUint64() uint64 {
 	case FilterRows:
 		return uint64(len(fr.rows))
 	case FilterBitmap:
-		return fr.bitmap.GetCardinality()
+		return uint64(fr.qbm.Cardinality())
 	default:
 		return 0
 	}
@@ -448,11 +472,11 @@ func (fr FilterResult) Rows() []uint32 {
 	return nil
 }
 
-// Bitmap returns the underlying bitmap (only valid for FilterBitmap mode).
+// QueryBitmap returns the underlying QueryBitmap (only valid for FilterBitmap mode).
 // Returns nil for other modes.
-func (fr FilterResult) Bitmap() *roaring.Bitmap {
+func (fr FilterResult) QueryBitmap() *bitmap.QueryBitmap {
 	if fr.mode == FilterBitmap {
-		return fr.bitmap
+		return fr.qbm
 	}
 	return nil
 }
@@ -460,7 +484,7 @@ func (fr FilterResult) Bitmap() *roaring.Bitmap {
 // Clone creates an independent copy of the FilterResult.
 // For FilterRows mode, this copies the underlying slice to prevent
 // aliasing issues when the original slice is reused.
-// For FilterBitmap mode, this clones the bitmap.
+// For FilterBitmap mode, this clones the QueryBitmap.
 // For FilterNone/FilterAll, returns the same value (no data to copy).
 func (fr FilterResult) Clone() FilterResult {
 	switch fr.mode {
@@ -472,10 +496,10 @@ func (fr FilterResult) Clone() FilterResult {
 		copy(copied, fr.rows)
 		return FilterResult{mode: FilterRows, rows: copied}
 	case FilterBitmap:
-		if fr.bitmap == nil {
+		if fr.qbm == nil {
 			return FilterResult{mode: FilterNone}
 		}
-		return FilterResult{mode: FilterBitmap, bitmap: fr.bitmap.Clone()}
+		return FilterResult{mode: FilterBitmap, qbm: fr.qbm.Clone()}
 	default:
 		return fr // FilterNone and FilterAll have no data
 	}
@@ -486,7 +510,7 @@ func (fr FilterResult) Clone() FilterResult {
 // sufficient capacity. The returned FilterResult owns the slice (no aliasing with dst).
 //
 // For FilterRows mode: appends rows to dst and returns a FilterResult pointing to the new slice.
-// For FilterBitmap mode: falls back to Clone() (bitmap cloning always allocates).
+// For FilterBitmap mode: extracts to rows mode (QueryBitmap is zero-alloc, no Clone needed).
 // For FilterNone/FilterAll: returns the same value (no data to copy).
 //
 // Example:
@@ -509,8 +533,22 @@ func (fr FilterResult) CloneInto(dst []uint32) (FilterResult, []uint32) {
 		// Return FilterResult pointing to the newly appended slice
 		return FilterResult{mode: FilterRows, rows: dst[startIdx:]}, dst
 	case FilterBitmap:
-		// Bitmap mode: can't share a buffer, fall back to Clone()
-		return fr.Clone(), dst
+		// QueryBitmap: always extract to rows (zero-alloc iteration)
+		if fr.qbm == nil || fr.qbm.IsEmpty() {
+			return FilterResult{mode: FilterNone}, dst
+		}
+		card := fr.qbm.Cardinality()
+		startIdx := len(dst)
+		// Ensure capacity
+		if cap(dst)-len(dst) < card {
+			newCap := len(dst) + card
+			newDst := make([]uint32, len(dst), newCap)
+			copy(newDst, dst)
+			dst = newDst
+		}
+		// Use ToSlice for zero-alloc extraction
+		dst = fr.qbm.ToSlice(dst)
+		return FilterResult{mode: FilterRows, rows: dst[startIdx:]}, dst
 	default:
 		return fr, dst // FilterNone and FilterAll have no data
 	}
@@ -518,7 +556,7 @@ func (fr FilterResult) CloneInto(dst []uint32) (FilterResult, []uint32) {
 
 // ForEach iterates over all row IDs in the result.
 // The callback should return true to continue, false to stop.
-// Zero allocations (no Iterator created for rows mode).
+// Zero allocations.
 func (fr FilterResult) ForEach(fn func(uint32) bool) {
 	switch fr.mode {
 	case FilterRows:
@@ -528,9 +566,8 @@ func (fr FilterResult) ForEach(fn func(uint32) bool) {
 			}
 		}
 	case FilterBitmap:
-		// Note: roaring.ForEach still allocates an iterator internally
-		// but we can't avoid that for bitmap mode
-		fr.bitmap.Iterate(fn)
+		// QueryBitmap ForEach: zero-alloc, SIMD-friendly
+		fr.qbm.ForEach(fn)
 	}
 }
 
@@ -542,15 +579,8 @@ func (fr FilterResult) ToArray(scratch []uint32) []uint32 {
 	case FilterRows:
 		return fr.rows
 	case FilterBitmap:
-		// Use ManyIterator for efficient extraction
-		card := int(fr.bitmap.GetCardinality())
-		if cap(scratch) < card {
-			scratch = make([]uint32, card)
-		} else {
-			scratch = scratch[:card]
-		}
-		fr.bitmap.ManyIterator().NextMany(scratch)
-		return scratch
+		// QueryBitmap ToSlice: zero-alloc with scratch
+		return fr.qbm.ToSlice(scratch)
 	default:
 		return scratch[:0]
 	}
@@ -571,7 +601,7 @@ func (fr FilterResult) Contains(id uint32) bool {
 		_, found := slices.BinarySearch(fr.rows, id)
 		return found
 	case FilterBitmap:
-		return fr.bitmap.Contains(id)
+		return fr.qbm.Contains(id)
 	default:
 		return false
 	}
@@ -611,14 +641,14 @@ func (frb FilterResultBitmap) ToArrayInto(dst []uint32) []uint32 {
 }
 
 // ==============================================================================
-// FilterResult AND/OR operations
+// FilterResult AND/OR operations (SIMD-accelerated via QueryBitmap)
 // ==============================================================================
 
 // FilterResultAnd performs AND operation on two FilterResults.
 // Design rules:
 //   - Rows ∩ Rows → Rows (two-pointer merge, zero-alloc)
-//   - Rows ∩ Bitmap → Rows (probe bitmap, zero-alloc)
-//   - Bitmap ∩ Bitmap → Rows if small, else Bitmap
+//   - Rows ∩ Bitmap → Rows (probe QueryBitmap, zero-alloc)
+//   - Bitmap ∩ Bitmap → SIMD AND, return rows if small
 //
 // Uses QueryScratch for scratch space (zero allocations in steady state).
 func FilterResultAnd(a, b FilterResult, qs *QueryScratch) FilterResult {
@@ -637,10 +667,10 @@ func FilterResultAnd(a, b FilterResult, qs *QueryScratch) FilterResult {
 		return andRowsRows(a.rows, b.rows, qs)
 
 	case a.mode == FilterRows && b.mode == FilterBitmap:
-		return andRowsBitmap(a.rows, b.bitmap, qs)
+		return andRowsQueryBitmap(a.rows, b.qbm, qs)
 
 	case a.mode == FilterBitmap && b.mode == FilterBitmap:
-		return andBitmapBitmap(a.bitmap, b.bitmap, qs)
+		return andQueryBitmaps(a.qbm, b.qbm, qs)
 	}
 
 	return EmptyResult() // unreachable
@@ -668,13 +698,13 @@ func andRowsRows(a, b []uint32, qs *QueryScratch) FilterResult {
 	return RowsResult(out)
 }
 
-// andRowsBitmap probes bitmap for each row ID.
+// andRowsQueryBitmap probes QueryBitmap for each row ID.
 // Zero allocations - uses QueryScratch.TmpRowIDs.
-func andRowsBitmap(rows []uint32, bm *roaring.Bitmap, qs *QueryScratch) FilterResult {
+func andRowsQueryBitmap(rows []uint32, qb *bitmap.QueryBitmap, qs *QueryScratch) FilterResult {
 	out := qs.TmpRowIDs[:0]
 
 	for _, id := range rows {
-		if bm.Contains(id) {
+		if qb.Contains(id) {
 			out = append(out, id)
 		}
 	}
@@ -683,43 +713,32 @@ func andRowsBitmap(rows []uint32, bm *roaring.Bitmap, qs *QueryScratch) FilterRe
 	return RowsResult(out)
 }
 
-// andBitmapBitmap intersects two bitmaps.
-// If result is small (<1024), returns rows mode (SIMD-friendly).
-// Otherwise, uses bitmap mode with lazy materialization.
-func andBitmapBitmap(a, b *roaring.Bitmap, qs *QueryScratch) FilterResult {
-	// Choose smaller side to iterate
-	if a.GetCardinality() < b.GetCardinality() {
-		a, b = b, a
-	}
+// andQueryBitmaps intersects two QueryBitmaps using SIMD.
+// If result is small (<1024), returns rows mode.
+// Otherwise, returns QueryBitmap mode (SIMD AND already done).
+func andQueryBitmaps(a, b *bitmap.QueryBitmap, qs *QueryScratch) FilterResult {
+	// Copy 'a' into Tmp1, then SIMD AND with 'b'
+	qs.Tmp1.Clear()
+	qs.Tmp1.CopyFrom(a)
+	qs.Tmp1.And(b)
 
-	// If smaller bitmap is small enough, probe and return rows
+	// If result is small, extract to rows (more cache-friendly for iteration)
 	const rowsThreshold = 1024
-	if b.GetCardinality() < rowsThreshold {
-		out := qs.TmpRowIDs[:0]
-		b.Iterate(func(id uint32) bool {
-			if a.Contains(id) {
-				out = append(out, id)
-			}
-			return true
-		})
+	card := qs.Tmp1.Cardinality()
+	if card < rowsThreshold {
+		out := qs.Tmp1.ToSlice(qs.TmpRowIDs[:0])
 		qs.TmpRowIDs = out
 		return RowsResult(out)
 	}
 
-	// Large result: use bitmap mode
-	// Copy 'a' into Tmp1, then AND with 'b'
-	// Note: And() on empty bitmap returns empty, so we must copy first
-	qs.Tmp1.rb.Clear()
-	qs.Tmp1.rb.Or(a) // Copy 'a' into Tmp1
-	qs.Tmp1.rb.And(b)
-	return BitmapResult(qs.Tmp1.rb)
+	return QueryBitmapResult(qs.Tmp1)
 }
 
 // FilterResultOr performs OR operation on two FilterResults.
 // Design rules:
-//   - Rows ∪ Rows → Rows if small, else Bitmap
-//   - Rows ∪ Bitmap → Bitmap
-//   - Bitmap ∪ Bitmap → Bitmap
+//   - Rows ∪ Rows → Rows if small, else QueryBitmap (SIMD)
+//   - Rows ∪ Bitmap → QueryBitmap (SIMD)
+//   - Bitmap ∪ Bitmap → QueryBitmap (SIMD)
 //
 // Uses QueryScratch for scratch space.
 func FilterResultOr(a, b FilterResult, qs *QueryScratch) FilterResult {
@@ -738,11 +757,11 @@ func FilterResultOr(a, b FilterResult, qs *QueryScratch) FilterResult {
 		}
 	}
 
-	// Fallback to bitmap for large unions
-	qs.Tmp1.rb.Clear()
-	materializeIntoBitmap(a, qs.Tmp1.rb)
-	materializeIntoBitmap(b, qs.Tmp1.rb)
-	return BitmapResult(qs.Tmp1.rb)
+	// Fallback to QueryBitmap for large unions (SIMD OR)
+	qs.Tmp1.Clear()
+	materializeIntoQueryBitmap(a, qs.Tmp1)
+	materializeIntoQueryBitmap(b, qs.Tmp1)
+	return QueryBitmapResult(qs.Tmp1)
 }
 
 // orRowsRows performs sorted union of row slices.
@@ -772,13 +791,13 @@ func orRowsRows(a, b []uint32, qs *QueryScratch) FilterResult {
 	return RowsResult(out)
 }
 
-// materializeIntoBitmap adds FilterResult contents to a bitmap.
-func materializeIntoBitmap(fr FilterResult, bm *roaring.Bitmap) {
+// materializeIntoQueryBitmap adds FilterResult contents to a QueryBitmap.
+func materializeIntoQueryBitmap(fr FilterResult, qb *bitmap.QueryBitmap) {
 	switch fr.mode {
 	case FilterRows:
-		bm.AddMany(fr.rows)
+		qb.AddMany(fr.rows)
 	case FilterBitmap:
-		bm.Or(fr.bitmap)
+		qb.Or(fr.qbm)
 	}
 }
 

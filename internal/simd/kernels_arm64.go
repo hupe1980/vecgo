@@ -37,6 +37,14 @@ func setNEONKernels() {
 	kernelFilterRangeF64Indices = filterRangeF64IndicesNEON
 	kernelCountRangeF64 = countRangeF64NEON
 	kernelGatherU32 = gatherU32NEON
+	// Bitmap operations - use SIMD for bitwise ops but NOT popcount
+	// Go's bits.OnesCount64 compiles to hardware CNT instruction on ARM64,
+	// which is faster than our NEON implementation due to less overhead
+	kernelAndWords = andWordsNEON
+	kernelAndNotWords = andNotWordsNEON
+	kernelOrWords = orWordsNEON
+	kernelXorWords = xorWordsNEON
+	// kernelPopcountWords stays at generic (bits.OnesCount64)
 }
 
 func dotNEON(a, b []float32) float32 {
@@ -237,6 +245,12 @@ func setSVE2Kernels() {
 	kernelFilterRangeF64Indices = filterRangeF64IndicesSVE2
 	kernelCountRangeF64 = countRangeF64SVE2
 	kernelGatherU32 = gatherU32SVE2
+	// Bitmap operations - use SIMD for bitwise ops but NOT popcount
+	kernelAndWords = andWordsSVE2
+	kernelAndNotWords = andNotWordsSVE2
+	kernelOrWords = orWordsSVE2
+	kernelXorWords = xorWordsSVE2
+	// kernelPopcountWords stays at generic (bits.OnesCount64)
 }
 
 func dotSVE2(a, b []float32) float32 {
@@ -415,3 +429,67 @@ func gatherU32SVE2(src []uint32, indices []int32, dst []uint32) {
 		)
 	}
 }
+
+// ============================================================================
+// NEON Bitmap Operations
+// ============================================================================
+
+func andWordsNEON(dst, src []uint64) {
+	if len(dst) > 0 {
+		andWordsNEONAsm(unsafe.Pointer(&dst[0]), unsafe.Pointer(&src[0]), int64(len(dst)))
+	}
+}
+
+func andNotWordsNEON(dst, src []uint64) {
+	if len(dst) > 0 {
+		andNotWordsNEONAsm(unsafe.Pointer(&dst[0]), unsafe.Pointer(&src[0]), int64(len(dst)))
+	}
+}
+
+func orWordsNEON(dst, src []uint64) {
+	if len(dst) > 0 {
+		orWordsNEONAsm(unsafe.Pointer(&dst[0]), unsafe.Pointer(&src[0]), int64(len(dst)))
+	}
+}
+
+func xorWordsNEON(dst, src []uint64) {
+	if len(dst) > 0 {
+		xorWordsNEONAsm(unsafe.Pointer(&dst[0]), unsafe.Pointer(&src[0]), int64(len(dst)))
+	}
+}
+
+// NOTE: popcountWordsNEON removed - Go's bits.OnesCount64 compiles to hardware
+// CNT instruction and is faster than explicit SIMD due to reduced overhead.
+// See: CRoaring and bits-and-blooms/bitset implementations.
+
+// ============================================================================
+// SVE2 Bitmap Operations
+// ============================================================================
+
+func andWordsSVE2(dst, src []uint64) {
+	if len(dst) > 0 {
+		andWordsSVE2Asm(unsafe.Pointer(&dst[0]), unsafe.Pointer(&src[0]), int64(len(dst)))
+	}
+}
+
+func andNotWordsSVE2(dst, src []uint64) {
+	if len(dst) > 0 {
+		andNotWordsSVE2Asm(unsafe.Pointer(&dst[0]), unsafe.Pointer(&src[0]), int64(len(dst)))
+	}
+}
+
+func orWordsSVE2(dst, src []uint64) {
+	if len(dst) > 0 {
+		orWordsSVE2Asm(unsafe.Pointer(&dst[0]), unsafe.Pointer(&src[0]), int64(len(dst)))
+	}
+}
+
+func xorWordsSVE2(dst, src []uint64) {
+	if len(dst) > 0 {
+		xorWordsSVE2Asm(unsafe.Pointer(&dst[0]), unsafe.Pointer(&src[0]), int64(len(dst)))
+	}
+}
+
+// NOTE: popcountWordsSVE2 removed - Go's bits.OnesCount64 compiles to hardware
+// CNT instruction and is faster than explicit SIMD due to reduced overhead.
+// See: CRoaring and bits-and-blooms/bitset implementations.

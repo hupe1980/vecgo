@@ -123,6 +123,15 @@ type FlushConfig struct {
 	MaxMemTableSize int64
 }
 
+// batchResultPool provides reusable candidate slices for BatchSearch.
+// Each pooled slice can hold up to 100 candidates (typical k).
+var batchResultPool = sync.Pool{
+	New: func() any {
+		s := make([]model.Candidate, 0, 100)
+		return &s
+	},
+}
+
 // CompactionConfig holds configuration for compaction.
 type CompactionConfig struct {
 	// DiskANNThreshold is the number of rows above which DiskANN is used.
@@ -1285,6 +1294,7 @@ func (e *Engine) BatchDelete(ctx context.Context, ids []model.ID) error {
 }
 
 // BatchSearch performs multiple k-NN searches in parallel.
+// Uses pooled result slices to minimize allocations under concurrent load.
 func (e *Engine) BatchSearch(ctx context.Context, queries [][]float32, k int, opts ...func(*model.SearchOptions)) ([][]model.Candidate, error) {
 	if k <= 0 {
 		return nil, fmt.Errorf("%w: k must be > 0", ErrInvalidArgument)
@@ -1307,19 +1317,37 @@ func (e *Engine) BatchSearch(ctx context.Context, queries [][]float32, k int, op
 			e.batchSearchSem <- struct{}{}
 			defer func() { <-e.batchSearchSem }()
 
+			// Use pooled slice to reduce allocations
+			batchPtr := batchResultPool.Get().(*[]model.Candidate)
+			batch := (*batchPtr)[:0]
+
+			// Ensure capacity for k results
+			if cap(batch) < k {
+				batch = make([]model.Candidate, 0, k)
+			}
+
 			next := e.SearchIter(ctx, q, k, opts...)
-			// Pre-allocate result slice with expected capacity
-			batch := make([]model.Candidate, 0, k)
 			for c, err := range next {
 				if err != nil {
 					errOnce.Do(func() {
 						firstErr = err
 					})
+					// Return slice to pool even on error
+					*batchPtr = batch[:0]
+					batchResultPool.Put(batchPtr)
 					return
 				}
 				batch = append(batch, c)
 			}
-			results[i] = batch
+
+			// For results, we need to copy since we're returning pooled memory
+			// This copy is necessary for correctness but amortized across many queries
+			results[i] = make([]model.Candidate, len(batch))
+			copy(results[i], batch)
+
+			// Return to pool
+			*batchPtr = batch[:0]
+			batchResultPool.Put(batchPtr)
 		}(i, q)
 	}
 

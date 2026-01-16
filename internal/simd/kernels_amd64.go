@@ -46,6 +46,14 @@ func setAVX2Kernels() {
 	kernelFilterRangeF64Indices = filterRangeF64IndicesAVX2
 	kernelCountRangeF64 = countRangeF64AVX2
 	kernelGatherU32 = gatherU32AVX2
+	// Bitmap operations - use SIMD for bitwise ops
+	// Popcount: Go's bits.OnesCount64 compiles to hardware POPCNT,
+	// which is very efficient. Generic implementation used.
+	kernelAndWords = andWordsAVX2
+	kernelAndNotWords = andNotWordsAVX2
+	kernelOrWords = orWordsAVX2
+	kernelXorWords = xorWordsAVX2
+	// kernelPopcountWords uses generic (bits.OnesCount64 -> POPCNT)
 }
 
 func dotAVX2(a, b []float32) float32 {
@@ -249,6 +257,12 @@ func setAVX512Kernels() {
 	kernelFilterRangeF64Indices = filterRangeF64IndicesAVX512
 	kernelCountRangeF64 = countRangeF64AVX512
 	kernelGatherU32 = gatherU32AVX512
+	// Bitmap operations
+	kernelAndWords = andWordsAVX512
+	kernelAndNotWords = andNotWordsAVX512
+	kernelOrWords = orWordsAVX512
+	kernelXorWords = xorWordsAVX512
+	// kernelPopcountWords uses generic (bits.OnesCount64 -> POPCNT)
 }
 
 func dotAVX512(a, b []float32) float32 {
@@ -430,3 +444,65 @@ func gatherU32AVX512(src []uint32, indices []int32, dst []uint32) {
 		)
 	}
 }
+
+// ============================================================================
+// AVX2 Bitmap Operations
+// ============================================================================
+
+func andWordsAVX2(dst, src []uint64) {
+	if len(dst) > 0 {
+		andWordsAVX2Asm(unsafe.Pointer(&dst[0]), unsafe.Pointer(&src[0]), int64(len(dst)))
+	}
+}
+
+func andNotWordsAVX2(dst, src []uint64) {
+	if len(dst) > 0 {
+		andNotWordsAVX2Asm(unsafe.Pointer(&dst[0]), unsafe.Pointer(&src[0]), int64(len(dst)))
+	}
+}
+
+func orWordsAVX2(dst, src []uint64) {
+	if len(dst) > 0 {
+		orWordsAVX2Asm(unsafe.Pointer(&dst[0]), unsafe.Pointer(&src[0]), int64(len(dst)))
+	}
+}
+
+func xorWordsAVX2(dst, src []uint64) {
+	if len(dst) > 0 {
+		xorWordsAVX2Asm(unsafe.Pointer(&dst[0]), unsafe.Pointer(&src[0]), int64(len(dst)))
+	}
+}
+
+// NOTE: popcountWordsAVX2 removed - Go's bits.OnesCount64 compiles to hardware
+// POPCNT instruction and is faster than explicit SIMD due to reduced overhead.
+
+// ============================================================================
+// AVX-512 Bitmap Operations
+// ============================================================================
+
+func andWordsAVX512(dst, src []uint64) {
+	if len(dst) > 0 {
+		andWordsAVX512Asm(unsafe.Pointer(&dst[0]), unsafe.Pointer(&src[0]), int64(len(dst)))
+	}
+}
+
+func andNotWordsAVX512(dst, src []uint64) {
+	if len(dst) > 0 {
+		andNotWordsAVX512Asm(unsafe.Pointer(&dst[0]), unsafe.Pointer(&src[0]), int64(len(dst)))
+	}
+}
+
+func orWordsAVX512(dst, src []uint64) {
+	if len(dst) > 0 {
+		orWordsAVX512Asm(unsafe.Pointer(&dst[0]), unsafe.Pointer(&src[0]), int64(len(dst)))
+	}
+}
+
+func xorWordsAVX512(dst, src []uint64) {
+	if len(dst) > 0 {
+		xorWordsAVX512Asm(unsafe.Pointer(&dst[0]), unsafe.Pointer(&src[0]), int64(len(dst)))
+	}
+}
+
+// NOTE: popcountWordsAVX512 removed - Go's bits.OnesCount64 compiles to hardware
+// POPCNT instruction and is faster than explicit SIMD due to reduced overhead.

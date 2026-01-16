@@ -460,11 +460,15 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 				// OPTIMIZATION: Use pooled result buffers to avoid allocation
 				maxRes := numSegments * searchK
 				if cap(s.ParallelResults) < maxRes {
-					s.ParallelResults = make([]searcher.InternalCandidate, maxRes)
+					// Grow geometrically to reduce future reallocations
+					newCap := max(maxRes, cap(s.ParallelResults)*2)
+					s.ParallelResults = make([]searcher.InternalCandidate, newCap)
 				}
 
 				if cap(s.ParallelSlices) < numSegments {
-					s.ParallelSlices = make([][]searcher.InternalCandidate, numSegments)
+					// Grow geometrically to reduce future reallocations
+					newCap := max(numSegments, cap(s.ParallelSlices)*2)
+					s.ParallelSlices = make([][]searcher.InternalCandidate, newCap)
 				}
 				s.ParallelSlices = s.ParallelSlices[:numSegments]
 				// Ensure clean state (nil slices)
@@ -838,9 +842,12 @@ func (e *Engine) evaluateSegmentFilterResult(ctx context.Context, seg segment.Se
 	}
 
 	// Convert bitmap to FilterResult
-	// For small results, extract to rows mode; for large, wrap bitmap
+	// For small results, extract to rows mode (more cache-friendly)
+	// For large results, use QueryBitmap for SIMD execution
 	const rowsThreshold = 1024
-	if bm.Cardinality() <= rowsThreshold {
+	card := bm.Cardinality()
+
+	if card <= rowsThreshold {
 		out := qs.TmpRowIDs[:0]
 		out = bm.ToArrayInto(out)
 		qs.TmpRowIDs = out
@@ -853,15 +860,21 @@ func (e *Engine) evaluateSegmentFilterResult(ctx context.Context, seg segment.Se
 		return imetadata.RowsResult(out), nil
 	}
 
-	// Large result: wrap as bitmap (but we need the underlying roaring.Bitmap)
-	// For this fallback case, extract to rows anyway since we need to return the pooled bitmap
+	// Large result: convert to QueryBitmap for SIMD execution
+	// Extract to temporary slice first, then bulk-add to QueryBitmap
+	// This is faster than ForEach + Add because AddMany batches block tracking
 	out := qs.TmpRowIDs[:0]
 	out = bm.ToArrayInto(out)
 	qs.TmpRowIDs = out
 
+	// Return the source bitmap to pool BEFORE populating QueryBitmap
 	if lb, ok := bm.(*imetadata.LocalBitmap); ok {
 		imetadata.PutPooledBitmap(lb)
 	}
 
-	return imetadata.RowsResult(out), nil
+	// Bulk populate QueryBitmap from extracted rows
+	qs.Tmp2.Clear()
+	qs.Tmp2.AddMany(out)
+
+	return imetadata.QueryBitmapResult(qs.Tmp2), nil
 }

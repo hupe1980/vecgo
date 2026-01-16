@@ -478,8 +478,11 @@ func (ui *UnifiedIndex) evaluateSingleFilterResult(f metadata.Filter, qs *QueryS
 			qs.TmpRowIDs = out
 			return RowsResult(out)
 		}
-		// Large bitmap: return bitmap mode (zero-copy reference)
-		return BitmapResult(b.rb)
+		// Large bitmap: convert from storage (roaring) to execution (QueryBitmap)
+		// This is the storage → execution boundary conversion
+		qs.Tmp2.Clear()
+		qs.Tmp2.PopulateFromRoaring(b.rb)
+		return QueryBitmapResult(qs.Tmp2)
 
 	case metadata.OpIn:
 		arr, ok := f.Value.AsArray()
@@ -513,25 +516,32 @@ func (ui *UnifiedIndex) evaluateSingleFilterResult(f metadata.Filter, qs *QueryS
 
 		distinctValues := ui.getFieldCardinality(f.Key)
 
-		// Use scratch bitmap for evaluation
-		qs.Tmp2.rb.Clear()
+		// Use TmpStorage (roaring) for storage-layer evaluation, then convert
+		qs.TmpStorage.rb.Clear()
 		if distinctValues > lowCardinalityThreshold && ui.numeric.HasField(f.Key) {
-			ui.numeric.EvaluateFilterInto(f, qs.Tmp2)
+			ui.numeric.EvaluateFilterInto(f, qs.TmpStorage)
 		} else {
-			ui.evaluateNumericFilterScanInto(f, qs.Tmp2)
+			ui.evaluateNumericFilterScanInto(f, qs.TmpStorage)
 		}
 
 		// Convert to appropriate mode
 		const rowsThreshold = 1024
-		if qs.Tmp2.Cardinality() <= rowsThreshold {
+		if qs.TmpStorage.Cardinality() <= rowsThreshold {
 			out := qs.TmpRowIDs[:0]
-			out = qs.Tmp2.ToArrayInto(out)
+			out = qs.TmpStorage.ToArrayInto(out)
 			qs.TmpRowIDs = out
 			return RowsResult(out)
 		}
 
-		// Large result: keep as bitmap (in Tmp2)
-		return BitmapResult(qs.Tmp2.rb)
+		// Large result: convert from storage (roaring) to execution (QueryBitmap)
+		// Use ToArrayInto + AddMany to avoid ToArray() allocation in PopulateFromRoaring
+		out := qs.TmpRowIDs[:0]
+		out = qs.TmpStorage.ToArrayInto(out)
+		qs.TmpRowIDs = out
+
+		qs.Tmp2.Clear()
+		qs.Tmp2.AddMany(out)
+		return QueryBitmapResult(qs.Tmp2)
 
 	default:
 		return EmptyResult()

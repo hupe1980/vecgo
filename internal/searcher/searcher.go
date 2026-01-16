@@ -3,9 +3,14 @@ package searcher
 import (
 	"sync"
 
+	"github.com/hupe1980/vecgo/internal/bitmap"
 	imetadata "github.com/hupe1980/vecgo/internal/metadata"
 	"github.com/hupe1980/vecgo/model"
 )
+
+// DefaultUniverseSize is the default maximum row count for QueryBitmap.
+// 1M rows covers typical segments; larger segments will trigger reallocation.
+const DefaultUniverseSize = 1 << 20 // 1M
 
 // Searcher is a reusable execution context for vector search operations.
 // It owns all scratch memory required for search, eliminating heap allocations
@@ -83,6 +88,11 @@ type Searcher struct {
 	// Collects rowIDs into slice, builds bitmap once via AddMany.
 	BitmapBuilder *imetadata.BitmapBuilder
 
+	// QueryBitmap is a SIMD-friendly bitmap for query-time filter operations.
+	// Supports O(1) block skipping, active-mask-driven AND/OR, and zero allocations.
+	// This is the hot-path bitmap for filtered graph traversal.
+	QueryBitmap *bitmap.QueryBitmap
+
 	// OpsPerformed tracks the number of distance calculations or node visits.
 	OpsPerformed int
 }
@@ -97,6 +107,8 @@ var searcherPool = sync.Pool{
 func NewSearcher(visitedCap, queueCap int) *Searcher {
 	// Pre-allocate all scratch buffers to avoid allocations in hot path.
 	// Default capacity covers typical k=10..100 searches.
+	// Pre-size SemChan to GOMAXPROCS to avoid reallocation under burst load.
+	// Pre-size ParallelResults for typical 16 segments * 100 k = 1600 results.
 	return &Searcher{
 		Visited:           NewVisitedSet(visitedCap),
 		Candidates:        NewPriorityQueue(true),  // MaxHeap for results (keep smallest)
@@ -112,13 +124,18 @@ func NewSearcher(visitedCap, queueCap int) *Searcher {
 		Results:           make([]model.Candidate, 0, queueCap),
 		CandidateBuffer:   make([]InternalCandidate, 0, queueCap),
 		ModelScratch:      make([]model.Candidate, 0, queueCap),
-		ScratchIDs:        make([]uint32, 0, queueCap),
+		ScratchIDs:        make([]uint32, 0, 1024), // Larger default for filtered search
+		ScratchBools:      make([]bool, 0, 1024),   // Pre-allocate for tombstone filtering
 		ScratchForeignIDs: make([]model.ID, 0, queueCap),
-		ParallelResults:   make([]InternalCandidate, 0, queueCap*16),
+		ParallelResults:   make([]InternalCandidate, 0, 1600), // 16 segments * 100 results
 		ParallelSlices:    make([][]InternalCandidate, 0, 16),
 		SegmentFilters:    make([]any, 0, 16),
+		// Pre-size SemChan to GOMAXPROCS to avoid reallocation under burst
+		SemChan: make(chan struct{}, 16), // Will grow if needed, but rarely
 		// BitmapBuilder for zero-alloc filter evaluation
 		BitmapBuilder: imetadata.NewBitmapBuilder(),
+		// QueryBitmap for SIMD-friendly filter operations (1M universe covers most segments)
+		QueryBitmap: bitmap.New(DefaultUniverseSize),
 	}
 }
 
@@ -149,6 +166,7 @@ func (s *Searcher) Reset() {
 	s.CandidateBuffer = s.CandidateBuffer[:0]
 	s.ModelScratch = s.ModelScratch[:0]
 	s.ScratchIDs = s.ScratchIDs[:0]
+	s.ScratchBools = s.ScratchBools[:0]
 	s.ScratchForeignIDs = s.ScratchForeignIDs[:0]
 	s.ParallelResults = s.ParallelResults[:0]
 	s.ParallelSlices = s.ParallelSlices[:0]
@@ -162,5 +180,18 @@ func (s *Searcher) Reset() {
 		s.BitmapBuilder.Reset(0)
 	}
 
+	// Reset QueryBitmap for next query (only clears active blocks - O(active) not O(universe))
+	if s.QueryBitmap != nil {
+		s.QueryBitmap.Clear()
+	}
+
 	s.OpsPerformed = 0
+}
+
+// EnsureQueryBitmapSize ensures the QueryBitmap can hold the given universe size.
+// If the current bitmap is too small, a new one is allocated (rare case).
+func (s *Searcher) EnsureQueryBitmapSize(universeSize uint32) {
+	if s.QueryBitmap == nil || s.QueryBitmap.UniverseSize() < universeSize {
+		s.QueryBitmap = bitmap.New(universeSize)
+	}
 }
