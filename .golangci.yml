@@ -24,6 +24,11 @@ linters:
     - wastedassign
     - makezero
     - thelper
+    # Performance-critical additions
+    - copyloopvar   # loop variable captures → hidden heap allocations
+    - nilnil        # ambiguous (nil, nil) → downstream alloc/checks
+    # Note: forcetypeassert disabled - all hits are sync.Pool patterns where
+    # type is guaranteed. Adding ok checks would add branches in hot paths.
 
   # Disabled for high-performance database code:
   # - dupl: Intentional code duplication for hot-path inlining
@@ -171,6 +176,11 @@ linters:
       - linters:
           - staticcheck
         text: "SA6002"  # sync.Pool allocation hint - we manage pool correctly
+
+      # nilnil: (nil, nil) is intentional for "all matches" / "no filter" semantics
+      - linters:
+          - nilnil
+        text: "return both a .nil. error"
 
 issues:
   max-issues-per-linter: 0

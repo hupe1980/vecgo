@@ -163,7 +163,7 @@ func BenchmarkStorage_ReadRandom(b *testing.B) {
 		ctx := context.Background()
 		buf := make([]byte, 4096) // Match block size
 		// Pre-warm the first few blocks
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			blob.ReadAt(ctx, buf, int64(i*4096))
 		}
 

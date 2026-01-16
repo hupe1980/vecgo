@@ -31,12 +31,10 @@ func BenchmarkCompaction_Pressure(b *testing.B) {
 	vec := make([]float32, 128)
 	rng.FillUniform(vec)
 
-	b.ResetTimer()
-
 	// We run for b.N iterations.
 	// Each iteration inserts a vector.
 	// Compaction happens in background.
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		if _, err := eng.Insert(context.Background(), vec, nil, nil); err != nil {
 			b.Fatal(err)
 		}

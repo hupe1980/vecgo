@@ -27,7 +27,7 @@ func BenchmarkHybridSearch(b *testing.B) {
 	rng := testutil.NewRNG(1)
 	data := make([][]float32, numVecs)
 	pks := make([]model.ID, numVecs)
-	for i := 0; i < numVecs; i++ {
+	for i := range numVecs {
 		vec := make([]float32, dim)
 		rng.FillUniform(vec)
 		data[i] = vec
@@ -80,10 +80,7 @@ func BenchmarkHybridSearch(b *testing.B) {
 
 func naiveHybridSearch(ctx context.Context, data [][]float32, pks []model.ID, lexIdx lexical.Index, qVec []float32, qText string, k int, rrfK int) []model.ID {
 	// 1. Exact Vector Search
-	vectorK := k * 2
-	if vectorK < 50 {
-		vectorK = 50
-	}
+	vectorK := max(k*2, 50)
 	// exactTopK_L2 returns PKs sorted by distance (best first)
 	vecPKs := exactTopK_L2_WithIDs(data, pks, qVec, vectorK)
 

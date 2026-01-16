@@ -19,9 +19,7 @@ import (
 const (
 	ManifestFileName = "MANIFEST"
 	CurrentFileName  = "CURRENT"
-	// CurrentVersion is the version of the manifest format.
-	// Version 1: Binary format with all fields
-	CurrentVersion = 1
+	CurrentVersion   = 1
 )
 
 // Manifest describes the state of the engine at a specific point in time.
@@ -60,6 +58,11 @@ type SegmentInfo struct {
 	// Used for calculating overlaps in leveled compaction.
 	MinID model.ID `json:"min_id"`
 	MaxID model.ID `json:"max_id"`
+
+	// Stats contains segment-level statistics for query pruning.
+	// Enables skipping entire segments before opening them.
+	// Populated at flush/compaction time. May be nil for legacy segments.
+	Stats *SegmentStats `json:"stats,omitempty"`
 }
 
 // PKIndexInfo describes the persistent PK index.

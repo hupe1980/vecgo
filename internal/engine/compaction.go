@@ -167,6 +167,9 @@ func (e *Engine) CompactWithContext(ctx context.Context, segmentIDs []model.Segm
 	var minID, maxID model.ID
 	first := true
 
+	// Create stats collector for segment pruning
+	statsCollector := manifest.NewStatsCollector(e.dim, e.dim <= 256)
+
 	for i, seg := range segments {
 		segID := segmentIDs[i]
 		ts := tombstones[segID]
@@ -195,6 +198,9 @@ func (e *Engine) CompactWithContext(ctx context.Context, segmentIDs []model.Segm
 			if err := addFunc(id, vec, md, payload); err != nil {
 				return err
 			}
+
+			// Collect stats for segment pruning
+			statsCollector.Add(vec, md)
 
 			// For DiskANN, NewRowID will be updated after Write() via GetIDMapping()
 			// For flat, count is the correct final position (when k=1, no reordering)
@@ -278,7 +284,10 @@ func (e *Engine) CompactWithContext(ctx context.Context, segmentIDs []model.Segm
 		}
 	}
 
-	// 2. Prepare Manifest Update
+	// Finalize stats for segment pruning
+	segmentStats := statsCollector.Finalize()
+
+	// 2. Prepare Manifest Update with stats for pruning
 	newSegInfo := manifest.SegmentInfo{
 		ID:       newSegID,
 		Level:    targetLevel,
@@ -287,6 +296,7 @@ func (e *Engine) CompactWithContext(ctx context.Context, segmentIDs []model.Segm
 		Size:     newSegSize,
 		MinID:    minID,
 		MaxID:    maxID,
+		Stats:    segmentStats, // Stats for segment pruning
 	}
 
 	newSegments := make([]manifest.SegmentInfo, 0, len(e.manifest.Segments)-len(segmentIDs)+1)
@@ -319,6 +329,8 @@ func (e *Engine) CompactWithContext(ctx context.Context, segmentIDs []model.Segm
 
 	e.manifest.Segments = newSegments
 	e.manifest.PKIndex = manifest.PKIndexInfo{} // Update memory state to match disk
+	// Update segment stats cache for fast O(1) lookup during search
+	e.updateSegmentStatsCache()
 
 	// 3. Update Engine State (Create New Snapshot)
 	newSnap := currentSnap.Clone()

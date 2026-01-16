@@ -207,7 +207,6 @@ func (b *CachingBlob) fillCache(ctx context.Context, startBlock, endBlock int64)
 	g.SetLimit(16)
 
 	for _, run := range missingRuns {
-		run := run // capture loop variable
 		g.Go(func() error {
 			byteStart := run.start * b.blockSize
 			byteSize := run.count * b.blockSize

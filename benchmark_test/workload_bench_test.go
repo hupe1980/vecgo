@@ -105,7 +105,7 @@ func BenchmarkBurstWorkload(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		// Simulate a burst: 4 workers each doing 100 searches
 		var wg sync.WaitGroup
-		for w := 0; w < workers; w++ {
+		for w := range workers {
 			wg.Add(1)
 			go func(workerID int) {
 				defer wg.Done()

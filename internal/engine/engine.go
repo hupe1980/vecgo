@@ -68,6 +68,11 @@ type Engine struct {
 
 	current atomic.Pointer[Snapshot]
 
+	// segmentStats provides fast O(1) lookup of segment pruning stats.
+	// Updated atomically with manifest changes.
+	// Key: SegmentID, Value: *SegmentStats (may be nil for legacy segments)
+	segmentStats atomic.Pointer[map[model.SegmentID]*manifest.SegmentStats]
+
 	targetVersion   uint64    // If > 0, engine is read-only at this version
 	targetTimestamp time.Time // If !IsZero, engine resolves closest version (read-only)
 	retentionPolicy RetentionPolicy
@@ -751,6 +756,8 @@ func (e *Engine) init(ctx context.Context) (*Engine, error) {
 	e.pkIndex = pkIdx
 	e.manifest = m
 	e.lsn.Store(m.MaxLSN)
+	// Initialize segment stats cache for fast O(1) lookup during search
+	e.updateSegmentStatsCache()
 	if e.logger != nil {
 		e.logger.Info("Init loaded segments", "count", len(segments), "manifest_len", len(m.Segments), "manifest_id", m.ID)
 	}
@@ -1798,11 +1805,17 @@ func (e *Engine) Commit(ctx context.Context) (err error) {
 	var segmentBuf, payloadBuf bytes.Buffer
 	w := flat.NewWriter(&segmentBuf, &payloadBuf, activeID, e.dim, e.metric, 0, flat.QuantizationNone)
 
+	// Create stats collector for segment pruning
+	// Track vectors only for small dimensions (centroid computation)
+	statsCollector := manifest.NewStatsCollector(e.dim, e.dim <= 256)
+
 	// Write data
 	err = active.Iterate(ctx, func(rowID uint32, id model.ID, vec []float32, md metadata.Document, payload []byte) error {
 		if err := w.Add(id, vec, md, payload); err != nil {
 			return err
 		}
+		// Collect stats for segment pruning
+		statsCollector.Add(vec, md)
 		moves = append(moves, flushMove{id: id, oldRow: rowID, newRow: count})
 		count++
 		return nil
@@ -1810,6 +1823,9 @@ func (e *Engine) Commit(ctx context.Context) (err error) {
 	if err != nil {
 		return err
 	}
+
+	// Finalize stats
+	segmentStats := statsCollector.Finalize()
 
 	if err := w.Flush(ctx); err != nil {
 		return err
@@ -1918,13 +1934,17 @@ func (e *Engine) Commit(ctx context.Context) (err error) {
 	e.current.Store(newSnap)
 	snap.DecRef()
 
-	// Update Manifest
+	// Update Manifest with segment stats for pruning
 	e.manifest.Segments = append(e.manifest.Segments, manifest.SegmentInfo{
 		ID:       activeID,
 		Level:    0, // L0
 		RowCount: count,
 		Path:     filename,
+		Stats:    segmentStats, // Stats for segment pruning
 	})
+	// Update segment stats cache for fast O(1) lookup during search
+	e.updateSegmentStatsCache()
+
 	if e.logger != nil {
 		e.logger.Info("Manifest updated", "total_segments", len(e.manifest.Segments))
 	}
@@ -2225,6 +2245,31 @@ func (e *Engine) persistPKIndex() error {
 	e.manifest.PKIndex.Path = pkIndexFilename
 
 	return nil
+}
+
+// updateSegmentStatsCache rebuilds the segment stats lookup map from manifest.
+// Called after manifest changes (flush, compaction, load).
+// Thread-safety: Must be called while holding e.mu.
+func (e *Engine) updateSegmentStatsCache() {
+	statsMap := make(map[model.SegmentID]*manifest.SegmentStats, len(e.manifest.Segments))
+	for i := range e.manifest.Segments {
+		seg := &e.manifest.Segments[i]
+		if seg.Stats != nil {
+			statsMap[seg.ID] = seg.Stats
+		}
+	}
+	e.segmentStats.Store(&statsMap)
+}
+
+// getSegmentStats returns the pruning stats for a segment, if available.
+// Returns nil for legacy segments without stats.
+// Thread-safety: Lock-free via atomic pointer.
+func (e *Engine) getSegmentStats(segID model.SegmentID) *manifest.SegmentStats {
+	statsMapPtr := e.segmentStats.Load()
+	if statsMapPtr == nil {
+		return nil
+	}
+	return (*statsMapPtr)[segID]
 }
 
 // SegmentInfo returns information about all segments in the engine.

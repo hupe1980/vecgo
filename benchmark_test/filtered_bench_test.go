@@ -72,7 +72,7 @@ func runFilteredBenchmark(b *testing.B, dim, numVecs int) {
 	b.Logf("Loading %d vectors of dim=%d (batch size=%d)...", numVecs, dim, batchSize)
 
 	// Generate all data first
-	for i := 0; i < numVecs; i++ {
+	for i := range numVecs {
 		vec := make([]float32, dim)
 		rng.FillUniform(vec)
 		data[i] = vec
@@ -107,7 +107,7 @@ func runFilteredBenchmark(b *testing.B, dim, numVecs int) {
 	b.Logf("Load complete. Starting benchmarks...")
 
 	queries := make([][]float32, numQueries)
-	for i := 0; i < numQueries; i++ {
+	for i := range numQueries {
 		queries[i] = make([]float32, dim)
 		rng.FillUniform(queries[i])
 	}
@@ -124,13 +124,7 @@ func runFilteredBenchmark(b *testing.B, dim, numVecs int) {
 	}
 
 	for _, suite := range suites {
-		threshold := int64(float64(bucketCount) * suite.sel)
-		if threshold < 1 {
-			threshold = 1
-		}
-		if threshold > bucketCount {
-			threshold = bucketCount
-		}
+		threshold := min(max(int64(float64(bucketCount)*suite.sel), 1), bucketCount)
 
 		filter := metadata.NewFilterSet(metadata.Filter{
 			Key:      "bucket",
@@ -141,7 +135,7 @@ func runFilteredBenchmark(b *testing.B, dim, numVecs int) {
 		// Compute ground truth once per selectivity level
 		filteredData := make([][]float32, 0, numVecs)
 		filteredPKs := make([]model.ID, 0, numVecs)
-		for i := 0; i < numVecs; i++ {
+		for i := range numVecs {
 			if buckets[i] < threshold {
 				filteredData = append(filteredData, data[i])
 				filteredPKs = append(filteredPKs, pks[i])

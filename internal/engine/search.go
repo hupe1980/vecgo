@@ -260,8 +260,16 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 				}
 
 				// Immutable Segments - use EvaluateFilterResult where available
+				// With segment pruning: skip segments that can't possibly match
 				if possible {
 					for i, seg := range snap.sortedSegments {
+						// SEGMENT PRUNING: Skip segments that can be pruned based on manifest stats
+						// This is O(1) per segment and avoids opening/reading segments entirely
+						if e.canPruneSegment(seg.ID(), options.Filter) {
+							// Segment can be skipped - no possible matches based on stats
+							continue
+						}
+
 						// Try zero-alloc path first
 						fr, err := e.evaluateSegmentFilterResult(ctx, seg, options.Filter, qs)
 						if err != nil {
@@ -518,7 +526,15 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 				}
 
 				// 1b. Search Segments
+				// With segment pruning: skip segments that can be pruned based on manifest stats
 				for i, seg := range snap.sortedSegments {
+					// SEGMENT PRUNING: Skip segments that can be pruned based on manifest stats
+					// This is O(1) per segment and avoids HNSW traversal entirely
+					if options.Filter != nil && e.canPruneSegment(seg.ID(), options.Filter) {
+						// Segment can be skipped - no possible matches based on stats
+						continue
+					}
+
 					wg.Add(1)
 					// In read-only mode, index starts at 0 instead of 1
 					idx := i + 1
