@@ -11,3 +11,7 @@ func hammingSve2(a unsafe.Pointer, b unsafe.Pointer, n int64) int64
 
 //go:noescape
 func jaccardSve2(a unsafe.Pointer, b unsafe.Pointer, n int64, result unsafe.Pointer)
+
+//go:noescape
+func popcountSve2(a unsafe.Pointer, n int64) int64
+

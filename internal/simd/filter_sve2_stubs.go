@@ -7,10 +7,10 @@ package simd
 import "unsafe"
 
 //go:noescape
-func countRangeF64Sve2(values unsafe.Pointer, n int64, minVal float64, maxVal float64) int64
+func countRangeF64Sve2(values unsafe.Pointer, n int64, minVal float64, maxVal float64, countOut unsafe.Pointer)
 
 //go:noescape
-func filterRangeF64IndicesSve2(values unsafe.Pointer, n int64, minVal float64, maxVal float64, dst unsafe.Pointer) int64
+func filterRangeF64IndicesSve2(values unsafe.Pointer, n int64, minVal float64, maxVal float64, dst unsafe.Pointer, countOut unsafe.Pointer)
 
 //go:noescape
 func filterRangeF64Sve2(values unsafe.Pointer, n int64, minVal float64, maxVal float64, dst unsafe.Pointer)

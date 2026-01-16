@@ -62,11 +62,6 @@ jobs:
             go: "1.25.x"
             simd: neon
 
-          # macOS x86-64 (AVX2)
-          - os: macos-13
-            go: "1.25.x"
-            simd: avx2
-
           # macOS ARM64 (NEON)
           - os: macos-latest
             go: "1.25.x"
@@ -101,20 +96,20 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # x86-64: AVX2 (baseline) + AVX-512 (if available)
+          # x86-64: Test both AVX2 and AVX-512 paths
           - runner: ubuntu-latest
-            arch: amd64-avx2
-            flags: ""
+            arch: amd64
+            simd_impls: "avx2 avx512"
 
-          # ARM64: NEON (baseline)
+          # ARM64 Linux: NEON only (SVE2 not available on GitHub runners)
           - runner: ubuntu-24.04-arm
-            arch: arm64-neon
-            flags: ""
+            arch: arm64-linux
+            simd_impls: "neon"
 
-          # ARM64 macOS: NEON (Apple Silicon)
+          # ARM64 macOS: Test both NEON and SVE2 (Apple Silicon supports both)
           - runner: macos-latest
-            arch: arm64-neon-macos
-            flags: ""
+            arch: arm64-macos
+            simd_impls: "neon sve2"
 
     steps:
       - uses: actions/checkout@v4
@@ -124,11 +119,18 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
-      - name: SIMD Kernel Tests
-        run: go test -v -timeout 120s ./internal/simd/...
+      - name: SIMD Kernel Tests (all implementations)
+        run: |
+          echo "Testing SIMD implementations: ${{ matrix.simd_impls }}"
+          for impl in ${{ matrix.simd_impls }}; do
+            echo "=== Testing VECGO_SIMD=$impl ==="
+            VECGO_SIMD=$impl go test -v -timeout 120s ./internal/simd/...
+          done
 
       - name: SIMD Kernel Tests (Pure Go Fallback)
-        run: go test -v -timeout 120s -tags noasm ./internal/simd/...
+        run: |
+          echo "=== Testing VECGO_SIMD=generic ==="
+          VECGO_SIMD=generic go test -v -timeout 120s ./internal/simd/...
 
       - name: SIMD Equivalence Tests
         run: |
@@ -137,8 +139,11 @@ jobs:
 
       - name: SIMD Benchmarks
         run: |
-          go test -run '^$' -bench 'Dot|SquaredL2|Int4|Hamming|PqAdc' \
-            -benchtime=100ms -benchmem ./internal/simd/...
+          for impl in ${{ matrix.simd_impls }}; do
+            echo "=== Benchmarking VECGO_SIMD=$impl ==="
+            VECGO_SIMD=$impl go test -run '^$' -bench 'Dot|SquaredL2|Int4|Hamming|PqAdc' \
+              -benchtime=100ms -benchmem ./internal/simd/...
+          done
 
   # ─────────────────────────────────────────────────────────────────────
   # mmap Cross-Platform Tests

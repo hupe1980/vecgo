@@ -17,7 +17,7 @@ test-race:
 # Runs benchmarks and saves output to benchmark_test/current.txt
 bench-current:
     @echo "Running benchmarks..."
-    go test -bench=. -benchmem ./benchmark_test | tee benchmark_test/current.txt
+    go test -bench=. -benchmem -benchtime=200ms -timeout=30m ./benchmark_test | tee benchmark_test/current.txt
     @echo "Done. Results saved to benchmark_test/current.txt"
 
 
@@ -26,7 +26,7 @@ bench-current:
 # the reference point for `benchstat` comparisons.
 bench-baseline:
     @echo "Recording baseline benchmarks..."
-    go test -bench=. -benchmem ./benchmark_test | tee benchmark_test/baseline.txt
+    go test -bench=. -benchmem -benchtime=200ms -timeout=30m ./benchmark_test | tee benchmark_test/baseline.txt
     @echo "Done. Results saved to benchmark_test/baseline.txt"
 
 # Compare benchmark_test/baseline.txt vs benchmark_test/current.txt using benchstat.

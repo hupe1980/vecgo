@@ -183,7 +183,7 @@ func BenchmarkHamming_128Bytes(b *testing.B) {
 		a[i] = byte(i * 131)
 		bv[i] = byte((i * 131) ^ 0x5A)
 	}
-	var sink int64
+	var sink int
 	b.ResetTimer()
 	for b.Loop() {
 		sink = Hamming(a, bv)
@@ -198,7 +198,7 @@ func BenchmarkHamming_768Bytes(b *testing.B) {
 		a[i] = byte(i * 131)
 		bv[i] = byte((i * 131) ^ 0x5A)
 	}
-	var sink int64
+	var sink int
 	b.ResetTimer()
 	for b.Loop() {
 		sink = Hamming(a, bv)
@@ -392,7 +392,7 @@ func TestHamming(t *testing.T) {
 	tests := []struct {
 		name string
 		a, b []byte
-		want int64
+		want int
 	}{
 		{"Empty", []byte{}, []byte{}, 0},
 		{"Nil", nil, nil, 0},

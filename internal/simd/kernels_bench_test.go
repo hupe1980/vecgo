@@ -157,7 +157,7 @@ func BenchmarkHamming_Sizes(b *testing.B) {
 			c := randBytes(r, n)
 			b.SetBytes(int64(n))
 			b.ResetTimer()
-			var sink int64
+			var sink int
 			for b.Loop() {
 				sink = Hamming(a, c)
 			}

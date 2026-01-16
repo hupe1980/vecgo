@@ -35,6 +35,10 @@ func osMapAnon(size int) ([]byte, func([]byte) error, error) {
 }
 
 func osAdvise(data []byte, pattern AccessPattern) error {
+	if len(data) == 0 {
+		return nil
+	}
+
 	var advice int
 	switch pattern {
 	case AccessSequential:
@@ -49,5 +53,13 @@ func osAdvise(data []byte, pattern AccessPattern) error {
 		advice = unix.MADV_NORMAL
 	}
 
-	return unix.Madvise(data, advice)
+	// On Linux, madvise requires page-aligned addresses.
+	// If the slice isn't page-aligned, we silently succeed since
+	// the hint is advisory and non-critical.
+	err := unix.Madvise(data, advice)
+	if err == unix.EINVAL {
+		// Likely a page alignment issue on Linux - ignore it
+		return nil
+	}
+	return err
 }

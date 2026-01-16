@@ -235,7 +235,7 @@ func HammingDistance(a, b []uint64) int {
 	// Use SIMD-optimized implementation via unsafe cast to bytes
 	aBytes := unsafe.Slice((*byte)(unsafe.Pointer(&a[0])), len(a)*8)
 	bBytes := unsafe.Slice((*byte)(unsafe.Pointer(&b[0])), len(b)*8)
-	return int(simd.Hamming(aBytes, bBytes))
+	return simd.Hamming(aBytes, bBytes)
 }
 
 // HammingDistanceBytes computes the Hamming distance between two byte slices.
@@ -245,7 +245,7 @@ func HammingDistanceBytes(a, b []byte) int {
 	if minLen == 0 {
 		return 0
 	}
-	return int(simd.Hamming(a[:minLen], b[:minLen]))
+	return simd.Hamming(a[:minLen], b[:minLen])
 }
 
 // NormalizedHammingDistance returns Hamming distance normalized to [0, 1].

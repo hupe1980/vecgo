@@ -424,7 +424,11 @@ func (g *Generator) compileToAssembly() (string, error) {
 		}
 	}
 	if g.Arch == "amd64" {
-		args = append(args, "-mno-red-zone", "-mstackrealign")
+		// -mno-red-zone: required for Go compatibility (Go doesn't use red zone)
+		// -mstackrealign: ensure 16-byte stack alignment for AVX
+		// -fomit-frame-pointer: CRITICAL - prevent push rbp/mov rbp,rsp prologue
+		//                       which breaks Go's frame pointer-based argument access
+		args = append(args, "-mno-red-zone", "-mstackrealign", "-fomit-frame-pointer")
 
 		// Detect SIMD instruction set from filename and add appropriate flags
 		baseName := strings.ToLower(filepath.Base(g.SourcePath))

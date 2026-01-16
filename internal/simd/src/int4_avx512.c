@@ -14,7 +14,13 @@ void int4L2DistanceAvx512(const float *__restrict__ query,
                           const float *__restrict__ diff,
                           float *__restrict__ out) {
     __m512 sum = _mm512_setzero_ps();
-    const __m512 scale = _mm512_set1_ps(1.0f / 15.0f);
+    
+    // Hoist constants outside loop to avoid literal pool relocations
+    __m512 fifteen = _mm512_set1_ps(15.0f);
+    __m512 scale = _mm512_div_ps(_mm512_set1_ps(1.0f), fifteen);
+    
+    // Create 0x0F mask via broadcast
+    __m128i nibble_mask_128 = _mm_set1_epi8(0x0F);
 
     int64_t i = 0;
     // Process 32 dimensions at a time (16 bytes of packed INT4)
@@ -23,9 +29,9 @@ void int4L2DistanceAvx512(const float *__restrict__ query,
         __m128i packed = _mm_loadu_si128((__m128i const *)(code + i / 2));
         
         // Unpack high nibbles (shift right by 4, mask)
-        __m128i high_nibbles = _mm_and_si128(_mm_srli_epi16(packed, 4), _mm_set1_epi8(0x0F));
+        __m128i high_nibbles = _mm_and_si128(_mm_srli_epi16(packed, 4), nibble_mask_128);
         // Unpack low nibbles
-        __m128i low_nibbles = _mm_and_si128(packed, _mm_set1_epi8(0x0F));
+        __m128i low_nibbles = _mm_and_si128(packed, nibble_mask_128);
         
         // Interleave to get correct order: [h0,l0,h1,l1,...]
         __m128i interleaved_lo = _mm_unpacklo_epi8(high_nibbles, low_nibbles);
