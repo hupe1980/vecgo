@@ -1,6 +1,7 @@
 package manifest
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -15,7 +16,9 @@ import (
 const binaryMagic = 0x56454347 // "VECG"
 
 // binaryVersion is the current manifest format version.
-const binaryVersion = 1
+// Version 3: Added Bloom filters for categorical fields.
+// Version 2: Enhanced SegmentStats with row counts, entropy, shape, and richer vector stats.
+const binaryVersion = 3
 
 // WriteBinary writes the manifest in binary format (version 1).
 // Format:
@@ -98,6 +101,7 @@ func (m *Manifest) WriteBinary(w io.Writer) error {
 }
 
 // ReadBinary reads the manifest from binary format.
+// Supports reading both v1 (legacy) and v2 (enhanced stats) formats.
 func ReadBinary(r io.Reader) (*Manifest, error) {
 	header := make([]byte, 16)
 	if _, err := io.ReadFull(r, header); err != nil {
@@ -109,8 +113,8 @@ func ReadBinary(r io.Reader) (*Manifest, error) {
 		return nil, fmt.Errorf("invalid magic: %x", magic)
 	}
 	version := binary.LittleEndian.Uint32(header[4:8])
-	if version != binaryVersion {
-		return nil, fmt.Errorf("unsupported version: %d", version)
+	if version != 1 && version != binaryVersion {
+		return nil, fmt.Errorf("unsupported version: %d (expected 1 or %d)", version, binaryVersion)
 	}
 	checksum := binary.LittleEndian.Uint32(header[8:12])
 	length := binary.LittleEndian.Uint32(header[12:16])
@@ -145,7 +149,14 @@ func ReadBinary(r io.Reader) (*Manifest, error) {
 		m.Segments[i].MinID = model.ID(pb.readUint64())
 		m.Segments[i].MaxID = model.ID(pb.readUint64())
 		m.Segments[i].Path = pb.readString()
-		m.Segments[i].Stats = pb.readSegmentStats()
+		switch version {
+		case 1:
+			m.Segments[i].Stats = pb.readSegmentStatsV1()
+		case 2:
+			m.Segments[i].Stats = pb.readSegmentStatsV2()
+		default:
+			m.Segments[i].Stats = pb.readSegmentStats()
+		}
 	}
 
 	m.PKIndex.Path = pb.readString()
@@ -356,24 +367,50 @@ func (p *payloadBuffer) readBytes() []byte {
 	return b
 }
 
-// writeSegmentStats serializes segment stats for persistence.
+// writeSegmentStats serializes segment stats for persistence (v2 format).
 // Format:
 //
 //	hasStats (1 byte): 0 = nil, 1 = present
 //	if present:
+//	  === Core Counts ===
+//	  totalRows (4 bytes)
+//	  liveRows (4 bytes)
+//	  deletedRatio (float32)
+//	  filterEntropy (float32)
+//
+//	  === Numeric Fields ===
 //	  numNumeric (2 bytes)
 //	  for each:
 //	    key (string), min (float64), max (float64), hasNaN (bool)
+//	    histogram (16 x uint32)
+//	    histogramMin (16 x float64)
+//	    histogramMax (16 x float64)
+//	    sum (float64), sumSq (float64), count (uint32)
+//
+//	  === Categorical Fields ===
 //	  numCategorical (2 bytes)
 //	  for each:
-//	    key (string), distinctCount (4 bytes), numTopK (2 bytes), topK...
+//	    key (string), distinctCount (4 bytes), dominantValue (string), dominantRatio (float32)
+//	    entropy (float32)
+//	    numTopK (2 bytes), topK...
+//
+//	  === HasFields ===
 //	  numHasFields (2 bytes)
 //	  for each:
 //	    key (string)
+//
+//	  === Vector Stats ===
 //	  hasVector (1 byte)
 //	  if hasVector:
 //	    minNorm, maxNorm, meanNorm (float32 each)
+//	    avgDistToCentroid, radius95, radiusMax (float32 each)
 //	    centroidLen (2 bytes), centroid (bytes)
+//
+//	  === Shape Stats ===
+//	  hasShape (1 byte)
+//	  if hasShape:
+//	    isSortedByTimestamp (bool), timestampField (string)
+//	    isAppendOnly (bool), isClustered (bool), clusterTightness (float32)
 func (p *payloadBuffer) writeSegmentStats(stats *SegmentStats) {
 	if p.err != nil {
 		return
@@ -384,24 +421,62 @@ func (p *payloadBuffer) writeSegmentStats(stats *SegmentStats) {
 	}
 	p.writeBool(true)
 
-	// Numeric stats
+	// Core counts
+	p.writeUint32(stats.TotalRows)
+	p.writeUint32(stats.LiveRows)
+	p.writeFloat32(stats.DeletedRatio)
+	p.writeFloat32(stats.FilterEntropy)
+
+	// Numeric stats (with enhanced histogram)
 	p.writeUint16(uint16(len(stats.Numeric)))
-	for k, v := range stats.Numeric {
+	for k, v := range stats.Numeric { //nolint:gocritic // can't take address of map value
 		p.writeString(k)
 		p.writeFloat64(v.Min)
 		p.writeFloat64(v.Max)
 		p.writeBool(v.HasNaN)
+		// Write histogram (16 bins)
+		for i := range HistogramBins {
+			p.writeUint32(v.Histogram[i])
+		}
+		// Write per-bin min/max
+		for i := range HistogramBins {
+			p.writeFloat64(v.HistogramMin[i])
+		}
+		for i := range HistogramBins {
+			p.writeFloat64(v.HistogramMax[i])
+		}
+		// Write variance tracking
+		p.writeFloat64(v.Sum)
+		p.writeFloat64(v.SumSq)
+		p.writeUint32(v.Count)
 	}
 
-	// Categorical stats
+	// Categorical stats (with entropy and Bloom filter)
 	p.writeUint16(uint16(len(stats.Categorical)))
 	for k, v := range stats.Categorical {
 		p.writeString(k)
 		p.writeUint32(v.DistinctCount)
+		p.writeString(v.DominantValue)
+		p.writeFloat32(v.DominantRatio)
+		p.writeFloat32(v.Entropy)
 		p.writeUint16(uint16(len(v.TopK)))
 		for _, vf := range v.TopK {
 			p.writeString(vf.Value)
 			p.writeUint32(vf.Count)
+		}
+		// Write Bloom filter (v3)
+		if v.Bloom != nil {
+			p.writeBool(true)
+			var bloomBuf bytes.Buffer
+			if _, err := v.Bloom.WriteTo(&bloomBuf); err != nil {
+				// If Bloom serialization fails, write as no Bloom
+				p.buf = p.buf[:len(p.buf)-1] // Remove the true we wrote
+				p.writeBool(false)
+			} else {
+				p.writeBytes(bloomBuf.Bytes())
+			}
+		} else {
+			p.writeBool(false)
 		}
 	}
 
@@ -411,7 +486,7 @@ func (p *payloadBuffer) writeSegmentStats(stats *SegmentStats) {
 		p.writeString(k)
 	}
 
-	// Vector stats
+	// Vector stats (enhanced)
 	if stats.Vector == nil {
 		p.writeBool(false)
 	} else {
@@ -419,12 +494,27 @@ func (p *payloadBuffer) writeSegmentStats(stats *SegmentStats) {
 		p.writeFloat32(stats.Vector.MinNorm)
 		p.writeFloat32(stats.Vector.MaxNorm)
 		p.writeFloat32(stats.Vector.MeanNorm)
+		p.writeFloat32(stats.Vector.AvgDistanceToCentroid)
+		p.writeFloat32(stats.Vector.Radius95)
+		p.writeFloat32(stats.Vector.RadiusMax)
 		// Centroid as int8 slice
 		centroidBytes := make([]byte, len(stats.Vector.Centroid))
 		for i, v := range stats.Vector.Centroid {
 			centroidBytes[i] = byte(v)
 		}
 		p.writeBytes(centroidBytes)
+	}
+
+	// Shape stats
+	if stats.Shape == nil {
+		p.writeBool(false)
+	} else {
+		p.writeBool(true)
+		p.writeBool(stats.Shape.IsSortedByTimestamp)
+		p.writeString(stats.Shape.TimestampField)
+		p.writeBool(stats.Shape.IsAppendOnly)
+		p.writeBool(stats.Shape.IsClustered)
+		p.writeFloat32(stats.Shape.ClusterTightness)
 	}
 }
 
@@ -438,7 +528,13 @@ func (p *payloadBuffer) readSegmentStats() *SegmentStats {
 
 	stats := &SegmentStats{}
 
-	// Numeric stats
+	// Core counts
+	stats.TotalRows = p.readUint32()
+	stats.LiveRows = p.readUint32()
+	stats.DeletedRatio = p.readFloat32()
+	stats.FilterEntropy = p.readFloat32()
+
+	// Numeric stats (with enhanced histogram)
 	numNumeric := p.readUint16()
 	if numNumeric > 0 {
 		stats.Numeric = make(map[string]NumericFieldStats, numNumeric)
@@ -449,11 +545,26 @@ func (p *payloadBuffer) readSegmentStats() *SegmentStats {
 				Max:    p.readFloat64(),
 				HasNaN: p.readBool(),
 			}
+			// Read histogram (16 bins)
+			for j := 0; j < HistogramBins; j++ {
+				v.Histogram[j] = p.readUint32()
+			}
+			// Read per-bin min/max
+			for j := 0; j < HistogramBins; j++ {
+				v.HistogramMin[j] = p.readFloat64()
+			}
+			for j := 0; j < HistogramBins; j++ {
+				v.HistogramMax[j] = p.readFloat64()
+			}
+			// Read variance tracking
+			v.Sum = p.readFloat64()
+			v.SumSq = p.readFloat64()
+			v.Count = p.readUint32()
 			stats.Numeric[k] = v
 		}
 	}
 
-	// Categorical stats
+	// Categorical stats (with entropy and Bloom filter in v3)
 	numCategorical := p.readUint16()
 	if numCategorical > 0 {
 		stats.Categorical = make(map[string]CategoricalStats, numCategorical)
@@ -461,6 +572,115 @@ func (p *payloadBuffer) readSegmentStats() *SegmentStats {
 			k := p.readString()
 			cs := CategoricalStats{
 				DistinctCount: p.readUint32(),
+				DominantValue: p.readString(),
+				DominantRatio: p.readFloat32(),
+				Entropy:       p.readFloat32(),
+			}
+			numTopK := p.readUint16()
+			if numTopK > 0 {
+				cs.TopK = make([]ValueFreq, numTopK)
+				for j := 0; j < int(numTopK); j++ {
+					cs.TopK[j].Value = p.readString()
+					cs.TopK[j].Count = p.readUint32()
+				}
+			}
+			// Read Bloom filter (v3+)
+			if p.readBool() {
+				bloomData := p.readBytes()
+				if len(bloomData) > 0 && p.err == nil {
+					bloomReader := bytes.NewReader(bloomData)
+					cs.Bloom, _ = ReadBloomFilter(bloomReader) // Ignore error, Bloom is optional
+				}
+			}
+			stats.Categorical[k] = cs
+		}
+	}
+
+	// HasFields
+	numHasFields := p.readUint16()
+	if numHasFields > 0 {
+		stats.HasFields = make(map[string]bool, numHasFields)
+		for i := 0; i < int(numHasFields); i++ {
+			k := p.readString()
+			stats.HasFields[k] = true
+		}
+	}
+
+	// Vector stats (enhanced)
+	if p.readBool() {
+		stats.Vector = &VectorStats{
+			MinNorm:               p.readFloat32(),
+			MaxNorm:               p.readFloat32(),
+			MeanNorm:              p.readFloat32(),
+			AvgDistanceToCentroid: p.readFloat32(),
+			Radius95:              p.readFloat32(),
+			RadiusMax:             p.readFloat32(),
+		}
+		centroidBytes := p.readBytes()
+		if len(centroidBytes) > 0 {
+			stats.Vector.Centroid = make([]int8, len(centroidBytes))
+			for i, b := range centroidBytes {
+				stats.Vector.Centroid[i] = int8(b)
+			}
+		}
+	}
+
+	// Shape stats
+	if p.readBool() {
+		stats.Shape = &ShapeStats{
+			IsSortedByTimestamp: p.readBool(),
+			TimestampField:      p.readString(),
+			IsAppendOnly:        p.readBool(),
+			IsClustered:         p.readBool(),
+			ClusterTightness:    p.readFloat32(),
+		}
+	}
+
+	return stats
+}
+
+// readSegmentStatsV1 reads legacy v1 format stats.
+func (p *payloadBuffer) readSegmentStatsV1() *SegmentStats {
+	if p.err != nil {
+		return nil
+	}
+	if !p.readBool() {
+		return nil
+	}
+
+	stats := &SegmentStats{}
+
+	// Numeric stats (v1: no enhanced histogram fields)
+	numNumeric := p.readUint16()
+	if numNumeric > 0 {
+		stats.Numeric = make(map[string]NumericFieldStats, numNumeric)
+		for i := 0; i < int(numNumeric); i++ {
+			k := p.readString()
+			v := NumericFieldStats{
+				Min:    p.readFloat64(),
+				Max:    p.readFloat64(),
+				HasNaN: p.readBool(),
+			}
+			// Read histogram (16 bins)
+			for j := 0; j < HistogramBins; j++ {
+				v.Histogram[j] = p.readUint32()
+			}
+			// v1 doesn't have HistogramMin/Max, Sum, SumSq, Count
+			stats.Numeric[k] = v
+		}
+	}
+
+	// Categorical stats (v1: no entropy)
+	numCategorical := p.readUint16()
+	if numCategorical > 0 {
+		stats.Categorical = make(map[string]CategoricalStats, numCategorical)
+		for i := 0; i < int(numCategorical); i++ {
+			k := p.readString()
+			cs := CategoricalStats{
+				DistinctCount: p.readUint32(),
+				DominantValue: p.readString(),
+				DominantRatio: p.readFloat32(),
+				// v1 doesn't have Entropy
 			}
 			numTopK := p.readUint16()
 			if numTopK > 0 {
@@ -484,12 +704,13 @@ func (p *payloadBuffer) readSegmentStats() *SegmentStats {
 		}
 	}
 
-	// Vector stats
+	// Vector stats (v1: basic only)
 	if p.readBool() {
 		stats.Vector = &VectorStats{
 			MinNorm:  p.readFloat32(),
 			MaxNorm:  p.readFloat32(),
 			MeanNorm: p.readFloat32(),
+			// v1 doesn't have AvgDistanceToCentroid, Radius95, RadiusMax
 		}
 		centroidBytes := p.readBytes()
 		if len(centroidBytes) > 0 {
@@ -497,6 +718,122 @@ func (p *payloadBuffer) readSegmentStats() *SegmentStats {
 			for i, b := range centroidBytes {
 				stats.Vector.Centroid[i] = int8(b)
 			}
+		}
+	}
+
+	// v1 doesn't have Shape stats, TotalRows, LiveRows, DeletedRatio, FilterEntropy
+
+	return stats
+}
+
+// readSegmentStatsV2 reads v2 format stats (no Bloom filters).
+func (p *payloadBuffer) readSegmentStatsV2() *SegmentStats {
+	if p.err != nil {
+		return nil
+	}
+	if !p.readBool() {
+		return nil
+	}
+
+	stats := &SegmentStats{
+		TotalRows:     p.readUint32(),
+		LiveRows:      p.readUint32(),
+		DeletedRatio:  p.readFloat32(),
+		FilterEntropy: p.readFloat32(),
+	}
+
+	// Numeric stats
+	numNumeric := p.readUint16()
+	if numNumeric > 0 {
+		stats.Numeric = make(map[string]NumericFieldStats, numNumeric)
+		for i := 0; i < int(numNumeric); i++ {
+			k := p.readString()
+			v := NumericFieldStats{
+				Min:    p.readFloat64(),
+				Max:    p.readFloat64(),
+				HasNaN: p.readBool(),
+			}
+			// Read histogram (16 bins)
+			for j := 0; j < HistogramBins; j++ {
+				v.Histogram[j] = p.readUint32()
+			}
+			// Read per-bin min/max
+			for j := 0; j < HistogramBins; j++ {
+				v.HistogramMin[j] = p.readFloat64()
+			}
+			for j := 0; j < HistogramBins; j++ {
+				v.HistogramMax[j] = p.readFloat64()
+			}
+			// Read variance tracking
+			v.Sum = p.readFloat64()
+			v.SumSq = p.readFloat64()
+			v.Count = p.readUint32()
+			stats.Numeric[k] = v
+		}
+	}
+
+	// Categorical stats (v2: with entropy, no Bloom)
+	numCategorical := p.readUint16()
+	if numCategorical > 0 {
+		stats.Categorical = make(map[string]CategoricalStats, numCategorical)
+		for i := 0; i < int(numCategorical); i++ {
+			k := p.readString()
+			cs := CategoricalStats{
+				DistinctCount: p.readUint32(),
+				DominantValue: p.readString(),
+				DominantRatio: p.readFloat32(),
+				Entropy:       p.readFloat32(),
+			}
+			numTopK := p.readUint16()
+			if numTopK > 0 {
+				cs.TopK = make([]ValueFreq, numTopK)
+				for j := 0; j < int(numTopK); j++ {
+					cs.TopK[j].Value = p.readString()
+					cs.TopK[j].Count = p.readUint32()
+				}
+			}
+			// v2 doesn't have Bloom filter
+			stats.Categorical[k] = cs
+		}
+	}
+
+	// HasFields
+	numHasFields := p.readUint16()
+	if numHasFields > 0 {
+		stats.HasFields = make(map[string]bool, numHasFields)
+		for i := 0; i < int(numHasFields); i++ {
+			k := p.readString()
+			stats.HasFields[k] = true
+		}
+	}
+
+	// Vector stats (enhanced)
+	if p.readBool() {
+		stats.Vector = &VectorStats{
+			MinNorm:               p.readFloat32(),
+			MaxNorm:               p.readFloat32(),
+			MeanNorm:              p.readFloat32(),
+			AvgDistanceToCentroid: p.readFloat32(),
+			Radius95:              p.readFloat32(),
+			RadiusMax:             p.readFloat32(),
+		}
+		centroidBytes := p.readBytes()
+		if len(centroidBytes) > 0 {
+			stats.Vector.Centroid = make([]int8, len(centroidBytes))
+			for i, b := range centroidBytes {
+				stats.Vector.Centroid[i] = int8(b)
+			}
+		}
+	}
+
+	// Shape stats
+	if p.readBool() {
+		stats.Shape = &ShapeStats{
+			IsSortedByTimestamp: p.readBool(),
+			TimestampField:      p.readString(),
+			IsAppendOnly:        p.readBool(),
+			IsClustered:         p.readBool(),
+			ClusterTightness:    p.readFloat32(),
 		}
 	}
 

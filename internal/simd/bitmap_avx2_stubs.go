@@ -18,5 +18,3 @@ func orWordsAVX2Asm(dst unsafe.Pointer, src unsafe.Pointer, n int64)
 //go:noescape
 func xorWordsAVX2Asm(dst unsafe.Pointer, src unsafe.Pointer, n int64)
 
-// NOTE: popcountWordsAVX2Asm removed - Go's bits.OnesCount64 compiles to hardware
-// POPCNT instruction and is faster than explicit SIMD due to reduced overhead.

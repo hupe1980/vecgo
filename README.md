@@ -48,8 +48,10 @@ Quantization reduces **in-memory index size** for DiskANN segments. Full vectors
 - 🔒 **Commit-Oriented Durability** — Atomic commits with immutable segments
 - 🔀 **[Hybrid Search](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf)** — BM25 + vector similarity with RRF fusion
 - 📸 **Snapshot Isolation** — Lock-free reads via MVCC
-- ⏰ **Time-Travel** — Query historical snapshots
+- ⏰ **Time-Travel Queries** — `WithTimestamp()` / `WithVersion()` to query historical state
 - 🏷️ **Typed Metadata** — Schema-enforced metadata with filtering
+- 📊 **Query Statistics** — `WithStats()` + `Explain()` for debugging
+- 🎯 **Segment Pruning** — Triangle inequality, Bloom filters, numeric range stats
 - 🚀 **SIMD Optimized** — AVX-512/AVX2/NEON/SVE2 runtime detection
 
 ## 🚀 Quick Start
@@ -193,6 +195,88 @@ db.Insert(ctx, vector, doc, nil)
 
 // Hybrid search with RRF fusion
 results, _ := db.HybridSearch(ctx, vector, "neural networks", 10)
+```
+
+### ⏰ Time-Travel Queries
+
+Query historical snapshots without affecting the current state:
+
+```go
+// Open at a specific point in time
+yesterday := time.Now().Add(-24 * time.Hour)
+db, _ := vecgo.Open(ctx, vecgo.Local("./data"), vecgo.WithTimestamp(yesterday))
+
+// Or open at a specific version ID
+db, _ := vecgo.Open(ctx, vecgo.Local("./data"), vecgo.WithVersion(42))
+
+// Query as if it were that moment in time
+results, _ := db.Search(ctx, query, 10)
+```
+
+**How it works:**
+- Old manifests are preserved (each points to immutable segments)
+- Compaction still runs — creates NEW optimized segments
+- Old segments retained until `Vacuum()` removes expired manifests
+- Storage: `~current_data × (1 + retained_versions × churn_rate)`
+
+**Use cases:**
+- 🔍 Debug production issues: "What did the index look like before the bad deployment?"
+- 📊 A/B testing: Compare recall against historical versions
+- 🔄 Recovery: Roll back to a known-good state
+
+**Managing retention:**
+```go
+// Configure retention policy
+policy := vecgo.RetentionPolicy{KeepVersions: 10}
+db, _ := vecgo.Open(ctx, vecgo.Local("./data"), vecgo.WithRetentionPolicy(policy))
+
+// Reclaim disk space from expired versions
+db.Vacuum(ctx)
+```
+
+### 📊 Query Statistics & Explain
+
+Understand query execution for debugging and optimization:
+
+```go
+var stats vecgo.QueryStats
+results, _ := db.Search(ctx, query, 10, vecgo.WithStats(&stats))
+
+// Summary explanation
+fmt.Println(stats.Explain())
+// Output: "searched 3 segments (1 pruned by stats, 0 by bloom), 
+//          scanned 1200 vectors in 2.1ms, recalled 847 candidates (0.7 hit rate)"
+
+// Detailed statistics
+fmt.Printf("Segments searched: %d\n", stats.SegmentsSearched)
+fmt.Printf("Segments pruned (stats): %d\n", stats.SegmentsPrunedByStats)
+fmt.Printf("Segments pruned (bloom): %d\n", stats.SegmentsPrunedByBloom)
+fmt.Printf("Vectors scanned: %d\n", stats.VectorsScanned)
+fmt.Printf("Candidates recalled: %d\n", stats.CandidatesRecalled)
+fmt.Printf("Latency: %v\n", stats.Latency)
+fmt.Printf("Graph hops: %d\n", stats.GraphHops)
+fmt.Printf("Cost estimate: %.2f\n", stats.CostEstimate())
+```
+
+### 🎯 Segment Pruning & Manifest Stats
+
+Vecgo automatically prunes irrelevant segments using advanced statistics:
+
+| Pruning Strategy | Description | Speedup |
+|------------------|-------------|---------|
+| **Triangle Inequality** | Skip segments where `|query - centroid| > radius + threshold` | 2-10× |
+| **Bloom Filters** | Skip segments missing required categorical values | 5-50× |
+| **Numeric Range Stats** | Skip segments with min/max outside filter range | 2-5× |
+| **Categorical Cardinality** | Prioritize high-entropy segments for broad queries | 1.5-3× |
+
+These statistics are automatically computed during `Commit()` and stored in the manifest (v3 format).
+
+```go
+// Get current statistics
+dbStats := db.Stats()
+fmt.Printf("Manifest version: %d\n", dbStats.ManifestID)
+fmt.Printf("Total vectors: %d\n", dbStats.TotalVectors)
+fmt.Printf("Segment count: %d\n", dbStats.SegmentCount)
 ```
 
 ### 📦 Insert Modes

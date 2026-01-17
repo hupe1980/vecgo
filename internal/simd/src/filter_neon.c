@@ -23,6 +23,9 @@ void filterRangeF64Neon(
     float64x2_t vmin = vdupq_n_f64(minVal);
     float64x2_t vmax = vdupq_n_f64(maxVal);
     
+    // Constant for masking to 0 or 1
+    uint8x8_t one = vdup_n_u8(1);
+    
     int64_t i = 0;
     
     // Process 8 doubles at a time for better throughput
@@ -32,13 +35,13 @@ void filterRangeF64Neon(
         float64x2_t v2 = vld1q_f64(&values[i + 4]);
         float64x2_t v3 = vld1q_f64(&values[i + 6]);
         
-        // Compare all vectors
+        // Compare all vectors: result is all 1s or all 0s per lane
         uint64x2_t r0 = vandq_u64(vcgeq_f64(v0, vmin), vcleq_f64(v0, vmax));
         uint64x2_t r1 = vandq_u64(vcgeq_f64(v1, vmin), vcleq_f64(v1, vmax));
         uint64x2_t r2 = vandq_u64(vcgeq_f64(v2, vmin), vcleq_f64(v2, vmax));
         uint64x2_t r3 = vandq_u64(vcgeq_f64(v3, vmin), vcleq_f64(v3, vmax));
         
-        // Narrow 64-bit to 32-bit
+        // Narrow 64-bit to 32-bit (takes lower 32 bits of each 64-bit lane)
         uint32x2_t n0 = vmovn_u64(r0);
         uint32x2_t n1 = vmovn_u64(r1);
         uint32x2_t n2 = vmovn_u64(r2);
@@ -56,8 +59,8 @@ void filterRangeF64Neon(
         uint16x8_t h = vcombine_u16(h01, h23);
         uint8x8_t bytes = vmovn_u16(h);
         
-        // Mask to get 0 or 1 (high bit is set for true)
-        bytes = vshr_n_u8(bytes, 7);
+        // AND with 1 to get exactly 0 or 1 (bytes are 0xFF or 0x00)
+        bytes = vand_u8(bytes, one);
         
         vst1_u8(&dst[i], bytes);
     }

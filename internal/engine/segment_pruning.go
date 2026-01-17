@@ -49,8 +49,16 @@ func canPruneByFilter(stats *manifest.SegmentStats, f metadata.Filter) bool {
 		}
 	}
 
-	// Extract numeric value for range checks
 	val := f.Value
+
+	// Categorical/String equality checks using purity
+	if val.Kind == metadata.KindString && f.Operator == metadata.OpEqual {
+		if stats.CanPruneCategorical(f.Key, val.StringValue()) {
+			return true
+		}
+	}
+
+	// Extract numeric value for range checks
 	if val.Kind == metadata.KindInt || val.Kind == metadata.KindFloat {
 		var numVal float64
 		if val.Kind == metadata.KindInt {
@@ -92,8 +100,14 @@ func canPruneByFilter(stats *manifest.SegmentStats, f metadata.Filter) bool {
 					allPruned = false
 					break
 				}
+			} else if v.Kind == metadata.KindString {
+				// Check categorical pruning for each string value
+				if !stats.CanPruneCategorical(f.Key, v.StringValue()) {
+					allPruned = false
+					break
+				}
 			} else {
-				// Non-numeric value in IN list - can't prune
+				// Unknown value type - can't prune
 				allPruned = false
 				break
 			}

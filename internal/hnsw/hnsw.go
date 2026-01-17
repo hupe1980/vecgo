@@ -1214,6 +1214,7 @@ func (h *HNSW) searchLayerUnfiltered(s *searcher.Searcher, g *graph, query []flo
 // 2. Use cached edge distances for navigation through filtered-out nodes
 // 3. Adaptive termination that doesn't quit early when results are sparse
 // 4. Two-queue separation: navigation candidates vs result candidates
+// 5. Filter gate tracking for query feedback and adaptive traversal
 func (h *HNSW) searchLayerPredicateAware(s *searcher.Searcher, g *graph, query []float32, epID model.RowID, epDist float32, level int, ef int, filter segment.Filter, distFunc DistFunc) {
 	h.initializeSearch(s, epID)
 	h.processEntryPoint(s, g, epID, epDist, filter)
@@ -1221,6 +1222,13 @@ func (h *HNSW) searchLayerPredicateAware(s *searcher.Searcher, g *graph, query [
 	candidates := s.ScratchCandidates // Navigation candidates (explore graph)
 	results := s.Candidates           // Result candidates (pass filter)
 	visited := s.Visited
+	stats := &s.FilterGateStats // Track filter effectiveness
+
+	// Adaptive filter gating threshold:
+	// As we accumulate more results, we can afford to be more aggressive about
+	// skipping filtered-out nodes. This adapts to the actual filter selectivity.
+	consecutiveFilterMisses := 0
+	const filterMissGateThreshold = 10 // After N consecutive misses, tighten gating
 
 	for candidates.Len() > 0 {
 		curr, _ := candidates.PopItem()
@@ -1246,17 +1254,28 @@ func (h *HNSW) searchLayerPredicateAware(s *searcher.Searcher, g *graph, query [
 					continue
 				}
 				visited.Visit(next.ID)
+				stats.NodesVisited++
 
 				// PREDICATE-FIRST EVALUATION (ACORN optimization)
 				// Check filter BEFORE computing distance - O(1) bitmap lookup vs O(d) SIMD
 				passesFilter := filter.Matches(uint32(next.ID))
 				isDeleted := g.tombstones.Test(uint32(next.ID))
 
-				// Deferred distance computation decision
+				// Track filter effectiveness for query feedback
+				if passesFilter {
+					stats.NodesPassedFilter++
+					consecutiveFilterMisses = 0
+				} else {
+					stats.NodesRejectedByFilter++
+					consecutiveFilterMisses++
+				}
+
+				// Deferred distance computation decision with adaptive gating
 				var nextDist float32
 				if passesFilter && !isDeleted {
 					// Node passes filter - MUST compute distance for results
 					nextDist = distFunc(next.ID)
+					stats.DistanceComputations++
 				} else if results.Len() < ef/2 {
 					// Haven't found enough results yet - explore more aggressively
 					// Use cached edge distance if available, otherwise compute
@@ -1264,19 +1283,29 @@ func (h *HNSW) searchLayerPredicateAware(s *searcher.Searcher, g *graph, query [
 						nextDist = next.Dist // Use pre-computed edge distance
 					} else {
 						nextDist = distFunc(next.ID)
+						stats.DistanceComputations++
 					}
 				} else if results.Len() < ef {
 					// Have some results but not full - be selective about exploration
+					// Adaptive gating: if we've had many consecutive filter misses,
+					// the filter is highly selective - skip more aggressively
+					if consecutiveFilterMisses > filterMissGateThreshold {
+						stats.ExpansionsSkipped++
+						continue // Skip - filter is highly selective
+					}
 					// Only compute distance if edge suggests this is a good candidate
 					if next.Dist > 0 && results.Len() > 0 {
 						worst, _ := results.TopItem()
 						if next.Dist > worst.Distance*1.5 {
+							stats.ExpansionsSkipped++
 							continue // Skip obviously bad navigation candidates
 						}
 					}
 					nextDist = distFunc(next.ID)
+					stats.DistanceComputations++
 				} else {
 					// Have enough results - skip filtered nodes entirely
+					stats.ExpansionsSkipped++
 					continue
 				}
 

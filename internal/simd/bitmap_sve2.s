@@ -58,9 +58,6 @@ LBB2_1:
 	RET
 Lfunc_end2:
 
-// NOTE: popcountWordsSVE2Asm removed - Go's bits.OnesCount64 compiles to hardware
-// CNT instruction and is faster than explicit SIMD due to reduced overhead.
-
 TEXT ·xorWordsSVE2Asm(SB), NOSPLIT, $0-24
 	MOVD dst+0(FP), R0
 	MOVD src+8(FP), R1

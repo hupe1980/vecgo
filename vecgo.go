@@ -3,6 +3,7 @@ package vecgo
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/hupe1980/vecgo/blobstore"
 	"github.com/hupe1980/vecgo/distance"
@@ -115,6 +116,29 @@ func (db *DB) BatchInsertRecords(ctx context.Context, records []Record) ([]ID, e
 	}
 
 	return db.BatchInsert(ctx, vectors, mds, payloads)
+}
+
+// Vacuum removes old manifest versions and their orphaned segments based on
+// the RetentionPolicy configured via WithRetentionPolicy().
+//
+// This reclaims disk space from:
+//   - Old manifest versions (beyond KeepVersions or KeepDuration)
+//   - Segments no longer referenced by any retained manifest
+//
+// Time-travel queries to vacuumed versions will fail.
+//
+// Safe to call periodically (e.g., daily cron job). No-op if no retention policy is set.
+//
+// Example:
+//
+//	// Configure retention when opening
+//	policy := vecgo.RetentionPolicy{KeepVersions: 10}
+//	db, _ := vecgo.Open(ctx, vecgo.Local("./data"), vecgo.WithRetentionPolicy(policy))
+//
+//	// Later, reclaim space from expired versions
+//	err := db.Vacuum(ctx)
+func (db *DB) Vacuum(ctx context.Context) error {
+	return db.Engine.Vacuum(ctx)
 }
 
 // NewRecord creates a new RecordBuilder for fluent record construction.
@@ -283,7 +307,25 @@ type FlushConfig = engine.FlushConfig
 type CompactionPolicy = engine.CompactionPolicy
 
 // RetentionPolicy defines rules for retaining old versions.
+// Used with Vacuum() to control time-travel storage overhead.
 type RetentionPolicy = engine.RetentionPolicy
+
+// VacuumStats holds results of the vacuum operation.
+type VacuumStats = engine.VacuumStats
+
+// WithRetentionPolicy sets the retention policy for time-travel versioning.
+// Old manifests and their orphaned segments are removed by Vacuum() based on this policy.
+//
+// Example:
+//
+//	policy := vecgo.RetentionPolicy{
+//	    KeepVersions: 10,                    // Keep last 10 versions
+//	    KeepDuration: 7 * 24 * time.Hour,    // OR keep 7 days of history
+//	}
+//	db, _ := vecgo.Open(ctx, vecgo.Local("./data"), vecgo.WithRetentionPolicy(policy))
+func WithRetentionPolicy(p RetentionPolicy) Option {
+	return engine.WithRetentionPolicy(p)
+}
 
 // WithFlushConfig sets the flush configuration.
 func WithFlushConfig(cfg FlushConfig) Option {
@@ -335,4 +377,32 @@ func WithDimension(dim int) Option {
 // WithMetric sets the distance metric.
 func WithMetric(m Metric) Option {
 	return engine.WithMetric(m)
+}
+
+// WithTimestamp opens the database at the state closest to the given time (Time-Travel).
+// This enables querying historical data states without loading the latest version.
+//
+// Example:
+//
+//	// Query the database as it was yesterday
+//	yesterday := time.Now().Add(-24 * time.Hour)
+//	db, err := vecgo.Open(ctx, vecgo.Local("./data"), vecgo.WithTimestamp(yesterday))
+//
+// Note: The database must have been committed at least once at or before the given timestamp.
+// If no version exists at or before the timestamp, an error is returned.
+func WithTimestamp(t time.Time) Option {
+	return engine.WithTimestamp(t)
+}
+
+// WithVersion opens the database at a specific manifest version ID (Time-Travel).
+// Version IDs are monotonically increasing and assigned on each Commit().
+//
+// Example:
+//
+//	// Open at version 42
+//	db, err := vecgo.Open(ctx, vecgo.Local("./data"), vecgo.WithVersion(42))
+//
+// Use Stats().ManifestID to get the current version ID after opening.
+func WithVersion(v uint64) Option {
+	return engine.WithVersion(v)
 }

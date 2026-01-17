@@ -19,7 +19,7 @@ import (
 const (
 	ManifestFileName = "MANIFEST"
 	CurrentFileName  = "CURRENT"
-	CurrentVersion   = 1
+	CurrentVersion   = 3 // v3: Added Bloom filters for categorical fields
 )
 
 // Manifest describes the state of the engine at a specific point in time.

@@ -494,3 +494,176 @@ go test -bench=. -benchmem ./benchmark_test/
 ```
 
 Search benchmarks report `recall@k` against an exact baseline.
+
+---
+
+## Query Debugging & Statistics
+
+### QueryStats API
+
+Use `WithStats()` to collect detailed execution metrics:
+
+```go
+var stats vecgo.QueryStats
+results, err := db.Search(ctx, query, 10, vecgo.WithStats(&stats))
+
+// Human-readable explanation
+fmt.Println(stats.Explain())
+// "searched 3 segments (1 pruned by stats, 2 by bloom), scanned 1200 vectors in 2.1ms"
+
+// Programmatic access
+fmt.Printf("Segments: searched=%d, pruned=%d\n", 
+    stats.SegmentsSearched, 
+    stats.SegmentsPrunedByStats + stats.SegmentsPrunedByBloom)
+fmt.Printf("Vectors: scanned=%d, candidates=%d\n", 
+    stats.VectorsScanned, stats.CandidatesRecalled)
+fmt.Printf("Graph hops: %d, distance ops: %d (short-circuited: %d)\n",
+    stats.GraphHops, stats.DistanceComputations, stats.DistanceShortCircuits)
+```
+
+### Performance Indicators
+
+| Metric | Good | Warning | Action |
+|--------|------|---------|--------|
+| `SegmentsPrunedByStats` | >50% | <20% | Add categorical filters, use WithTimestamp for temporal data |
+| `SegmentsPrunedByBloom` | >30% | 0% | Add equality filters on categorical fields |
+| `DistanceShortCircuits` | >10% | 0% | Normal for filtered queries; indicates efficient pruning |
+| `CandidatesRecalled / VectorsScanned` | >0.5 | <0.1 | Improve filter selectivity |
+
+### Cost Estimation
+
+```go
+cost := stats.CostEstimate()
+if cost > 1000 {
+    log.Warn("Expensive query detected", "cost", cost, "latency", stats.Latency)
+}
+```
+
+---
+
+## Segment Pruning
+
+Vecgo automatically prunes segments using manifest statistics. Understanding these can help optimize query performance.
+
+### Triangle Inequality Pruning
+
+For distance-based queries, segments where `dist(query, centroid) - Radius95 > maxDistance` are skipped entirely:
+
+```
+Query → Centroid distance: 0.8
+Segment Radius95: 0.3
+Current maxDistance: 0.4
+
+Minimum possible distance to any vector: 0.8 - 0.3 = 0.5 > 0.4
+→ Segment pruned (cannot improve results)
+```
+
+**Optimization**: Use `vecgo.WithMaxDistance(d)` to provide a tight upper bound early.
+
+### Bloom Filter Pruning
+
+Categorical equality filters (`category = "electronics"`) use Bloom filters for O(1) negative lookup:
+
+```go
+// Filter on high-cardinality field with equality
+filter := metadata.NewFilterSet(
+    metadata.Filter{Key: "product_id", Operator: metadata.OpEqual, Value: metadata.String("SKU-12345")},
+)
+// Bloom filter eliminates ~99% of segments that definitely don't contain this value
+```
+
+**Best Practices:**
+- Use equality filters on categorical fields when possible
+- High-cardinality fields (100+ distinct values) benefit most from Bloom filters
+- Bloom filters have ~1% false positive rate (may search some segments unnecessarily)
+
+### Numeric Range Stats
+
+Each segment stores min/max per numeric field:
+
+```go
+filter := metadata.NewFilterSet(
+    metadata.Filter{Key: "timestamp", Operator: metadata.OpGreaterThan, Value: metadata.Int(1704067200)},
+)
+// Segments with max(timestamp) < 1704067200 are skipped entirely
+```
+
+**Optimization**: Use temporal filters with `WithTimestamp()` for time-series data.
+
+### Segment Ordering
+
+Segments are searched in priority order, not ID order:
+
+| Factor | Effect |
+|--------|--------|
+| **Centroid distance** | Closer segments searched first |
+| **Cluster tightness** | Tight clusters have higher priority (more results per hop) |
+| **Filter entropy** | Low-entropy segments searched first (better early termination) |
+| **Tombstone ratio** | High-deletion segments deprioritized |
+
+---
+
+## Time-Travel Queries
+
+Query historical database states without loading the latest version:
+
+```go
+// Open at a specific point in time
+yesterday := time.Now().Add(-24 * time.Hour)
+db, _ := vecgo.Open(ctx, vecgo.Local("./data"), vecgo.WithTimestamp(yesterday))
+
+// Open at a specific version
+db, _ := vecgo.Open(ctx, vecgo.Local("./data"), vecgo.WithVersion(42))
+
+// Check current version
+stats := db.Stats()
+fmt.Printf("Opened at version %d\n", stats.ManifestID)
+```
+
+### Retention Policy
+
+Control how many historical versions are preserved:
+
+```go
+policy := vecgo.RetentionPolicy{
+    KeepVersions: 10,           // Keep last 10 versions
+    KeepDuration: 7 * 24 * time.Hour, // Or keep versions from last 7 days
+}
+db, _ := vecgo.Open(ctx, vecgo.Local("./data"), vecgo.WithRetentionPolicy(policy))
+
+// Clean up old versions
+db.Vacuum(ctx)  // Removes versions beyond retention policy
+```
+
+### Storage Overhead
+
+Time-travel preserves old segments until `Vacuum()` removes them:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ Storage = CurrentData × (1 + RetainedVersions × ChurnRate)  │
+└─────────────────────────────────────────────────────────────┘
+
+Example: 10GB data, 10 versions retained, 20% daily churn
+  → Storage ≈ 10GB × (1 + 10 × 0.2) = 30GB
+```
+
+**Compaction still works!** It creates new optimized segments. Old segments are preserved for time-travel but deleted when `Vacuum()` removes the manifests referencing them.
+
+| Retention Setting | Disk Overhead | Time-Travel Window |
+|-------------------|---------------|--------------------|
+| `KeepVersions: 1` | ~1.5× | Current only |
+| `KeepVersions: 10` | ~2-3× | ~10 commits |
+| `KeepDuration: 7d` | ~2-4× | 7 days |
+| `KeepVersions: 0` | ~1× | None (disable time-travel) |
+
+**Best Practice**: Run `Vacuum()` periodically (e.g., daily cron) to reclaim space from expired versions.
+
+### Use Cases
+
+| Scenario | API |
+|----------|-----|
+| Debug yesterday's recall issue | `WithTimestamp(yesterday)` |
+| A/B test against version 42 | `WithVersion(42)` |
+| Audit data at compliance checkpoint | `WithTimestamp(auditDate)` |
+| Roll back after bad deployment | `WithVersion(knownGoodVersion)` |

@@ -95,6 +95,45 @@ type Searcher struct {
 
 	// OpsPerformed tracks the number of distance calculations or node visits.
 	OpsPerformed int
+
+	// FilterGateStats tracks filter effectiveness during graph traversal.
+	// Updated atomically during search for query feedback.
+	FilterGateStats FilterGateStats
+}
+
+// FilterGateStats tracks filter effectiveness during HNSW traversal.
+// Used for query feedback and adaptive traversal decisions.
+type FilterGateStats struct {
+	// NodesVisited is the total number of graph nodes visited.
+	NodesVisited int
+	// NodesPassedFilter is the count of nodes that passed the filter.
+	NodesPassedFilter int
+	// NodesRejectedByFilter is the count rejected by filter (before distance).
+	NodesRejectedByFilter int
+	// ExpansionsSkipped is the count of graph expansions skipped due to filter gating.
+	ExpansionsSkipped int
+	// DistanceComputations is the number of distance computations performed.
+	DistanceComputations int
+	// DistanceShortCircuits is the count of distance computations short-circuited.
+	DistanceShortCircuits int
+}
+
+// Reset clears the filter gate stats.
+func (f *FilterGateStats) Reset() {
+	f.NodesVisited = 0
+	f.NodesPassedFilter = 0
+	f.NodesRejectedByFilter = 0
+	f.ExpansionsSkipped = 0
+	f.DistanceComputations = 0
+	f.DistanceShortCircuits = 0
+}
+
+// FilterPassRate returns the filter pass rate (0.0-1.0).
+func (f *FilterGateStats) FilterPassRate() float64 {
+	if f.NodesVisited == 0 {
+		return 1.0
+	}
+	return float64(f.NodesPassedFilter) / float64(f.NodesVisited)
 }
 
 var searcherPool = sync.Pool{
@@ -186,6 +225,7 @@ func (s *Searcher) Reset() {
 	}
 
 	s.OpsPerformed = 0
+	s.FilterGateStats.Reset()
 }
 
 // EnsureQueryBitmapSize ensures the QueryBitmap can hold the given universe size.

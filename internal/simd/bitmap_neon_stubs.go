@@ -18,5 +18,3 @@ func orWordsNEONAsm(dst unsafe.Pointer, src unsafe.Pointer, n int64)
 //go:noescape
 func xorWordsNEONAsm(dst unsafe.Pointer, src unsafe.Pointer, n int64)
 
-// NOTE: popcountWordsNEONAsm removed - Go's bits.OnesCount64 compiles to hardware
-// CNT instruction and is faster than explicit SIMD due to reduced overhead.

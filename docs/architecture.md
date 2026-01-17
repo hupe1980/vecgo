@@ -116,6 +116,56 @@ Segmented persistence relies on an atomic publish protocol:
 *   **Manifest**: a small file describing live segments + schema/codec/quantizer metadata.
 *   **Atomic publish**: write new segment(s) + updated manifest to temporary paths, then `rename()` into place.
 *   **Recovery**: load last valid manifest; ignore orphan temp files. No WAL replay needed.
+*   **Versioning**: Each manifest has a monotonically increasing version ID. Old manifests are preserved for time-travel queries.
+
+### 1.2 Time-Travel Queries (MVCC)
+
+Vecgo supports querying historical database states via `WithTimestamp()` or `WithVersion()`:
+
+```go
+// Query the database as it was yesterday
+yesterday := time.Now().Add(-24 * time.Hour)
+db, _ := vecgo.Open(ctx, vecgo.Local("./data"), vecgo.WithTimestamp(yesterday))
+
+// Or open at a specific manifest version
+db, _ := vecgo.Open(ctx, vecgo.Local("./data"), vecgo.WithVersion(42))
+```
+
+**How It Works:**
+1. **Manifest History**: Old manifests are preserved (configurable via `RetentionPolicy`)
+2. **Version Resolution**: `WithTimestamp(t)` finds the latest manifest with `CreatedAt ≤ t`
+3. **Segment Immutability**: Since segments are immutable, historical reads are trivially consistent
+4. **No Performance Impact**: Time-travel queries execute at the same speed as current queries
+
+**Compaction & Segment Reorganization:**
+
+Time-travel does NOT prevent compaction or segment reorganization:
+
+```
+Manifest v1: [seg-1, seg-2, seg-3]      ← Created at t1
+Manifest v2: [seg-4]                     ← Compaction merged segs into seg-4
+
+Time-travel to v1: Uses seg-1,2,3 (still on disk!)
+Current (v2):      Uses seg-4 (optimized layout)
+
+Vacuum(RetentionPolicy{KeepVersions: 1}):
+  → Deletes v1 manifest
+  → seg-1,2,3 now unreferenced → deleted
+  → Disk space reclaimed
+```
+
+**Key Architectural Points:**
+- Compaction creates NEW segments (never modifies old ones)
+- Old segments are preserved as long as ANY manifest references them
+- `Vacuum()` removes old manifests AND their orphaned segments
+- Storage cost: `disk_usage ≈ current_data × (1 + retained_versions × churn_rate)`
+- This is the same model as Git, Iceberg, and Delta Lake
+
+**Use Cases:**
+- Debug production issues: "What did the index look like before the bad deployment?"
+- A/B testing: Compare recall against historical versions
+- Compliance: Audit trail of data changes
+- Recovery: Roll back to a known-good state
 
 ### 2. Vecgo API (`vecgo.go`)
 
@@ -1013,6 +1063,123 @@ sequenceDiagram
     Seg->>Seg: Publish new segment
     Note over Seg: Space reclaimed
 ```
+
+---
+
+## Query Statistics & Explain API
+
+Vecgo provides detailed query execution statistics for debugging, optimization, and observability.
+
+### QueryStats Structure
+
+```go
+type QueryStats struct {
+    // Segment-level statistics
+    SegmentsSearched      int           // Segments actually searched
+    SegmentsPrunedByStats int           // Pruned via manifest statistics
+    SegmentsPrunedByBloom int           // Pruned via Bloom filters
+    
+    // Execution statistics
+    VectorsScanned        int           // Total vectors examined
+    CandidatesRecalled    int           // Candidates passing initial filters
+    GraphHops             int           // HNSW/Vamana graph traversals
+    DistanceComputations  int           // Exact distance calculations
+    DistanceShortCircuits int           // Early-exit distance checks
+    
+    // Timing
+    Latency               time.Duration // Total query time
+}
+```
+
+### Using QueryStats
+
+```go
+var stats vecgo.QueryStats
+results, err := db.Search(ctx, query, 10, vecgo.WithStats(&stats))
+
+// Human-readable summary
+fmt.Println(stats.Explain())
+// Output: "searched 3 segments (1 pruned by stats, 2 by bloom), 
+//          scanned 1200 vectors in 2.1ms, recalled 847 candidates"
+
+// Detailed metrics for monitoring
+fmt.Printf("Segments: %d searched, %d pruned\n", 
+    stats.SegmentsSearched, 
+    stats.SegmentsPrunedByStats + stats.SegmentsPrunedByBloom)
+fmt.Printf("Efficiency: %.1f%% short-circuit rate\n",
+    float64(stats.DistanceShortCircuits) / float64(stats.DistanceComputations) * 100)
+
+// Cost estimation for query planning
+cost := stats.CostEstimate()  // Composite score for budget allocation
+```
+
+### Cost Estimation
+
+`CostEstimate()` returns a composite score useful for:
+- **Query budgeting**: Predict resource usage before execution
+- **Adaptive scheduling**: Prioritize cheap queries under load
+- **SLA monitoring**: Alert on expensive queries
+
+---
+
+## Segment Pruning & Manifest Statistics
+
+Vecgo uses comprehensive segment statistics to skip irrelevant segments without loading them.
+
+### Manifest Statistics (v3 Format)
+
+Each segment stores statistics computed at flush time (~2-3KB overhead):
+
+| Category | Statistics | Pruning Use |
+|----------|------------|-------------|
+| **Core** | TotalRows, LiveRows, DeletedRatio, FilterEntropy | Compaction triggers, entropy-based ordering |
+| **Numeric** | Min, Max, Histogram[16], Per-bin min/max | Range filter pruning |
+| **Categorical** | DistinctCount, TopK[16], Entropy, Bloom filter | Equality filter pruning |
+| **Vector** | Centroid, Radius95, RadiusMax, AvgDistanceToCentroid | Triangle inequality pruning |
+| **Shape** | IsSortedByTimestamp, IsAppendOnly, ClusterTightness | Query optimization hints |
+
+### Pruning Methods
+
+**1. Triangle Inequality Pruning (Vector-based)**
+```
+If dist(query, centroid) - Radius95 > maxDistance:
+    → Skip entire segment (no vectors can be within maxDistance)
+```
+
+**2. Bloom Filter Pruning (Categorical)**
+```
+If bloom.MayContain("category", "electronics") == false:
+    → Skip segment (definitely no matching values)
+```
+
+**3. Numeric Range Pruning**
+```
+If filter is "price > 100" and segment.Max("price") < 100:
+    → Skip segment (all values below threshold)
+```
+
+**4. Entropy-Based Ordering**
+```
+Segments with low entropy (clustered values) are searched first
+→ Better early termination, fewer segments needed
+```
+
+### Segment Scheduler
+
+The `SegmentScheduler` computes optimal segment traversal order:
+
+```go
+// Priority scoring factors (configurable weights)
+priority := 0.3 * centroidDistance    // Closer segments first
+         + 0.3 * clusterTightness     // Tight clusters = higher density
+         + 0.2 * (1 - filterEntropy)  // Low entropy = better early termination
+         - 0.2 * tombstoneRatio       // Penalize segments with many deletes
+```
+
+**Benchmarks** (100 segments):
+- Schedule computation: ~17μs
+- Memory: 5KB allocation
+- Typical pruning: 30-70% of segments skipped
 
 ---
 

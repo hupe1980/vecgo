@@ -368,11 +368,15 @@ const (
 	FilterRows
 	// FilterBitmap indicates result is stored as a QueryBitmap (SIMD, zero-alloc).
 	FilterBitmap
+	// FilterRange indicates result is a contiguous range [start, end).
+	// Extremely efficient for temporal/sequential data.
+	FilterRange
 )
 
 // FilterResult is a dual-mode filter result that avoids allocations.
 // For low cardinality, it stores rows as []uint32 (SIMD-friendly).
 // For high cardinality, it uses QueryBitmap (SIMD-accelerated, zero-alloc).
+// For contiguous ranges, it stores [start, end) bounds (zero storage overhead).
 //
 // IMPORTANT: FilterResult now uses QueryBitmap instead of roaring.
 // This removes Roaring from all query hot paths.
@@ -381,9 +385,11 @@ const (
 // The rows slice and bitmap pointer are borrowed from QueryScratch.
 // Lifetime is query-scoped.
 type FilterResult struct {
-	mode FilterMode
-	rows []uint32            // borrowed from QueryScratch.TmpRowIDs
-	qbm  *bitmap.QueryBitmap // borrowed from QueryScratch.Tmp1 (SIMD, zero-alloc)
+	mode       FilterMode
+	rows       []uint32            // borrowed from QueryScratch.TmpRowIDs
+	qbm        *bitmap.QueryBitmap // borrowed from QueryScratch.Tmp1 (SIMD, zero-alloc)
+	rangeStart uint32              // for FilterRange: inclusive start
+	rangeEnd   uint32              // for FilterRange: exclusive end
 }
 
 // RowsResult creates a FilterResult from a []uint32 slice.
@@ -412,6 +418,72 @@ func QueryBitmapResult(qb *bitmap.QueryBitmap) FilterResult {
 	}
 }
 
+// RangeResult creates a FilterResult from a contiguous range [start, end).
+// This is extremely efficient for sequential/temporal data where many
+// consecutive rows match. Zero storage overhead beyond two integers.
+// Returns FilterNone if start >= end.
+func RangeResult(start, end uint32) FilterResult {
+	if start >= end {
+		return FilterResult{mode: FilterNone}
+	}
+	return FilterResult{
+		mode:       FilterRange,
+		rangeStart: start,
+		rangeEnd:   end,
+	}
+}
+
+// AdaptiveResult creates a FilterResult choosing the optimal representation
+// based on cardinality and data characteristics. This is the recommended
+// constructor when the optimal representation is not known in advance.
+//
+// Thresholds:
+//   - Empty → FilterNone
+//   - 1 element → FilterRows (most cache-friendly)
+//   - ≤1024 elements → FilterRows (fits in L1 cache for iteration)
+//   - Contiguous range → FilterRange (zero storage overhead)
+//   - >1024 elements → FilterBitmap (SIMD-accelerated ops)
+//
+// The segmentSize parameter enables range detection and FilterAll optimization.
+func AdaptiveResult(rows []uint32, segmentSize uint32) FilterResult {
+	n := len(rows)
+
+	// Empty
+	if n == 0 {
+		return EmptyResult()
+	}
+
+	// All rows match (common for unfiltered queries)
+	if segmentSize > 0 && uint32(n) == segmentSize {
+		return AllResult()
+	}
+
+	// Small cardinality: always use rows (cache-friendly)
+	const rowsThreshold = 1024
+	if n <= rowsThreshold {
+		return RowsResult(rows)
+	}
+
+	// Check if contiguous range (common for temporal data)
+	if isContiguousRange(rows) {
+		return RangeResult(rows[0], rows[n-1]+1)
+	}
+
+	// Large cardinality: would need bitmap but caller must provide QueryBitmap
+	// Fall back to rows (caller can upgrade to bitmap if needed)
+	return RowsResult(rows)
+}
+
+// isContiguousRange checks if rows form a contiguous sequence.
+// O(1) check using first, last, and count.
+func isContiguousRange(rows []uint32) bool {
+	if len(rows) < 2 {
+		return true
+	}
+	expected := rows[len(rows)-1] - rows[0] + 1
+	return expected == uint32(len(rows))
+}
+
 // EmptyResult creates an empty FilterResult.
 func EmptyResult() FilterResult {
 	return FilterResult{mode: FilterNone}
@@ -421,6 +493,20 @@ func EmptyResult() FilterResult {
 // This indicates no filtering should be applied (equivalent to nil bitmap in old API).
 func AllResult() FilterResult {
 	return FilterResult{mode: FilterAll}
+}
+
+// IsRange returns true if the result is stored as a range.
+func (fr FilterResult) IsRange() bool {
+	return fr.mode == FilterRange
+}
+
+// Range returns the range bounds (only valid for FilterRange mode).
+// Returns (0, 0) for other modes.
+func (fr FilterResult) Range() (start, end uint32) {
+	if fr.mode == FilterRange {
+		return fr.rangeStart, fr.rangeEnd
+	}
+	return 0, 0
 }
 
 // Mode returns the current mode of the FilterResult.
@@ -446,6 +532,8 @@ func (fr FilterResult) Cardinality() int {
 		return len(fr.rows)
 	case FilterBitmap:
 		return fr.qbm.Cardinality()
+	case FilterRange:
+		return int(fr.rangeEnd - fr.rangeStart)
 	default:
 		return 0
 	}
@@ -458,6 +546,8 @@ func (fr FilterResult) CardinalityUint64() uint64 {
 		return uint64(len(fr.rows))
 	case FilterBitmap:
 		return uint64(fr.qbm.Cardinality())
+	case FilterRange:
+		return uint64(fr.rangeEnd - fr.rangeStart)
 	default:
 		return 0
 	}
@@ -485,6 +575,7 @@ func (fr FilterResult) QueryBitmap() *bitmap.QueryBitmap {
 // For FilterRows mode, this copies the underlying slice to prevent
 // aliasing issues when the original slice is reused.
 // For FilterBitmap mode, this clones the QueryBitmap.
+// For FilterRange mode, returns the same value (no data to copy).
 // For FilterNone/FilterAll, returns the same value (no data to copy).
 func (fr FilterResult) Clone() FilterResult {
 	switch fr.mode {
@@ -500,6 +591,8 @@ func (fr FilterResult) Clone() FilterResult {
 			return FilterResult{mode: FilterNone}
 		}
 		return FilterResult{mode: FilterBitmap, qbm: fr.qbm.Clone()}
+	case FilterRange:
+		return fr // Range is a value type, no aliasing issues
 	default:
 		return fr // FilterNone and FilterAll have no data
 	}
@@ -549,6 +642,28 @@ func (fr FilterResult) CloneInto(dst []uint32) (FilterResult, []uint32) {
 		// Use ToSlice for zero-alloc extraction
 		dst = fr.qbm.ToSlice(dst)
 		return FilterResult{mode: FilterRows, rows: dst[startIdx:]}, dst
+	case FilterRange:
+		// Range: expand to rows if small enough, otherwise keep as range
+		count := int(fr.rangeEnd - fr.rangeStart)
+		if count <= 0 {
+			return FilterResult{mode: FilterNone}, dst
+		}
+		// For large ranges, keep as range (no copy needed)
+		if count > 8192 {
+			return fr, dst
+		}
+		// For small ranges, expand to rows
+		startIdx := len(dst)
+		if cap(dst)-len(dst) < count {
+			newCap := len(dst) + count
+			newDst := make([]uint32, len(dst), newCap)
+			copy(newDst, dst)
+			dst = newDst
+		}
+		for i := fr.rangeStart; i < fr.rangeEnd; i++ {
+			dst = append(dst, i)
+		}
+		return FilterResult{mode: FilterRows, rows: dst[startIdx:]}, dst
 	default:
 		return fr, dst // FilterNone and FilterAll have no data
 	}
@@ -568,12 +683,20 @@ func (fr FilterResult) ForEach(fn func(uint32) bool) {
 	case FilterBitmap:
 		// QueryBitmap ForEach: zero-alloc, SIMD-friendly
 		fr.qbm.ForEach(fn)
+	case FilterRange:
+		// Range iteration: extremely cache-friendly sequential access
+		for i := fr.rangeStart; i < fr.rangeEnd; i++ {
+			if !fn(i) {
+				return
+			}
+		}
 	}
 }
 
 // ToArray extracts all row IDs into a slice.
 // For FilterRows, returns the slice directly (no copy).
 // For FilterBitmap, uses the provided scratch buffer.
+// For FilterRange, expands range into scratch buffer.
 func (fr FilterResult) ToArray(scratch []uint32) []uint32 {
 	switch fr.mode {
 	case FilterRows:
@@ -581,6 +704,21 @@ func (fr FilterResult) ToArray(scratch []uint32) []uint32 {
 	case FilterBitmap:
 		// QueryBitmap ToSlice: zero-alloc with scratch
 		return fr.qbm.ToSlice(scratch)
+	case FilterRange:
+		// Expand range to scratch
+		count := int(fr.rangeEnd - fr.rangeStart)
+		if count <= 0 {
+			return scratch[:0]
+		}
+		if cap(scratch) < count {
+			scratch = make([]uint32, count)
+		} else {
+			scratch = scratch[:count]
+		}
+		for i := 0; i < count; i++ {
+			scratch[i] = fr.rangeStart + uint32(i)
+		}
+		return scratch
 	default:
 		return scratch[:0]
 	}
@@ -602,6 +740,9 @@ func (fr FilterResult) Contains(id uint32) bool {
 		return found
 	case FilterBitmap:
 		return fr.qbm.Contains(id)
+	case FilterRange:
+		// O(1) range check
+		return id >= fr.rangeStart && id < fr.rangeEnd
 	default:
 		return false
 	}
@@ -648,13 +789,27 @@ func (frb FilterResultBitmap) ToArrayInto(dst []uint32) []uint32 {
 // Design rules:
 //   - Rows ∩ Rows → Rows (two-pointer merge, zero-alloc)
 //   - Rows ∩ Bitmap → Rows (probe QueryBitmap, zero-alloc)
+//   - Rows ∩ Range → Rows (filter by range bounds, zero-alloc)
+//   - Range ∩ Range → Range (intersect bounds, O(1))
 //   - Bitmap ∩ Bitmap → SIMD AND, return rows if small
+//   - Range ∩ Bitmap → materialize range intersection
 //
 // Uses QueryScratch for scratch space (zero allocations in steady state).
 func FilterResultAnd(a, b FilterResult, qs *QueryScratch) FilterResult {
 	// Fast exits
 	if a.mode == FilterNone || b.mode == FilterNone {
 		return EmptyResult()
+	}
+
+	// Handle Range mode specially (very efficient)
+	if a.mode == FilterRange && b.mode == FilterRange {
+		return andRangeRange(a, b)
+	}
+	if a.mode == FilterRange {
+		return andRangeOther(a, b, qs)
+	}
+	if b.mode == FilterRange {
+		return andRangeOther(b, a, qs)
 	}
 
 	// Normalize: rows first (smaller side first for efficiency)
@@ -674,6 +829,53 @@ func FilterResultAnd(a, b FilterResult, qs *QueryScratch) FilterResult {
 	}
 
 	return EmptyResult() // unreachable
+}
+
+// andRangeRange intersects two ranges - O(1) operation.
+func andRangeRange(a, b FilterResult) FilterResult {
+	// Intersect: max(start1, start2), min(end1, end2)
+	start := a.rangeStart
+	if b.rangeStart > start {
+		start = b.rangeStart
+	}
+	end := a.rangeEnd
+	if b.rangeEnd < end {
+		end = b.rangeEnd
+	}
+	if start >= end {
+		return EmptyResult()
+	}
+	return RangeResult(start, end)
+}
+
+// andRangeOther intersects a range with rows or bitmap.
+func andRangeOther(rangeResult, other FilterResult, qs *QueryScratch) FilterResult {
+	switch other.mode {
+	case FilterRows:
+		// Filter rows by range bounds
+		out := qs.TmpRowIDs[:0]
+		for _, id := range other.rows {
+			if id >= rangeResult.rangeStart && id < rangeResult.rangeEnd {
+				out = append(out, id)
+			}
+		}
+		qs.TmpRowIDs = out
+		return RowsResult(out)
+	case FilterBitmap:
+		// Materialize range and intersect with bitmap
+		// For large ranges, iterate bitmap and filter by range
+		out := qs.TmpRowIDs[:0]
+		other.qbm.ForEach(func(id uint32) bool {
+			if id >= rangeResult.rangeStart && id < rangeResult.rangeEnd {
+				out = append(out, id)
+			}
+			return true
+		})
+		qs.TmpRowIDs = out
+		return RowsResult(out)
+	default:
+		return EmptyResult()
+	}
 }
 
 // andRowsRows performs two-pointer intersection of sorted row slices.

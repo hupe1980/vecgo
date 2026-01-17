@@ -4,6 +4,20 @@ package simd
 
 import "unsafe"
 
+// Precomputed lookup table for AVX2 popcount (nibble -> popcount)
+var popcountLookup = [32]byte{
+	0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4,
+	0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4,
+}
+
+// Low nibble mask for AVX2 popcount
+var lowNibbleMask = [32]byte{
+	0x0f, 0x0f, 0x0f, 0x0f, 0x0f, 0x0f, 0x0f, 0x0f,
+	0x0f, 0x0f, 0x0f, 0x0f, 0x0f, 0x0f, 0x0f, 0x0f,
+	0x0f, 0x0f, 0x0f, 0x0f, 0x0f, 0x0f, 0x0f, 0x0f,
+	0x0f, 0x0f, 0x0f, 0x0f, 0x0f, 0x0f, 0x0f, 0x0f,
+}
+
 // init sets the SIMD kernel pointers based on the active ISA.
 // This runs after capability_amd64.go init() has detected CPU features
 // and selected the active ISA.
@@ -122,11 +136,16 @@ func dotBatchAVX2(query []float32, targets []float32, dim int, out []float32) {
 }
 
 func hammingAVX2(a, b []byte) int {
-	var ret int64
-	if len(a) > 0 {
-		hammingAvx2(unsafe.Pointer(&a[0]), unsafe.Pointer(&b[0]), int64(len(a)), unsafe.Pointer(&ret))
+	if len(a) == 0 {
+		return 0
 	}
-	return int(ret)
+	return int(hammingAvx2(
+		unsafe.Pointer(&a[0]),
+		unsafe.Pointer(&b[0]),
+		int64(len(a)),
+		unsafe.Pointer(&popcountLookup[0]),
+		unsafe.Pointer(&lowNibbleMask[0]),
+	))
 }
 
 func sq8uL2BatchPerDimensionAVX2(query []float32, codes []byte, mins, invScales []float32, dim int, out []float32) {
@@ -202,12 +221,14 @@ func filterRangeF64IndicesAVX2(values []float64, minVal, maxVal float64, indices
 	if len(values) == 0 {
 		return 0
 	}
-	count := filterRangeF64IndicesAvx2(
+	var count int64
+	filterRangeF64IndicesAvx2(
 		unsafe.Pointer(&values[0]),
 		int64(len(values)),
 		minVal,
 		maxVal,
 		unsafe.Pointer(&indices[0]),
+		unsafe.Pointer(&count),
 	)
 	return int(count)
 }
@@ -216,11 +237,13 @@ func countRangeF64AVX2(values []float64, minVal, maxVal float64) int {
 	if len(values) == 0 {
 		return 0
 	}
-	count := countRangeF64Avx2(
+	var count int64
+	countRangeF64Avx2(
 		unsafe.Pointer(&values[0]),
 		int64(len(values)),
 		minVal,
 		maxVal,
+		unsafe.Pointer(&count),
 	)
 	return int(count)
 }
@@ -331,11 +354,10 @@ func dotBatchAVX512(query []float32, targets []float32, dim int, out []float32) 
 }
 
 func hammingAVX512(a, b []byte) int {
-	var ret int64
-	if len(a) > 0 {
-		hammingAvx512(unsafe.Pointer(&a[0]), unsafe.Pointer(&b[0]), int64(len(a)), unsafe.Pointer(&ret))
+	if len(a) == 0 {
+		return 0
 	}
-	return int(ret)
+	return int(hammingAvx512(unsafe.Pointer(&a[0]), unsafe.Pointer(&b[0]), int64(len(a))))
 }
 
 func sq8uL2BatchPerDimensionAVX512(query []float32, codes []byte, mins, invScales []float32, dim int, out []float32) {
@@ -411,12 +433,14 @@ func filterRangeF64IndicesAVX512(values []float64, minVal, maxVal float64, indic
 	if len(values) == 0 {
 		return 0
 	}
-	count := filterRangeF64IndicesAvx512(
+	var count int64
+	filterRangeF64IndicesAvx512(
 		unsafe.Pointer(&values[0]),
 		int64(len(values)),
 		minVal,
 		maxVal,
 		unsafe.Pointer(&indices[0]),
+		unsafe.Pointer(&count),
 	)
 	return int(count)
 }
@@ -425,11 +449,13 @@ func countRangeF64AVX512(values []float64, minVal, maxVal float64) int {
 	if len(values) == 0 {
 		return 0
 	}
-	count := countRangeF64Avx512(
+	var count int64
+	countRangeF64Avx512(
 		unsafe.Pointer(&values[0]),
 		int64(len(values)),
 		minVal,
 		maxVal,
+		unsafe.Pointer(&count),
 	)
 	return int(count)
 }
