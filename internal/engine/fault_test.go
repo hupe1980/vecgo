@@ -17,7 +17,24 @@ import (
 )
 
 func TestFault_CorruptSegmentHeader(t *testing.T) {
-	dir := t.TempDir()
+	// Use manual temp directory management for proper cleanup on Windows
+	dir, err := os.MkdirTemp("", "vecgo-fault-test-*")
+	require.NoError(t, err)
+	defer func() {
+		// On Windows, mmap handles may take time to release after Close().
+		// Retry cleanup with exponential backoff.
+		for i := range 5 {
+			if err := os.RemoveAll(dir); err == nil {
+				return
+			}
+			time.Sleep(time.Duration(10*(1<<i)) * time.Millisecond) // 10, 20, 40, 80, 160ms
+		}
+		// Final attempt - if it fails, log but don't fail the test
+		if err := os.RemoveAll(dir); err != nil {
+			t.Logf("Warning: failed to clean up temp dir %s: %v", dir, err)
+		}
+	}()
+
 	e, err := engine.OpenLocal(context.Background(), dir,
 		engine.WithDimension(128),
 		engine.WithMetric(distance.MetricL2),
@@ -86,13 +103,13 @@ func TestFault_ConcurrentClose(t *testing.T) {
 	var wg sync.WaitGroup
 	start := make(chan struct{})
 
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
 			<-start
 			vec := make([]float32, 128)
-			for j := 0; j < 100; j++ {
+			for range 100 {
 				_, err := e.Insert(context.Background(), vec, nil, nil)
 				if err != nil {
 					if err == engine.ErrClosed {

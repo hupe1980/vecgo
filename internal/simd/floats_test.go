@@ -180,7 +180,9 @@ func TestSquaredL2Bounded_EquivalenceWithUnbounded(t *testing.T) {
 		bounded, exceeded := SquaredL2Bounded(a, b, 1e10)
 
 		assert.False(t, exceeded, "should not exceed high bound for n=%d", n)
-		assert.InDelta(t, unbounded, bounded, 1e-4, "bounded should match unbounded for n=%d", n)
+		// Use 1e-3 tolerance: different SIMD implementations may have slightly different
+		// accumulation orders leading to small floating-point differences
+		assert.InDelta(t, unbounded, bounded, 1e-3, "bounded should match unbounded for n=%d", n)
 	}
 }
 

@@ -2,6 +2,7 @@ package hnsw
 
 import (
 	"context"
+	"runtime"
 	"sync"
 	"testing"
 
@@ -11,6 +12,15 @@ import (
 // TestConcurrentInserts verifies that multiple inserts can run concurrently without data races
 func TestConcurrentInserts(t *testing.T) {
 	const dim = 32
+
+	// Reduce scale on Windows to avoid paging file exhaustion on CI runners
+	numGoroutines := 10
+	vectorsPerGoroutine := 100
+	if runtime.GOOS == "windows" {
+		numGoroutines = 4
+		vectorsPerGoroutine = 25
+	}
+
 	idx, err := New(func(o *Options) {
 		o.Dimension = dim
 		o.M = 8
@@ -19,9 +29,6 @@ func TestConcurrentInserts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	const numGoroutines = 10
-	const vectorsPerGoroutine = 100
 
 	var wg sync.WaitGroup
 	wg.Add(numGoroutines)
