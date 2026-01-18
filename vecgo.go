@@ -250,6 +250,32 @@ func WithPreFilter(preFilter bool) SearchOption {
 	return engine.WithPreFilter(preFilter)
 }
 
+// WithSelectivityCutoff sets the selectivity threshold above which HNSW with
+// post-filtering is preferred over bitmap-based brute-force search.
+//
+// When a filter matches more than this percentage of documents in a segment,
+// the engine skips expensive bitmap materialization and uses HNSW traversal
+// with post-filtering instead. This is faster because bitmap overhead dominates
+// at high selectivity.
+//
+// Default: 0.30 (30%) - based on benchmark analysis
+// Range: 0.0 - 1.0
+// - Lower values (e.g., 0.1): More aggressive HNSW usage
+// - Higher values (e.g., 0.5): More bitmap brute-force usage
+// - 0: Uses adaptive heuristic based on k and absolute match count
+//
+// Example:
+//
+//	// Use HNSW when filter matches >20% of documents
+//	results, _ := db.Search(ctx, query, 10,
+//	    vecgo.WithFilter(filter),
+//	    vecgo.WithSelectivityCutoff(0.20))
+func WithSelectivityCutoff(cutoff float64) SearchOption {
+	return func(o *model.SearchOptions) {
+		o.SelectivityCutoff = cutoff
+	}
+}
+
 // WithoutData disables automatic retrieval of metadata and payload.
 // By default, search returns metadata and payload for each result.
 // Use this option for high-throughput scenarios where only IDs and scores are needed.

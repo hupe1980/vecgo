@@ -16,6 +16,18 @@
 - 🎯 **Simpler than CGO wrappers** — pure Go toolchain, static binaries, cross-compilation
 - 🏗️ **Modern architecture** — commit-oriented durability (append-only versioned commits), no WAL complexity
 
+## 📊 Performance Highlights (Apple M4 Pro)
+
+| Benchmark | Result | Notes |
+|-----------|--------|-------|
+| **Filtered Search (1%)** | **115μs** @ 8,662 qps | FilterCursor + Zero-Copy |
+| **Filtered Search (10%)** | **230μs** @ 4,343 qps | FilterCursor + Zero-Copy |
+| **Bulk Insert** | **2.18M vec/s** | Deferred mode |
+| **Recall@10** | **1.0** | Perfect accuracy |
+| **Binary Size** | **15MB** | Pure Go, no CGO |
+
+> See [FINDINGS.md](FINDINGS.md) for complete benchmark results and optimization details.
+
 ## 🎯 Features
 
 ### 📊 Index Types

@@ -15,9 +15,17 @@ test-race:
     go test -p 1 -race -v -timeout 300s ./...
 
 # Runs benchmarks and saves output to benchmark_test/current.txt
+# Uses -short to skip heavy benchmarks (500K vectors, etc.)
 bench-current:
-    @echo "Running benchmarks..."
-    go test -bench=. -benchmem -benchtime=200ms -timeout=30m ./benchmark_test | tee benchmark_test/current.txt
+    @echo "Running benchmarks (use 'bench-full' for comprehensive suite)..."
+    go test -bench=. -short -benchmem -benchtime=200ms -timeout=15m ./benchmark_test | tee benchmark_test/current.txt
+    @echo "Done. Results saved to benchmark_test/current.txt"
+
+# Runs full benchmark suite including heavy tests (500K+ vectors)
+# WARNING: Takes 30+ minutes and requires significant RAM
+bench-full:
+    @echo "Running FULL benchmark suite (this will take a while)..."
+    go test -bench=. -benchmem -benchtime=200ms -timeout=60m ./benchmark_test | tee benchmark_test/current.txt
     @echo "Done. Results saved to benchmark_test/current.txt"
 
 
@@ -26,7 +34,7 @@ bench-current:
 # the reference point for `benchstat` comparisons.
 bench-baseline:
     @echo "Recording baseline benchmarks..."
-    go test -bench=. -benchmem -benchtime=200ms -timeout=30m ./benchmark_test | tee benchmark_test/baseline.txt
+    go test -bench=. -short -benchmem -benchtime=200ms -timeout=15m ./benchmark_test | tee benchmark_test/baseline.txt
     @echo "Done. Results saved to benchmark_test/baseline.txt"
 
 # Compare benchmark_test/baseline.txt vs benchmark_test/current.txt using benchstat.

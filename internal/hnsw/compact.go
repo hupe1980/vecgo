@@ -208,7 +208,7 @@ func (h *HNSW) reconcileNode(ctx context.Context, s *searcher.Searcher, scratch 
 		// Search for candidates
 		filter := &excludeFilter{target: uint32(id)}
 		// searchLayer populates s.Candidates
-		h.searchLayer(s, g, vec, currID, currDist, level, h.opts.EF, filter, distFunc)
+		h.searchLayer(s, g, vec, currID, currDist, level, h.opts.EF, filter, 0, distFunc)
 
 		// Use s.Candidates
 		candidates := s.Candidates

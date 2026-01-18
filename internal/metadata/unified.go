@@ -825,6 +825,15 @@ func (ui *UnifiedIndex) RUnlock() {
 	ui.mu.RUnlock()
 }
 
+// SealNumericIndex seals the numeric index for sorted binary search.
+// This must be called after bulk loading with AddInvertedIndex is complete.
+// After sealing, numeric range queries use O(log n) binary search instead of O(n) scan.
+func (ui *UnifiedIndex) SealNumericIndex() {
+	ui.mu.Lock()
+	defer ui.mu.Unlock()
+	ui.numeric.Seal()
+}
+
 // CreateStreamingFilter creates a filter function that checks the index without allocating intermediate bitmaps.
 // The caller MUST hold the read lock (RLock) while using the returned function.
 // The context is used for provider lookups on fallback paths.
@@ -856,8 +865,75 @@ func (ui *UnifiedIndex) createFilterCheck(ctx context.Context, filter metadata.F
 		return ui.createEqualCheck(filter)
 	case metadata.OpIn:
 		return ui.createInCheck(filter)
+	case metadata.OpLessThan, metadata.OpLessEqual, metadata.OpGreaterThan, metadata.OpGreaterEqual:
+		return ui.createRangeCheck(filter)
 	default:
 		return ui.createFallbackCheck(ctx, filter)
+	}
+}
+
+// createRangeCheck creates a check function for range operators using NumericIndex.
+// This is O(1) per rowID using pre-captured field data when the index is sealed.
+// Falls back to document scanning if the index is not sealed or field not found.
+func (ui *UnifiedIndex) createRangeCheck(filter metadata.Filter) func(model.RowID) bool {
+	// Try to convert filter value to float64
+	var filterVal float64
+	switch filter.Value.Kind {
+	case metadata.KindInt:
+		filterVal = float64(filter.Value.I64)
+	case metadata.KindFloat:
+		filterVal = filter.Value.F64
+	default:
+		// Non-numeric value, can't use numeric index
+		return func(model.RowID) bool { return false }
+	}
+
+	// Get matcher from NumericIndex (O(1) per row)
+	// This only works if the index has been sealed (rowIDToIndex populated)
+	matcher := ui.numeric.GetFieldMatcher(filter.Key, filter.Operator, filterVal)
+	if matcher != nil {
+		return func(id model.RowID) bool {
+			return matcher(uint32(id))
+		}
+	}
+
+	// Fallback: Field not in sealed numeric index - use document lookup
+	// This happens for in-memory memtable or unsealed segments
+	documents := ui.documents
+	op := filter.Operator
+	key := unique.Make(filter.Key)
+	return func(id model.RowID) bool {
+		doc, ok := documents[id]
+		if !ok {
+			return false
+		}
+		val, exists := doc[key]
+		if !exists {
+			return false
+		}
+		// Convert to float64 for comparison
+		var docVal float64
+		switch val.Kind {
+		case metadata.KindInt:
+			docVal = float64(val.I64)
+		case metadata.KindFloat:
+			docVal = val.F64
+		default:
+			return false
+		}
+		// Use numeric comparison (same as NumericIndex)
+		switch op {
+		case metadata.OpLessThan:
+			return docVal < filterVal
+		case metadata.OpLessEqual:
+			return docVal <= filterVal
+		case metadata.OpGreaterThan:
+			return docVal > filterVal
+		case metadata.OpGreaterEqual:
+			return docVal >= filterVal
+		default:
+			return false
+		}
 	}
 }
 
@@ -899,6 +975,224 @@ func (ui *UnifiedIndex) createInCheck(filter metadata.Filter) func(model.RowID) 
 		return false
 	}
 }
+
+// FilterCursor returns a push-based cursor for filtered iteration.
+// This is the zero-allocation hot path that:
+//   - Avoids Roaring bitmap OR operations (no dst.Or(bitmap) calls)
+//   - Evaluates filters lazily during iteration
+//   - Supports early termination
+//
+// For equality/IN filters: O(1) bitmap Contains() check per row
+// For range filters: O(1) numeric comparison per row
+//
+// The caller MUST hold the read lock (RLock) while using the cursor.
+func (ui *UnifiedIndex) FilterCursor(fs *metadata.FilterSet, rowCount uint32) FilterCursor {
+	if fs == nil || len(fs.Filters) == 0 {
+		return NewAllCursor(rowCount)
+	}
+
+	// Build filter checks (same as CreateStreamingFilter but returns cursor)
+	checks := make([]func(uint32) bool, 0, len(fs.Filters))
+	estimate := int(rowCount)
+
+	for _, filter := range fs.Filters {
+		check, selectivity := ui.createFilterCheckWithSelectivity(filter)
+		checks = append(checks, check)
+		estimate = int(float64(estimate) * selectivity)
+		if estimate < 1 {
+			estimate = 1
+		}
+	}
+
+	// Fast path: single equality filter with small bitmap
+	if len(fs.Filters) == 1 && fs.Filters[0].Operator == metadata.OpEqual {
+		if b := ui.getBitmapLocked(fs.Filters[0].Key, fs.Filters[0].Value); b != nil {
+			// Extract to rows for SIMD-friendly iteration
+			if b.Cardinality() <= 4096 {
+				rows := make([]uint32, 0, b.Cardinality())
+				rows = b.ToArrayInto(rows)
+				return NewRowsCursor(rows)
+			}
+		} else {
+			return GetEmptyCursor()
+		}
+	}
+
+	return &unifiedFilterCursor{
+		checks:   checks,
+		rowCount: rowCount,
+		estimate: estimate,
+	}
+}
+
+// createFilterCheckWithSelectivity returns a filter check function and estimated selectivity.
+func (ui *UnifiedIndex) createFilterCheckWithSelectivity(filter metadata.Filter) (func(uint32) bool, float64) {
+	switch filter.Operator {
+	case metadata.OpEqual:
+		bitmap := ui.getBitmapLocked(filter.Key, filter.Value)
+		if bitmap == nil {
+			return func(uint32) bool { return false }, 0.0
+		}
+		selectivity := 0.1 // Default estimate
+		if total := uint64(len(ui.documents)); total > 0 {
+			selectivity = float64(bitmap.Cardinality()) / float64(total)
+		}
+		return func(id uint32) bool { return bitmap.Contains(id) }, selectivity
+
+	case metadata.OpIn:
+		arr, ok := filter.Value.AsArray()
+		if !ok {
+			return func(uint32) bool { return false }, 0.0
+		}
+		var bitmaps []*LocalBitmap
+		var totalCard uint64
+		for _, v := range arr {
+			if b := ui.getBitmapLocked(filter.Key, v); b != nil {
+				bitmaps = append(bitmaps, b)
+				totalCard += b.Cardinality()
+			}
+		}
+		if len(bitmaps) == 0 {
+			return func(uint32) bool { return false }, 0.0
+		}
+		selectivity := 0.2 // Default estimate
+		if total := uint64(len(ui.documents)); total > 0 {
+			selectivity = float64(totalCard) / float64(total)
+			if selectivity > 1.0 {
+				selectivity = 1.0
+			}
+		}
+		return func(id uint32) bool {
+			for _, b := range bitmaps {
+				if b.Contains(id) {
+					return true
+				}
+			}
+			return false
+		}, selectivity
+
+	case metadata.OpNotEqual:
+		bitmap := ui.getBitmapLocked(filter.Key, filter.Value)
+		if bitmap == nil {
+			// Field/value doesn't exist, everything matches NotEqual
+			return func(uint32) bool { return true }, 1.0
+		}
+		return func(id uint32) bool { return !bitmap.Contains(id) }, 0.9
+
+	case metadata.OpLessThan, metadata.OpLessEqual, metadata.OpGreaterThan, metadata.OpGreaterEqual:
+		// For range filters, use NumericIndex directly
+		// This avoids Roaring bitmap OR operations
+		if !ui.numeric.HasField(filter.Key) {
+			// No numeric index for this field - fall back to provider if available
+			if ui.provider == nil {
+				return func(uint32) bool { return false }, 0.0
+			}
+			// Use provider-based evaluation (slower but works without numeric index)
+			return ui.createProviderBasedRangeCheck(filter)
+		}
+
+		var filterVal float64
+		switch filter.Value.Kind {
+		case metadata.KindInt:
+			filterVal = float64(filter.Value.I64)
+		case metadata.KindFloat:
+			filterVal = filter.Value.F64
+		default:
+			return func(uint32) bool { return false }, 0.0
+		}
+
+		// Use GetFieldMatcher for zero-allocation per-row check
+		// This captures the field reference once, eliminating per-rowID string map lookups
+		selectivity := ui.numeric.EstimateSelectivity(filter.Key, filter.Operator, filterVal)
+		matcher := ui.numeric.GetFieldMatcher(filter.Key, filter.Operator, filterVal)
+		if matcher == nil {
+			return func(uint32) bool { return false }, 0.0
+		}
+		return matcher, selectivity
+
+	default:
+		return func(uint32) bool { return false }, 0.0
+	}
+}
+
+// createProviderBasedRangeCheck creates a range check using the document provider.
+// This is slower than MatchRowID but works when numeric index is unavailable.
+func (ui *UnifiedIndex) createProviderBasedRangeCheck(filter metadata.Filter) (func(uint32) bool, float64) {
+	if ui.provider == nil {
+		return func(uint32) bool { return false }, 0.0
+	}
+
+	var filterVal float64
+	switch filter.Value.Kind {
+	case metadata.KindInt:
+		filterVal = float64(filter.Value.I64)
+	case metadata.KindFloat:
+		filterVal = filter.Value.F64
+	default:
+		return func(uint32) bool { return false }, 0.0
+	}
+
+	return func(id uint32) bool {
+		doc, ok := ui.provider(context.Background(), model.RowID(id))
+		if !ok || doc == nil {
+			return false
+		}
+		val, exists := doc[filter.Key]
+		if !exists {
+			return false
+		}
+		var numVal float64
+		switch val.Kind {
+		case metadata.KindInt:
+			numVal = float64(val.I64)
+		case metadata.KindFloat:
+			numVal = val.F64
+		default:
+			return false
+		}
+		switch filter.Operator {
+		case metadata.OpLessThan:
+			return numVal < filterVal
+		case metadata.OpLessEqual:
+			return numVal <= filterVal
+		case metadata.OpGreaterThan:
+			return numVal > filterVal
+		case metadata.OpGreaterEqual:
+			return numVal >= filterVal
+		default:
+			return false
+		}
+	}, 0.5
+}
+
+// unifiedFilterCursor iterates over row IDs, applying filter checks lazily.
+type unifiedFilterCursor struct {
+	checks   []func(uint32) bool
+	rowCount uint32
+	estimate int
+}
+
+func (c *unifiedFilterCursor) ForEach(fn func(rowID uint32) bool) {
+	for id := uint32(0); id < c.rowCount; id++ {
+		// Apply all filter checks (AND logic, short-circuit on first false)
+		match := true
+		for _, check := range c.checks {
+			if !check(id) {
+				match = false
+				break
+			}
+		}
+		if match {
+			if !fn(id) {
+				return
+			}
+		}
+	}
+}
+
+func (c *unifiedFilterCursor) EstimateCardinality() int { return c.estimate }
+func (c *unifiedFilterCursor) IsEmpty() bool            { return c.rowCount == 0 }
+func (c *unifiedFilterCursor) IsAll() bool              { return len(c.checks) == 0 }
 
 // Query evaluates a filter set and returns a bitmap of matching documents.
 // Returns nil if the filter set matches all documents (empty filter).

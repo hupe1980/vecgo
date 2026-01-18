@@ -136,6 +136,19 @@ func (f *FilterGateStats) FilterPassRate() float64 {
 	return float64(f.NodesPassedFilter) / float64(f.NodesVisited)
 }
 
+// FilterIsSelective returns true if the filter is selective enough to benefit
+// from predicate-aware traversal. After warmup (100 visits), if >50% of nodes
+// pass the filter, predicate checking is a pessimization.
+// Used for adaptive mode switching (like Snowflake/DuckDB/ClickHouse).
+func (s *Searcher) FilterIsSelective() bool {
+	// During warmup, assume filter is selective (conservative)
+	if s.FilterGateStats.NodesVisited < 100 {
+		return true
+	}
+	// Filter is selective if <50% of nodes pass
+	return s.FilterGateStats.FilterPassRate() < 0.5
+}
+
 var searcherPool = sync.Pool{
 	New: func() any {
 		return NewSearcher(1024, 128) // Default initial capacity
@@ -148,10 +161,14 @@ func NewSearcher(visitedCap, queueCap int) *Searcher {
 	// Default capacity covers typical k=10..100 searches.
 	// Pre-size SemChan to GOMAXPROCS to avoid reallocation under burst load.
 	// Pre-size ParallelResults for typical 16 segments * 100 k = 1600 results.
+	//
+	// PriorityQueue capacity: Default EF is 300, so pre-allocate for that.
+	// This eliminates growslice allocations which dominate mid-selectivity search CPU.
+	pqCap := max(queueCap, 512) // At least 512 to cover EF=300 + headroom
 	return &Searcher{
 		Visited:           NewVisitedSet(visitedCap),
-		Candidates:        NewPriorityQueue(true),  // MaxHeap for results (keep smallest)
-		ScratchCandidates: NewPriorityQueue(false), // MinHeap for exploration (explore closest)
+		Candidates:        NewPriorityQueueWithCapacity(true, pqCap),  // MaxHeap for results
+		ScratchCandidates: NewPriorityQueueWithCapacity(false, pqCap), // MinHeap for exploration
 		FilterBitmap:      imetadata.NewLocalBitmap(),
 		ScratchResults:    make([]PriorityQueueItem, 0, queueCap),
 		Heap:              NewCandidateHeap(queueCap, false),
@@ -175,6 +192,8 @@ func NewSearcher(visitedCap, queueCap int) *Searcher {
 		BitmapBuilder: imetadata.NewBitmapBuilder(),
 		// QueryBitmap for SIMD-friendly filter operations (1M universe covers most segments)
 		QueryBitmap: bitmap.New(DefaultUniverseSize),
+		// ScratchVecBuf for batch vector fetching (64 batch * 512 dim = 32K floats covers most cases)
+		ScratchVecBuf: make([]float32, 0, 64*512),
 	}
 }
 

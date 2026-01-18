@@ -115,6 +115,20 @@ type SearchOptions struct {
 	// Stats receives detailed query execution statistics when non-nil.
 	// Use this for query debugging, performance analysis, and cost estimation.
 	Stats *QueryStats
+
+	// SelectivityCutoff is the estimated selectivity above which brute-force with bitmap
+	// is skipped in favor of HNSW with post-filtering. Range: 0.0-1.0.
+	// Default (0): uses adaptive heuristic based on k and estimated matches.
+	// Recommended: 0.30 (30%) - bitmap overhead dominates above this threshold.
+	SelectivityCutoff float64
+
+	// Selectivity is the estimated filter pass rate (0.0-1.0).
+	// Set by the engine during query planning based on filter evaluation.
+	// Used by HNSW to choose traversal strategy:
+	// - Low (<0.5): predicate-aware (filter-first)
+	// - High (>0.5): unfiltered + post-filter
+	// 0 means unknown (defaults to predicate-aware).
+	Selectivity float64
 }
 
 // QueryStats provides detailed execution statistics for a search query.
@@ -124,8 +138,16 @@ type QueryStats struct {
 	// TotalDurationMicros is the total query execution time in microseconds.
 	TotalDurationMicros int64
 
+	// Timing breakdown (microseconds) - these sum to approximately TotalDurationMicros
+	FilterTimeMicros int64 // Time spent evaluating filters
+	SearchTimeMicros int64 // Time spent in HNSW/brute-force search
+	MergeTimeMicros  int64 // Time spent merging results + segment ordering
+
 	// SegmentsSearched is the number of segments searched.
 	SegmentsSearched int
+
+	// SegmentsPruned is the number of segments skipped via manifest-level pruning.
+	SegmentsPruned int
 
 	// SegmentStats contains per-segment execution details.
 	SegmentStats []SegmentQueryStats
@@ -150,8 +172,17 @@ type QueryStats struct {
 	// CandidatesReturned is the number of candidates returned (≤ K).
 	CandidatesReturned int
 
-	// Strategy describes the search strategy used (e.g., "hnsw", "brute_force", "hybrid").
+	// Strategy describes the search strategy used (e.g., "hnsw", "brute_force", "hybrid", "streaming").
 	Strategy string
+
+	// BruteForceSegments is the number of segments searched with brute-force.
+	BruteForceSegments int
+
+	// HNSWSegments is the number of segments searched with HNSW.
+	HNSWSegments int
+
+	// PureSegmentHits is the number of pure segments that matched without filter evaluation.
+	PureSegmentHits int
 }
 
 // SegmentQueryStats contains execution statistics for a single segment.
@@ -195,10 +226,19 @@ func (s *QueryStats) Explain() string {
 		return "no stats collected"
 	}
 	return fmt.Sprintf(
-		"Query took %dμs: searched %d segments, %d distance calcs (%d short-circuited), "+
+		"Query took %dμs (filter: %dμs, search: %dμs, merge: %dμs): "+
+			"searched %d segments (%d pruned, %d brute-force, %d HNSW, %d pure-hits), "+
+			"%d distance calcs (%d short-circuited), "+
 			"%d nodes visited, %d candidates evaluated → %d returned. Strategy: %s",
 		s.TotalDurationMicros,
+		s.FilterTimeMicros,
+		s.SearchTimeMicros,
+		s.MergeTimeMicros,
 		s.SegmentsSearched,
+		s.SegmentsPruned,
+		s.BruteForceSegments,
+		s.HNSWSegments,
+		s.PureSegmentHits,
 		s.DistanceComputations,
 		s.DistanceShortCircuits,
 		s.NodesVisited,

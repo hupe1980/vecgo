@@ -296,6 +296,9 @@ type QueryScratch struct {
 	TmpStorage *LocalBitmap
 	// TmpRowIDs is a reusable buffer for collecting rowIDs
 	TmpRowIDs []uint32
+	// TmpRowIDs2 is a secondary buffer for memtable shard accumulation
+	// (avoids allocation when shards overwrite TmpRowIDs)
+	TmpRowIDs2 []uint32
 	// TmpIndices is a reusable buffer for SIMD index operations (int32 for SIMD compatibility)
 	TmpIndices []int32
 }
@@ -308,6 +311,7 @@ var queryScratchPool = sync.Pool{
 			Tmp2:       bitmap.New(DefaultUniverseSize),
 			TmpStorage: &LocalBitmap{rb: roaring.New()},
 			TmpRowIDs:  make([]uint32, 0, 1024),
+			TmpRowIDs2: make([]uint32, 0, 1024),
 			TmpIndices: make([]int32, 0, 1024),
 		}
 	},
@@ -322,6 +326,7 @@ func GetQueryScratch() *QueryScratch {
 	qs.Tmp2.Clear()
 	qs.TmpStorage.rb.Clear()
 	qs.TmpRowIDs = qs.TmpRowIDs[:0]
+	qs.TmpRowIDs2 = qs.TmpRowIDs2[:0]
 	qs.TmpIndices = qs.TmpIndices[:0]
 	return qs
 }
@@ -337,6 +342,7 @@ func PutQueryScratch(qs *QueryScratch) {
 	qs.Tmp2.Clear()
 	qs.TmpStorage.rb.Clear()
 	qs.TmpRowIDs = qs.TmpRowIDs[:0]
+	qs.TmpRowIDs2 = qs.TmpRowIDs2[:0]
 	qs.TmpIndices = qs.TmpIndices[:0]
 	queryScratchPool.Put(qs)
 }

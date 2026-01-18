@@ -163,6 +163,45 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 		if len(snap.sortedSegments) == 0 && snap.active != nil {
 			e.tombstonesMu.RUnlock()
 
+			// CURSOR-BASED SEARCH: Zero-allocation filtered search
+			// Uses push-based iteration instead of materializing bitmaps
+			if options.Filter != nil {
+				selectivityCutoff := 0.30
+				if options.SelectivityCutoff > 0 {
+					selectivityCutoff = options.SelectivityCutoff
+				}
+				forcePreFilter := options.PreFilter != nil && *options.PreFilter
+
+				// Get cursor from memtable (zero-alloc)
+				cursor := snap.active.FilterCursor(options.Filter)
+
+				if !cursor.IsAll() && !cursor.IsEmpty() {
+					segSel := float64(cursor.EstimateCardinality()) / float64(snap.active.RowCount())
+					if forcePreFilter || segSel <= selectivityCutoff {
+						// Use cursor-based streaming execution
+						config := CursorSearchConfig{
+							SelectivityCutoff: selectivityCutoff,
+							BatchSize:         64,
+							ForcePreFilter:    forcePreFilter,
+						}
+
+						used, err := e.searchSegmentWithCursor(
+							ctx, snap.active, cursor, activeFilter,
+							config, s, qExec, searchK, descending,
+						)
+						if err != nil {
+							yield(model.Candidate{}, err)
+							return
+						}
+						if used {
+							// Skip HNSW search since we used streaming
+							goto rerank
+						}
+					}
+				}
+			}
+
+			// Fall back to HNSW search for high selectivity or no filter
 			if err := snap.active.Search(ctx, qExec, searchK, activeFilter, options, s); err != nil {
 				yield(model.Candidate{}, err)
 				return
@@ -199,9 +238,23 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 			// Strategy Selection: Check for Bitmap Pre-Filtering
 			var usedBitmapStrategy bool
 
-			// Adaptive threshold based on k and total vector count.
+			// Track if high selectivity detected (skip bitmap, use HNSW with post-filter)
+			var skipBitmapForHNSW bool
+
+			// Track maximum selectivity across segments for HNSW adaptive traversal
+			var maxSelectivity float64
+
+			// Selectivity-based cutoff: above this threshold, bitmap overhead dominates
+			// and HNSW with post-filtering is faster.
+			// Default: 30% (0.30) - based on benchmark analysis showing bitmap overhead
+			// dominates above ~30% selectivity. User can override via SelectivityCutoff.
+			selectivityCutoff := 0.30
+			if options.SelectivityCutoff > 0 {
+				selectivityCutoff = options.SelectivityCutoff
+			}
+
+			// Adaptive threshold based on k and total vector count (legacy fallback).
 			// For small k and highly selective filters, brute-force is faster.
-			// For large k or low selectivity, HNSW is better.
 			// Heuristic: threshold = max(k * 50, 500) capped at 5000
 			adaptiveThreshold := min(max(uint64(k*50), 500), 5000)
 
@@ -209,6 +262,173 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 			forcePreFilter := options.PreFilter != nil && *options.PreFilter
 
 			if options.Filter != nil {
+				// STREAMING EXECUTION: Process each segment immediately
+				// This avoids global FilterResult collection and reduces memory churn.
+				// Key insight: FilterResults should die at segment boundary.
+
+				// Cursor config for consistent settings
+				cursorConfig := CursorSearchConfig{
+					SelectivityCutoff: selectivityCutoff,
+					BatchSize:         64,
+					ForcePreFilter:    forcePreFilter,
+				}
+
+				// Track if we used streaming strategy
+				usedStreaming := false
+
+				// For immutable segments, we still need QueryScratch
+				qs := imetadata.GetQueryScratch()
+				defer imetadata.PutQueryScratch(qs)
+
+				// Process Active Segment (memtable) with cursor
+				if snap.active != nil {
+					cursor := snap.active.FilterCursor(options.Filter)
+					if !cursor.IsAll() && !cursor.IsEmpty() {
+						segSel := float64(cursor.EstimateCardinality()) / float64(snap.active.RowCount())
+						if segSel > maxSelectivity {
+							maxSelectivity = segSel
+						}
+						if forcePreFilter || segSel <= selectivityCutoff {
+							used, err := e.searchSegmentWithCursor(
+								ctx, snap.active, cursor, activeFilter,
+								cursorConfig, s, qExec, searchK, descending,
+							)
+							if err != nil {
+								yield(model.Candidate{}, err)
+								return
+							}
+							if used {
+								usedStreaming = true
+							}
+						} else {
+							// High selectivity in memtable - prefer HNSW
+							skipBitmapForHNSW = true
+						}
+					}
+				}
+
+				// Process Immutable Segments using FilterCursor when available
+				// This eliminates Roaring bitmap allocations in the hot path
+				if !skipBitmapForHNSW {
+					for i, seg := range snap.sortedSegments {
+						// SEGMENT PRUNING
+						if e.canPruneSegment(seg.ID(), options.Filter) {
+							continue
+						}
+
+						// Try cursor-based path first (zero-alloc)
+						// Note: seg.Segment accesses the embedded interface
+						if fc, ok := seg.Segment.(SegmentWithFilterCursor); ok {
+							cursor := fc.FilterCursor(options.Filter)
+							if cursor.IsAll() {
+								// Matches all - use HNSW for this segment
+								// But only if this segment has a graph index
+								if segmentHasGraphIndex(seg) {
+									skipBitmapForHNSW = true
+									maxSelectivity = 1.0
+									break
+								}
+								// Flat segment: can't use HNSW, fall through to brute-force with cursor
+							}
+
+							if !cursor.IsEmpty() {
+								segSel := float64(cursor.EstimateCardinality()) / float64(seg.RowCount())
+								if segSel > maxSelectivity {
+									maxSelectivity = segSel
+								}
+								// High selectivity routing:
+								// - For graph segments (HNSW/DiskANN): use graph traversal
+								// - For flat segments: ALWAYS use cursor (avoids expensive MatchesBinary)
+								if !forcePreFilter && segSel > selectivityCutoff && segmentHasGraphIndex(seg) {
+									// Graph segment with high selectivity - switch to HNSW for all remaining
+									skipBitmapForHNSW = true
+									break
+								}
+
+								var ts segment.Filter
+								if f := s.SegmentFilters[i]; f != nil {
+									ts = f.(segment.Filter)
+								}
+
+								used, err := e.searchSegmentWithCursor(
+									ctx, seg, cursor, ts,
+									cursorConfig, s, qExec, searchK, descending,
+								)
+								if err != nil {
+									yield(model.Candidate{}, err)
+									return
+								}
+								if used {
+									usedStreaming = true
+								}
+							}
+							continue
+						}
+
+						// Fallback: use FilterResult path (legacy)
+						fr, err := e.evaluateSegmentFilterResult(ctx, seg, options.Filter, qs)
+						if err != nil {
+							// Error - fallback to HNSW for remaining
+							break
+						}
+
+						if fr.IsAll() {
+							// Matches all - use HNSW for this segment (if it has a graph)
+							if segmentHasGraphIndex(seg) {
+								skipBitmapForHNSW = true
+								maxSelectivity = 1.0
+								break
+							}
+							// Flat segment: can't use HNSW, fall through to brute-force with cursor
+						}
+
+						if !fr.IsEmpty() {
+							segSel := float64(fr.Cardinality()) / float64(seg.RowCount())
+							if segSel > maxSelectivity {
+								maxSelectivity = segSel
+							}
+							// High selectivity routing:
+							// - For graph segments (HNSW/DiskANN): use graph traversal
+							// - For flat segments: ALWAYS use cursor (avoids expensive MatchesBinary)
+							if !forcePreFilter && segSel > selectivityCutoff && segmentHasGraphIndex(seg) {
+								// Graph segment with high selectivity - switch to HNSW for all remaining
+								skipBitmapForHNSW = true
+								break
+							}
+
+							var ts segment.Filter
+							if f := s.SegmentFilters[i]; f != nil {
+								ts = f.(segment.Filter)
+							}
+
+							// Use cursor wrapper for FilterResult
+							cursor := imetadata.NewFilterResultCursor(fr)
+							used, err := e.searchSegmentWithCursor(
+								ctx, seg, cursor, ts,
+								cursorConfig, s, qExec, searchK, descending,
+							)
+							if err != nil {
+								yield(model.Candidate{}, err)
+								return
+							}
+							if used {
+								usedStreaming = true
+							}
+						}
+					}
+				}
+
+				// If we used streaming, we're done with brute-force path
+				if usedStreaming {
+					usedBitmapStrategy = true
+				}
+				// If high selectivity detected, we skip bitmap paths but still run HNSW
+				// (usedBitmapStrategy stays false, so HNSW will run with post-filter)
+			}
+
+			// Legacy path (kept for fallback - will be removed after validation)
+			// Skip if: streaming was used, OR high selectivity was detected
+			if options.Filter != nil && !usedBitmapStrategy && !skipBitmapForHNSW {
 				// Zero-alloc filter path using FilterResult
 				// Get query scratch for filter evaluation
 				qs := imetadata.GetQueryScratch()
@@ -250,11 +470,19 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 					} else if !fr.IsEmpty() {
 						hits := uint64(fr.Cardinality())
 						totalHits += hits
-						// CloneInto to prevent aliasing when qs.TmpRowIDs is reused
-						// Uses pooled buffer to avoid per-segment allocations
-						var cloned imetadata.FilterResult
-						cloned, rowBuf = fr.CloneInto(rowBuf)
-						filters = append(filters, segFilter{seg: snap.active, fr: cloned, ts: activeFilter})
+
+						// SELECTIVITY-BASED CUTOFF: Check memtable selectivity
+						memtableSelectivity := float64(hits) / float64(snap.active.RowCount())
+						if !forcePreFilter && memtableSelectivity > selectivityCutoff {
+							// High selectivity - bail out to HNSW
+							possible = false
+						} else {
+							// CloneInto to prevent aliasing when qs.TmpRowIDs is reused
+							// Uses pooled buffer to avoid per-segment allocations
+							var cloned imetadata.FilterResult
+							cloned, rowBuf = fr.CloneInto(rowBuf)
+							filters = append(filters, segFilter{seg: snap.active, fr: cloned, ts: activeFilter})
+						}
 					}
 					// else: fr.IsEmpty() = no matches in this segment = skip (valid)
 				}
@@ -283,7 +511,18 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 						} else if !fr.IsEmpty() {
 							hits := uint64(fr.Cardinality())
 							totalHits += hits
-							// Skip threshold check if user forced pre-filtering
+
+							// SELECTIVITY-BASED CUTOFF: Check segment selectivity
+							// If segment selectivity > cutoff, bitmap overhead dominates
+							// and HNSW with post-filtering is faster for this segment.
+							segmentSelectivity := float64(hits) / float64(seg.RowCount())
+							if !forcePreFilter && segmentSelectivity > selectivityCutoff {
+								// High selectivity segment detected - bail out to HNSW
+								possible = false
+								break
+							}
+
+							// Also check absolute threshold (legacy fallback)
 							if !forcePreFilter && totalHits > adaptiveThreshold {
 								possible = false
 								break
@@ -440,138 +679,187 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 			}
 
 			if !usedBitmapStrategy {
-				// Parallel Segment Search (scatter-gather pattern)
-				// Revised to avoid errgroup overhead
+				// Segment Search: Choose between sequential and parallel based on selectivity
+				// At high selectivity (skipBitmapForHNSW = true), parallel search causes
+				// goroutine coordination overhead to dominate (85% pthread_cond_wait).
+				// Sequential search avoids this overhead entirely.
 				numSegments := len(snap.sortedSegments)
 				if snap.active != nil {
 					numSegments++ // Include memtable
 				}
 
-				concurrency := runtime.GOMAXPROCS(0)
-				if concurrency > numSegments {
-					concurrency = numSegments
-				}
-				if concurrency == 0 {
-					concurrency = 1
-				}
+				// FIX: Use sequential search when selectivity is high
+				// This avoids goroutine fan-out and scheduler collapse
+				useSequentialSearch := skipBitmapForHNSW || numSegments <= 2
 
-				var wg sync.WaitGroup
-
-				// OPTIMIZATION: Reuse semaphore channel when capacity is sufficient
-				sem := s.SemChan
-				if cap(sem) < concurrency {
-					sem = make(chan struct{}, concurrency)
-					s.SemChan = sem
+				// Pass selectivity hint to HNSW for adaptive traversal
+				// This enables unfiltered+post-filter mode at high selectivity
+				if maxSelectivity > 0 {
+					options.Selectivity = maxSelectivity
 				}
 
-				// Storage for results to avoid locking the main heap
-				// OPTIMIZATION: Use pooled result buffers to avoid allocation
-				maxRes := numSegments * searchK
-				if cap(s.ParallelResults) < maxRes {
-					// Grow geometrically to reduce future reallocations
-					newCap := max(maxRes, cap(s.ParallelResults)*2)
-					s.ParallelResults = make([]searcher.InternalCandidate, newCap)
-				}
+				if useSequentialSearch {
+					// SEQUENTIAL SEARCH: Process segments one by one
+					// This avoids goroutine coordination overhead at high selectivity
 
-				if cap(s.ParallelSlices) < numSegments {
-					// Grow geometrically to reduce future reallocations
-					newCap := max(numSegments, cap(s.ParallelSlices)*2)
-					s.ParallelSlices = make([][]searcher.InternalCandidate, newCap)
-				}
-				s.ParallelSlices = s.ParallelSlices[:numSegments]
-				// Ensure clean state (nil slices)
-				for i := range s.ParallelSlices {
-					s.ParallelSlices[i] = nil
-				}
-				results := s.ParallelSlices
-				var firstErr error
-				var firstErrOnce sync.Once
+					// Search MemTable first
+					if snap.active != nil {
+						if err := snap.active.Search(ctx, qExec, searchK, activeFilter, options, s); err != nil {
+							yield(model.Candidate{}, err)
+							return
+						}
+					}
 
-				runSearch := func(idx int, seg segment.Segment, filt segment.Filter) {
-					defer wg.Done()
+					// Search immutable segments sequentially
+					for i, seg := range snap.sortedSegments {
+						// SEGMENT PRUNING: Skip segments that can be pruned based on manifest stats
+						if options.Filter != nil && e.canPruneSegment(seg.ID(), options.Filter) {
+							continue
+						}
 
-					// Acquire semaphore
-					sem <- struct{}{}
-					defer func() { <-sem }()
+						var f segment.Filter
+						if v := s.SegmentFilters[i]; v != nil {
+							f = v.(segment.Filter)
+						}
 
-					// Acquire local searcher
-					localS := searcher.Get()
-					defer searcher.Put(localS)
-					localS.Heap.Reset(descending)
+						if err := seg.Search(ctx, qExec, searchK, f, options, s); err != nil {
+							yield(model.Candidate{}, err)
+							return
+						}
+					}
+				} else {
+					// PARALLEL SEARCH: Fan out to goroutines for low selectivity
+					// Only beneficial when:
+					// 1. Selectivity is low (filter prunes most candidates)
+					// 2. Multiple segments to search (parallelism helps)
 
-					if err := seg.Search(ctx, qExec, searchK, filt, options, localS); err != nil {
-						firstErrOnce.Do(func() { firstErr = err })
+					concurrency := runtime.GOMAXPROCS(0)
+					if concurrency > numSegments {
+						concurrency = numSegments
+					}
+					if concurrency == 0 {
+						concurrency = 1
+					}
+
+					var wg sync.WaitGroup
+
+					// OPTIMIZATION: Reuse semaphore channel when capacity is sufficient
+					sem := s.SemChan
+					if cap(sem) < concurrency {
+						sem = make(chan struct{}, concurrency)
+						s.SemChan = sem
+					}
+
+					// Storage for results to avoid locking the main heap
+					// OPTIMIZATION: Use pooled result buffers to avoid allocation
+					maxRes := numSegments * searchK
+					if cap(s.ParallelResults) < maxRes {
+						// Grow geometrically to reduce future reallocations
+						newCap := max(maxRes, cap(s.ParallelResults)*2)
+						s.ParallelResults = make([]searcher.InternalCandidate, newCap)
+					}
+
+					if cap(s.ParallelSlices) < numSegments {
+						// Grow geometrically to reduce future reallocations
+						newCap := max(numSegments, cap(s.ParallelSlices)*2)
+						s.ParallelSlices = make([][]searcher.InternalCandidate, newCap)
+					}
+					s.ParallelSlices = s.ParallelSlices[:numSegments]
+					// Ensure clean state (nil slices)
+					for i := range s.ParallelSlices {
+						s.ParallelSlices[i] = nil
+					}
+					results := s.ParallelSlices
+					var firstErr error
+					var firstErrOnce sync.Once
+
+					runSearch := func(idx int, seg segment.Segment, filt segment.Filter) {
+						defer wg.Done()
+
+						// Acquire semaphore
+						sem <- struct{}{}
+						defer func() { <-sem }()
+
+						// Acquire local searcher
+						localS := searcher.Get()
+						defer searcher.Put(localS)
+						localS.Heap.Reset(descending)
+
+						if err := seg.Search(ctx, qExec, searchK, filt, options, localS); err != nil {
+							firstErrOnce.Do(func() { firstErr = err })
+							return
+						}
+
+						// Extract results with ZERO heap allocation per segment
+						if localS.Heap.Len() > 0 {
+							// Calculate slice of persistent buffer to use
+							start := idx * searchK
+							// Note: s.ParallelResults cap = numSegments * searchK.
+							// Safely slice:
+							dest := s.ParallelResults[start : start : start+searchK] // len=0, cap=searchK
+
+							for localS.Heap.Len() > 0 {
+								dest = append(dest, localS.Heap.Pop())
+							}
+							results[idx] = dest
+						}
+					}
+
+					// 1a. Search MemTable (only if not in read-only mode)
+					if snap.active != nil {
+						wg.Add(1)
+						go runSearch(0, snap.active, activeFilter)
+					}
+
+					// 1b. Search Segments
+					// With segment pruning: skip segments that can be pruned based on manifest stats
+					for i, seg := range snap.sortedSegments {
+						// SEGMENT PRUNING: Skip segments that can be pruned based on manifest stats
+						// This is O(1) per segment and avoids HNSW traversal entirely
+						if options.Filter != nil && e.canPruneSegment(seg.ID(), options.Filter) {
+							// Segment can be skipped - no possible matches based on stats
+							continue
+						}
+
+						wg.Add(1)
+						// In read-only mode, index starts at 0 instead of 1
+						idx := i + 1
+						if snap.active == nil {
+							idx = i
+						}
+						var f segment.Filter
+						if v := s.SegmentFilters[i]; v != nil {
+							f = v.(segment.Filter)
+						}
+						go runSearch(idx, seg, f)
+					}
+
+					wg.Wait()
+
+					if firstErr != nil {
+						yield(model.Candidate{}, firstErr)
 						return
 					}
 
-					// Extract results with ZERO heap allocation per segment
-					if localS.Heap.Len() > 0 {
-						// Calculate slice of persistent buffer to use
-						start := idx * searchK
-						// Note: s.ParallelResults cap = numSegments * searchK.
-						// Safely slice:
-						dest := s.ParallelResults[start : start : start+searchK] // len=0, cap=searchK
-
-						for localS.Heap.Len() > 0 {
-							dest = append(dest, localS.Heap.Pop())
-						}
-						results[idx] = dest
-					}
-				}
-
-				// 1a. Search MemTable (only if not in read-only mode)
-				if snap.active != nil {
-					wg.Add(1)
-					go runSearch(0, snap.active, activeFilter)
-				}
-
-				// 1b. Search Segments
-				// With segment pruning: skip segments that can be pruned based on manifest stats
-				for i, seg := range snap.sortedSegments {
-					// SEGMENT PRUNING: Skip segments that can be pruned based on manifest stats
-					// This is O(1) per segment and avoids HNSW traversal entirely
-					if options.Filter != nil && e.canPruneSegment(seg.ID(), options.Filter) {
-						// Segment can be skipped - no possible matches based on stats
-						continue
-					}
-
-					wg.Add(1)
-					// In read-only mode, index starts at 0 instead of 1
-					idx := i + 1
-					if snap.active == nil {
-						idx = i
-					}
-					var f segment.Filter
-					if v := s.SegmentFilters[i]; v != nil {
-						f = v.(segment.Filter)
-					}
-					go runSearch(idx, seg, f)
-				}
-
-				wg.Wait()
-
-				if firstErr != nil {
-					yield(model.Candidate{}, firstErr)
-					return
-				}
-
-				// Merge results
-				for _, candidates := range results {
-					for _, c := range candidates {
-						if s.Heap.Len() < searchK {
-							s.Heap.Push(c)
-						} else {
-							worst := s.Heap.Peek()
-							if searcher.InternalCandidateBetter(c, worst, descending) {
-								s.Heap.Pop()
+					// Merge results
+					for _, candidates := range results {
+						for _, c := range candidates {
+							if s.Heap.Len() < searchK {
 								s.Heap.Push(c)
+							} else {
+								worst := s.Heap.Peek()
+								if searcher.InternalCandidateBetter(c, worst, descending) {
+									s.Heap.Pop()
+									s.Heap.Push(c)
+								}
 							}
 						}
 					}
-				}
+				} // end parallel search else block
 			}
 		}
 
+	rerank:
 		// 2. Extract candidates for reranking
 		s.CandidateBuffer = s.CandidateBuffer[:0]
 		for s.Heap.Len() > 0 {

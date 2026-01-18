@@ -297,8 +297,9 @@ func (s *shard) Search(ctx context.Context, q []float32, k int, filter segment.F
 	}
 
 	hnswOpts := &idxhnsw.SearchOptions{
-		EFSearch: opts.NProbes,
-		Filter:   hnswFilter,
+		EFSearch:    opts.NProbes,
+		Filter:      hnswFilter,
+		Selectivity: opts.Selectivity, // Pass selectivity hint for adaptive traversal
 	}
 	if hnswOpts.EFSearch == 0 {
 		// Default EFSearch logic:
@@ -790,6 +791,92 @@ func (s *shard) EvaluateFilterResult(ctx context.Context, filter *metadata.Filte
 	qs.TmpRowIDs = out
 	return imetadata.RowsResult(out), nil
 }
+
+// FilterCursor returns a push-based cursor for filter evaluation.
+// This is the zero-allocation hot path for streaming filtered search.
+// Unlike EvaluateFilterResult (which materializes results), FilterCursor
+// pushes matching row IDs directly to the consumer, enabling:
+//   - Zero roaring allocations
+//   - Early termination
+//   - Segment-local execution
+//
+// The cursor borrows shard state and is valid until the shard changes.
+func (s *shard) FilterCursor(filter *metadata.FilterSet) imetadata.FilterCursor {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	count := uint32(s.ids.Count())
+	if count == 0 {
+		return imetadata.GetEmptyCursor()
+	}
+
+	if filter == nil || len(filter.Filters) == 0 {
+		return imetadata.NewAllCursor(count)
+	}
+
+	// Check if all filter columns exist
+	for _, f := range filter.Filters {
+		if _, ok := s.columns[f.Key]; !ok {
+			return imetadata.GetEmptyCursor()
+		}
+	}
+
+	// Return a column-based cursor that evaluates filters lazily
+	// We need to copy the columns map reference since we're releasing the lock
+	// The actual column data is append-only, so this is safe
+	return &shardFilterCursor{
+		shard:   s,
+		filters: filter.Filters,
+		count:   count,
+	}
+}
+
+// shardFilterCursor is a push-based filter cursor for memtable shards.
+// It evaluates filters lazily during iteration, avoiding materialization.
+type shardFilterCursor struct {
+	shard   *shard
+	filters []metadata.Filter
+	count   uint32
+}
+
+func (c *shardFilterCursor) ForEach(fn func(rowID uint32) bool) {
+	c.shard.mu.RLock()
+	defer c.shard.mu.RUnlock()
+
+	count := int(c.count)
+	filters := c.filters
+	columns := c.shard.columns
+
+rowLoop:
+	for id := 0; id < count; id++ {
+		// Check all filters (AND logic) with short-circuit
+		for _, f := range filters {
+			col := columns[f.Key]
+			if col == nil || !col.Matches(id, f.Value, f.Operator) {
+				continue rowLoop
+			}
+		}
+		// Passed all filters
+		if !fn(uint32(id)) {
+			return
+		}
+	}
+}
+
+func (c *shardFilterCursor) EstimateCardinality() int {
+	// Rough heuristic: 10% selectivity per filter
+	estimate := int(c.count)
+	for range c.filters {
+		estimate = estimate * 10 / 100
+		if estimate < 1 {
+			return 1
+		}
+	}
+	return estimate
+}
+
+func (c *shardFilterCursor) IsEmpty() bool { return c.count == 0 }
+func (c *shardFilterCursor) IsAll() bool   { return len(c.filters) == 0 }
 
 // Advise is a no-op for MemTable.
 func (s *shard) Advise(pattern segment.AccessPattern) error {

@@ -20,6 +20,9 @@
 # Go workspace file
 go.work
 
+# Benchmark fixtures (generated, ~1GB)
+benchmark_test/testdata/
+
 TODO.md
 .DS_Store
 _prompts/

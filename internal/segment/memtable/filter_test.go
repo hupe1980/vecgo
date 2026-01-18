@@ -135,4 +135,66 @@ func TestColumnarFilterWrapper(t *testing.T) {
 		assert.False(t, w.Matches(0))
 		assert.False(t, w.Matches(1))
 	})
+
+	t.Run("OpIn String Filter", func(t *testing.T) {
+		// color IN ("red", "green")
+		f := metadata.Filter{
+			Key:      "color",
+			Operator: metadata.OpIn,
+			Value:    metadata.Array([]metadata.Value{metadata.String("red"), metadata.String("green")}),
+		}
+		fs := metadata.NewFilterSet(f)
+		w := newColumnarFilterWrapper(nil, fs, columns, 4)
+
+		assert.True(t, w.Matches(0))  // "red" ✓
+		assert.False(t, w.Matches(1)) // "blue" ✗
+		assert.True(t, w.Matches(2))  // "green" ✓
+		assert.False(t, w.Matches(3)) // nil ✗
+	})
+
+	t.Run("OpIn Int Filter", func(t *testing.T) {
+		// price IN (10, 30)
+		f := metadata.Filter{
+			Key:      "price",
+			Operator: metadata.OpIn,
+			Value:    metadata.Array([]metadata.Value{metadata.Int(10), metadata.Int(30)}),
+		}
+		fs := metadata.NewFilterSet(f)
+		w := newColumnarFilterWrapper(nil, fs, columns, 4)
+
+		assert.True(t, w.Matches(0))  // 10 ✓
+		assert.False(t, w.Matches(1)) // 20 ✗
+		assert.True(t, w.Matches(2))  // 30 ✓
+		assert.False(t, w.Matches(3)) // nil ✗
+	})
+
+	t.Run("OpIn Single Element", func(t *testing.T) {
+		// price IN (20) - single element should work
+		f := metadata.Filter{
+			Key:      "price",
+			Operator: metadata.OpIn,
+			Value:    metadata.Array([]metadata.Value{metadata.Int(20)}),
+		}
+		fs := metadata.NewFilterSet(f)
+		w := newColumnarFilterWrapper(nil, fs, columns, 4)
+
+		assert.False(t, w.Matches(0)) // 10 ✗
+		assert.True(t, w.Matches(1))  // 20 ✓
+		assert.False(t, w.Matches(2)) // 30 ✗
+	})
+
+	t.Run("OpIn Empty Array", func(t *testing.T) {
+		// price IN () - empty array matches nothing
+		f := metadata.Filter{
+			Key:      "price",
+			Operator: metadata.OpIn,
+			Value:    metadata.Array([]metadata.Value{}),
+		}
+		fs := metadata.NewFilterSet(f)
+		w := newColumnarFilterWrapper(nil, fs, columns, 4)
+
+		assert.False(t, w.Matches(0))
+		assert.False(t, w.Matches(1))
+		assert.False(t, w.Matches(2))
+	})
 }

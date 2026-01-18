@@ -614,6 +614,12 @@ func (m *MemTable) FetchVectorsInto(_ context.Context, rows []uint32, dim int, d
 	return validMask, nil
 }
 
+// FetchVectorDirect is not supported for MemTable due to locking requirements.
+// Returns nil. Use FetchVectorsInto instead.
+func (m *MemTable) FetchVectorDirect(rowID uint32) []float32 {
+	return nil // Not supported for MemTable
+}
+
 // EvaluateFilter returns a bitmap of rows matching the filter.
 func (m *MemTable) EvaluateFilter(ctx context.Context, filter *metadata.FilterSet) (segment.Bitmap, error) {
 	if filter == nil || len(filter.Filters) == 0 {
@@ -656,17 +662,13 @@ func (m *MemTable) EvaluateFilterResult(ctx context.Context, filter *metadata.Fi
 		return imetadata.AllResult(), nil // No filter = match all
 	}
 
-	// For memtable with shards, we cannot use QueryScratch directly because
+	// For memtable with shards, we cannot use qs.TmpRowIDs directly because
 	// each shard call would overwrite the previous shard's results.
-	// Instead, we use TmpIndices (as int32) to accumulate results separately.
-	// This is a trade-off: we reuse existing scratch but need to copy.
-
-	// Accumulator for global row IDs - use a separate slice
-	// We'll collect into TmpRowIDs after all shards are processed
-	var accumulated []uint32
+	// Use TmpRowIDs2 as the accumulator (zero-alloc after warmup).
+	accumulated := qs.TmpRowIDs2[:0]
 
 	for i, s := range m.shards {
-		// Each shard writes to qs.TmpRowIDs, so we need to copy before next shard
+		// Each shard writes to qs.TmpRowIDs, so we accumulate to TmpRowIDs2
 		shardResult, err := s.EvaluateFilterResult(ctx, filter, qs)
 		if err != nil {
 			return imetadata.EmptyResult(), err
@@ -685,10 +687,6 @@ func (m *MemTable) EvaluateFilterResult(ctx context.Context, filter *metadata.Fi
 
 			// Copy rows with offset applied
 			shardRows := shardResult.Rows()
-			if accumulated == nil {
-				// First shard with results - estimate capacity
-				accumulated = make([]uint32, 0, len(shardRows)*len(m.shards))
-			}
 			for _, id := range shardRows {
 				accumulated = append(accumulated, id|shardOffset)
 			}
@@ -699,10 +697,164 @@ func (m *MemTable) EvaluateFilterResult(ctx context.Context, filter *metadata.Fi
 		return imetadata.EmptyResult(), nil
 	}
 
-	// Copy accumulated results into TmpRowIDs for the caller
+	// Store back to TmpRowIDs2 for capacity growth tracking
+	qs.TmpRowIDs2 = accumulated
+
+	// Copy to TmpRowIDs for the caller (this is the contract)
 	qs.TmpRowIDs = append(qs.TmpRowIDs[:0], accumulated...)
 	return imetadata.RowsResult(qs.TmpRowIDs), nil
 }
+
+// FilterCursor returns a push-based cursor for streaming filtered search.
+// This is the zero-allocation hot path that eliminates roaring bitmap overhead.
+// The cursor evaluates filters lazily during iteration - no materialization.
+//
+// Usage:
+//
+//	cursor := m.FilterCursor(filter)
+//	cursor.ForEach(func(rowID uint32) bool {
+//	    // rowID is global (includes shard prefix)
+//	    score := computeDistance(query, vectors[rowID])
+//	    heap.Push(rowID, score)
+//	    return true // continue
+//	})
+func (m *MemTable) FilterCursor(filter *metadata.FilterSet) imetadata.FilterCursor {
+	if filter == nil || len(filter.Filters) == 0 {
+		// No filter = all rows match, return multi-shard all cursor
+		return &multiShardAllCursor{shards: m.shards}
+	}
+
+	return &multiShardFilterCursor{
+		shards: m.shards,
+		filter: filter,
+	}
+}
+
+// multiShardAllCursor iterates all rows across all shards.
+type multiShardAllCursor struct {
+	shards []*shard
+}
+
+func (c *multiShardAllCursor) ForEach(fn func(rowID uint32) bool) {
+	for sIdx, s := range c.shards {
+		shardOffset := uint32(sIdx) << 28
+		s.mu.RLock()
+		count := uint32(s.ids.Count())
+		s.mu.RUnlock()
+
+		for id := uint32(0); id < count; id++ {
+			if !fn(id | shardOffset) {
+				return
+			}
+		}
+	}
+}
+
+func (c *multiShardAllCursor) EstimateCardinality() int {
+	total := 0
+	for _, s := range c.shards {
+		s.mu.RLock()
+		total += int(s.ids.Count())
+		s.mu.RUnlock()
+	}
+	return total
+}
+
+func (c *multiShardAllCursor) IsEmpty() bool {
+	for _, s := range c.shards {
+		s.mu.RLock()
+		count := s.ids.Count()
+		s.mu.RUnlock()
+		if count > 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *multiShardAllCursor) IsAll() bool { return true }
+
+// multiShardFilterCursor iterates filtered rows across all shards.
+type multiShardFilterCursor struct {
+	shards []*shard
+	filter *metadata.FilterSet
+}
+
+func (c *multiShardFilterCursor) ForEach(fn func(rowID uint32) bool) {
+	for sIdx, s := range c.shards {
+		shardOffset := uint32(sIdx) << 28
+
+		s.mu.RLock()
+		count := int(s.ids.Count())
+		columns := s.columns
+		filters := c.filter.Filters
+
+		// Check if all filter columns exist in this shard
+		allColumnsExist := true
+		for _, f := range filters {
+			if _, ok := columns[f.Key]; !ok {
+				allColumnsExist = false
+				break
+			}
+		}
+
+		if !allColumnsExist {
+			s.mu.RUnlock()
+			continue // No matches in this shard
+		}
+
+	rowLoop:
+		for id := 0; id < count; id++ {
+			// Check all filters (AND logic) with short-circuit
+			for _, f := range filters {
+				col := columns[f.Key]
+				if !col.Matches(id, f.Value, f.Operator) {
+					continue rowLoop
+				}
+			}
+			// Passed all filters
+			globalID := uint32(id) | shardOffset
+			if !fn(globalID) {
+				s.mu.RUnlock()
+				return
+			}
+		}
+		s.mu.RUnlock()
+	}
+}
+
+func (c *multiShardFilterCursor) EstimateCardinality() int {
+	total := 0
+	for _, s := range c.shards {
+		s.mu.RLock()
+		count := int(s.ids.Count())
+		s.mu.RUnlock()
+		// Rough heuristic: 10% selectivity per filter
+		estimate := count
+		for range c.filter.Filters {
+			estimate = estimate * 10 / 100
+			if estimate < 1 {
+				estimate = 1
+			}
+		}
+		total += estimate
+	}
+	return total
+}
+
+func (c *multiShardFilterCursor) IsEmpty() bool {
+	for _, s := range c.shards {
+		s.mu.RLock()
+		count := s.ids.Count()
+		s.mu.RUnlock()
+		if count > 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *multiShardFilterCursor) IsAll() bool { return false }
 
 func (m *MemTable) Iterate(ctx context.Context, fn func(rowID uint32, id model.ID, vec []float32, md metadata.Document, payload []byte) error) error {
 	// Iterate all shards

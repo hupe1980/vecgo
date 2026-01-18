@@ -817,6 +817,8 @@ func (w *Writer) Flush() error {
 
 	// Write Metadata Index
 	h.MetadataIndexOffset = bytesWritten
+	// Seal numeric index before writing so that sorted arrays are serialized
+	w.index.SealNumericIndex()
 	cw := &countingWriter{w: mw}
 	if err := w.index.WriteInvertedIndex(cw); err != nil {
 		return err

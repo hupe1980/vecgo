@@ -46,7 +46,7 @@ func OpenBenchEngine(b *testing.B, dim int, opts ...vecgo.Option) *BenchEngine {
 	defaultOpts := []vecgo.Option{
 		vecgo.Create(dim, vecgo.MetricL2),
 		vecgo.WithCompactionThreshold(1 << 40),                             // Disable auto-compaction
-		vecgo.WithFlushConfig(vecgo.FlushConfig{MaxMemTableSize: 1 << 30}), // 1GB memtable
+		vecgo.WithFlushConfig(vecgo.FlushConfig{MaxMemTableSize: 64 << 20}), // 1GB memtable
 		vecgo.WithMemoryLimit(0),                                           // No memory semaphore
 	}
 	allOpts := append(defaultOpts, opts...)

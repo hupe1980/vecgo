@@ -2,34 +2,114 @@
 
 This folder contains the production-grade benchmark suite for performance testing and regression detection.
 
+## Quick Start (Fast Benchmarks with Fixtures)
+
+The benchmark suite uses **pre-built fixtures** for instant startup. This eliminates the massive overhead of rebuilding indexes (10-60 seconds) for each benchmark.
+
+```bash
+# One-time: Generate fixtures (~2 minutes)
+go test -tags=genfixtures -run=TestGenerateFixtures -v ./benchmark_test/...
+
+# Run fast benchmarks using fixtures
+go test -bench=BenchmarkFast -benchtime=1s -run=^$ ./benchmark_test/...
+
+# Quick CI benchmarks (small fixtures only)
+go test -tags=genfixtures -run=TestGenerateFixtures -short -v ./benchmark_test/...
+go test -bench=BenchmarkFast -benchtime=1s -short -run=^$ ./benchmark_test/...
+```
+
+**Performance comparison:**
+| Benchmark Style | Time | CPU Usage | Notes |
+|-----------------|------|-----------|-------|
+| Old (rebuild each time) | 21s | 197s | Wastes 90% on index building |
+| New (fixtures) | 18s | 19s | **10x less CPU, instant startup** |
+
+## Fixture System
+
+### Available Fixtures
+
+| Fixture | Dimension | Vectors | Distribution | Use Case |
+|---------|-----------|---------|--------------|----------|
+| `uniform_128d_10k` | 128 | 10K | Uniform | CI, quick iteration |
+| `zipfian_128d_10k` | 128 | 10K | Zipfian | CI, realistic |
+| `uniform_128d_50k` | 128 | 50K | Uniform | Standard benchmarks |
+| `zipfian_128d_50k` | 128 | 50K | Zipfian | Optimization validation |
+| `uniform_768d_50k` | 768 | 50K | Uniform | Production dimensions |
+| `zipfian_768d_50k` | 768 | 50K | Zipfian | Production + realistic |
+| `uniform_768d_100k` | 768 | 100K | Uniform | Large-scale testing |
+| `zipfian_768d_100k` | 768 | 100K | Zipfian | Production-scale |
+
+### Fixture Commands
+
+```bash
+# List fixture status
+go test -tags=genfixtures -run=TestListFixtures -v ./benchmark_test/...
+
+# Generate specific fixture
+go test -tags=genfixtures -run=TestGenerateFixture/uniform_768d_100k -v ./benchmark_test/...
+
+# Clean all fixtures
+go test -tags=genfixtures -run=TestCleanFixtures -v ./benchmark_test/...
+```
+
 ## Benchmark Categories
+
+### Fast Benchmarks (Recommended - uses fixtures)
+- `BenchmarkFastSearch` - Search with varying selectivity (1%-90%)
+- `BenchmarkFastBatchSearch` - Batched search throughput
+- `BenchmarkFastConcurrentSearch` - Concurrent search scaling
+- `BenchmarkFastFiltered` - Filtered search at all selectivities
+- `BenchmarkFastDimensions` - Search across embedding dimensions
+
+### Production Metrics Benchmarks (`metrics_bench_test.go`) ⭐ NEW
+Essential for SLA compliance and capacity planning:
+- `BenchmarkLatencyPercentiles` - P50/P95/P99/P99.9 search latency
+- `BenchmarkLatencyUnderLoad` - Latency percentiles under concurrent load
+- `BenchmarkMemoryFootprint` - Memory usage per vector (bytes/vec, overhead ratio)
+- `BenchmarkIndexBuildTime` - Time to build index from scratch
+- `BenchmarkColdStart` - First-query latency after Open() (serverless critical)
+- `BenchmarkRecallQPSTradeoff` - Recall vs throughput Pareto frontier
+- `BenchmarkDeletePerformance` - Delete throughput and post-delete search
+- `BenchmarkGCPressure` - Allocation patterns under sustained load
+
+### Algorithm Tuning Benchmarks (`tuning_bench_test.go`) ⭐ NEW
+For optimizing HNSW/DiskANN parameters:
+- `BenchmarkEfSearchTuning` - Effect of ef_search on recall/latency
+- `BenchmarkBuildQuality` - Build time vs search quality trade-off
+- `BenchmarkDimensionScaling` - Performance across embedding dimensions
+- `BenchmarkBatchSizeOptimal` - Find optimal batch size for insert throughput
 
 ### Insert Benchmarks (`insert_bench_test.go`)
 - `BenchmarkInsert` - Single insert across dimensions (128, 768, 1536)
-- `BenchmarkBatchInsertNew` - Batch insert with varying batch sizes
+- `BenchmarkBatchInsert` - Batch insert with varying batch sizes
 - `BenchmarkDeferredInsert` - Bulk load path (deferred indexing)
 - `BenchmarkConcurrentInsert` - Concurrent insert scaling (1-8 goroutines)
 
-### Search Benchmarks (`search_bench_test.go`)
-- `BenchmarkSearchDim` - Search latency across dimensions with recall@10
-- `BenchmarkSearchScaling` - Search scaling with dataset size (1K-50K)
-- `BenchmarkConcurrentSearch` - Concurrent search throughput
-- `BenchmarkBatchSearch` - Batched search throughput
-- `BenchmarkSearchRefineFactor` - Quality/latency tradeoff
+### MemTable Search Benchmarks (`search_only_bench_test.go`)
+- `BenchmarkSearchOnly` - MemTable (L0) search path with proper methodology
+- `BenchmarkSearchOnlySelectivity` - Selectivity sweep on MemTable path
 
 ### Workload Benchmarks (`workload_bench_test.go`)
 - `BenchmarkMixedWorkload` - Concurrent read/write at various ratios (50-99% reads)
 - `BenchmarkBurstWorkload` - Burst traffic simulation
 - `BenchmarkReadAfterWrite` - Memtable search path (real-time apps)
-- `BenchmarkThroughputUnderLoad` - Sustained throughput with background writes
+- `BenchmarkThroughputUnderLoad` - Sustained load throughput
 
-### Filtered/Hybrid Benchmarks
-- `BenchmarkFilteredSearchSelectivity` - Filtered search at selectivity levels
+### Hybrid Search (`hybrid_bench_test.go`)
 - `BenchmarkHybridSearch` - Vector/Hybrid/Lexical comparison
 
-### Storage Benchmarks (`storage_bench_test.go`)
-- Local NVMe simulation
-- S3 latency simulation (with cache tiers)
+### Other Benchmarks
+- `BenchmarkCompaction_Pressure` - Compaction under write load
+- `BenchmarkBinaryQuantizer_Distance` - Binary quantizer performance
+- `BenchmarkStorage_ReadRandom` - Storage layer random reads
+
+## Data Distributions
+
+| Distribution | Description | Activates |
+|--------------|-------------|-----------|
+| **Uniform** | Random vectors, modulo bucket | Adversarial baseline |
+| **Zipfian** | Clustered vectors, power-law buckets | Segment purity, HNSW locality, pruning |
+| **NoFilter** | No metadata | Pure vector search baseline |
 
 ## Metrics Reported
 
@@ -41,18 +121,38 @@ This folder contains the production-grade benchmark suite for performance testin
 | `qps` | Query throughput |
 | `ops/sec` | Combined operations throughput |
 | `recall@10` | Search quality (higher is better) |
+| `P50_μs` | Median latency in microseconds |
+| `P95_μs` | 95th percentile latency |
+| `P99_μs` | 99th percentile latency (tail latency) |
+| `P99.9_μs` | 99.9th percentile latency |
+| `bytes/vec` | Memory usage per vector |
+| `overhead_ratio` | Memory overhead vs raw vector size |
+| `open_ms` | Time to open database |
+| `cold_start_ms` | Open + first query latency |
 
-## Quick Start
+## Running Benchmarks
 
 ```bash
-# Run all benchmarks
+# RECOMMENDED: Fast benchmarks with fixtures
+go test -bench=BenchmarkFast -benchtime=1s -run=^$ ./benchmark_test/...
+
+# Production metrics (latency percentiles, memory, cold start)
+go test -bench='BenchmarkLatency|BenchmarkMemory|BenchmarkCold' -short -run=^$ ./benchmark_test/...
+
+# Algorithm tuning (dimension scaling, batch size optimization)
+go test -bench=BenchmarkDimension -short -run=^$ ./benchmark_test/...
+
+# Legacy: All benchmarks (slower, rebuilds indexes)
 just bench-current
 
-# Run specific benchmark
-go test -bench=BenchmarkInsert -benchtime=1s ./benchmark_test/...
+# Filtered search comparison
+go test -bench=BenchmarkFastFiltered -benchtime=3s -run=^$ ./benchmark_test/...
 
 # Run with memory profiling
-go test -bench=BenchmarkSearch -benchmem -memprofile=mem.out ./benchmark_test/...
+go test -bench=BenchmarkFastSearch -benchmem -memprofile=mem.out -run=^$ ./benchmark_test/...
+
+# CPU profiling
+go test -bench=BenchmarkFastSearch -cpuprofile=cpu.out -run=^$ ./benchmark_test/...
 ```
 
 ## Baseline Comparison
@@ -97,8 +197,10 @@ Standard dataset sizes:
 
 ## Methodology
 
+- **Single query per iteration** — Each `b.N` iteration executes exactly one query (not batched)
 - **Deterministic seed** (`benchSeed=42`) for reproducible comparisons
 - **Warmup** before search benchmarks
 - **Setup outside timed region** (`b.ResetTimer()` after data loading)
 - **Custom metrics** via `b.ReportMetric()`
 - **Parallel benchmarks** via `b.RunParallel()` for concurrency testing
+- **Memory limit** — Default 64MB memtable to prevent OOM during test runs

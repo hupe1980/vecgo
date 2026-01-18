@@ -1,9 +1,7 @@
 package vectorstore
 
 import (
-	"runtime"
 	"sync"
-	_ "unsafe" // For go:linkname
 
 	"github.com/hupe1980/vecgo/model"
 )
@@ -67,6 +65,10 @@ func PutPrefetchBatch(pb *PrefetchBatch) {
 
 // Prefetch implements PrefetchHint for ColumnarStore.
 // It uses CPU prefetch instructions to load vectors into L2 cache.
+// Architecture-specific implementations:
+// - ARM64: PRFM PLDL1KEEP instruction
+// - AMD64: PREFETCHT0 instruction
+// - Other: Portable fallback via volatile read
 func (s *ColumnarStore) Prefetch(ids []model.RowID) {
 	if len(ids) == 0 {
 		return
@@ -80,35 +82,8 @@ func (s *ColumnarStore) Prefetch(ids []model.RowID) {
 	dim := int(s.dim)
 	dataLen := len(data)
 
-	// Prefetch each vector's memory into CPU cache
-	// Each vector is dim*4 bytes (float32)
-	// Cache line is typically 64 bytes
-	for _, id := range ids {
-		idx := int(id) * dim
-		if idx >= 0 && idx+dim <= dataLen {
-			// Prefetch the start of the vector
-			// This will pull at least one cache line into L2
-			prefetchData(&data[idx])
-		}
-	}
-}
-
-// prefetchData is a hint to the CPU to prefetch data.
-// This is implemented differently per architecture:
-// - x86/amd64: PREFETCHT0 instruction
-// - ARM64: PRFM instruction
-// For Go, we use a simple volatile read as a portable approximation.
-//
-//go:noinline
-func prefetchData(ptr *float32) {
-	// Volatile read - forces the memory to be accessed.
-	// The compiler can't optimize this away.
-	// On modern CPUs, this will trigger the hardware prefetcher.
-	_ = *ptr
-
-	// Also hint the Go runtime that we're accessing this memory.
-	// This can help with GC and memory management.
-	runtime.KeepAlive(ptr)
+	// Use architecture-specific prefetch (defined in prefetch_*.go files)
+	prefetchVectorBatch(data, dim, dataLen, ids)
 }
 
 // PrefetchBatchFromStore prefetches a batch of vectors from a columnar store.

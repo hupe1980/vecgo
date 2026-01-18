@@ -114,10 +114,11 @@ func (h *CandidateHeap) TryReplaceTop(x InternalCandidate) bool {
 }
 
 // up moves element at j up the heap. Optimized with inline comparison and single final write.
+// 4-ary heap: parent = (j-1)/4 instead of (j-1)/2
 func (h *CandidateHeap) up(j int) {
 	item := h.Candidates[j]
 	for j > 0 {
-		i := (j - 1) / 2 // parent
+		i := (j - 1) / heapArity // parent in 4-ary heap
 		if !InternalCandidateWorse(item, h.Candidates[i], h.descending) {
 			break
 		}
@@ -128,23 +129,33 @@ func (h *CandidateHeap) up(j int) {
 }
 
 // down moves element at i0 down the heap. Optimized with inline moves and single final write.
+// 4-ary heap: first child = 4*i+1, up to 4 children to compare.
 func (h *CandidateHeap) down(i0, n int) {
 	i := i0
 	item := h.Candidates[i]
 	for {
-		j1 := 2*i + 1
-		if j1 >= n || j1 < 0 { // j1 < 0 after int overflow
+		firstChild := heapArity*i + 1
+		if firstChild >= n {
 			break
 		}
-		j := j1 // left child
-		if j2 := j1 + 1; j2 < n && InternalCandidateWorse(h.Candidates[j2], h.Candidates[j1], h.descending) {
-			j = j2 // right child
+
+		// Find the best child among up to 4 children
+		best := firstChild
+		lastChild := firstChild + heapArity
+		if lastChild > n {
+			lastChild = n
 		}
-		if !InternalCandidateWorse(h.Candidates[j], item, h.descending) {
+		for c := firstChild + 1; c < lastChild; c++ {
+			if InternalCandidateWorse(h.Candidates[c], h.Candidates[best], h.descending) {
+				best = c
+			}
+		}
+
+		if !InternalCandidateWorse(h.Candidates[best], item, h.descending) {
 			break
 		}
-		h.Candidates[i] = h.Candidates[j]
-		i = j
+		h.Candidates[i] = h.Candidates[best]
+		i = best
 	}
 	h.Candidates[i] = item
 }

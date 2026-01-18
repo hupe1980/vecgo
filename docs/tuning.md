@@ -485,6 +485,77 @@ The oversample factor controls the recall/latency trade-off:
 
 ---
 
+## Filtered Search Performance
+
+Vecgo uses adaptive query planning to choose the optimal strategy based on filter selectivity.
+
+### Query Planning Strategies
+
+```mermaid
+flowchart TD
+    Filter{Filter Selectivity?} -->|≤30%| Cursor["FilterCursor<br/>Zero-alloc, O(1) matching"]
+    Filter -->|>30%| HNSW["HNSW + Post-Filter<br/>Graph traversal, late filter"]
+    
+    Cursor -->|"Each segment"| Check{Per-Segment<br/>Selectivity?}
+    Check -->|≤30%| Stream["ForEach + FetchVectorDirect<br/>Zero-copy SIMD distance"]
+    Check -->|>30%| Fallback["HNSW for this segment"]
+    
+    style Cursor fill:#e8f5e9
+    style HNSW fill:#e3f2fd
+    style Stream fill:#c8e6c9
+```
+
+### Selectivity Cutoff
+
+The `SelectivityCutoff` (default: 30%) determines when to switch strategies:
+
+```go
+// Force cursor-based filtering (ignores selectivity)
+results, _ := db.Search(ctx, query, 10,
+    vecgo.WithFilter(filter),
+    vecgo.WithPreFilter(true),  // Always use cursor
+)
+
+// Adjust cutoff threshold
+results, _ := db.Search(ctx, query, 10,
+    vecgo.WithFilter(filter),
+    vecgo.WithSelectivityCutoff(0.20),  // Switch to HNSW at 20%
+)
+```
+
+### Performance by Distribution
+
+| Distribution | Selectivity | Latency | Strategy | Notes |
+|--------------|-------------|---------|----------|-------|
+| **Uniform** | 1% | ~115μs | FilterCursor | ✅ Near-optimal |
+| **Uniform** | 10% | ~230μs | FilterCursor | ✅ Fast |
+| **Uniform** | 50% | ~1.5ms | HNSW | Expected crossover |
+| **Zipfian** | 1% | ~1.3ms | HNSW | ⚠️ Hot values exceed local cutoff |
+| **Zipfian** | 50% | ~1.3ms | HNSW | Selectivity irrelevant |
+
+### Understanding Zipfian Performance
+
+**Why Zipfian is slower:** Power-law distributions (80/20 rule) cause hot values to cluster in segments. Global selectivity (1%) lies about local conditions (30-70% per segment).
+
+**Current behavior:** The planner correctly detects high per-segment selectivity and falls through to HNSW. This is correct but expensive.
+
+**Optimization roadmap:**
+1. Hot-value bitmap caching (in progress)
+2. Per-segment stats in manifest
+3. Adaptive cutoff per distribution
+
+### Best Practices for Filtered Search
+
+| Scenario | Recommendation |
+|----------|----------------|
+| Low selectivity (<10%) | Default settings work well |
+| High selectivity (>50%) | Use `WithPreFilter(false)` to skip cursor |
+| Power-law data (Zipfian) | Consider pre-computing hot value filters |
+| Equality filters | Use typed metadata for O(1) microindex lookup |
+| Range filters | Ensure numeric fields are indexed |
+
+---
+
 ## Benchmarking
 
 Run benchmarks with allocation tracking:

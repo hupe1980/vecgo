@@ -48,6 +48,12 @@ type SearchResult struct {
 type SearchOptions struct {
 	EFSearch int
 	Filter   segment.Filter
+
+	// Selectivity is the estimated filter pass rate (0.0-1.0).
+	// Used to choose between predicate-aware (low selectivity) and
+	// unfiltered+post-filter (high selectivity) traversal.
+	// 0 means unknown/not provided (defaults to predicate-aware).
+	Selectivity float64
 }
 
 type BatchInsertResult struct {

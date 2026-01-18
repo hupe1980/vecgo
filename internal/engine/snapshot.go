@@ -47,6 +47,12 @@ func (r *RefCountedSegment) SetOnClose(f func()) {
 	r.onClose.Store(f)
 }
 
+// UnwrapSegment returns the underlying segment, implementing SegmentUnwrapper.
+// This is used by segmentHasGraphIndex to access the real segment type.
+func (r *RefCountedSegment) UnwrapSegment() segment.Segment {
+	return r.Segment
+}
+
 // Snapshot represents a consistent view of the database.
 type Snapshot struct {
 	refs            int64

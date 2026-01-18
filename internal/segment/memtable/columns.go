@@ -73,10 +73,26 @@ func (c *intColumn) Matches(i int, v metadata.Value, op metadata.Operator) bool 
 	if i >= len(c.data) || !c.valid[i] {
 		return false
 	}
-	// For now, only optimize Equal for int-int
+	datum := c.data[i]
+
+	// Optimize OpIn for int arrays
+	if op == metadata.OpIn {
+		arr, ok := v.AsArray()
+		if !ok {
+			return false
+		}
+		// Linear scan for small arrays, fast enough
+		for _, item := range arr {
+			if item.Kind == metadata.KindInt && item.I64 == datum {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Optimize scalar int comparisons
 	if v.Kind == metadata.KindInt {
 		val := v.I64
-		datum := c.data[i]
 		switch op {
 		case metadata.OpEqual:
 			return datum == val
@@ -247,15 +263,32 @@ func (c *stringColumn) Matches(i int, v metadata.Value, op metadata.Operator) bo
 	if i >= len(c.data) || !c.valid[i] {
 		return false
 	}
+	datum := c.data[i]
 
+	// Optimize OpIn for string arrays
+	if op == metadata.OpIn {
+		arr, ok := v.AsArray()
+		if !ok {
+			return false
+		}
+		// Linear scan for small arrays, fast enough
+		for _, item := range arr {
+			if h, ok := item.StringHandle(); ok && h == datum {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Optimize scalar string comparisons
 	if v.Kind == metadata.KindString {
 		targetHandle, ok := v.StringHandle()
 		if ok {
 			switch op {
 			case metadata.OpEqual:
-				return c.data[i] == targetHandle
+				return datum == targetHandle
 			case metadata.OpNotEqual:
-				return c.data[i] != targetHandle
+				return datum != targetHandle
 			}
 		}
 	}

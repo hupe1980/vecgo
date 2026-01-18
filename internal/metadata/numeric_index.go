@@ -60,6 +60,7 @@ type fieldStats struct {
 // After Seal(): The following fields are immutable and can be read lock-free:
 //   - values, rowIDs (sorted arrays)
 //   - bitmapIndex, sortedUniqueValues, prefixBitmaps (precomputed bitmaps)
+//   - rowIDToIndex or rowIDToIndexSlice (reverse lookup for O(1) MatchRowID)
 //   - stats (computed statistics)
 //
 // The pendingDeletes map is the only mutable field after Seal().
@@ -69,6 +70,18 @@ type numericField struct {
 
 	// rowIDs is the column of row IDs (aligned with values)
 	rowIDs []uint32
+
+	// rowIDToIndex maps rowID → index into values/rowIDs arrays (sparse rowIDs).
+	// Built on Seal() for O(1) reverse lookup in MatchRowID.
+	// IMMUTABLE after Seal() - can be read lock-free.
+	// Used when rowIDs are sparse (max > 2*len).
+	rowIDToIndex map[uint32]int
+
+	// rowIDToIndexSlice is the dense alternative to rowIDToIndex.
+	// Uses array indexing (no hash) for faster lookup when rowIDs are dense.
+	// Value of -1 means rowID not present in this field.
+	// Used when rowIDs are dense (max < 2*len).
+	rowIDToIndexSlice []int32
 
 	// sorted indicates whether the field is sorted (false during bulk load)
 	sorted bool
@@ -270,7 +283,36 @@ func (ni *NumericIndex) sealField(field *numericField) {
 		field.stats.cardinality = countDistinct(field.values)
 	}
 
-	// 4. Build bitmap index for low-cardinality fields
+	// 4. Build rowID → index lookup for O(1) MatchRowID
+	// Check if rowIDs are dense (0 to N-1) - if so, use slice for faster lookup
+	maxRowID := uint32(0)
+	for _, rid := range field.rowIDs {
+		if rid > maxRowID {
+			maxRowID = rid
+		}
+	}
+
+	// If rowIDs are reasonably dense (max < 2*len), use slice; otherwise use map
+	if int(maxRowID) < len(field.rowIDs)*2 {
+		// Dense: use slice for O(1) array indexing (no hash)
+		field.rowIDToIndexSlice = make([]int32, maxRowID+1)
+		for i := range field.rowIDToIndexSlice {
+			field.rowIDToIndexSlice[i] = -1 // Sentinel for "not present"
+		}
+		for i, rid := range field.rowIDs {
+			field.rowIDToIndexSlice[rid] = int32(i)
+		}
+		field.rowIDToIndex = nil // Clear map
+	} else {
+		// Sparse: use map
+		field.rowIDToIndex = make(map[uint32]int, len(field.rowIDs))
+		for i, rid := range field.rowIDs {
+			field.rowIDToIndex[rid] = i
+		}
+		field.rowIDToIndexSlice = nil // Clear slice
+	}
+
+	// 5. Build bitmap index for low-cardinality fields
 	if field.stats.cardinality > 0 && field.stats.cardinality <= LowCardinalityThreshold {
 		ni.buildBitmapIndex(field)
 	} else {
@@ -627,6 +669,334 @@ func (ni *NumericIndex) QueryRangeSIMD(
 
 	if len(gatheredRowIDs) > 0 {
 		dst.AddMany(gatheredRowIDs)
+	}
+}
+
+// ForEachMatch iterates over matching row IDs without allocating a bitmap.
+// This is the zero-allocation path for cursor-based filter evaluation.
+// Returns true if the iteration was completed, false if fn returned false (early termination).
+func (ni *NumericIndex) ForEachMatch(
+	fieldKey string,
+	op metadata.Operator,
+	filterVal float64,
+	fn func(rowID uint32) bool,
+) bool {
+	field, ok := ni.fields[fieldKey]
+	if !ok || len(field.values) == 0 {
+		return true // No matches, iteration complete
+	}
+
+	// Must be sorted for binary search
+	if !field.sorted {
+		return true // Cannot evaluate unsorted data with this method
+	}
+
+	var lo, hi int
+
+	switch op {
+	case metadata.OpEqual:
+		// Find exact range
+		lo = sort.SearchFloat64s(field.values, filterVal)
+		hi = lo
+		for hi < len(field.values) && field.values[hi] == filterVal {
+			hi++
+		}
+
+	case metadata.OpLessThan:
+		lo = 0
+		hi = sort.SearchFloat64s(field.values, filterVal)
+
+	case metadata.OpLessEqual:
+		lo = 0
+		hi = sort.SearchFloat64s(field.values, filterVal)
+		for hi < len(field.values) && field.values[hi] == filterVal {
+			hi++
+		}
+
+	case metadata.OpGreaterThan:
+		lo = sort.SearchFloat64s(field.values, filterVal)
+		for lo < len(field.values) && field.values[lo] == filterVal {
+			lo++
+		}
+		hi = len(field.values)
+
+	case metadata.OpGreaterEqual:
+		lo = sort.SearchFloat64s(field.values, filterVal)
+		hi = len(field.values)
+
+	case metadata.OpNotEqual:
+		// Iterate all except matching
+		eq_lo := sort.SearchFloat64s(field.values, filterVal)
+		eq_hi := eq_lo
+		for eq_hi < len(field.values) && field.values[eq_hi] == filterVal {
+			eq_hi++
+		}
+		// Iterate [0, eq_lo) then [eq_hi, len)
+		for i := 0; i < eq_lo; i++ {
+			rid := field.rowIDs[i]
+			if _, deleted := field.pendingDeletes[rid]; deleted {
+				continue
+			}
+			if !fn(rid) {
+				return false
+			}
+		}
+		for i := eq_hi; i < len(field.values); i++ {
+			rid := field.rowIDs[i]
+			if _, deleted := field.pendingDeletes[rid]; deleted {
+				continue
+			}
+			if !fn(rid) {
+				return false
+			}
+		}
+		return true
+
+	default:
+		return true // Unsupported operator
+	}
+
+	if hi <= lo {
+		return true // No matches
+	}
+
+	// Iterate matching range
+	for i := lo; i < hi; i++ {
+		rid := field.rowIDs[i]
+		if _, deleted := field.pendingDeletes[rid]; deleted {
+			continue
+		}
+		if !fn(rid) {
+			return false
+		}
+	}
+	return true
+}
+
+// EstimateSelectivity estimates the selectivity of a filter on a field.
+// Returns the fraction of rows that match (0.0 to 1.0).
+func (ni *NumericIndex) EstimateSelectivity(fieldKey string, op metadata.Operator, filterVal float64) float64 {
+	field, ok := ni.fields[fieldKey]
+	if !ok || len(field.values) == 0 {
+		return 0.0
+	}
+
+	total := float64(len(field.values))
+	if total == 0 {
+		return 0.0
+	}
+
+	// Use binary search to estimate count
+	switch op {
+	case metadata.OpEqual:
+		lo := sort.SearchFloat64s(field.values, filterVal)
+		hi := lo
+		for hi < len(field.values) && field.values[hi] == filterVal {
+			hi++
+		}
+		return float64(hi-lo) / total
+
+	case metadata.OpLessThan:
+		count := sort.SearchFloat64s(field.values, filterVal)
+		return float64(count) / total
+
+	case metadata.OpLessEqual:
+		hi := sort.SearchFloat64s(field.values, filterVal)
+		for hi < len(field.values) && field.values[hi] == filterVal {
+			hi++
+		}
+		return float64(hi) / total
+
+	case metadata.OpGreaterThan:
+		lo := sort.SearchFloat64s(field.values, filterVal)
+		for lo < len(field.values) && field.values[lo] == filterVal {
+			lo++
+		}
+		return float64(len(field.values)-lo) / total
+
+	case metadata.OpGreaterEqual:
+		lo := sort.SearchFloat64s(field.values, filterVal)
+		return float64(len(field.values)-lo) / total
+
+	case metadata.OpNotEqual:
+		lo := sort.SearchFloat64s(field.values, filterVal)
+		hi := lo
+		for hi < len(field.values) && field.values[hi] == filterVal {
+			hi++
+		}
+		return 1.0 - float64(hi-lo)/total
+
+	default:
+		return 0.5 // Unknown operator
+	}
+}
+
+// MatchRowID checks if a specific rowID matches a filter condition.
+// Uses O(1) lookup via rowIDToIndex map (built during Seal).
+// This is the zero-allocation hot path for FilterCursor range filters.
+//
+// Returns false if:
+//   - Field doesn't exist
+//   - RowID not found in field
+//   - RowID has a pending delete
+//   - Value doesn't match the filter condition
+//
+// Thread-safety: Caller must hold read lock.
+func (ni *NumericIndex) MatchRowID(fieldKey string, op metadata.Operator, filterVal float64, rowID uint32) bool {
+	field, ok := ni.fields[fieldKey]
+	if !ok {
+		return false
+	}
+
+	// O(1) lookup: rowID → index
+	var idx int
+	var found bool
+
+	if field.rowIDToIndexSlice != nil {
+		// Dense path: array indexing (no hash)
+		if int(rowID) >= len(field.rowIDToIndexSlice) {
+			return false
+		}
+		idxVal := field.rowIDToIndexSlice[rowID]
+		if idxVal < 0 {
+			return false
+		}
+		idx = int(idxVal)
+		found = true
+	} else {
+		// Sparse path: map lookup
+		idx, found = field.rowIDToIndex[rowID]
+	}
+
+	if !found {
+		return false
+	}
+
+	// Check pending deletes
+	if _, deleted := field.pendingDeletes[rowID]; deleted {
+		return false
+	}
+
+	// Get the value for this rowID
+	value := field.values[idx]
+
+	// Compare against filter
+	switch op {
+	case metadata.OpEqual:
+		return value == filterVal
+	case metadata.OpNotEqual:
+		return value != filterVal
+	case metadata.OpLessThan:
+		return value < filterVal
+	case metadata.OpLessEqual:
+		return value <= filterVal
+	case metadata.OpGreaterThan:
+		return value > filterVal
+	case metadata.OpGreaterEqual:
+		return value >= filterVal
+	default:
+		return false
+	}
+}
+
+// GetFieldMatcher returns a closure that matches rowIDs against a filter condition.
+// The field is looked up ONCE at call time, eliminating per-rowID string map lookups.
+// This is the optimized hot path for FilterCursor.
+//
+// Returns nil if the field doesn't exist.
+func (ni *NumericIndex) GetFieldMatcher(fieldKey string, op metadata.Operator, filterVal float64) func(rowID uint32) bool {
+	field, ok := ni.fields[fieldKey]
+	if !ok {
+		return nil
+	}
+
+	// Pre-capture slices/maps to avoid field access in hot path
+	rowIDToIndexSlice := field.rowIDToIndexSlice
+	rowIDToIndex := field.rowIDToIndex
+	values := field.values
+	pendingDeletes := field.pendingDeletes
+	hasPendingDeletes := len(pendingDeletes) > 0
+
+	// If neither lookup structure is populated, the index isn't sealed.
+	// Return nil to signal caller should use fallback (document lookup).
+	if rowIDToIndexSlice == nil && rowIDToIndex == nil {
+		return nil
+	}
+
+	// Select optimal path based on data structure at closure creation time
+	// This avoids branching inside the hot loop
+
+	if rowIDToIndexSlice != nil {
+		// Dense path: array indexing (no hash)
+		if hasPendingDeletes {
+			// Dense + deletes (rare for immutable segments)
+			return func(rowID uint32) bool {
+				if int(rowID) >= len(rowIDToIndexSlice) {
+					return false
+				}
+				idxVal := rowIDToIndexSlice[rowID]
+				if idxVal < 0 {
+					return false
+				}
+				if _, deleted := pendingDeletes[rowID]; deleted {
+					return false
+				}
+				return compareFloat64(values[idxVal], op, filterVal)
+			}
+		}
+		// Dense + no deletes (optimal path for immutable segments)
+		return func(rowID uint32) bool {
+			if int(rowID) >= len(rowIDToIndexSlice) {
+				return false
+			}
+			idxVal := rowIDToIndexSlice[rowID]
+			if idxVal < 0 {
+				return false
+			}
+			return compareFloat64(values[idxVal], op, filterVal)
+		}
+	}
+
+	// Sparse path: map lookup
+	if hasPendingDeletes {
+		return func(rowID uint32) bool {
+			idx, found := rowIDToIndex[rowID]
+			if !found {
+				return false
+			}
+			if _, deleted := pendingDeletes[rowID]; deleted {
+				return false
+			}
+			return compareFloat64(values[idx], op, filterVal)
+		}
+	}
+	return func(rowID uint32) bool {
+		idx, found := rowIDToIndex[rowID]
+		if !found {
+			return false
+		}
+		return compareFloat64(values[idx], op, filterVal)
+	}
+}
+
+// compareFloat64 is an inlined comparison helper.
+// Using switch here lets the compiler generate efficient branch tables.
+func compareFloat64(value float64, op metadata.Operator, filterVal float64) bool {
+	switch op {
+	case metadata.OpEqual:
+		return value == filterVal
+	case metadata.OpNotEqual:
+		return value != filterVal
+	case metadata.OpLessThan:
+		return value < filterVal
+	case metadata.OpLessEqual:
+		return value <= filterVal
+	case metadata.OpGreaterThan:
+		return value > filterVal
+	case metadata.OpGreaterEqual:
+		return value >= filterVal
+	default:
+		return false
 	}
 }
 

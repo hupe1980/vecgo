@@ -100,6 +100,15 @@ type Segment interface {
 	// Returns nil bitmap if all vectors are valid.
 	FetchVectorsInto(ctx context.Context, rows []uint32, dim int, dst []float32) (validMask []bool, err error)
 
+	// FetchVectorDirect returns a slice pointing directly to the segment's internal storage
+	// for the given rowID. This is zero-copy and very fast, but the returned slice:
+	// - Must NOT be modified
+	// - Is only valid while the segment is open
+	// - May point to mmap'd memory
+	// Returns nil if the row doesn't exist or the segment doesn't support direct access.
+	// Use this for read-only operations like distance computation.
+	FetchVectorDirect(rowID uint32) []float32
+
 	// Iterate iterates over all vectors in the segment.
 	// The context is used for cancellation during long iterations.
 	Iterate(ctx context.Context, fn func(rowID uint32, id model.ID, vec []float32, md metadata.Document, payload []byte) error) error

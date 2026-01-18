@@ -457,6 +457,12 @@ func (s *Segment) Metric() distance.Metric {
 	return distance.Metric(s.header.Metric)
 }
 
+// HasGraphIndex returns true for DiskANN segments.
+// DiskANN uses Vamana graph for approximate nearest neighbor search.
+func (s *Segment) HasGraphIndex() bool {
+	return true
+}
+
 // Get returns the vector for the given ID.
 func (s *Segment) Get(ctx context.Context, id uint32) ([]float32, error) {
 	if id >= s.header.RowCount {
@@ -915,6 +921,20 @@ func (s *Segment) FetchVectorsInto(ctx context.Context, rows []uint32, dim int, 
 	return nil, nil // All valid
 }
 
+// FetchVectorDirect returns a slice pointing directly to the mmap'd vector data.
+// This is zero-copy and very fast, but:
+// - The returned slice must NOT be modified
+// - The slice is only valid while the segment is open
+// - The slice points to mmap'd memory
+// Returns nil if the rowID is out of bounds.
+func (s *Segment) FetchVectorDirect(rowID uint32) []float32 {
+	if rowID >= s.header.RowCount {
+		return nil
+	}
+	dim := int(s.header.Dim)
+	return s.vectors[int(rowID)*dim : int(rowID+1)*dim]
+}
+
 // Iterate iterates over all vectors in the segment.
 // The context is used for cancellation during long iterations.
 func (s *Segment) Iterate(ctx context.Context, fn func(rowID uint32, id model.ID, vec []float32, md metadata.Document, payload []byte) error) error {
@@ -1115,6 +1135,42 @@ func (s *Segment) EvaluateFilterResult(ctx context.Context, filter *metadata.Fil
 	}
 	return s.index.EvaluateFilterResult(filter, qs), nil
 }
+
+// FilterCursor returns a push-based cursor for filtered iteration.
+// This is the zero-allocation hot path that avoids Roaring bitmap operations.
+func (s *Segment) FilterCursor(filter *metadata.FilterSet) imetadata.FilterCursor {
+	if filter == nil || len(filter.Filters) == 0 {
+		return imetadata.NewAllCursor(s.header.RowCount)
+	}
+
+	if s.index == nil {
+		// No index = no way to evaluate efficiently
+		return imetadata.GetEmptyCursor()
+	}
+
+	s.index.RLock()
+	cursor := s.index.FilterCursor(filter, s.header.RowCount)
+	// Wrap to release lock after iteration
+	return &diskannSegmentCursor{
+		inner: cursor,
+		index: s.index,
+	}
+}
+
+// diskannSegmentCursor wraps UnifiedIndex cursor with lock management.
+type diskannSegmentCursor struct {
+	inner imetadata.FilterCursor
+	index *imetadata.UnifiedIndex
+}
+
+func (c *diskannSegmentCursor) ForEach(fn func(rowID uint32) bool) {
+	defer c.index.RUnlock()
+	c.inner.ForEach(fn)
+}
+
+func (c *diskannSegmentCursor) EstimateCardinality() int { return c.inner.EstimateCardinality() }
+func (c *diskannSegmentCursor) IsEmpty() bool            { return c.inner.IsEmpty() }
+func (c *diskannSegmentCursor) IsAll() bool              { return c.inner.IsAll() }
 
 // readID reads the ID for the given row from the blob.
 func (s *Segment) readID(ctx context.Context, rowID uint32) (model.ID, bool) {

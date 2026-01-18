@@ -389,6 +389,8 @@ func Open(ctx context.Context, blob blobstore.Blob, opts ...Option) (*Segment, e
 				}
 			}
 		}
+		// Seal the numeric index to enable sorted binary search
+		s.metadataIndex.SealNumericIndex()
 	}
 
 	return s, nil
@@ -429,6 +431,14 @@ func (s *Segment) RowCount() uint32 {
 
 func (s *Segment) Metric() distance.Metric {
 	return distance.Metric(s.header.Metric)
+}
+
+// HasGraphIndex returns false for flat segments.
+// Flat segments use brute-force scan, not graph traversal.
+// This signals to the engine that cursor-based search should always be used
+// for filtered queries (avoids expensive per-row MatchesBinary calls).
+func (s *Segment) HasGraphIndex() bool {
+	return false
 }
 
 // Search performs an exact scan.
@@ -864,6 +874,20 @@ func (s *Segment) FetchVectorsInto(_ context.Context, rows []uint32, dim int, ds
 	return nil, nil // All valid
 }
 
+// FetchVectorDirect returns a slice pointing directly to the mmap'd vector data.
+// This is zero-copy and very fast, but:
+// - The returned slice must NOT be modified
+// - The slice is only valid while the segment is open
+// - The slice points to mmap'd memory
+// Returns nil if the rowID is out of bounds.
+func (s *Segment) FetchVectorDirect(rowID uint32) []float32 {
+	if rowID >= s.header.RowCount {
+		return nil
+	}
+	dim := int(s.header.Dim)
+	return s.vectors[int(rowID)*dim : int(rowID+1)*dim]
+}
+
 // Iterate iterates over all vectors in the segment.
 // The context is used for cancellation during long iterations.
 func (s *Segment) Iterate(ctx context.Context, fn func(rowID uint32, id model.ID, vec []float32, md metadata.Document, payload []byte) error) error {
@@ -1028,6 +1052,98 @@ func (s *Segment) EvaluateFilterResult(ctx context.Context, filter *metadata.Fil
 	qs.TmpRowIDs = out
 	return imetadata.RowsResult(out), nil
 }
+
+// FilterCursor returns a push-based cursor for filtered iteration.
+// This is the zero-allocation hot path that avoids Roaring bitmap operations.
+//
+// Architecture:
+//   - If metadataIndex exists: delegates to UnifiedIndex.FilterCursor
+//   - Otherwise: falls back to document scanning with lazy filter evaluation
+//
+// The cursor is valid until the segment is closed.
+func (s *Segment) FilterCursor(filter *metadata.FilterSet) imetadata.FilterCursor {
+	if filter == nil || len(filter.Filters) == 0 {
+		return imetadata.NewAllCursor(s.header.RowCount)
+	}
+
+	// Fast path: use inverted index if available
+	if s.metadataIndex != nil {
+		s.metadataIndex.RLock()
+		cursor := s.metadataIndex.FilterCursor(filter, s.header.RowCount)
+		// Note: We need to wrap the cursor to release the lock when done
+		return &flatSegmentCursor{
+			inner:   cursor,
+			index:   s.metadataIndex,
+			segment: s,
+			filter:  filter,
+		}
+	}
+
+	// Slow path: scan metadata blobs with lazy evaluation
+	return &flatScanCursor{
+		segment: s,
+		filter:  filter,
+	}
+}
+
+// flatSegmentCursor wraps UnifiedIndex cursor with lock management.
+type flatSegmentCursor struct {
+	inner   imetadata.FilterCursor
+	index   *imetadata.UnifiedIndex
+	segment *Segment
+	filter  *metadata.FilterSet
+}
+
+func (c *flatSegmentCursor) ForEach(fn func(rowID uint32) bool) {
+	// The lock is already held from FilterCursor
+	defer c.index.RUnlock()
+	c.inner.ForEach(fn)
+}
+
+func (c *flatSegmentCursor) EstimateCardinality() int { return c.inner.EstimateCardinality() }
+func (c *flatSegmentCursor) IsEmpty() bool            { return c.inner.IsEmpty() }
+func (c *flatSegmentCursor) IsAll() bool              { return c.inner.IsAll() }
+
+// flatScanCursor implements lazy document scanning when no index is available.
+type flatScanCursor struct {
+	segment *Segment
+	filter  *metadata.FilterSet
+}
+
+func (c *flatScanCursor) ForEach(fn func(rowID uint32) bool) {
+	s := c.segment
+	if len(s.metadataOffsets) == 0 {
+		return // No metadata, no matches
+	}
+
+	for i := uint32(0); i < s.header.RowCount; i++ {
+		start := s.metadataOffsets[i]
+		end := s.metadataOffsets[i+1]
+		if start >= end {
+			continue // No metadata for this row
+		}
+
+		mdBytes := s.metadataBlob[start:end]
+		var md metadata.Document
+		if err := md.UnmarshalBinary(mdBytes); err != nil {
+			continue // Skip corrupted metadata
+		}
+
+		if c.filter.Matches(md) {
+			if !fn(i) {
+				return
+			}
+		}
+	}
+}
+
+func (c *flatScanCursor) EstimateCardinality() int {
+	// Conservative estimate: assume 10% selectivity
+	return int(c.segment.header.RowCount) / 10
+}
+
+func (c *flatScanCursor) IsEmpty() bool { return c.segment.header.RowCount == 0 }
+func (c *flatScanCursor) IsAll() bool   { return false }
 
 // Advise hints the kernel about access patterns.
 func (s *Segment) Advise(pattern segment.AccessPattern) error {

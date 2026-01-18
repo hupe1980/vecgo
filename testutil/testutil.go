@@ -223,6 +223,100 @@ func (r *RNG) ClusteredVectors(num, dim, clusters int, spread float32) [][]float
 	return vectors
 }
 
+// Zipf returns a Zipfian-distributed value in [0, n).
+// Uses Zipf's law: P(k) ∝ 1/k^s where s is the skew parameter.
+// s=1.0 gives standard Zipf, s=1.5 gives heavy-tail (80/20 rule).
+// This is how real-world data is distributed (power law).
+func (r *RNG) Zipf(n int, s float64) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.zipfLocked(n, s)
+}
+
+// zipfLocked is the internal implementation (caller must hold lock).
+func (r *RNG) zipfLocked(n int, s float64) int {
+	// Use rejection sampling from uniform distribution
+	// This is mathematically correct for Zipf distribution
+	if n <= 1 {
+		return 0
+	}
+
+	// Compute normalization constant (harmonic number with exponent s)
+	var hns float64
+	for i := 1; i <= n; i++ {
+		hns += 1.0 / math.Pow(float64(i), s)
+	}
+
+	// Sample from uniform and use inverse transform
+	u := r.rand.Float64() * hns
+	var cumulative float64
+	for k := 1; k <= n; k++ {
+		cumulative += 1.0 / math.Pow(float64(k), s)
+		if u <= cumulative {
+			return k - 1 // 0-indexed
+		}
+	}
+
+	return n - 1
+}
+
+// ZipfBuckets generates n bucket assignments with Zipfian distribution.
+// Returns slice where ~20% of buckets contain ~80% of values (when s=1.5).
+func (r *RNG) ZipfBuckets(n, bucketCount int, s float64) []int64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	buckets := make([]int64, n)
+	for i := range n {
+		buckets[i] = int64(r.zipfLocked(bucketCount, s))
+	}
+
+	return buckets
+}
+
+// ClusteredVectorsWithBuckets generates vectors where each bucket has its own centroid.
+// This creates correlation between metadata (bucket) and vector space.
+// Vectors in the same bucket are close together in vector space.
+// noise controls how much deviation from centroid (0.1 = tight clusters, 0.3 = loose).
+func (r *RNG) ClusteredVectorsWithBuckets(num, dim, bucketCount int, buckets []int64, noise float32) [][]float32 {
+	// Generate one centroid per bucket
+	centroids := r.UnitVectors(bucketCount, dim)
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	data := make([]float32, num*dim)
+	vectors := make([][]float32, num)
+
+	for i := range num {
+		bucket := buckets[i]
+		centroid := centroids[bucket]
+		vec := data[i*dim : (i+1)*dim]
+
+		// Vector = centroid + Gaussian noise
+		for j := range dim {
+			vec[j] = centroid[j] + float32(r.rand.NormFloat64())*noise
+		}
+		vectors[i] = vec
+	}
+
+	return vectors
+}
+
+// SparseMetadata generates metadata with missing fields.
+// missingRate is the probability that a field is missing (0.3 = 30% missing).
+func (r *RNG) SparseMetadata(n int, missingRate float64) []bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	present := make([]bool, n)
+	for i := range n {
+		present[i] = r.rand.Float64() >= missingRate
+	}
+
+	return present
+}
+
 // ComputeRecall computes recall@k by comparing approximate results against ground truth.
 func ComputeRecall(groundTruth, approximate []SearchResult) float64 {
 	if len(groundTruth) == 0 || len(approximate) == 0 {
