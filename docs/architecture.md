@@ -531,7 +531,7 @@ Vecgo persists state via a small set of purpose-built components:
 - `pk/`: persistent PK index (`PK -> Location(SegmentID, RowID)`).
 - `internal/segment/*`: immutable segment files produced by flush/compaction.
 
-> **Note**: WAL has been removed. Vecgo uses commit-oriented durability with append-only versioned commits.
+> **Note**: Vecgo uses commit-oriented durability with append-only versioned commits (no WAL).
 
 ### Atomic File Operations
 
@@ -698,8 +698,8 @@ Cloud Segment Access Pattern:
 ```
 
 **Memory Impact** (1GB segment on S3):
-- Full download (old): 1GB resident
-- Lazy + cache (new): 8KB + 100MB cache = ~100MB resident (10x reduction)
+- Full download: 1GB resident
+- Lazy + cache: 8KB + 100MB cache = ~100MB resident (10x reduction)
 
 **Persistence Model**:
 - **Segments**: Immutable blobs (e.g., `seg/001-c8f2.data`).
@@ -832,7 +832,7 @@ UnifiedIndex
 └── numeric   *NumericIndex               (ColumnIndex - high cardinality)
 ```
 
-### FilterCursor — Zero-Allocation Query Execution (NEW)
+### FilterCursor — Zero-Allocation Query Execution
 
 **Problem**: Traditional filter evaluation materializes bitmaps (Roaring) for all matches, causing:
 - Allocation overhead (~25% of filtered search cost)
@@ -891,17 +891,33 @@ vec := seg.FetchVectorDirect(rowID)  // Returns []float32 pointing to mmap
 dist := distance.SquaredL2(query, vec)  // SIMD operates on mmap'd memory
 ```
 
-**Result**: 78% latency reduction for low-selectivity queries (1-30%):
+**Inner Cursor Caching (sync.Once)**:
 
-| Selectivity | Before | After | Improvement |
-|-------------|--------|-------|-------------|
-| 1% | ~1ms | 115μs | **8.7×** |
-| 10% | ~1ms | 230μs | **4.3×** |
-| 30% | ~1ms | 417μs | **2.4×** |
+The search hot path calls `IsAll()`, `IsEmpty()`, `EstimateCardinality()`, and `ForEach()` in sequence.
+To avoid redundant inner cursor construction, segment cursors cache the inner `UnifiedIndex` cursor on first use:
+
+```go
+type flatSegmentCursor struct {
+    index    *UnifiedIndex
+    filter   *FilterSet
+    rowCount uint32
+    
+    inner imetadata.FilterCursor  // Cached
+    once  sync.Once               // Single initialization
+}
+
+func (c *flatSegmentCursor) ensureInner() {
+    c.once.Do(func() {
+        c.index.RLock()
+        defer c.index.RUnlock()
+        c.inner = c.index.FilterCursor(c.filter, c.rowCount)
+    })
+}
+```
+
+This eliminates redundant `FilterCursor()` calls per filtered search, significantly reducing latency for low-selectivity queries.
 
 **Cost-Based Query Dispatch**:
-
-For numeric comparisons (`<`, `>`, `<=`, `>=`, `!=`), the index uses adaptive dispatch based on field cardinality:
 
 For numeric comparisons (`<`, `>`, `<=`, `>=`, `!=`), the index uses adaptive dispatch based on field cardinality:
 
@@ -928,25 +944,11 @@ if distinctValues <= 512 {
 | `timestamp` | ~10K | ColumnIndex | O(log 10K) = O(14) |
 | `price` | ~50K | ColumnIndex | O(log 50K) = O(16) |
 
-**Benchmark Results** (Apple M4 Pro, 100K documents):
-
-```
-# High cardinality (10K distinct values) - "timestamp > X"
-NumericIndex:  117μs  (binary search)
-InvertedScan:  716μs  (scan all values)
-Winner: NumericIndex 6.1x faster ✓
-
-# Low cardinality (100 distinct values) - "category >= X"
-NumericIndex:  118μs  (binary search)
-InvertedScan:  8.3μs  (OR 50 bitmaps)
-Winner: InvertedScan 14x faster ✓
-```
-
 **Optimized Operations**:
 
 - `OpEqual`, `OpIn`: Direct bitmap lookup O(1)
 - `OpLessThan`, `OpGreaterThan`, etc.: Adaptive dispatch as above
-- `OpContains`, `OpStartsWith`: Filter scan (not yet optimized)
+- `OpContains`, `OpStartsWith`: Filter scan
 
 **Example Usage**:
 

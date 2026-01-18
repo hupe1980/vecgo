@@ -3,6 +3,7 @@ package benchmark_test
 import (
 	"context"
 	"fmt"
+	"math"
 	"runtime"
 	"sort"
 	"testing"
@@ -182,7 +183,7 @@ func BenchmarkMemoryFootprint(b *testing.B) {
 			dir := b.TempDir()
 			db, err := vecgo.Open(ctx, vecgo.Local(dir),
 				vecgo.Create(cfg.dim, vecgo.MetricL2),
-				vecgo.WithCompactionThreshold(1<<40),
+				vecgo.WithCompactionThreshold(math.MaxInt),
 				vecgo.WithFlushConfig(vecgo.FlushConfig{MaxMemTableSize: 64 << 20}),
 				vecgo.WithDiskANNThreshold(cfg.size+1),
 				vecgo.WithMemoryLimit(0),
@@ -259,7 +260,7 @@ func BenchmarkIndexBuildTime(b *testing.B) {
 
 				db, err := vecgo.Open(ctx, vecgo.Local(dir),
 					vecgo.Create(cfg.dim, vecgo.MetricL2),
-					vecgo.WithCompactionThreshold(1<<40),
+					vecgo.WithCompactionThreshold(math.MaxInt),
 					vecgo.WithFlushConfig(vecgo.FlushConfig{MaxMemTableSize: 64 << 20}),
 					vecgo.WithDiskANNThreshold(cfg.size+1),
 					vecgo.WithMemoryLimit(0),
@@ -390,7 +391,7 @@ func BenchmarkRecallQPSTradeoff(b *testing.B) {
 
 			b.StopTimer()
 
-			if truth != nil && len(truth) > 0 {
+			if len(truth) > 0 {
 				var totalRecall float64
 				numSamples := min(50, len(queries))
 				for qi := 0; qi < numSamples; qi++ {
@@ -417,7 +418,7 @@ func BenchmarkDeletePerformance(b *testing.B) {
 	dir := b.TempDir()
 	db, err := vecgo.Open(ctx, vecgo.Local(dir),
 		vecgo.Create(dim, vecgo.MetricL2),
-		vecgo.WithCompactionThreshold(1<<40),
+		vecgo.WithCompactionThreshold(math.MaxInt),
 		vecgo.WithFlushConfig(vecgo.FlushConfig{MaxMemTableSize: 64 << 20}),
 		vecgo.WithDiskANNThreshold(n+1),
 		vecgo.WithMemoryLimit(0),

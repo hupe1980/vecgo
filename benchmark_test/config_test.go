@@ -2,6 +2,7 @@ package benchmark_test
 
 import (
 	"context"
+	"math"
 	"testing"
 
 	"github.com/hupe1980/vecgo"
@@ -45,9 +46,9 @@ func OpenBenchEngine(b *testing.B, dim int, opts ...vecgo.Option) *BenchEngine {
 	dir := b.TempDir()
 	defaultOpts := []vecgo.Option{
 		vecgo.Create(dim, vecgo.MetricL2),
-		vecgo.WithCompactionThreshold(1 << 40),                             // Disable auto-compaction
+		vecgo.WithCompactionThreshold(math.MaxInt),                          // Disable auto-compaction
 		vecgo.WithFlushConfig(vecgo.FlushConfig{MaxMemTableSize: 64 << 20}), // 1GB memtable
-		vecgo.WithMemoryLimit(0),                                           // No memory semaphore
+		vecgo.WithMemoryLimit(0),                                            // No memory semaphore
 	}
 	allOpts := append(defaultOpts, opts...)
 	db, err := vecgo.Open(context.Background(), vecgo.Local(dir), allOpts...)

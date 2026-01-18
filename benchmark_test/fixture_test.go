@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sync"
@@ -29,17 +30,30 @@ type FixtureConfig struct {
 	VectorNoise  float32
 	MissingRate  float64
 	Seed         int64
+
+	// Segment-local skew parameters
+	NumSegments    int     // Number of segments for segment_local_skew
+	LocalDominance float64 // Probability of dominant bucket (0.9 = 90% in dominant)
 }
 
 // StandardFixtures defines the canonical set of benchmark fixtures.
+// Based on best-in-class benchmark methodology:
+// - Uniform: Baseline, algorithmic efficiency, happy path
+// - Zipfian: Hot keys, cache behavior, planner lies (global vs local selectivity)
+// - Segment-local skew: Tests whether planner trusts global stats blindly (Snowflake killer)
+// - Correlated: Tests ANN + filter interaction (realistic embeddings)
+// - Boolean adversarial: Tests bitmap operations, allocation stress
 var StandardFixtures = []FixtureConfig{
 	// Small fixtures for CI
 	{Name: "uniform_128d_10k", Dim: 128, NumVecs: 10_000, BucketCount: 100, Distribution: "uniform", Seed: 42},
 	{Name: "zipfian_128d_10k", Dim: 128, NumVecs: 10_000, BucketCount: 100, Distribution: "zipfian", ZipfSkew: 1.5, VectorNoise: 0.15, MissingRate: 0.30, Seed: 42},
 
-	// Medium fixtures
+	// Medium fixtures — Core benchmark set (5 distributions)
 	{Name: "uniform_128d_50k", Dim: 128, NumVecs: 50_000, BucketCount: 100, Distribution: "uniform", Seed: 42},
 	{Name: "zipfian_128d_50k", Dim: 128, NumVecs: 50_000, BucketCount: 100, Distribution: "zipfian", ZipfSkew: 1.5, VectorNoise: 0.15, MissingRate: 0.30, Seed: 42},
+	{Name: "seglocal_128d_50k", Dim: 128, NumVecs: 50_000, BucketCount: 100, Distribution: "segment_local_skew", NumSegments: 10, LocalDominance: 0.90, Seed: 42},
+	{Name: "correlated_128d_50k", Dim: 128, NumVecs: 50_000, BucketCount: 100, Distribution: "correlated", VectorNoise: 0.10, Seed: 42},
+	{Name: "booladv_128d_50k", Dim: 128, NumVecs: 50_000, BucketCount: 100, Distribution: "boolean_adversarial", Seed: 42},
 	{Name: "nofilter_128d_50k", Dim: 128, NumVecs: 50_000, BucketCount: 0, Distribution: "nofilter", Seed: 42},
 
 	// Production-scale
@@ -118,7 +132,7 @@ func GenerateFixture(cfg FixtureConfig) error {
 
 	db, err := vecgo.Open(ctx, vecgo.Local(dir),
 		vecgo.Create(cfg.Dim, vecgo.MetricL2),
-		vecgo.WithCompactionThreshold(1<<40),
+		vecgo.WithCompactionThreshold(math.MaxInt),
 		vecgo.WithFlushConfig(vecgo.FlushConfig{MaxMemTableSize: 64 << 20}),
 		vecgo.WithDiskANNThreshold(cfg.NumVecs+1),
 		vecgo.WithMemoryLimit(0),
@@ -132,6 +146,7 @@ func GenerateFixture(cfg FixtureConfig) error {
 
 	var data [][]float32
 	var buckets []int64
+	var bucketsB []int64 // Secondary bucket for boolean_adversarial
 	var present []bool
 
 	switch cfg.Distribution {
@@ -141,12 +156,36 @@ func GenerateFixture(cfg FixtureConfig) error {
 		for i := range present {
 			present[i] = true
 		}
+
 	case "zipfian":
 		data, buckets, present = generateZipfianData(rng, cfg)
+
+	case "segment_local_skew":
+		data, buckets = generateSegmentLocalSkewData(rng, cfg)
+		present = make([]bool, cfg.NumVecs)
+		for i := range present {
+			present[i] = true
+		}
+
+	case "correlated":
+		data, buckets = generateCorrelatedData(rng, cfg)
+		present = make([]bool, cfg.NumVecs)
+		for i := range present {
+			present[i] = true
+		}
+
+	case "boolean_adversarial":
+		data, buckets, bucketsB = generateBooleanAdversarialData(rng, cfg)
+		present = make([]bool, cfg.NumVecs)
+		for i := range present {
+			present[i] = true
+		}
+
 	case "nofilter":
 		data = generateNoFilterData(rng, cfg)
 		buckets = nil
 		present = nil
+
 	default:
 		return fmt.Errorf("unknown distribution: %s", cfg.Distribution)
 	}
@@ -163,7 +202,12 @@ func GenerateFixture(cfg FixtureConfig) error {
 			batchMds = make([]metadata.Document, end-start)
 			for i := range batchMds {
 				if present[start+i] {
-					batchMds[i] = metadata.Document{"bucket": metadata.Int(buckets[start+i])}
+					doc := metadata.Document{"bucket": metadata.Int(buckets[start+i])}
+					// Add secondary bucket for boolean_adversarial
+					if bucketsB != nil {
+						doc["bucket_b"] = metadata.Int(bucketsB[start+i])
+					}
+					batchMds[i] = doc
 				} else {
 					batchMds[i] = metadata.Document{}
 				}
@@ -270,6 +314,81 @@ func generateNoFilterData(rng *testutil.RNG, cfg FixtureConfig) [][]float32 {
 		data[i] = vec
 	}
 	return data
+}
+
+// generateSegmentLocalSkewData creates the "Snowflake killer" distribution:
+// - Globally uniform: each bucket appears with ~equal frequency
+// - Per-segment skewed: within each segment, one bucket dominates (90%)
+//
+// This tests whether the query planner trusts global stats blindly.
+// Global selectivity says 1%, but per-segment selectivity is 90%.
+func generateSegmentLocalSkewData(rng *testutil.RNG, cfg FixtureConfig) ([][]float32, []int64) {
+	numSegments := cfg.NumSegments
+	if numSegments < 1 {
+		numSegments = 10
+	}
+	localDominance := cfg.LocalDominance
+	if localDominance <= 0 {
+		localDominance = 0.90
+	}
+
+	buckets := rng.SegmentLocalSkewBuckets(cfg.NumVecs, cfg.BucketCount, numSegments, localDominance)
+
+	// Generate random vectors (not clustered - tests filter performance, not ANN)
+	data := make([][]float32, cfg.NumVecs)
+	for i := range cfg.NumVecs {
+		vec := make([]float32, cfg.Dim)
+		rng.FillUniform(vec)
+		data[i] = vec
+	}
+
+	return data, buckets
+}
+
+// generateCorrelatedData creates vectors where metadata predicts vector similarity.
+// Vectors with the same bucket value are CLOSE in vector space.
+// This is realistic: "category=shoes" → vectors cluster in embedding space.
+//
+// This tests:
+// - Whether filtering helps graph pruning
+// - Whether predicate-aware HNSW traversal is beneficial
+func generateCorrelatedData(rng *testutil.RNG, cfg FixtureConfig) ([][]float32, []int64) {
+	// Use uniform bucket distribution for metadata
+	buckets := make([]int64, cfg.NumVecs)
+	for i := range cfg.NumVecs {
+		buckets[i] = int64(i) % int64(cfg.BucketCount)
+	}
+
+	// Generate correlated vectors (tight clusters = high correlation)
+	noise := cfg.VectorNoise
+	if noise <= 0 {
+		noise = 0.10 // Tight clusters by default
+	}
+	data := rng.CorrelatedVectorsWithBuckets(cfg.NumVecs, cfg.Dim, cfg.BucketCount, buckets, noise)
+
+	return data, buckets
+}
+
+// generateBooleanAdversarialData creates a bimodal distribution designed to
+// stress-test bitmap operations and compound filter evaluation.
+//
+// Creates two bucket fields:
+// - bucket: bimodal (10% selective, 90% dense)
+// - bucket_b: interleaved (sometimes correlated, sometimes anti-correlated)
+//
+// This tests filters like: (bucket < X OR bucket_b = Y) AND bucket > Z
+func generateBooleanAdversarialData(rng *testutil.RNG, cfg FixtureConfig) ([][]float32, []int64, []int64) {
+	bucketA, bucketB := rng.BooleanAdversarialBuckets(cfg.NumVecs, cfg.BucketCount)
+
+	// Generate random vectors
+	data := make([][]float32, cfg.NumVecs)
+	for i := range cfg.NumVecs {
+		vec := make([]float32, cfg.Dim)
+		rng.FillUniform(vec)
+		data[i] = vec
+	}
+
+	return data, bucketA, bucketB
 }
 
 // ============================================================================
@@ -587,7 +706,7 @@ func OpenFixture(ctx context.Context, name string) (*vecgo.DB, error) {
 
 	dir := FixtureDir(name)
 	return vecgo.Open(ctx, vecgo.Local(dir),
-		vecgo.WithCompactionThreshold(1<<40),
+		vecgo.WithCompactionThreshold(math.MaxInt),
 		vecgo.WithFlushConfig(vecgo.FlushConfig{MaxMemTableSize: 64 << 20}),
 		vecgo.WithMemoryLimit(0),
 	)

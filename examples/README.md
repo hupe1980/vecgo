@@ -60,7 +60,7 @@ Demonstrates **high-throughput ingestion** with `BatchInsertDeferred`:
 3. Search verification
 4. Performance comparison with standard `BatchInsert`
 
-Key insight: `BatchInsertDeferred` achieves **~1000x faster** throughput by deferring
+Key insight: `BatchInsertDeferred` achieves **significantly higher** throughput by deferring
 HNSW graph construction. Vectors become searchable after `Commit()`.
 
 ## Running Examples

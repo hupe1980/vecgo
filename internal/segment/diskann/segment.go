@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"sync"
 	"unsafe"
 
 	"github.com/hupe1980/vecgo/blobstore"
@@ -1148,29 +1149,58 @@ func (s *Segment) FilterCursor(filter *metadata.FilterSet) imetadata.FilterCurso
 		return imetadata.GetEmptyCursor()
 	}
 
-	s.index.RLock()
-	cursor := s.index.FilterCursor(filter, s.header.RowCount)
-	// Wrap to release lock after iteration
+	// Note: Lock is acquired lazily in each method to avoid deadlock
+	// when cursor is inspected (IsEmpty/IsAll) but ForEach is not called
 	return &diskannSegmentCursor{
-		inner: cursor,
-		index: s.index,
+		index:    s.index,
+		filter:   filter,
+		rowCount: s.header.RowCount,
 	}
 }
 
-// diskannSegmentCursor wraps UnifiedIndex cursor with lock management.
+// diskannSegmentCursor wraps UnifiedIndex cursor with lazy lock management.
+// The inner cursor is created on first use and cached for subsequent calls.
+// Lock is acquired per-method to avoid deadlock when cursor is inspected
+// but ForEach is not called.
 type diskannSegmentCursor struct {
+	index    *imetadata.UnifiedIndex
+	filter   *metadata.FilterSet
+	rowCount uint32
+
+	// Cached inner cursor (created on first use under lock)
 	inner imetadata.FilterCursor
-	index *imetadata.UnifiedIndex
+	once  sync.Once
+}
+
+// ensureInner creates the inner cursor under lock on first call.
+// Subsequent calls return immediately (sync.Once guarantees single init).
+func (c *diskannSegmentCursor) ensureInner() {
+	c.once.Do(func() {
+		c.index.RLock()
+		defer c.index.RUnlock()
+		c.inner = c.index.FilterCursor(c.filter, c.rowCount)
+	})
 }
 
 func (c *diskannSegmentCursor) ForEach(fn func(rowID uint32) bool) {
-	defer c.index.RUnlock()
+	c.ensureInner()
 	c.inner.ForEach(fn)
 }
 
-func (c *diskannSegmentCursor) EstimateCardinality() int { return c.inner.EstimateCardinality() }
-func (c *diskannSegmentCursor) IsEmpty() bool            { return c.inner.IsEmpty() }
-func (c *diskannSegmentCursor) IsAll() bool              { return c.inner.IsAll() }
+func (c *diskannSegmentCursor) EstimateCardinality() int {
+	c.ensureInner()
+	return c.inner.EstimateCardinality()
+}
+
+func (c *diskannSegmentCursor) IsEmpty() bool {
+	c.ensureInner()
+	return c.inner.IsEmpty()
+}
+
+func (c *diskannSegmentCursor) IsAll() bool {
+	c.ensureInner()
+	return c.inner.IsAll()
+}
 
 // readID reads the ID for the given row from the blob.
 func (s *Segment) readID(ctx context.Context, rowID uint32) (model.ID, bool) {

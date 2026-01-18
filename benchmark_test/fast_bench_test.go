@@ -24,11 +24,18 @@ import (
 
 // BenchmarkFastSearch benchmarks search performance using pre-built fixtures.
 // This is the primary benchmark for search optimization work.
+//
+// The benchmark suite covers 5 distributions (best-in-class methodology):
+// - Uniform: Baseline, algorithmic efficiency
+// - Zipfian: Hot keys, cache behavior, planner lies
+// - Segment-local skew: Planner correctness (Snowflake killer)
+// - Correlated: ANN + filter interaction
+// - Boolean adversarial: Bitmap operations, allocation stress
 func BenchmarkFastSearch(b *testing.B) {
 	ctx := context.Background()
 
-	// Use quick fixtures for CI, standard for full benchmarking
-	fixtures := []string{"uniform_128d_50k", "zipfian_128d_50k"}
+	// Use quick fixtures for CI, full adversarial set for benchmarking
+	fixtures := []string{"uniform_128d_50k", "zipfian_128d_50k", "seglocal_128d_50k", "correlated_128d_50k", "booladv_128d_50k"}
 	if testing.Short() {
 		fixtures = []string{"uniform_128d_10k", "zipfian_128d_10k"}
 	}
@@ -100,7 +107,7 @@ func BenchmarkFastSearch(b *testing.B) {
 					b.StopTimer()
 
 					// Compute recall using pre-computed ground truth
-					if truth != nil && len(truth) > 0 {
+					if len(truth) > 0 {
 						var sumRecall float64
 						numSamples := min(20, len(queries))
 						for qi := 0; qi < numSamples; qi++ {

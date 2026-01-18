@@ -23,7 +23,8 @@ TEXT ·prefetchVectorNEON(SB), NOSPLIT, $0-8
 // dim: dimension of each vector
 // count: number of vectors to prefetch
 // ids: slice of row IDs to prefetch
-TEXT ·prefetchBatchNEON(SB), NOSPLIT, $0-56
+// Stack frame: base(8) + dim(8) + count(8) + ids(24) = 48 bytes
+TEXT ·prefetchBatchNEON(SB), NOSPLIT, $0-48
     MOVD base+0(FP), R0      // base pointer
     MOVD dim+8(FP), R1       // dimension
     MOVD count+16(FP), R2    // count

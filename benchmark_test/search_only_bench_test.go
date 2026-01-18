@@ -3,6 +3,7 @@ package benchmark_test
 import (
 	"context"
 	"fmt"
+	"math"
 	"runtime"
 	"testing"
 
@@ -62,7 +63,7 @@ func BenchmarkSearchOnly(b *testing.B) {
 		rng := testutil.NewRNG(1)
 		dir := b.TempDir()
 		e, err := vecgo.Open(ctx, vecgo.Local(dir), vecgo.Create(dim, vecgo.MetricL2),
-			vecgo.WithCompactionThreshold(1<<40),
+			vecgo.WithCompactionThreshold(math.MaxInt),
 			vecgo.WithFlushConfig(vecgo.FlushConfig{MaxMemTableSize: 64 << 20}),
 			vecgo.WithDiskANNThreshold(numVecs+1),
 			vecgo.WithMemoryLimit(0),
@@ -153,7 +154,7 @@ func BenchmarkSearchOnly(b *testing.B) {
 		rng := testutil.NewRNG(42)
 		dir := b.TempDir()
 		e, err := vecgo.Open(ctx, vecgo.Local(dir), vecgo.Create(dim, vecgo.MetricL2),
-			vecgo.WithCompactionThreshold(1<<40),
+			vecgo.WithCompactionThreshold(math.MaxInt),
 			vecgo.WithFlushConfig(vecgo.FlushConfig{MaxMemTableSize: 64 << 20}),
 			vecgo.WithDiskANNThreshold(numVecs+1),
 			vecgo.WithMemoryLimit(0),
@@ -240,7 +241,7 @@ func BenchmarkSearchOnly(b *testing.B) {
 		rng := testutil.NewRNG(1)
 		dir := b.TempDir()
 		e, err := vecgo.Open(ctx, vecgo.Local(dir), vecgo.Create(dim, vecgo.MetricL2),
-			vecgo.WithCompactionThreshold(1<<40),
+			vecgo.WithCompactionThreshold(math.MaxInt),
 			vecgo.WithFlushConfig(vecgo.FlushConfig{MaxMemTableSize: 64 << 20}),
 			vecgo.WithDiskANNThreshold(numVecs+1),
 			vecgo.WithMemoryLimit(0),
@@ -323,7 +324,7 @@ func BenchmarkSearchOnlySelectivity(b *testing.B) {
 
 	dir := b.TempDir()
 	e, err := vecgo.Open(ctx, vecgo.Local(dir), vecgo.Create(dim, vecgo.MetricL2),
-		vecgo.WithCompactionThreshold(1<<40),
+		vecgo.WithCompactionThreshold(math.MaxInt),
 		vecgo.WithFlushConfig(vecgo.FlushConfig{MaxMemTableSize: 64 << 20}),
 		vecgo.WithDiskANNThreshold(numVecs+1),
 		vecgo.WithMemoryLimit(0),

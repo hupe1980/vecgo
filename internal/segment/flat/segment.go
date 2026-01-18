@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"sync"
 	"unsafe"
 
 	"github.com/hupe1980/vecgo/blobstore"
@@ -1068,14 +1069,13 @@ func (s *Segment) FilterCursor(filter *metadata.FilterSet) imetadata.FilterCurso
 
 	// Fast path: use inverted index if available
 	if s.metadataIndex != nil {
-		s.metadataIndex.RLock()
-		cursor := s.metadataIndex.FilterCursor(filter, s.header.RowCount)
-		// Note: We need to wrap the cursor to release the lock when done
+		// Note: Lock is acquired lazily in ForEach() to avoid deadlock
+		// when cursor is inspected (IsEmpty/IsAll) but ForEach is not called
 		return &flatSegmentCursor{
-			inner:   cursor,
-			index:   s.metadataIndex,
-			segment: s,
-			filter:  filter,
+			index:    s.metadataIndex,
+			segment:  s,
+			filter:   filter,
+			rowCount: s.header.RowCount,
 		}
 	}
 
@@ -1086,23 +1086,50 @@ func (s *Segment) FilterCursor(filter *metadata.FilterSet) imetadata.FilterCurso
 	}
 }
 
-// flatSegmentCursor wraps UnifiedIndex cursor with lock management.
+// flatSegmentCursor wraps UnifiedIndex cursor with lazy lock management.
+// The inner cursor is created on first use and cached for subsequent calls.
+// Lock is acquired per-method to avoid deadlock when cursor is inspected
+// but ForEach is not called.
 type flatSegmentCursor struct {
-	inner   imetadata.FilterCursor
-	index   *imetadata.UnifiedIndex
-	segment *Segment
-	filter  *metadata.FilterSet
+	index    *imetadata.UnifiedIndex
+	segment  *Segment
+	filter   *metadata.FilterSet
+	rowCount uint32
+
+	// Cached inner cursor (created on first use under lock)
+	inner imetadata.FilterCursor
+	once  sync.Once
+}
+
+// ensureInner creates the inner cursor under lock on first call.
+// Subsequent calls return immediately (sync.Once guarantees single init).
+func (c *flatSegmentCursor) ensureInner() {
+	c.once.Do(func() {
+		c.index.RLock()
+		defer c.index.RUnlock()
+		c.inner = c.index.FilterCursor(c.filter, c.rowCount)
+	})
 }
 
 func (c *flatSegmentCursor) ForEach(fn func(rowID uint32) bool) {
-	// The lock is already held from FilterCursor
-	defer c.index.RUnlock()
+	c.ensureInner()
 	c.inner.ForEach(fn)
 }
 
-func (c *flatSegmentCursor) EstimateCardinality() int { return c.inner.EstimateCardinality() }
-func (c *flatSegmentCursor) IsEmpty() bool            { return c.inner.IsEmpty() }
-func (c *flatSegmentCursor) IsAll() bool              { return c.inner.IsAll() }
+func (c *flatSegmentCursor) EstimateCardinality() int {
+	c.ensureInner()
+	return c.inner.EstimateCardinality()
+}
+
+func (c *flatSegmentCursor) IsEmpty() bool {
+	c.ensureInner()
+	return c.inner.IsEmpty()
+}
+
+func (c *flatSegmentCursor) IsAll() bool {
+	c.ensureInner()
+	return c.inner.IsAll()
+}
 
 // flatScanCursor implements lazy document scanning when no index is available.
 type flatScanCursor struct {

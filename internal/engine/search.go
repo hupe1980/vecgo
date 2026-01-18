@@ -67,6 +67,52 @@ func cmpCandidateBySegment(a, b model.Candidate) int {
 	return 0
 }
 
+// cmpCandidateByScoreAsc compares Candidates by Score ascending (best = lowest).
+func cmpCandidateByScoreAsc(a, b model.Candidate) int {
+	if a.Score < b.Score {
+		return -1
+	}
+	if a.Score > b.Score {
+		return 1
+	}
+	if a.Loc.SegmentID < b.Loc.SegmentID {
+		return -1
+	}
+	if a.Loc.SegmentID > b.Loc.SegmentID {
+		return 1
+	}
+	if a.Loc.RowID < b.Loc.RowID {
+		return -1
+	}
+	if a.Loc.RowID > b.Loc.RowID {
+		return 1
+	}
+	return 0
+}
+
+// cmpCandidateByScoreDesc compares Candidates by Score descending (best = highest).
+func cmpCandidateByScoreDesc(a, b model.Candidate) int {
+	if a.Score > b.Score {
+		return -1
+	}
+	if a.Score < b.Score {
+		return 1
+	}
+	if a.Loc.SegmentID < b.Loc.SegmentID {
+		return -1
+	}
+	if a.Loc.SegmentID > b.Loc.SegmentID {
+		return 1
+	}
+	if a.Loc.RowID < b.Loc.RowID {
+		return -1
+	}
+	if a.Loc.RowID > b.Loc.RowID {
+		return 1
+	}
+	return 0
+}
+
 // SearchIter performs a k-NN search and yields results via an iterator.
 // This allows for zero-copy streaming of results.
 //
@@ -936,7 +982,8 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 		slices.Reverse(s.Results)
 
 		// 6. Fetch PKs and Materialize Data
-		var cols []string
+		// Pre-allocate cols with capacity 3 to avoid multiple slice growths
+		cols := s.ScratchCols[:0]
 		if options.IncludeVector {
 			cols = append(cols, "vector")
 		}
@@ -1015,36 +1062,12 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 		}
 
 		// 7. Restore Order (Best Score First)
-		slices.SortFunc(s.Results, func(a, b model.Candidate) int {
-			if descending {
-				if a.Score > b.Score {
-					return -1
-				}
-				if a.Score < b.Score {
-					return 1
-				}
-			} else {
-				if a.Score < b.Score {
-					return -1
-				}
-				if a.Score > b.Score {
-					return 1
-				}
-			}
-			if a.Loc.SegmentID < b.Loc.SegmentID {
-				return -1
-			}
-			if a.Loc.SegmentID > b.Loc.SegmentID {
-				return 1
-			}
-			if a.Loc.RowID < b.Loc.RowID {
-				return -1
-			}
-			if a.Loc.RowID > b.Loc.RowID {
-				return 1
-			}
-			return 0
-		})
+		// Use package-level comparator to avoid closure allocation.
+		if descending {
+			slices.SortFunc(s.Results, cmpCandidateByScoreDesc)
+		} else {
+			slices.SortFunc(s.Results, cmpCandidateByScoreAsc)
+		}
 
 		// 8. Visibility Check
 		validCount := 0

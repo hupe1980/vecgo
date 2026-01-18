@@ -65,6 +65,41 @@ func (c *RowsCursor) EstimateCardinality() int { return len(c.rows) }
 func (c *RowsCursor) IsEmpty() bool            { return len(c.rows) == 0 }
 func (c *RowsCursor) IsAll() bool              { return false }
 
+// BitmapCursor wraps a LocalBitmap for direct iteration.
+// Uses the bitmap's native iterator, avoiding slice extraction.
+// Zero allocations during iteration.
+type BitmapCursor struct {
+	bitmap *LocalBitmap
+}
+
+// NewBitmapCursor creates a FilterCursor from a bitmap.
+// The bitmap is NOT copied - caller must ensure it outlives the cursor.
+func NewBitmapCursor(bitmap *LocalBitmap) *BitmapCursor {
+	return &BitmapCursor{bitmap: bitmap}
+}
+
+func (c *BitmapCursor) ForEach(fn func(rowID uint32) bool) {
+	if c.bitmap == nil {
+		return
+	}
+	c.bitmap.ForEach(func(id uint32) bool {
+		return fn(id)
+	})
+}
+
+func (c *BitmapCursor) EstimateCardinality() int {
+	if c.bitmap == nil {
+		return 0
+	}
+	return int(c.bitmap.Cardinality())
+}
+
+func (c *BitmapCursor) IsEmpty() bool {
+	return c.bitmap == nil || c.bitmap.IsEmpty()
+}
+
+func (c *BitmapCursor) IsAll() bool { return false }
+
 // RangeCursor iterates over a contiguous range [start, end).
 // Extremely efficient for temporal/sequential data.
 // Zero storage, zero allocations.

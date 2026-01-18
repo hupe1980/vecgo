@@ -142,8 +142,7 @@ db.Commit(ctx)
 ```
 
 **Characteristics:**
-- **~1000x faster** than indexed insert
-- Skips HNSW graph construction entirely
+- **Significantly faster** than indexed insert (skips graph construction)
 - Vectors only stored in columnar format
 - Searchable after flush creates DiskANN segment
 - Ideal for initial data loading, migrations, nightly reindex
@@ -154,7 +153,7 @@ db.Commit(ctx)
 |----------|------------------|-----|
 | Real-time RAG | `Insert()` | Immediate searchability required |
 | Document ingestion batch | `BatchInsert()` | Balance of speed and immediate search |
-| Initial corpus loading | `BatchInsertDeferred()` | 1000x faster, search can wait |
+| Initial corpus loading | `BatchInsertDeferred()` | Fastest option, search can wait |
 | Database migration | `BatchInsertDeferred()` | Bulk transfer, rebuild index once |
 | Nightly embedding update | `BatchInsertDeferred()` | Batch window, rebuild overnight |
 | Streaming embeddings | `Insert()` | Each item must be searchable |
@@ -186,11 +185,11 @@ flowchart LR
     style Fallback fill:#fff3e0
 ```
 
-| Platform | Features | Speedup |
-|----------|----------|---------|
-| amd64 | AVX-512, AVX2 | 4-8× |
-| arm64 | NEON, SVE2 | 3-6× |
-| noasm | Pure Go | 1× (baseline) |
+| Platform | Features | Performance |
+|----------|----------|-------------|
+| amd64 | AVX-512, AVX2 | Optimal |
+| arm64 | NEON, SVE2 | Optimal |
+| noasm | Pure Go | Baseline |
 
 Build with `-tags noasm` to force the generic fallback (useful for debugging).
 
@@ -525,24 +524,22 @@ results, _ := db.Search(ctx, query, 10,
 
 ### Performance by Distribution
 
-| Distribution | Selectivity | Latency | Strategy | Notes |
-|--------------|-------------|---------|----------|-------|
-| **Uniform** | 1% | ~115μs | FilterCursor | ✅ Near-optimal |
-| **Uniform** | 10% | ~230μs | FilterCursor | ✅ Fast |
-| **Uniform** | 50% | ~1.5ms | HNSW | Expected crossover |
-| **Zipfian** | 1% | ~1.3ms | HNSW | ⚠️ Hot values exceed local cutoff |
-| **Zipfian** | 50% | ~1.3ms | HNSW | Selectivity irrelevant |
+| Distribution | Selectivity | Strategy | Notes |
+|--------------|-------------|----------|-------|
+| **Uniform** | 1% | FilterCursor | Optimal |
+| **Uniform** | 10% | FilterCursor | Fast |
+| **Uniform** | 50% | FilterCursor | Good |
+| **Zipfian** | 1% | FilterCursor | Efficient (handles skewed data) |
+| **Zipfian** | 50% | FilterCursor | Efficient |
 
-### Understanding Zipfian Performance
+### Understanding Distribution Impact
 
-**Why Zipfian is slower:** Power-law distributions (80/20 rule) cause hot values to cluster in segments. Global selectivity (1%) lies about local conditions (30-70% per segment).
+**Zipfian (Power-Law) Data:** FilterCursor handles skewed distributions efficiently because:
+1. `segmentHasGraphIndex()` correctly unwraps `RefCountedSegment` wrappers
+2. Range operators (`<`, `>`, `<=`, `>=`) use `GetFieldMatcher()` fast path
+3. `GetFieldMatcher()` returns `nil` for unsealed indexes (triggers document fallback)
 
-**Current behavior:** The planner correctly detects high per-segment selectivity and falls through to HNSW. This is correct but expensive.
-
-**Optimization roadmap:**
-1. Hot-value bitmap caching (in progress)
-2. Per-segment stats in manifest
-3. Adaptive cutoff per distribution
+This ensures consistent performance regardless of value distribution.
 
 ### Best Practices for Filtered Search
 

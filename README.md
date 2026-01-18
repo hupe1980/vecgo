@@ -16,17 +16,20 @@
 - 🎯 **Simpler than CGO wrappers** — pure Go toolchain, static binaries, cross-compilation
 - 🏗️ **Modern architecture** — commit-oriented durability (append-only versioned commits), no WAL complexity
 
-## 📊 Performance Highlights (Apple M4 Pro)
+## 📊 Performance
 
-| Benchmark | Result | Notes |
-|-----------|--------|-------|
-| **Filtered Search (1%)** | **115μs** @ 8,662 qps | FilterCursor + Zero-Copy |
-| **Filtered Search (10%)** | **230μs** @ 4,343 qps | FilterCursor + Zero-Copy |
-| **Bulk Insert** | **2.18M vec/s** | Deferred mode |
-| **Recall@10** | **1.0** | Perfect accuracy |
-| **Binary Size** | **15MB** | Pure Go, no CGO |
+Vecgo is optimized for high-throughput, low-latency vector search with:
+- **FilterCursor** — zero-allocation push-based iteration
+- **Zero-Copy Vectors** — direct access to mmap'd memory
+- **SIMD Distance** — AVX-512/AVX2/NEON/SVE2 runtime detection
 
-> See [FINDINGS.md](FINDINGS.md) for complete benchmark results and optimization details.
+Run benchmarks locally to see performance on your hardware:
+
+```bash
+cd benchmark_test && go test -bench=. -benchmem -timeout=15m
+```
+
+> See [benchmark_test/baseline.txt](benchmark_test/baseline.txt) for reference results.
 
 ## 🎯 Features
 
@@ -73,6 +76,8 @@ Quantization reduces **in-memory index size** for DiskANN segments. Full vectors
 ```bash
 go get github.com/hupe1980/vecgo
 ```
+
+**Platform Requirements:** Vecgo requires a **64-bit** architecture (amd64 or arm64). SIMD optimizations use AVX-512/AVX2 on x86-64 and NEON/SVE2 on ARM64.
 
 ### 💻 Basic Usage
 
@@ -274,12 +279,12 @@ fmt.Printf("Cost estimate: %.2f\n", stats.CostEstimate())
 
 Vecgo automatically prunes irrelevant segments using advanced statistics:
 
-| Pruning Strategy | Description | Speedup |
-|------------------|-------------|---------|
-| **Triangle Inequality** | Skip segments where `|query - centroid| > radius + threshold` | 2-10× |
-| **Bloom Filters** | Skip segments missing required categorical values | 5-50× |
-| **Numeric Range Stats** | Skip segments with min/max outside filter range | 2-5× |
-| **Categorical Cardinality** | Prioritize high-entropy segments for broad queries | 1.5-3× |
+| Pruning Strategy | Description |
+|------------------|-------------|
+| **Triangle Inequality** | Skip segments where `|query - centroid| > radius + threshold` |
+| **Bloom Filters** | Skip segments missing required categorical values |
+| **Numeric Range Stats** | Skip segments with min/max outside filter range |
+| **Categorical Cardinality** | Prioritize high-entropy segments for broad queries |
 
 These statistics are automatically computed during `Commit()` and stored in the manifest (v3 format).
 
@@ -295,26 +300,23 @@ fmt.Printf("Segment count: %d\n", dbStats.SegmentCount)
 
 Vecgo offers three insert modes optimized for different workloads:
 
-| Mode | Method | Throughput | Searchable | Best For |
-|------|--------|------------|------------|----------|
-| **Single** | `Insert()` | ~2K vec/s | ✅ Immediately | Real-time updates |
-| **Batch** | `BatchInsert()` | ~3K vec/s | ✅ Immediately | Medium batches (10-100) |
-| **Deferred** | `BatchInsertDeferred()` | ~2M vec/s | ❌ After flush | Bulk loading |
+| Mode | Method | Searchable | Best For |
+|------|--------|------------|----------|
+| **Single** | `Insert()` | ✅ Immediately | Real-time updates |
+| **Batch** | `BatchInsert()` | ✅ Immediately | Medium batches (10-100) |
+| **Deferred** | `BatchInsertDeferred()` | ❌ After flush | Bulk loading |
 
 ```go
 // 1. SINGLE INSERT — Real-time updates (HNSW-indexed immediately)
 //    Use when: you need vectors searchable immediately
-//    ~2,000 vectors/sec (768 dim)
 id, err := db.Insert(ctx, vector, metadata, payload)
 
 // 2. BATCH INSERT — Indexed batch (HNSW-indexed immediately)
 //    Use when: you have medium batches and need immediate search
-//    ~3,000 vectors/sec (768 dim, batch=100)
 ids, err := db.BatchInsert(ctx, vectors, metadatas, payloads)
 
 // 3. DEFERRED INSERT — Bulk loading (NO HNSW indexing)
 //    Use when: you're bulk loading and don't need immediate search
-//    ~2,000,000 vectors/sec (768 dim) — 1000x faster!
 //    Vectors become searchable after Commit() triggers flush
 ids, err := db.BatchInsertDeferred(ctx, vectors, metadatas, payloads)
 db.Commit(ctx) // Flush to disk, now searchable via DiskANN

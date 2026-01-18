@@ -1881,6 +1881,10 @@ func (e *Engine) Commit(ctx context.Context) (err error) {
 
 	// Update Snapshot: Replace MemTable segment with Disk segment
 	// ID stays the same (activeID), but underlying implementation changes.
+	// DecRef the old frozen memtable to release its resources (arena memory)
+	if oldSeg := newSnap.segments[activeID]; oldSeg != nil {
+		oldSeg.DecRef()
+	}
 	newSnap.segments[activeID] = NewRefCountedSegment(newSeg)
 
 	// Update PK Index to point to new RowIDs

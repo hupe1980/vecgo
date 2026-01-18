@@ -68,6 +68,10 @@ type Searcher struct {
 
 	// ScratchForeignIDs is a reusable buffer for PrimaryKeys.
 	ScratchForeignIDs []model.ID
+
+	// ScratchCols is a reusable buffer for column names during fetch (max 3: vector, metadata, payload).
+	ScratchCols [3]string
+
 	// ParallelResults is a reusable buffer for collecting results from parallel segment searches.
 	ParallelResults []InternalCandidate
 

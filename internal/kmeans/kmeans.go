@@ -200,6 +200,18 @@ type centroidDist struct {
 	dist float32
 }
 
+// cmpCentroidDistByDist compares centroidDist by distance ascending.
+// Package-level function to avoid closure allocation.
+func cmpCentroidDistByDist(a, b centroidDist) int {
+	if a.dist < b.dist {
+		return -1
+	}
+	if a.dist > b.dist {
+		return 1
+	}
+	return 0
+}
+
 // FindClosestCentroids returns the indices of the n closest centroids to the query vector.
 // This function is on the search hot path when partitioning is enabled.
 func FindClosestCentroids(query []float32, centroids []float32, dim int, n int, metric distance.Metric) ([]int, error) {
@@ -257,15 +269,7 @@ func FindClosestCentroids(query []float32, centroids []float32, dim int, n int, 
 	}
 
 	// Full sort for larger n values
-	slices.SortFunc(dists, func(a, b centroidDist) int {
-		if a.dist < b.dist {
-			return -1
-		}
-		if a.dist > b.dist {
-			return 1
-		}
-		return 0
-	})
+	slices.SortFunc(dists, cmpCentroidDistByDist)
 
 	result := make([]int, n)
 	for i := 0; i < n; i++ {

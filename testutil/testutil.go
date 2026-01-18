@@ -343,6 +343,120 @@ func ComputeRecall(groundTruth, approximate []SearchResult) float64 {
 	return float64(hits) / float64(k)
 }
 
+// ============================================================================
+// Adversarial Distribution Generators
+// ============================================================================
+
+// SegmentLocalSkewBuckets generates bucket assignments where:
+// - Globally uniform distribution (each bucket has ~equal total count)
+// - But within each "segment" (chunk of numVecs/numSegments), one bucket dominates
+//
+// This creates the "Snowflake killer" scenario where:
+// - Global stats say selectivity = 1%
+// - Per-segment stats show selectivity = 90%
+//
+// Use this to test whether the planner trusts global stats blindly.
+func (r *RNG) SegmentLocalSkewBuckets(numVecs, bucketCount, numSegments int, localDominance float64) []int64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	buckets := make([]int64, numVecs)
+	segmentSize := numVecs / numSegments
+	if segmentSize < 1 {
+		segmentSize = 1
+	}
+
+	for i := range numVecs {
+		segmentIdx := i / segmentSize
+		if segmentIdx >= numSegments {
+			segmentIdx = numSegments - 1
+		}
+
+		// Each segment has a "dominant" bucket
+		dominantBucket := int64(segmentIdx % bucketCount)
+
+		// With probability localDominance, assign to dominant bucket
+		// Otherwise, assign uniformly to other buckets
+		if r.rand.Float64() < localDominance {
+			buckets[i] = dominantBucket
+		} else {
+			// Assign to a random non-dominant bucket
+			other := int64(r.rand.Intn(bucketCount - 1))
+			if other >= dominantBucket {
+				other++
+			}
+			buckets[i] = other
+		}
+	}
+
+	return buckets
+}
+
+// CorrelatedVectorsWithBuckets generates vectors where metadata predicts vector similarity.
+// Unlike random assignment, vectors with the same bucket value are CLOSE in vector space.
+// This is realistic: "category=shoes" → vectors cluster in embedding space.
+//
+// What this tests:
+// - Whether filtering helps graph pruning (vectors in same bucket are neighbors)
+// - Whether predicate-aware HNSW traversal is beneficial
+// - Realistic embedding behavior (semantic similarity ↔ metadata correlation)
+func (r *RNG) CorrelatedVectorsWithBuckets(numVecs, dim, bucketCount int, buckets []int64, clusterTightness float32) [][]float32 {
+	// This is just an alias to ClusteredVectorsWithBuckets with clearer semantics
+	// The correlation strength is controlled by clusterTightness (lower = tighter clusters = more correlation)
+	return r.ClusteredVectorsWithBuckets(numVecs, dim, bucketCount, buckets, clusterTightness)
+}
+
+// BooleanAdversarialBuckets generates bucket assignments designed to stress-test
+// bitmap operations and filter evaluation.
+//
+// Creates a bimodal distribution where buckets are either:
+// - Very selective (only a few vectors)
+// - Very dense (many vectors)
+//
+// This tests:
+// - Roaring bitmap container promotion (array → bitmap → runs)
+// - Allocation behavior under alternating selectivity
+// - Whether the planner correctly handles mixed selectivity per-field
+func (r *RNG) BooleanAdversarialBuckets(numVecs, bucketCount int) ([]int64, []int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	bucketA := make([]int64, numVecs) // Primary bucket (bimodal)
+	bucketB := make([]int64, numVecs) // Secondary bucket (interleaved for compound filters)
+
+	// Create bimodal distribution for bucket A:
+	// - Buckets 0-9: ~1% each (selective)
+	// - Buckets 10-19: ~9% each (dense)
+	selectiveBuckets := bucketCount / 10
+	if selectiveBuckets < 1 {
+		selectiveBuckets = 1
+	}
+
+	for i := range numVecs {
+		// 10% chance of selective bucket, 90% dense
+		if r.rand.Float64() < 0.10 {
+			bucketA[i] = int64(r.rand.Intn(selectiveBuckets))
+		} else {
+			bucketA[i] = int64(selectiveBuckets + r.rand.Intn(bucketCount-selectiveBuckets))
+		}
+
+		// Bucket B: interleaved pattern to create complex (A OR B) scenarios
+		// Half correlated with A, half anti-correlated
+		if r.rand.Float64() < 0.5 {
+			bucketB[i] = bucketA[i] // Correlated: (A=x OR B=x) has high overlap
+		} else {
+			// Anti-correlated: random bucket different from A
+			other := int64(r.rand.Intn(bucketCount - 1))
+			if other >= bucketA[i] {
+				other++
+			}
+			bucketB[i] = other
+		}
+	}
+
+	return bucketA, bucketB
+}
+
 // BruteForceSearch performs exact search for ground truth.
 func BruteForceSearch(vectors [][]float32, query []float32, k int) []SearchResult {
 	type result struct {

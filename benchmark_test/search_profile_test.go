@@ -5,6 +5,7 @@ package benchmark_test
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"runtime"
 	"runtime/pprof"
@@ -55,7 +56,7 @@ func TestSearchProfile(t *testing.T) {
 
 	dir := t.TempDir()
 	e, err := vecgo.Open(ctx, vecgo.Local(dir), vecgo.Create(dim, vecgo.MetricL2),
-		vecgo.WithCompactionThreshold(1<<40),
+		vecgo.WithCompactionThreshold(math.MaxInt),
 		vecgo.WithFlushConfig(vecgo.FlushConfig{MaxMemTableSize: 64 << 20}),
 		vecgo.WithDiskANNThreshold(numVecs+1),
 		vecgo.WithMemoryLimit(0),
@@ -225,7 +226,7 @@ func TestSearchMemProfile(t *testing.T) {
 
 	dir := t.TempDir()
 	e, err := vecgo.Open(ctx, vecgo.Local(dir), vecgo.Create(dim, vecgo.MetricL2),
-		vecgo.WithCompactionThreshold(1<<40),
+		vecgo.WithCompactionThreshold(math.MaxInt),
 		vecgo.WithFlushConfig(vecgo.FlushConfig{MaxMemTableSize: 64 << 20}),
 		vecgo.WithDiskANNThreshold(numVecs+1),
 		vecgo.WithMemoryLimit(0),

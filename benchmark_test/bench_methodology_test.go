@@ -2,6 +2,7 @@ package benchmark_test
 
 import (
 	"context"
+	"math"
 	"runtime"
 	"testing"
 
@@ -195,7 +196,7 @@ func SetupFilteredBenchmark(b *testing.B, dim, numVecs, bucketCount, numQueries 
 
 	dir := b.TempDir()
 	db, err := vecgo.Open(context.Background(), vecgo.Local(dir), vecgo.Create(dim, vecgo.MetricL2),
-		vecgo.WithCompactionThreshold(1<<40),                                // Disable compaction
+		vecgo.WithCompactionThreshold(math.MaxInt),                          // Disable compaction
 		vecgo.WithFlushConfig(vecgo.FlushConfig{MaxMemTableSize: 64 << 20}), // 64MB memtable
 		vecgo.WithDiskANNThreshold(numVecs+1),                               // Keep in HNSW
 		vecgo.WithMemoryLimit(0),                                            // No memory limit

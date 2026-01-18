@@ -3,6 +3,7 @@ package benchmark_test
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"testing"
 	"time"
@@ -40,7 +41,7 @@ func BenchmarkEfSearchTuning(b *testing.B) {
 	dir := b.TempDir()
 	db, err := vecgo.Open(ctx, vecgo.Local(dir),
 		vecgo.Create(dim, vecgo.MetricL2),
-		vecgo.WithCompactionThreshold(1<<40),
+		vecgo.WithCompactionThreshold(math.MaxInt),
 		vecgo.WithFlushConfig(vecgo.FlushConfig{MaxMemTableSize: 64 << 20}),
 		vecgo.WithDiskANNThreshold(n+1),
 		vecgo.WithMemoryLimit(0),
@@ -159,7 +160,7 @@ func BenchmarkBuildQuality(b *testing.B) {
 
 			db, err := vecgo.Open(ctx, vecgo.Local(dir),
 				vecgo.Create(dim, vecgo.MetricL2),
-				vecgo.WithCompactionThreshold(1<<40),
+				vecgo.WithCompactionThreshold(math.MaxInt),
 				vecgo.WithFlushConfig(vecgo.FlushConfig{MaxMemTableSize: 64 << 20}),
 				vecgo.WithDiskANNThreshold(n+1),
 				vecgo.WithMemoryLimit(0),
@@ -259,7 +260,7 @@ func BenchmarkDimensionScaling(b *testing.B) {
 
 			db, err := vecgo.Open(ctx, vecgo.Local(dir),
 				vecgo.Create(dim, vecgo.MetricL2),
-				vecgo.WithCompactionThreshold(1<<40),
+				vecgo.WithCompactionThreshold(math.MaxInt),
 				vecgo.WithFlushConfig(vecgo.FlushConfig{MaxMemTableSize: 64 << 20}),
 				vecgo.WithDiskANNThreshold(n+1),
 				vecgo.WithMemoryLimit(0),
@@ -343,7 +344,7 @@ func BenchmarkBatchSizeOptimal(b *testing.B) {
 			dir := b.TempDir()
 			db, err := vecgo.Open(ctx, vecgo.Local(dir),
 				vecgo.Create(dim, vecgo.MetricL2),
-				vecgo.WithCompactionThreshold(1<<40),
+				vecgo.WithCompactionThreshold(math.MaxInt),
 				vecgo.WithFlushConfig(vecgo.FlushConfig{MaxMemTableSize: 64 << 20}),
 				vecgo.WithDiskANNThreshold(totalVecs+1),
 				vecgo.WithMemoryLimit(0),

@@ -26,14 +26,30 @@ go test -bench=BenchmarkFast -benchtime=1s -short -run=^$ ./benchmark_test/...
 
 ## Fixture System
 
+### The 5-Distribution Framework (Best-in-Class Methodology)
+
+Based on industry analysis (Snowflake, BigQuery, DuckDB), we benchmark against **5 targeted distributions**:
+
+| Distribution | Fixture | What It Tests | Failure Mode |
+|--------------|---------|---------------|--------------|
+| **Uniform** | `uniform_*` | Baseline, algorithmic efficiency | Happy path, SIMD |
+| **Zipfian** | `zipfian_*` | Hot keys, cache behavior | Planner lies |
+| **Segment-local skew** | `seglocal_*` | Planner correctness | Global 1% vs per-segment 90% |
+| **Correlated vectors** | `correlated_*` | ANN + filter interaction | Graph pruning impact |
+| **Boolean adversarial** | `booladv_*` | Bitmap operations | Allocation cliffs |
+
 ### Available Fixtures
 
-| Fixture | Dimension | Vectors | Distribution | Use Case |
-|---------|-----------|---------|--------------|----------|
+| Fixture | Dim | Vectors | Distribution | Use Case |
+|---------|-----|---------|--------------|----------|
 | `uniform_128d_10k` | 128 | 10K | Uniform | CI, quick iteration |
 | `zipfian_128d_10k` | 128 | 10K | Zipfian | CI, realistic |
 | `uniform_128d_50k` | 128 | 50K | Uniform | Standard benchmarks |
 | `zipfian_128d_50k` | 128 | 50K | Zipfian | Optimization validation |
+| `seglocal_128d_50k` | 128 | 50K | Segment-local skew | Planner testing |
+| `correlated_128d_50k` | 128 | 50K | Correlated | ANN+filter interaction |
+| `booladv_128d_50k` | 128 | 50K | Boolean adversarial | Bitmap stress |
+| `nofilter_128d_50k` | 128 | 50K | No filter | Unfiltered baseline |
 | `uniform_768d_50k` | 768 | 50K | Uniform | Production dimensions |
 | `zipfian_768d_50k` | 768 | 50K | Zipfian | Production + realistic |
 | `uniform_768d_100k` | 768 | 100K | Uniform | Large-scale testing |
@@ -55,7 +71,7 @@ go test -tags=genfixtures -run=TestCleanFixtures -v ./benchmark_test/...
 ## Benchmark Categories
 
 ### Fast Benchmarks (Recommended - uses fixtures)
-- `BenchmarkFastSearch` - Search with varying selectivity (1%-90%)
+- `BenchmarkFastSearch` - Search across all 5 distributions with varying selectivity
 - `BenchmarkFastBatchSearch` - Batched search throughput
 - `BenchmarkFastConcurrentSearch` - Concurrent search scaling
 - `BenchmarkFastFiltered` - Filtered search at all selectivities
