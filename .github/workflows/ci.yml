@@ -101,15 +101,16 @@ jobs:
             arch: amd64
             simd_impls: "avx2 avx512"
 
-          # ARM64 Linux: NEON only (SVE2 not available on GitHub runners)
+          # ARM64 Linux: Test NEON (SVE2 may or may not be available on GitHub runners)
+          # The test diagnostic output will show actual CPU capabilities
           - runner: ubuntu-24.04-arm
             arch: arm64-linux
             simd_impls: "neon"
 
-          # ARM64 macOS: Test both NEON and SVE2 (Apple Silicon supports both)
+          # ARM64 macOS: NEON only (Apple Silicon does NOT support SVE2)
           - runner: macos-latest
             arch: arm64-macos
-            simd_impls: "neon sve2"
+            simd_impls: "neon"
 
     steps:
       - uses: actions/checkout@v4

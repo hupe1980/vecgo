@@ -1,3 +1,7 @@
+// SQ8 (scalar quantization 8-bit) distance kernels for AVX-512
+// Optimizations:
+//   - FMA for fused multiply-add
+//   - AVX-512 native reduce operations
 #include <immintrin.h>
 #include <stdint.h>
 

@@ -1,5 +1,20 @@
+// SQ8 (scalar quantization 8-bit) distance kernels for AVX2
+// Optimizations:
+//   - 4-way accumulator unrolling for ILP
+//   - FMA for fused multiply-add  
+//   - Optimized horizontal sum (register-only)
 #include <immintrin.h>
 #include <stdint.h>
+
+// Optimized horizontal sum: avoids store/load round-trip
+static inline float hsum256_ps(__m256 v) {
+    __m128 lo = _mm256_castps256_ps128(v);
+    __m128 hi = _mm256_extractf128_ps(v, 1);
+    __m128 sum = _mm_add_ps(lo, hi);
+    sum = _mm_hadd_ps(sum, sum);
+    sum = _mm_hadd_ps(sum, sum);
+    return _mm_cvtss_f32(sum);
+}
 
 // Sq8L2BatchAvx2 computes squared L2 distance between a float32 query and SQ8 encoded vectors.
 // query: float32 query vector (dim)
@@ -46,10 +61,7 @@ void sq8L2BatchAvx2(const float *__restrict__ query, const int8_t *__restrict__ 
         }
         
         // Horizontal sum
-        float temp[8];
-        _mm256_storeu_ps(temp, sum);
-        float total = 0;
-        for (int k = 0; k < 8; k++) total += temp[k];
+        float total = hsum256_ps(sum);
         
         // Remainder
         for (; j < dim; j++) {
@@ -159,10 +171,7 @@ void sq8uL2BatchPerDimensionAvx2(const float *__restrict__ query, const uint8_t 
         sum1 = _mm256_add_ps(sum1, sum3);
 
         // Horizontal sum
-        float temp[8];
-        _mm256_storeu_ps(temp, sum1);
-        float total = temp[0] + temp[1] + temp[2] + temp[3] + 
-                      temp[4] + temp[5] + temp[6] + temp[7];
+        float total = hsum256_ps(sum1);
 
         // Remainder
         for (; j < dim; j++) {

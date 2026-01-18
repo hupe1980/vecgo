@@ -6,6 +6,16 @@
 // 256 bytes = 4 cache lines = optimal for most x86 processors.
 #define PREFETCH_AHEAD 256
 
+// Optimized horizontal sum: avoids store/load round-trip
+static inline float hsum256_ps(__m256 v) {
+    __m128 lo = _mm256_castps256_ps128(v);
+    __m128 hi = _mm256_extractf128_ps(v, 1);
+    __m128 sum = _mm_add_ps(lo, hi);
+    sum = _mm_hadd_ps(sum, sum);
+    sum = _mm_hadd_ps(sum, sum);
+    return _mm_cvtss_f32(sum);
+}
+
 // DotProductAvx2 computes dot product with 4-way accumulator unrolling + FMA.
 // Processes 32 floats per iteration (4 accumulators × 8-wide AVX).
 // Requires AVX2 for FMA support.
@@ -52,11 +62,8 @@ void dotProductAvx2(float *__restrict a, float *__restrict b, int64_t n, float *
     sum3 = _mm256_add_ps(sum3, sum4);
     sum1 = _mm256_add_ps(sum1, sum3);
     
-    // Horizontal reduction (sum all 8 lanes)
-    float temp[8];
-    _mm256_storeu_ps(temp, sum1);
-    float result = temp[0] + temp[1] + temp[2] + temp[3] + 
-                   temp[4] + temp[5] + temp[6] + temp[7];
+    // Horizontal reduction
+    float result = hsum256_ps(sum1);
     
     // Scalar cleanup for remaining elements
     int64_t remainder = n % 32;
@@ -119,10 +126,7 @@ void squaredL2Avx2(float *__restrict vec1, float *__restrict vec2, int64_t n, fl
     sum1 = _mm256_add_ps(sum1, sum3);
     
     // Horizontal reduction
-    float temp[8];
-    _mm256_storeu_ps(temp, sum1);
-    float sum = temp[0] + temp[1] + temp[2] + temp[3] + 
-                temp[4] + temp[5] + temp[6] + temp[7];
+    float sum = hsum256_ps(sum1);
     
     // Scalar cleanup for remaining elements
     int64_t remainder = n % 32;
@@ -167,10 +171,7 @@ void pqAdcLookupAvx2(float *__restrict table, uint8_t *__restrict codes, int64_t
     }
     
     // Horizontal sum
-    float temp[8];
-    _mm256_storeu_ps(temp, sum_vec);
-    float total = temp[0] + temp[1] + temp[2] + temp[3] + 
-                  temp[4] + temp[5] + temp[6] + temp[7];
+    float total = hsum256_ps(sum_vec);
                   
     // Remainder
     for (; i < m; i++)

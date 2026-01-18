@@ -1,3 +1,7 @@
+// PQ Int8 distance kernels for AVX-512
+// Optimizations:
+//   - FMA for fused multiply-add
+//   - AVX-512 native reduce operations
 #include <immintrin.h>
 #include <stdint.h>
 
@@ -35,12 +39,7 @@ void squaredL2Int8DequantizedAvx512(const float *__restrict__ query,
         sum = _mm512_fmadd_ps(v_diff, v_diff, sum);
     }
 
-    float tmp[16];
-    _mm512_storeu_ps(tmp, sum);
-    float total = 0;
-    for (int k = 0; k < 16; k++) {
-        total += tmp[k];
-    }
+    float total = _mm512_reduce_add_ps(sum);
 
     for (; j < subdim; j++) {
         float rec = (float)code[j] * s + o;
@@ -82,12 +81,7 @@ void buildDistanceTableInt8Avx512(const float *__restrict__ query,
             sum = _mm512_fmadd_ps(v_diff, v_diff, sum);
         }
 
-        float tmp[16];
-        _mm512_storeu_ps(tmp, sum);
-        float total = 0;
-        for (int k = 0; k < 16; k++) {
-            total += tmp[k];
-        }
+        float total = _mm512_reduce_add_ps(sum);
 
         for (; j < subdim; j++) {
             float rec = (float)code[j] * s + o;
@@ -132,12 +126,7 @@ void findNearestCentroidInt8Avx512(const float *__restrict__ query,
             sum = _mm512_fmadd_ps(v_diff, v_diff, sum);
         }
 
-        float tmp[16];
-        _mm512_storeu_ps(tmp, sum);
-        float total = 0;
-        for (int k = 0; k < 16; k++) {
-            total += tmp[k];
-        }
+        float total = _mm512_reduce_add_ps(sum);
 
         for (; j < subdim; j++) {
             float rec = (float)code[j] * s + o;

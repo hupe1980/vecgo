@@ -1,5 +1,14 @@
+// AVX-512 batch distance kernels
+// Optimizations:
+//   - 4-way accumulator unrolling for ILP
+//   - Software prefetching for cache efficiency
+//   - AVX-512 native reduce operations
+//   - FMA for fused multiply-add
 #include <immintrin.h>
 #include <stdint.h>
+
+// Prefetch distance in bytes (8 cache lines = 512 bytes for AVX-512)
+#define PREFETCH_AHEAD 512
 
 // SquaredL2BatchAvx512 computes squared L2 distance for a batch of vectors using AVX-512.
 // query: pointer to the query vector (dim floats)
@@ -11,6 +20,11 @@ void squaredL2BatchAvx512(float *__restrict__ query, float *__restrict__ targets
     for (int64_t i = 0; i < n; i++) {
         float *target = targets + i * dim;
         
+        // Prefetch next target vector
+        if (i + 1 < n) {
+            _mm_prefetch((const char*)(targets + (i + 1) * dim), _MM_HINT_T0);
+        }
+        
         __m512 sum1 = _mm512_setzero_ps();
         __m512 sum2 = _mm512_setzero_ps();
         __m512 sum3 = _mm512_setzero_ps();
@@ -19,6 +33,8 @@ void squaredL2BatchAvx512(float *__restrict__ query, float *__restrict__ targets
         int64_t j = 0;
         // Unrolled loop (64 floats per step)
         for (; j <= dim - 64; j += 64) {
+            // Prefetch ahead within current vector
+            _mm_prefetch((const char*)(target + j + PREFETCH_AHEAD/4), _MM_HINT_T0);
             __m512 q1 = _mm512_loadu_ps(query + j);
             __m512 q2 = _mm512_loadu_ps(query + j + 16);
             __m512 q3 = _mm512_loadu_ps(query + j + 32);
@@ -71,6 +87,11 @@ void dotBatchAvx512(float *__restrict__ query, float *__restrict__ targets, int6
     for (int64_t i = 0; i < n; i++) {
         float *target = targets + i * dim;
         
+        // Prefetch next target vector
+        if (i + 1 < n) {
+            _mm_prefetch((const char*)(targets + (i + 1) * dim), _MM_HINT_T0);
+        }
+        
         __m512 sum1 = _mm512_setzero_ps();
         __m512 sum2 = _mm512_setzero_ps();
         __m512 sum3 = _mm512_setzero_ps();
@@ -79,6 +100,8 @@ void dotBatchAvx512(float *__restrict__ query, float *__restrict__ targets, int6
         int64_t j = 0;
         // Unrolled loop (64 floats per step)
         for (; j <= dim - 64; j += 64) {
+            // Prefetch ahead
+            _mm_prefetch((const char*)(target + j + PREFETCH_AHEAD/4), _MM_HINT_T0);
             __m512 q1 = _mm512_loadu_ps(query + j);
             __m512 q2 = _mm512_loadu_ps(query + j + 16);
             __m512 q3 = _mm512_loadu_ps(query + j + 32);

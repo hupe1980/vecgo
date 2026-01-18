@@ -1,5 +1,19 @@
+// PQ Int8 distance kernels for AVX2
+// Optimizations:
+//   - FMA for fused multiply-add
+//   - Optimized horizontal sum (register-only)
 #include <immintrin.h>
 #include <stdint.h>
+
+// Optimized horizontal sum: avoids store/load round-trip
+static inline float hsum256_ps(__m256 v) {
+    __m128 lo = _mm256_castps256_ps128(v);
+    __m128 hi = _mm256_extractf128_ps(v, 1);
+    __m128 sum = _mm_add_ps(lo, hi);
+    sum = _mm_hadd_ps(sum, sum);
+    sum = _mm_hadd_ps(sum, sum);
+    return _mm_cvtss_f32(sum);
+}
 
 // squaredL2Int8DequantizedAvx2 computes squared L2 distance between a float32 query
 // and an int8 code vector after dequantization:
@@ -34,12 +48,7 @@ void squaredL2Int8DequantizedAvx2(const float *__restrict__ query,
         sum = _mm256_fmadd_ps(v_diff, v_diff, sum);
     }
 
-    float tmp[8];
-    _mm256_storeu_ps(tmp, sum);
-    float total = 0;
-    for (int k = 0; k < 8; k++) {
-        total += tmp[k];
-    }
+    float total = hsum256_ps(sum);
 
     for (; j < subdim; j++) {
         float rec = (float)code[j] * s + o;
@@ -80,12 +89,7 @@ void buildDistanceTableInt8Avx2(const float *__restrict__ query,
             sum = _mm256_fmadd_ps(v_diff, v_diff, sum);
         }
 
-        float tmp[8];
-        _mm256_storeu_ps(tmp, sum);
-        float total = 0;
-        for (int k = 0; k < 8; k++) {
-            total += tmp[k];
-        }
+        float total = hsum256_ps(sum);
 
         for (; j < subdim; j++) {
             float rec = (float)code[j] * s + o;
@@ -129,12 +133,7 @@ void findNearestCentroidInt8Avx2(const float *__restrict__ query,
             sum = _mm256_fmadd_ps(v_diff, v_diff, sum);
         }
 
-        float tmp[8];
-        _mm256_storeu_ps(tmp, sum);
-        float total = 0;
-        for (int k = 0; k < 8; k++) {
-            total += tmp[k];
-        }
+        float total = hsum256_ps(sum);
 
         for (; j < subdim; j++) {
             float rec = (float)code[j] * s + o;
