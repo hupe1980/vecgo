@@ -20,11 +20,11 @@ TEXT ·int4L2DistanceAvx2(SB), NOSPLIT, $0-48
 	LONG $0xc86ef9c5 // vmovd	%eax, %xmm1
 	LONG $0x5879e2c4; BYTE $0xc9 // vpbroadcastd	%xmm1, %xmm1
 	LONG $0x20fa8348 // cmpq	$0x20, %rdx
-	WORD $0x107d // jge	0x36 <int4L2DistanceAvx2+0x36>
+	JGE LBB0_4
 	LONG $0xd257e8c5 // vxorps	%xmm2, %xmm2, %xmm2
 	WORD $0x3145; BYTE $0xd2 // xorl	%r10d, %r10d
 	LONG $0xdb57e0c5 // vxorps	%xmm3, %xmm3, %xmm3
-	LONG $0x00011fe9; BYTE $0x00 // jmp	0x155 <int4L2DistanceAvx2+0x155>
+	JMP LBB0_2
 LBB0_4:
 	LONG $0xe457d8c5 // vxorps	%xmm4, %xmm4, %xmm4
 	WORD $0xc031 // xorl	%eax, %eax
@@ -82,15 +82,15 @@ LBB0_5:
 	LONG $0xea28fcc5 // vmovaps	%ymm2, %ymm5
 	WORD $0x3948; BYTE $0xd0 // cmpq	%rdx, %rax
 	WORD $0x894c; BYTE $0xd0 // movq	%r10, %rax
-	LONG $0xfefb8e0f; WORD $0xffff // jle	0x50 <int4L2DistanceAvx2+0x50>
+	JLE LBB0_5
 LBB0_2:
 	WORD $0x894c; BYTE $0xd0 // movq	%r10, %rax
 	LONG $0x10c88348 // orq	$0x10, %rax
 	WORD $0x3948; BYTE $0xd0 // cmpq	%rdx, %rax
-	WORD $0x0c7e // jle	0x16d <int4L2DistanceAvx2+0x16d>
+	JLE LBB0_6
 	WORD $0x894c; BYTE $0xd0 // movq	%r10, %rax
 	LONG $0xe328fcc5 // vmovaps	%ymm3, %ymm4
-	LONG $0x000099e9; BYTE $0x00 // jmp	0x206 <int4L2DistanceAvx2+0x206>
+	JMP LBB0_8
 LBB0_6:
 	WORD $0x894d; BYTE $0xd3 // movq	%r10, %r11
 	WORD $0xd149; BYTE $0xeb // shrq	%r11
@@ -123,7 +123,7 @@ LBB0_7:
 	LONG $0xdc28fcc5 // vmovaps	%ymm4, %ymm3
 	WORD $0x3949; BYTE $0xd2 // cmpq	%rdx, %r10
 	WORD $0x8949; BYTE $0xc2 // movq	%rax, %r10
-	LONG $0xff7a8e0f; WORD $0xffff // jle	0x180 <int4L2DistanceAvx2+0x180>
+	JLE LBB0_7
 LBB0_8:
 	LONG $0xc458ecc5 // vaddps	%ymm4, %ymm2, %ymm0
 	LONG $0x197de3c4; WORD $0x01c1 // vextractf128	$0x1, %ymm0, %xmm1
@@ -134,18 +134,18 @@ LBB0_8:
 	LONG $0x6e7941c4; BYTE $0xfa // vmovd	%r10d, %xmm15
 	LONG $0x3c117ac5; BYTE $0x24 // vmovss	%xmm15, (%rsp)
 	WORD $0x3948; BYTE $0xd0 // cmpq	%rdx, %rax
-	LONG $0x00968d0f; WORD $0x0000 // jge	0x2cb <int4L2DistanceAvx2+0x2cb>
+	JGE LBB0_9
 	LONG $0x0410fac5; BYTE $0x24 // vmovss	(%rsp), %xmm0
 	WORD $0x8949; BYTE $0xc2 // movq	%rax, %r10
 	WORD $0xd149; BYTE $0xea // shrq	%r10
 	WORD $0x014c; BYTE $0xd6 // addq	%r10, %rsi
-	WORD $0x1beb // jmp	0x260 <int4L2DistanceAvx2+0x260>
+	JMP LBB0_11
 LBB0_13:
 	LONG $0x02c08348 // addq	$0x2, %rax
 	WORD $0xff48; BYTE $0xc6 // incq	%rsi
 	LONG $0xd128f8c5 // vmovaps	%xmm1, %xmm2
 	WORD $0x3948; BYTE $0xd0 // cmpq	%rdx, %rax
-	WORD $0x6f7d // jge	0x2cf <int4L2DistanceAvx2+0x2cf>
+	JGE LBB0_14
 LBB0_11:
 	LONG $0x16b60f44 // movzbl	(%rsi), %r10d
 	WORD $0x8945; BYTE $0xd3 // movl	%r10d, %r11d
@@ -160,7 +160,7 @@ LBB0_11:
 	LONG $0xa971e2c4; BYTE $0xca // vfmadd213ss	%xmm2, %xmm1, %xmm1 # xmm1 = (xmm1 * xmm1) + xmm2
 	LONG $0x01588d4c // leaq	0x1(%rax), %r11
 	WORD $0x3949; BYTE $0xd3 // cmpq	%rdx, %r11
-	WORD $0xb57d // jge	0x250 <int4L2DistanceAvx2+0x250>
+	JGE LBB0_13
 	LONG $0x0fe28041 // andb	$0xf, %r10b
 	LONG $0xd2b60f45 // movzbl	%r10b, %r10d
 	LONG $0x2a2ac1c4; BYTE $0xd2 // vcvtsi2ss	%r10d, %xmm10, %xmm2
@@ -170,7 +170,7 @@ LBB0_11:
 	LONG $0x5410fac5; WORD $0x0487 // vmovss	0x4(%rdi,%rax,4), %xmm2
 	LONG $0xd35ceac5 // vsubss	%xmm3, %xmm2, %xmm2
 	LONG $0xb969e2c4; BYTE $0xca // vfmadd231ss	%xmm2, %xmm2, %xmm1 # xmm1 = (xmm2 * xmm2) + xmm1
-	WORD $0x85eb // jmp	0x250 <int4L2DistanceAvx2+0x250>
+	JMP LBB0_13
 LBB0_9:
 	LONG $0xca28f8c5 // vmovaps	%xmm2, %xmm1
 LBB0_14:
@@ -202,7 +202,7 @@ TEXT ·int4L2DistanceBatchAvx2(SB), NOSPLIT, $0-56
 	LONG $0xf86e79c5 // vmovd	%eax, %xmm15
 	LONG $0x7c117ac5; WORD $0x0424 // vmovss	%xmm15, 0x4(%rsp)
 	WORD $0x8548; BYTE $0xc9 // testq	%rcx, %rcx
-	LONG $0x03088e0f; WORD $0x0000 // jle	0x7dd <int4L2DistanceBatchAvx2+0x33d>
+	JLE LBB2_19
 	LONG $0x01528d4c // leaq	0x1(%rdx), %r10
 	LONG $0x3feac149 // shrq	$0x3f, %r10
 	WORD $0x0149; BYTE $0xd2 // addq	%rdx, %r10
@@ -214,7 +214,7 @@ TEXT ·int4L2DistanceBatchAvx2(SB), NOSPLIT, $0-56
 	LONG $0x085e8d4c // leaq	0x8(%rsi), %r11
 	WORD $0x3145; BYTE $0xf6 // xorl	%r14d, %r14d
 	WORD $0x8948; BYTE $0xf3 // movq	%rsi, %rbx
-	WORD $0x2feb // jmp	0x531 <int4L2DistanceBatchAvx2+0x91>
+	JMP LBB2_2
 LBB2_13:
 	LONG $0xdc28f8c5 // vmovaps	%xmm4, %xmm3
 LBB2_18:
@@ -224,21 +224,21 @@ LBB2_18:
 	WORD $0x014c; BYTE $0xd3 // addq	%r10, %rbx
 	WORD $0x894d; BYTE $0xfe // movq	%r15, %r14
 	WORD $0x3949; BYTE $0xcf // cmpq	%rcx, %r15
-	LONG $0x02ac840f; WORD $0x0000 // je	0x7dd <int4L2DistanceBatchAvx2+0x33d>
+	JE LBB2_19
 LBB2_2:
 	LONG $0x017e8d4d // leaq	0x1(%r14), %r15
 	WORD $0x3949; BYTE $0xcf // cmpq	%rcx, %r15
-	WORD $0x0c7d // jge	0x546 <int4L2DistanceBatchAvx2+0xa6>
+	JGE LBB2_4
 	WORD $0x894d; BYTE $0xfc // movq	%r15, %r12
 	LONG $0xe2af0f4d // imulq	%r10, %r12
 	LONG $0x0c180f42; BYTE $0x26 // prefetcht0	(%rsi,%r12)
 LBB2_4:
 	LONG $0x20fa8348 // cmpq	$0x20, %rdx
-	WORD $0x147d // jge	0x560 <int4L2DistanceBatchAvx2+0xc0>
+	JGE LBB2_8
 	LONG $0xdb57e0c5 // vxorps	%xmm3, %xmm3, %xmm3
 	WORD $0x3145; BYTE $0xed // xorl	%r13d, %r13d
 	LONG $0xe457d8c5 // vxorps	%xmm4, %xmm4, %xmm4
-	LONG $0x00010de9; BYTE $0x00 // jmp	0x669 <int4L2DistanceBatchAvx2+0x1c9>
+	JMP LBB2_6
 LBB2_8:
 	LONG $0xed57d0c5 // vxorps	%xmm5, %xmm5, %xmm5
 	WORD $0x894d; BYTE $0xdc // movq	%r11, %r12
@@ -294,15 +294,15 @@ LBB2_9:
 	LONG $0xf328fcc5 // vmovaps	%ymm3, %ymm6
 	WORD $0x3948; BYTE $0xd5 // cmpq	%rdx, %rbp
 	WORD $0x894c; BYTE $0xed // movq	%r13, %rbp
-	LONG $0xff078e0f; WORD $0xffff // jle	0x570 <int4L2DistanceBatchAvx2+0xd0>
+	JLE LBB2_9
 LBB2_6:
 	WORD $0x894d; BYTE $0xec // movq	%r13, %r12
 	LONG $0x10cc8349 // orq	$0x10, %r12
 	WORD $0x3949; BYTE $0xd4 // cmpq	%rdx, %r12
-	WORD $0x1b7e // jle	0x690 <int4L2DistanceBatchAvx2+0x1f0>
+	JLE LBB2_10
 	WORD $0x894d; BYTE $0xec // movq	%r13, %r12
 	LONG $0xec28fcc5 // vmovaps	%ymm4, %ymm5
-	LONG $0x0000a6e9; BYTE $0x00 // jmp	0x727 <int4L2DistanceBatchAvx2+0x287>
+	JMP LBB2_12
 LBB2_10:
 	WORD $0x894c; BYTE $0xed // movq	%r13, %rbp
 	WORD $0xd148; BYTE $0xed // shrq	%rbp
@@ -335,7 +335,7 @@ LBB2_11:
 	LONG $0xe528fcc5 // vmovaps	%ymm5, %ymm4
 	WORD $0x3949; BYTE $0xd5 // cmpq	%rdx, %r13
 	WORD $0x894d; BYTE $0xe5 // movq	%r12, %r13
-	LONG $0xff798e0f; WORD $0xffff // jle	0x6a0 <int4L2DistanceBatchAvx2+0x200>
+	JLE LBB2_11
 LBB2_12:
 	LONG $0xdd58e4c5 // vaddps	%ymm5, %ymm3, %ymm3
 	LONG $0x197de3c4; WORD $0x01dc // vextractf128	$0x1, %ymm3, %xmm4
@@ -343,17 +343,17 @@ LBB2_12:
 	LONG $0xdb7ce3c5 // vhaddps	%xmm3, %xmm3, %xmm3
 	LONG $0xe37ce3c5 // vhaddps	%xmm3, %xmm3, %xmm4
 	WORD $0x3949; BYTE $0xd4 // cmpq	%rdx, %r12
-	LONG $0xfdca8d0f; WORD $0xffff // jge	0x510 <int4L2DistanceBatchAvx2+0x70>
+	JGE LBB2_13
 	WORD $0x894d; BYTE $0xe5 // movq	%r12, %r13
 	WORD $0xd149; BYTE $0xed // shrq	%r13
 	WORD $0x0149; BYTE $0xdd // addq	%rbx, %r13
-	WORD $0x23eb // jmp	0x774 <int4L2DistanceBatchAvx2+0x2d4>
+	JMP LBB2_15
 LBB2_17:
 	LONG $0x02c48349 // addq	$0x2, %r12
 	WORD $0xff49; BYTE $0xc5 // incq	%r13
 	LONG $0xe328f8c5 // vmovaps	%xmm3, %xmm4
 	WORD $0x3949; BYTE $0xd4 // cmpq	%rdx, %r12
-	LONG $0xfda08d0f; WORD $0xffff // jge	0x514 <int4L2DistanceBatchAvx2+0x74>
+	JGE LBB2_18
 LBB2_15:
 	LONG $0x45b60f41; BYTE $0x00 // movzbl	(%r13), %eax
 	WORD $0xc589 // movl	%eax, %ebp
@@ -368,7 +368,7 @@ LBB2_15:
 	LONG $0xa961e2c4; BYTE $0xdc // vfmadd213ss	%xmm4, %xmm3, %xmm3 # xmm3 = (xmm3 * xmm3) + xmm4
 	LONG $0x246c8d49; BYTE $0x01 // leaq	0x1(%r12), %rbp
 	WORD $0x3948; BYTE $0xd5 // cmpq	%rdx, %rbp
-	WORD $0xb07d // jge	0x760 <int4L2DistanceBatchAvx2+0x2c0>
+	JGE LBB2_17
 	WORD $0x0f24 // andb	$0xf, %al
 	WORD $0xb60f; BYTE $0xc0 // movzbl	%al, %eax
 	LONG $0xe02aaac5 // vcvtsi2ss	%eax, %xmm10, %xmm4
@@ -378,7 +378,7 @@ LBB2_15:
 	LONG $0x107aa1c4; WORD $0xa764; BYTE $0x04 // vmovss	0x4(%rdi,%r12,4), %xmm4
 	LONG $0xe55cdac5 // vsubss	%xmm5, %xmm4, %xmm4
 	LONG $0xb959e2c4; BYTE $0xdc // vfmadd231ss	%xmm4, %xmm4, %xmm3 # xmm3 = (xmm4 * xmm4) + xmm3
-	WORD $0x83eb // jmp	0x760 <int4L2DistanceBatchAvx2+0x2c0>
+	JMP LBB2_17
 LBB2_19:
 	LONG $0x08c48348 // addq	$0x8, %rsp
 	BYTE $0x5b // popq	%rbx
@@ -408,9 +408,9 @@ TEXT ·int4L2DistancePrecomputedAvx2(SB), NOSPLIT, $0-40
 	WORD $0x8949; BYTE $0xf0 // movq	%rsi, %r8
 	LONG $0xc057f8c5 // vxorps	%xmm0, %xmm0, %xmm0
 	LONG $0x08fa8348 // cmpq	$0x8, %rdx
-	WORD $0x087d // jge	0x304 <int4L2DistancePrecomputedAvx2+0x24>
+	JGE LBB1_2
 	WORD $0x3145; BYTE $0xd2 // xorl	%r10d, %r10d
-	LONG $0x0000ece9; BYTE $0x00 // jmp	0x3f0 <int4L2DistancePrecomputedAvx2+0x110>
+	JMP LBB1_4
 LBB1_2:
 	LONG $0x000070b8; BYTE $0x00 // movl	$0x70, %eax
 	WORD $0x3145; BYTE $0xdb // xorl	%r11d, %r11d
@@ -464,27 +464,27 @@ LBB1_3:
 	LONG $0x10c38349 // addq	$0x10, %r11
 	WORD $0x3949; BYTE $0xd3 // cmpq	%rdx, %r11
 	WORD $0x894d; BYTE $0xd3 // movq	%r10, %r11
-	LONG $0xff208e0f; WORD $0xffff // jle	0x310 <int4L2DistancePrecomputedAvx2+0x30>
+	JLE LBB1_3
 LBB1_4:
 	LONG $0x197de3c4; WORD $0x01c1 // vextractf128	$0x1, %ymm0, %xmm1
 	LONG $0xc158f8c5 // vaddps	%xmm1, %xmm0, %xmm0
 	LONG $0xc07cfbc5 // vhaddps	%xmm0, %xmm0, %xmm0
 	LONG $0xc87cfbc5 // vhaddps	%xmm0, %xmm0, %xmm1
 	WORD $0x3949; BYTE $0xd2 // cmpq	%rdx, %r10
-	WORD $0x6f7d // jge	0x476 <int4L2DistancePrecomputedAvx2+0x196>
+	JGE LBB1_5
 	WORD $0x894c; BYTE $0xd0 // movq	%r10, %rax
 	WORD $0xd148; BYTE $0xe8 // shrq	%rax
 	WORD $0x0149; BYTE $0xc0 // addq	%rax, %r8
 	WORD $0x894c; BYTE $0xd0 // movq	%r10, %rax
 	LONG $0x04e0c148 // shlq	$0x4, %rax
-	WORD $0x1beb // jmp	0x434 <int4L2DistancePrecomputedAvx2+0x154>
+	JMP LBB1_7
 LBB1_9:
 	LONG $0x02c28349 // addq	$0x2, %r10
 	WORD $0xff49; BYTE $0xc0 // incq	%r8
 	LONG $0x20c08348 // addq	$0x20, %rax
 	LONG $0xc828f8c5 // vmovaps	%xmm0, %xmm1
 	WORD $0x3949; BYTE $0xd2 // cmpq	%rdx, %r10
-	WORD $0x467d // jge	0x47a <int4L2DistancePrecomputedAvx2+0x19a>
+	JGE LBB1_10
 LBB1_7:
 	LONG $0x08b60f45 // movzbl	(%r8), %r9d
 	WORD $0x8944; BYTE $0xce // movl	%r9d, %esi
@@ -495,13 +495,13 @@ LBB1_7:
 	LONG $0xa979e2c4; BYTE $0xc1 // vfmadd213ss	%xmm1, %xmm0, %xmm0 # xmm0 = (xmm0 * xmm0) + xmm1
 	LONG $0x01728d49 // leaq	0x1(%r10), %rsi
 	WORD $0x3948; BYTE $0xd6 // cmpq	%rdx, %rsi
-	WORD $0xc67d // jge	0x420 <int4L2DistancePrecomputedAvx2+0x140>
+	JGE LBB1_9
 	LONG $0x0fe18341 // andl	$0xf, %r9d
 	WORD $0x0149; BYTE $0xc1 // addq	%rax, %r9
 	LONG $0x107aa1c4; WORD $0x974c; BYTE $0x04 // vmovss	0x4(%rdi,%r10,4), %xmm1
 	LONG $0x5c72a1c4; WORD $0x894c; BYTE $0x40 // vsubss	0x40(%rcx,%r9,4), %xmm1, %xmm1
 	LONG $0xb971e2c4; BYTE $0xc1 // vfmadd231ss	%xmm1, %xmm1, %xmm0 # xmm0 = (xmm1 * xmm1) + xmm0
-	WORD $0xaaeb // jmp	0x420 <int4L2DistancePrecomputedAvx2+0x140>
+	JMP LBB1_9
 LBB1_5:
 	LONG $0xc128f8c5 // vmovaps	%xmm1, %xmm0
 LBB1_10:

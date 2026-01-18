@@ -15,7 +15,10 @@ import (
 	"strings"
 )
 
-const archARM64 = "arm64"
+const (
+	archARM64 = "arm64"
+	archAMD64 = "amd64"
+)
 
 var (
 	verbose     = flag.Bool("v", false, "verbose output")
@@ -374,7 +377,7 @@ func cTypeToGo(cType string) string {
 
 func (g *Generator) getClangTarget() string {
 	archMap := map[string]string{
-		"amd64":   "x86_64",
+		archAMD64: "x86_64",
 		archARM64: archARM64,
 	}
 	osMap := map[string]string{
@@ -423,7 +426,7 @@ func (g *Generator) compileToAssembly() (string, error) {
 			args = append(args, "-march=armv9-a+sve2", "-D__ARM_FEATURE_SVE2=1")
 		}
 	}
-	if g.Arch == "amd64" {
+	if g.Arch == archAMD64 {
 		// -mno-red-zone: required for Go compatibility (Go doesn't use red zone)
 		// -fomit-frame-pointer: CRITICAL - prevent push rbp/mov rbp,rsp prologue
 		//                       which breaks Go's frame pointer-based argument access
@@ -484,6 +487,80 @@ func (g *Generator) validateNoRelocations(objPath string) error {
 		return fmt.Errorf("object contains relocations; raw WORD emission is unsafe. Rework the C to avoid literal pools/calls, or rerun with -allow-relocs.\nllvm-objdump -r output:\n%s", text)
 	}
 	return nil
+}
+
+// ------------------------------------------------------------
+// AMD64 Jump Instruction Handling
+// ------------------------------------------------------------
+
+// amd64JumpOpcodes maps x86 jump mnemonics to Go assembly mnemonics
+var amd64JumpOpcodes = map[string]string{
+	"jmp":  "JMP",
+	"je":   "JE",
+	"jz":   "JE", // alias
+	"jne":  "JNE",
+	"jnz":  "JNE", // alias
+	"jl":   "JLT",
+	"jlt":  "JLT",
+	"jle":  "JLE",
+	"jg":   "JGT",
+	"jgt":  "JGT",
+	"jge":  "JGE",
+	"jb":   "JCS", // below (unsigned) = carry set
+	"jnae": "JCS", // alias
+	"jc":   "JCS", // carry
+	"jae":  "JCC", // above or equal (unsigned) = carry clear
+	"jnb":  "JCC", // alias
+	"jnc":  "JCC", // no carry
+	"ja":   "JHI", // above (unsigned)
+	"jnbe": "JHI", // alias
+	"jbe":  "JLS", // below or equal (unsigned)
+	"jna":  "JLS", // alias
+	"js":   "JMI", // sign (negative)
+	"jns":  "JPL", // not sign (positive)
+	"jo":   "JOS", // overflow
+	"jno":  "JOC", // no overflow
+	"jp":   "JPE", // parity even
+	"jpe":  "JPE", // alias
+	"jnp":  "JPO", // parity odd
+	"jpo":  "JPO", // alias
+}
+
+// isAMD64Jump returns true if the assembly represents a jump instruction.
+// We check the original assembly source (e.g., "jge .LBB0_2") not objdump output.
+func isAMD64Jump(asm string) bool {
+	// Assembly format from source: "jmp .LBB0_8" or "jge .LBB0_2"
+	// Check if it starts with "j" (all x86 jumps do: jmp, je, jne, jge, etc.)
+	return strings.HasPrefix(asm, "j")
+}
+
+// convertAMD64JumpToGo converts an AMD64 jump from assembly source to Go assembly.
+// Input format (from clang -S): "jmp .LBB0_8" or "jge .LBB0_2"
+// Output format: "JMP LBB0_8" or "JGE LBB0_2"
+// Following goat's approach: https://github.com/gorse-io/goat
+func convertAMD64JumpToGo(asm string) string {
+	// Split on the label (format: "jmp .LBB0_8" or "jge .LBB0_2")
+	// The label is separated by space or tab
+	parts := strings.Fields(asm)
+	if len(parts) < 2 {
+		return ""
+	}
+
+	opcode := parts[0]
+	label := parts[1]
+
+	// Get the Go opcode (uppercase)
+	goOp, ok := amd64JumpOpcodes[opcode]
+	if !ok {
+		// Unknown jump - use uppercase opcode directly
+		goOp = strings.ToUpper(opcode)
+	}
+
+	// Handle label: ".LBB0_8" -> "LBB0_8"
+	// Strip the leading dot (Go asm labels don't have dots)
+	label = strings.TrimPrefix(label, ".")
+
+	return fmt.Sprintf("%s %s", goOp, label)
 }
 
 // ------------------------------------------------------------
@@ -718,7 +795,7 @@ func (g *Generator) generateGoAsm(functions map[string]*Function) error {
 				}
 			}
 			buf.WriteString("\n")
-		case "amd64":
+		case archAMD64:
 			// Generate parameter loads for AMD64 (System V ABI)
 			// Integers/pointers go to DI, SI, DX, CX, R8, R9
 			// Floats/doubles go to XMM0-XMM7
@@ -760,7 +837,7 @@ func (g *Generator) generateGoAsm(functions map[string]*Function) error {
 						} else {
 							fmt.Fprintf(&buf, "\tMOVD R0, ret+%d(FP)\n", retOffset)
 						}
-					} else if g.Arch == "amd64" {
+					} else if g.Arch == archAMD64 {
 						if strings.Contains(fn.ReturnType, "float") {
 							fmt.Fprintf(&buf, "\tMOVSS XMM0, ret+%d(FP)\n", retOffset)
 						} else {
@@ -770,6 +847,20 @@ func (g *Generator) generateGoAsm(functions map[string]*Function) error {
 				}
 				buf.WriteString("\tRET\n")
 				continue
+			}
+
+			// For AMD64, convert jump instructions to native Go assembly mnemonics.
+			// This is critical because raw bytes contain PC-relative offsets that
+			// were computed for the original object file, but Go's assembler needs
+			// symbolic labels to compute correct offsets during linking.
+			// We use l.Assembly (from source .s file) which has labels like ".LBB0_2"
+			// rather than l.Disasm (from objdump) which has function-relative offsets.
+			if g.Arch == archAMD64 && l.Assembly != "" && isAMD64Jump(l.Assembly) {
+				goJump := convertAMD64JumpToGo(l.Assembly)
+				if goJump != "" {
+					fmt.Fprintf(&buf, "\t%s\n", goJump)
+					continue
+				}
 			}
 
 			if len(l.Binary) > 0 {
@@ -782,13 +873,13 @@ func (g *Generator) generateGoAsm(functions map[string]*Function) error {
 						buf.WriteString("; ")
 					}
 					remaining := len(l.Binary) - pos
-					if remaining >= 8 && g.Arch == "amd64" {
+					if remaining >= 8 && g.Arch == archAMD64 {
 						// QUAD: 8 bytes (little-endian) - AMD64 only
 						fmt.Fprintf(&buf, "QUAD $0x%s%s%s%s%s%s%s%s",
 							l.Binary[pos+7], l.Binary[pos+6], l.Binary[pos+5], l.Binary[pos+4],
 							l.Binary[pos+3], l.Binary[pos+2], l.Binary[pos+1], l.Binary[pos])
 						pos += 8
-					} else if remaining >= 4 && g.Arch == "amd64" {
+					} else if remaining >= 4 && g.Arch == archAMD64 {
 						// LONG: 4 bytes (little-endian) - AMD64
 						fmt.Fprintf(&buf, "LONG $0x%s%s%s%s",
 							l.Binary[pos+3], l.Binary[pos+2], l.Binary[pos+1], l.Binary[pos])
