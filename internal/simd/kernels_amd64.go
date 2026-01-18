@@ -38,7 +38,7 @@ func init() {
 var pqAdcOffsets = func() []int32 {
 	offsets := make([]int32, 256)
 	for i := range offsets {
-		offsets[i] = int32(i * 256 * 4) // 256 floats per subvector, 4 bytes per float
+		offsets[i] = int32(i * 256) // element index offset for subvector i (gather scale=4 handles byte conversion)
 	}
 	return offsets
 }()
