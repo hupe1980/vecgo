@@ -104,11 +104,12 @@ func (m *multiFlag) Set(value string) error {
 }
 
 type Function struct {
-	Name       string
-	Lines      []AsmLine
-	Parameters []Parameter
-	ArgOffsets map[string]int
-	ReturnType string
+	Name            string
+	Lines           []AsmLine
+	Parameters      []Parameter
+	ArgOffsets      map[string]int
+	ReturnType      string
+	StackParamCount int // Number of parameters pushed to stack (AMD64 overflow params)
 }
 
 type Parameter struct {
@@ -780,10 +781,20 @@ func (g *Generator) generateGoAsm(functions map[string]*Function) error {
 			// Generate parameter loads for AMD64 (System V ABI)
 			// Integers/pointers go to DI, SI, DX, CX, R8, R9
 			// Floats/doubles go to XMM0-XMM7
+			// Parameters beyond 6 integers must be pushed onto the stack
+			// in reverse order so C code can access them at expected offsets.
 			intRegisters := []string{"DI", "SI", "DX", "CX", "R8", "R9"}
 			floatRegisters := []string{"X0", "X1", "X2", "X3", "X4", "X5", "X6", "X7"}
 			intRegIdx := 0
 			floatRegIdx := 0
+
+			// Track parameters that exceed register count (need stack passing)
+			type stackParam struct {
+				name     string
+				fpOffset int
+			}
+			var stackParams []stackParam
+
 			for i, param := range fn.Parameters {
 				offset := i * 8
 				if customOffset, ok := fn.ArgOffsets[param.Name]; ok {
@@ -798,10 +809,32 @@ func (g *Generator) generateGoAsm(functions map[string]*Function) error {
 					if intRegIdx < len(intRegisters) {
 						fmt.Fprintf(&buf, "\tMOVQ %s+%d(FP), %s\n", param.Name, offset, intRegisters[intRegIdx])
 						intRegIdx++
+					} else {
+						// Integer parameter beyond 6th - needs stack passing
+						stackParams = append(stackParams, stackParam{
+							name:     param.Name,
+							fpOffset: offset,
+						})
+						intRegIdx++
 					}
 				}
 			}
+
+			// Push overflow parameters onto stack in reverse order
+			// This places them where System V ABI expects: param7 at RSP+8 after return
+			// The C code will access them at predictable offsets after its prologue
+			if len(stackParams) > 0 {
+				for i := len(stackParams) - 1; i >= 0; i-- {
+					fmt.Fprintf(&buf, "\tPUSHQ %s+%d(FP)\n", stackParams[i].name, stackParams[i].fpOffset)
+				}
+				// Push dummy value for 16-byte stack alignment (System V ABI requirement)
+				buf.WriteString("\tPUSHQ $0\n")
+			}
+
 			buf.WriteString("\n")
+
+			// Store stack param count for epilogue generation
+			fn.StackParamCount = len(stackParams)
 		}
 
 		for _, l := range fn.Lines {
@@ -810,6 +843,13 @@ func (g *Generator) generateGoAsm(functions map[string]*Function) error {
 			}
 
 			if l.Assembly == "ret" || l.Assembly == "retq" {
+				// Pop stack parameters before return (AMD64 overflow params)
+				// We pushed N params + 1 alignment dummy, so pop N+1 times
+				if g.Arch == archAMD64 && fn.StackParamCount > 0 {
+					for i := 0; i <= fn.StackParamCount; i++ {
+						buf.WriteString("\tPOPQ AX\n") // Use AX as scratch (will be clobbered)
+					}
+				}
 				if fn.ReturnType != "void" && fn.ReturnType != "" {
 					retOffset := argSize
 					if g.Arch == "arm64" {

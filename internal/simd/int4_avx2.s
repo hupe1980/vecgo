@@ -186,6 +186,8 @@ TEXT ·int4L2DistanceBatchAvx2(SB), NOSPLIT, $0-56
 	MOVQ n+24(FP), CX
 	MOVQ minVal+32(FP), R8
 	MOVQ diff+40(FP), R9
+	PUSHQ out+48(FP)
+	PUSHQ $0
 
 	BYTE $0x55 // pushq	%rbp
 	WORD $0x5741 // pushq	%r15
@@ -388,6 +390,8 @@ LBB2_19:
 	WORD $0x5f41 // popq	%r15
 	BYTE $0x5d // popq	%rbp
 	WORD $0xf8c5; BYTE $0x77 // vzeroupper
+	POPQ AX
+	POPQ AX
 	RET
 
 TEXT ·int4L2DistancePrecomputedAvx2(SB), NOSPLIT, $0-40

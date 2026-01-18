@@ -11,6 +11,8 @@ TEXT ·sq8L2BatchAvx512(SB), NOSPLIT, $0-56
 	MOVQ biases+24(FP), CX
 	MOVQ dim+32(FP), R8
 	MOVQ n+40(FP), R9
+	PUSHQ out+48(FP)
+	PUSHQ $0
 
 	WORD $0x854d; BYTE $0xc9 // testq	%r9, %r9
 	JLE LBB0_33
@@ -226,6 +228,8 @@ LBB0_32:
 	BYTE $0x5d // popq	%rbp
 LBB0_33:
 	WORD $0xf8c5; BYTE $0x77 // vzeroupper
+	POPQ AX
+	POPQ AX
 	RET
 
 TEXT ·sq8uL2BatchPerDimensionAvx512(SB), NOSPLIT, $0-56
@@ -235,6 +239,8 @@ TEXT ·sq8uL2BatchPerDimensionAvx512(SB), NOSPLIT, $0-56
 	MOVQ invScales+24(FP), CX
 	MOVQ dim+32(FP), R8
 	MOVQ n+40(FP), R9
+	PUSHQ out+48(FP)
+	PUSHQ $0
 
 	WORD $0x854d; BYTE $0xc9 // testq	%r9, %r9
 	JLE LBB1_33
@@ -455,5 +461,7 @@ LBB1_32:
 	BYTE $0x5d // popq	%rbp
 LBB1_33:
 	WORD $0xf8c5; BYTE $0x77 // vzeroupper
+	POPQ AX
+	POPQ AX
 	RET
 
