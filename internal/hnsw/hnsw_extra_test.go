@@ -74,6 +74,7 @@ func TestHNSW_Extra_Apply(t *testing.T) {
 		o.Dimension = 2
 	})
 	require.NoError(t, err)
+	defer h.Close()
 
 	// ApplyInsert (Explicit ID)
 	id := model.RowID(100)
@@ -112,6 +113,7 @@ func TestHNSW_Extra_Apply(t *testing.T) {
 func TestHNSW_Sharded_Stub(t *testing.T) {
 	h, err := NewSharded(0, 4, func(o *Options) { o.Dimension = 2 })
 	require.NoError(t, err)
+	defer h.Close()
 	assert.NotNil(t, h)
 	// ShardID and NumShards are hardcoded to 0/1 in current stub?
 	// Check impl: ShardID() returns 0, NumShards() returns 1.
@@ -125,6 +127,7 @@ func TestHNSW_Reset(t *testing.T) {
 	ctx := context.Background()
 	h, err := New(func(o *Options) { o.Dimension = 2 })
 	require.NoError(t, err)
+	defer h.Close()
 
 	_, err = h.Insert(ctx, []float32{1, 1})
 	require.NoError(t, err)
@@ -138,7 +141,9 @@ func TestHNSW_Errors(t *testing.T) {
 	_, err := New(func(o *Options) { o.Dimension = 0 })
 	assert.Error(t, err) // Invalid dimension
 
-	h, _ := New(func(o *Options) { o.Dimension = 2 })
+	h, err := New(func(o *Options) { o.Dimension = 2 })
+	require.NoError(t, err)
+	defer h.Close()
 	ctx := context.Background()
 
 	// VectorByID Not Found
@@ -163,6 +168,7 @@ func TestHNSW_Dimensions(t *testing.T) {
 		o.RandomSeed = &seed
 	})
 	require.NoError(t, err)
+	defer h.Close()
 	assert.NotNil(t, h)
 }
 
@@ -174,6 +180,7 @@ func TestHNSW_Stats(t *testing.T) {
 		o.EF = 100
 	})
 	require.NoError(t, err)
+	defer h.Close()
 
 	// Add some vectors
 	vectors := [][]float32{
@@ -200,6 +207,4 @@ func TestHNSW_Stats(t *testing.T) {
 	if ok {
 		assert.Equal(t, "3", count)
 	}
-
-	require.NoError(t, h.Close())
 }

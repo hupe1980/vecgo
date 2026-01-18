@@ -200,13 +200,19 @@ func (a *Arena) allocateChunkLocked(ctx context.Context) error {
 		}
 	}
 
-	// Use off-heap anonymous mapping to avoid GC pressure for large graphs
+	// Use off-heap anonymous mapping to avoid GC pressure for large graphs.
+	// On Unix: mmap with MAP_ANONYMOUS (lazy allocation, demand-paged).
+	// On Windows: VirtualAlloc with MEM_COMMIT (demand-paged).
+	//
+	// If this fails, the most common cause is missing Close() calls on HNSW indexes,
+	// which prevents arena memory from being released. Ensure all HNSW instances
+	// are closed with defer idx.Close() after creation.
 	mapping, err := mmap.MapAnon(a.chunkSize)
 	if err != nil {
 		if a.acquirer != nil {
 			a.acquirer.ReleaseMemory(int64(a.chunkSize))
 		}
-		return fmt.Errorf("failed to map anonymous memory for chunk: %w", err)
+		return fmt.Errorf("failed to allocate arena chunk (%d bytes): %w (hint: ensure HNSW.Close() is called to release memory)", a.chunkSize, err)
 	}
 
 	newChunk := &chunk{

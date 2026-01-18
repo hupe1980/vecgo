@@ -32,6 +32,7 @@ func TestNew(t *testing.T) {
 	if !assert.NoError(t, err) {
 		return
 	}
+	defer h.Close()
 
 	assert.Equal(t, 8, h.opts.M)
 	assert.Equal(t, 8, h.maxConnectionsPerLayer)
@@ -111,6 +112,7 @@ func TestHNSW_DotProduct_DistanceOrdering(t *testing.T) {
 	if !assert.NoError(t, err) {
 		return
 	}
+	defer h.Close()
 
 	id0, err := h.Insert(ctx, []float32{1, 0, 0})
 	if !assert.NoError(t, err) {
@@ -187,6 +189,7 @@ func runValidateInsertSearchCase(t *testing.T, ctx context.Context, tc TestCases
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer h.Close()
 
 	for i := 0; i < len(vecs); i++ {
 		if _, err := h.Insert(ctx, vecs[i]); err != nil {

@@ -29,6 +29,7 @@ func TestConcurrentInserts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer idx.Close()
 
 	var wg sync.WaitGroup
 	wg.Add(numGoroutines)
@@ -69,6 +70,7 @@ func TestConcurrentSearches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer idx.Close()
 
 	const numVectors = 1000
 
@@ -119,6 +121,7 @@ func TestConcurrentInsertsAndSearches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer idx.Close()
 
 	const numInitialVectors = 500
 	const numInsertGoroutines = 5
@@ -193,6 +196,7 @@ func TestConcurrentDeletes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer idx.Close()
 
 	const numVectors = 1000
 
