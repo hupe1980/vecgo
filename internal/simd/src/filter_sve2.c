@@ -23,28 +23,38 @@ void filterRangeF64Sve2(
     uint8_t* __restrict__ dst
 ) {
     int64_t i = 0;
+    
+    // SVE2 approach: process elements and use svcompact/scalar extraction
+    // Since SVE2 predicate results need to be converted to bytes, we use
+    // a hybrid approach for correctness
+    svbool_t pg64 = svptrue_b64();
     int64_t vl = svcntd();  // Vector length for 64-bit elements
     
     // Process full vectors
     for (; i + vl <= n; i += vl) {
-        svbool_t pg = svptrue_b64();
-        svfloat64_t v = svld1_f64(pg, &values[i]);
+        svfloat64_t v = svld1_f64(pg64, &values[i]);
         
-        // Compare: v >= minVal AND v <= maxVal
-        svbool_t cmp_ge = svcmpge_n_f64(pg, v, minVal);
-        svbool_t cmp_le = svcmple_n_f64(pg, v, maxVal);
-        svbool_t in_range = svand_b_z(pg, cmp_ge, cmp_le);
+        // Compare: v >= minVal AND v <= maxVal (inclusive bounds)
+        svbool_t cmp_ge = svcmpge_n_f64(pg64, v, minVal);
+        svbool_t cmp_le = svcmple_n_f64(pg64, v, maxVal);
+        svbool_t in_range = svand_b_z(pg64, cmp_ge, cmp_le);
         
-        // Use svsel to create 0/1 in 64-bit, then extract lane by lane
-        // We need to store bytes, so we extract each result
+        // Convert predicate to uint64 vector: 0 or 1 per lane
+        svuint64_t ones = svdup_u64(1);
+        svuint64_t zeros = svdup_u64(0);
+        svuint64_t result = svsel_u64(in_range, ones, zeros);
+        
+        // Store to temp buffer and copy to dst as bytes
+        // This is the cleanest way to handle 64-bit to 8-bit narrowing
+        uint64_t tmp[32];  // Max SVE vector is 2048 bits = 32 x 64-bit
+        svst1_u64(pg64, tmp, result);
+        
         for (int64_t j = 0; j < vl; j++) {
-            svbool_t lane_pred = svwhilelt_b64(j, j + 1);
-            dst[i + j] = svptest_first(svptrue_b64(), 
-                svand_b_z(svptrue_b64(), in_range, lane_pred)) ? 1 : 0;
+            dst[i + j] = (uint8_t)tmp[j];
         }
     }
     
-    // Handle remainder with predicated load
+    // Handle remainder with predicated operations
     if (i < n) {
         svbool_t pg = svwhilelt_b64(i, n);
         svfloat64_t v = svld1_f64(pg, &values[i]);
@@ -53,51 +63,20 @@ void filterRangeF64Sve2(
         svbool_t cmp_le = svcmple_n_f64(pg, v, maxVal);
         svbool_t in_range = svand_b_z(pg, cmp_ge, cmp_le);
         
-        // Store remaining bytes
+        svuint64_t ones = svdup_u64(1);
+        svuint64_t zeros = svdup_u64(0);
+        svuint64_t result = svsel_u64(in_range, ones, zeros);
+        
+        uint64_t tmp[32];
+        svst1_u64(pg, tmp, result);
+        
         for (int64_t j = 0; i + j < n; j++) {
-            svbool_t lane_pred = svwhilelt_b64(j, j + 1);
-            dst[i + j] = svptest_first(svptrue_b64(), 
-                svand_b_z(svptrue_b64(), in_range, lane_pred)) ? 1 : 0;
+            dst[i + j] = (uint8_t)tmp[j];
         }
-    }
-}
-
-// FilterRangeF64SVE2Simple - Simpler version using lane-by-lane extraction
-void filterRangeF64Sve2Simple(
-    const double* __restrict__ values,
-    int64_t n,
-    double minVal,
-    double maxVal,
-    uint8_t* __restrict__ dst
-) {
-    int64_t i = 0;
-    int64_t vl = svcntd();
-    
-    // Process vector-length elements at a time
-    for (; i + vl <= n; i += vl) {
-        svbool_t pg = svptrue_b64();
-        svfloat64_t v = svld1_f64(pg, &values[i]);
-        
-        svbool_t cmp_ge = svcmpge_n_f64(pg, v, minVal);
-        svbool_t cmp_le = svcmple_n_f64(pg, v, maxVal);
-        svbool_t in_range = svand_b_z(pg, cmp_ge, cmp_le);
-        
-        // Extract each lane result as 0 or 1
-        for (int64_t j = 0; j < vl; j++) {
-            svbool_t lane_pred = svwhilelt_b64(j, j + 1);
-            dst[i + j] = svptest_first(svptrue_b64(), 
-                svand_b_z(svptrue_b64(), in_range, lane_pred)) ? 1 : 0;
-        }
-    }
-    
-    // Handle remainder with scalar
-    for (; i < n; i++) {
-        dst[i] = (values[i] >= minVal && values[i] <= maxVal) ? 1 : 0;
     }
 }
 
 // FilterRangeF64IndicesSVE2 - Return indices of values in range
-// Uses scalar loop since SVE2 doesn't have efficient 64->32 compact store
 // Writes count of matching indices to *countOut
 void filterRangeF64IndicesSve2(
     const double* __restrict__ values,
@@ -109,31 +88,53 @@ void filterRangeF64IndicesSve2(
 ) {
     int64_t count = 0;
     int64_t i = 0;
+    svbool_t pg64 = svptrue_b64();
     int64_t vl = svcntd();
     
     // Process full vectors
     for (; i + vl <= n; i += vl) {
-        svbool_t pg = svptrue_b64();
-        svfloat64_t v = svld1_f64(pg, &values[i]);
+        svfloat64_t v = svld1_f64(pg64, &values[i]);
         
-        svbool_t cmp_ge = svcmpge_n_f64(pg, v, minVal);
-        svbool_t cmp_le = svcmple_n_f64(pg, v, maxVal);
-        svbool_t in_range = svand_b_z(pg, cmp_ge, cmp_le);
+        // Compare: v >= minVal AND v <= maxVal (inclusive bounds)
+        svbool_t cmp_ge = svcmpge_n_f64(pg64, v, minVal);
+        svbool_t cmp_le = svcmple_n_f64(pg64, v, maxVal);
+        svbool_t in_range = svand_b_z(pg64, cmp_ge, cmp_le);
         
-        // Extract matching indices - must use scalar loop since dst is int32
-        // and SVE2 indices are int64. Using svst1_s64 would corrupt memory.
+        // Convert predicate to uint64 vector for extraction
+        svuint64_t ones = svdup_u64(1);
+        svuint64_t zeros = svdup_u64(0);
+        svuint64_t result = svsel_u64(in_range, ones, zeros);
+        
+        uint64_t tmp[32];
+        svst1_u64(pg64, tmp, result);
+        
         for (int64_t j = 0; j < vl; j++) {
-            svbool_t lane_pred = svwhilelt_b64(j, j + 1);
-            if (svptest_first(svptrue_b64(), svand_b_z(svptrue_b64(), in_range, lane_pred))) {
+            if (tmp[j]) {
                 dst[count++] = (int32_t)(i + j);
             }
         }
     }
     
     // Handle remainder
-    for (; i < n; i++) {
-        if (values[i] >= minVal && values[i] <= maxVal) {
-            dst[count++] = (int32_t)i;
+    if (i < n) {
+        svbool_t pg = svwhilelt_b64(i, n);
+        svfloat64_t v = svld1_f64(pg, &values[i]);
+        
+        svbool_t cmp_ge = svcmpge_n_f64(pg, v, minVal);
+        svbool_t cmp_le = svcmple_n_f64(pg, v, maxVal);
+        svbool_t in_range = svand_b_z(pg, cmp_ge, cmp_le);
+        
+        svuint64_t ones = svdup_u64(1);
+        svuint64_t zeros = svdup_u64(0);
+        svuint64_t result = svsel_u64(in_range, ones, zeros);
+        
+        uint64_t tmp[32];
+        svst1_u64(pg, tmp, result);
+        
+        for (int64_t j = 0; i + j < n; j++) {
+            if (tmp[j]) {
+                dst[count++] = (int32_t)(i + j);
+            }
         }
     }
     
@@ -151,18 +152,18 @@ void countRangeF64Sve2(
 ) {
     int64_t count = 0;
     int64_t i = 0;
+    svbool_t pg64 = svptrue_b64();
     int64_t vl = svcntd();
     
     for (; i + vl <= n; i += vl) {
-        svbool_t pg = svptrue_b64();
-        svfloat64_t v = svld1_f64(pg, &values[i]);
+        svfloat64_t v = svld1_f64(pg64, &values[i]);
         
-        svbool_t cmp_ge = svcmpge_n_f64(pg, v, minVal);
-        svbool_t cmp_le = svcmple_n_f64(pg, v, maxVal);
-        svbool_t in_range = svand_b_z(pg, cmp_ge, cmp_le);
+        svbool_t cmp_ge = svcmpge_n_f64(pg64, v, minVal);
+        svbool_t cmp_le = svcmple_n_f64(pg64, v, maxVal);
+        svbool_t in_range = svand_b_z(pg64, cmp_ge, cmp_le);
         
         // Count active predicate bits
-        count += svcntp_b64(pg, in_range);
+        count += svcntp_b64(pg64, in_range);
     }
     
     // Handle remainder with predicated load
@@ -189,20 +190,18 @@ void gatherU32Sve2(
     uint32_t* __restrict__ dst
 ) {
     int64_t i = 0;
+    svbool_t pg32 = svptrue_b32();
     int64_t vl = svcntw();  // Vector length for 32-bit elements
     
     for (; i + vl <= n; i += vl) {
-        svbool_t pg = svptrue_b32();
-        
         // Load indices
-        svint32_t idx = svld1_s32(pg, &indices[i]);
+        svint32_t idx = svld1_s32(pg32, &indices[i]);
         
         // Gather from source using indices
-        // SVE2 gather: svld1_gather_s32index_u32
-        svuint32_t gathered = svld1_gather_s32index_u32(pg, src, idx);
+        svuint32_t gathered = svld1_gather_s32index_u32(pg32, src, idx);
         
         // Store results
-        svst1_u32(pg, &dst[i], gathered);
+        svst1_u32(pg32, &dst[i], gathered);
     }
     
     // Handle remainder

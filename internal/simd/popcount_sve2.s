@@ -9,43 +9,42 @@ TEXT ·hammingSve2(SB), NOSPLIT, $0-32
 	MOVD b+8(FP), R1
 	MOVD n+16(FP), R2
 
-	WORD $0x04bf5028
-	WORD $0xaa1f03e9
-	WORD $0xeb02011f
-	WORD $0xaa0003e8
-	WORD $0x5400006d
-	WORD $0xaa1f03e0
-	WORD $0x1400000e
+	WORD $0x04bf5028 // rdvl	x8, #0x1
+	WORD $0xaa1f03e9 // mov	x9, xzr
+	WORD $0xeb02011f // cmp	x8, x2
+	WORD $0xaa0003e8 // mov	x8, x0
+	WORD $0x5400006d // b.le	0x8c <hammingSve2+0x1c>
+	WORD $0xaa1f03e0 // mov	x0, xzr
+	WORD $0x1400000e // b	0xc0 <hammingSve2+0x50>
 LBB1_2:
-	WORD $0x2518e3e0
-	WORD $0xaa1f03e0
+	WORD $0x2518e3e0 // ptrue	p0.b
+	WORD $0xaa1f03e0 // mov	x0, xzr
 LBB1_3:
-	WORD $0xa4094100
-	WORD $0xa4094021
-	WORD $0x04295029
-	WORD $0x0429502a
-	WORD $0xeb02015f
-	WORD $0x04a13000
-	WORD $0x041aa000
-	WORD $0x04012000
-	WORD $0x9e66000b
-	WORD $0x8b000160
-	WORD $0x54fffecd
+	WORD $0xa4094100 // ld1b	{ z0.b }, p0/z, [x8, x9]
+	WORD $0xa4094021 // ld1b	{ z1.b }, p0/z, [x1, x9]
+	WORD $0x04295029 // addvl	x9, x9, #0x1
+	WORD $0x0429502a // addvl	x10, x9, #0x1
+	WORD $0xeb02015f // cmp	x10, x2
+	WORD $0x04a13000 // eor	z0.d, z0.d, z1.d
+	WORD $0x041aa000 // cnt	z0.b, p0/m, z0.b
+	WORD $0x04012000 // uaddv	d0, p0, z0.b
+	WORD $0x9e66000b // fmov	x11, d0
+	WORD $0x8b000160 // add	x0, x11, x0
+	WORD $0x54fffecd // b.le	0x94 <hammingSve2+0x24>
 LBB1_4:
-	WORD $0xeb02013f
-	WORD $0x5400012a
-	WORD $0x25221520
-	WORD $0xa4094100
-	WORD $0xa4094021
-	WORD $0x04a13000
-	WORD $0x041aa000
-	WORD $0x04012000
-	WORD $0x9e660008
-	WORD $0x8b000100
+	WORD $0xeb02013f // cmp	x9, x2
+	WORD $0x5400012a // b.ge	0xe8 <hammingSve2+0x78>
+	WORD $0x25221520 // whilelt	p0.b, x9, x2
+	WORD $0xa4094100 // ld1b	{ z0.b }, p0/z, [x8, x9]
+	WORD $0xa4094021 // ld1b	{ z1.b }, p0/z, [x1, x9]
+	WORD $0x04a13000 // eor	z0.d, z0.d, z1.d
+	WORD $0x041aa000 // cnt	z0.b, p0/m, z0.b
+	WORD $0x04012000 // uaddv	d0, p0, z0.b
+	WORD $0x9e660008 // fmov	x8, d0
+	WORD $0x8b000100 // add	x0, x8, x0
 LBB1_6:
 	MOVD R0, ret+24(FP)
 	RET
-Lfunc_end1:
 
 TEXT ·jaccardSve2(SB), NOSPLIT, $0-32
 	MOVD a+0(FP), R0
@@ -53,105 +52,103 @@ TEXT ·jaccardSve2(SB), NOSPLIT, $0-32
 	MOVD n+16(FP), R2
 	MOVD result+24(FP), R3
 
-	WORD $0x04bf5028
-	WORD $0xeb02011f
-	WORD $0x540000ad
-	WORD $0xaa1f03ea
-	WORD $0xaa1f03e9
-	WORD $0xaa1f03e8
-	WORD $0x14000016
+	WORD $0x04bf5028 // rdvl	x8, #0x1
+	WORD $0xeb02011f // cmp	x8, x2
+	WORD $0x540000ad // b.le	0x108 <jaccardSve2+0x1c>
+	WORD $0xaa1f03ea // mov	x10, xzr
+	WORD $0xaa1f03e9 // mov	x9, xzr
+	WORD $0xaa1f03e8 // mov	x8, xzr
+	WORD $0x14000016 // b	0x15c <jaccardSve2+0x70>
 LBB2_2:
-	WORD $0x2518e3e0
-	WORD $0xaa1f03ea
-	WORD $0xaa1f03e8
-	WORD $0xaa1f03e9
+	WORD $0x2518e3e0 // ptrue	p0.b
+	WORD $0xaa1f03ea // mov	x10, xzr
+	WORD $0xaa1f03e8 // mov	x8, xzr
+	WORD $0xaa1f03e9 // mov	x9, xzr
 LBB2_3:
-	WORD $0xa40a4000
-	WORD $0xa40a4021
-	WORD $0x042a502a
-	WORD $0x042a502b
-	WORD $0xeb02017f
-	WORD $0x04213002
-	WORD $0x04613000
-	WORD $0x0420bc41
-	WORD $0x041aa041
-	WORD $0x041aa000
-	WORD $0x04012021
-	WORD $0x04012000
-	WORD $0x9e66002c
-	WORD $0x9e66000d
-	WORD $0x8b080188
-	WORD $0x8b0901a9
-	WORD $0x54fffe0d
+	WORD $0xa40a4000 // ld1b	{ z0.b }, p0/z, [x0, x10]
+	WORD $0xa40a4021 // ld1b	{ z1.b }, p0/z, [x1, x10]
+	WORD $0x042a502a // addvl	x10, x10, #0x1
+	WORD $0x042a502b // addvl	x11, x10, #0x1
+	WORD $0xeb02017f // cmp	x11, x2
+	WORD $0x04213002 // and	z2.d, z0.d, z1.d
+	WORD $0x04613000 // orr	z0.d, z0.d, z1.d
+	WORD $0x0420bc41 // movprfx	z1, z2
+	WORD $0x041aa041 // cnt	z1.b, p0/m, z2.b
+	WORD $0x041aa000 // cnt	z0.b, p0/m, z0.b
+	WORD $0x04012021 // uaddv	d1, p0, z1.b
+	WORD $0x04012000 // uaddv	d0, p0, z0.b
+	WORD $0x9e66002c // fmov	x12, d1
+	WORD $0x9e66000d // fmov	x13, d0
+	WORD $0x8b080188 // add	x8, x12, x8
+	WORD $0x8b0901a9 // add	x9, x13, x9
+	WORD $0x54fffe0d // b.le	0x118 <jaccardSve2+0x2c>
 LBB2_4:
-	WORD $0xeb02015f
-	WORD $0x540001ea
-	WORD $0x25221540
-	WORD $0xa40a4000
-	WORD $0xa40a4021
-	WORD $0x04213002
-	WORD $0x04613000
-	WORD $0x0420bc41
-	WORD $0x041aa041
-	WORD $0x041aa000
-	WORD $0x04012021
-	WORD $0x04012000
-	WORD $0x9e66002a
-	WORD $0x9e66000b
-	WORD $0x8b080148
-	WORD $0x8b090169
+	WORD $0xeb02015f // cmp	x10, x2
+	WORD $0x540001ea // b.ge	0x19c <jaccardSve2+0xb0>
+	WORD $0x25221540 // whilelt	p0.b, x10, x2
+	WORD $0xa40a4000 // ld1b	{ z0.b }, p0/z, [x0, x10]
+	WORD $0xa40a4021 // ld1b	{ z1.b }, p0/z, [x1, x10]
+	WORD $0x04213002 // and	z2.d, z0.d, z1.d
+	WORD $0x04613000 // orr	z0.d, z0.d, z1.d
+	WORD $0x0420bc41 // movprfx	z1, z2
+	WORD $0x041aa041 // cnt	z1.b, p0/m, z2.b
+	WORD $0x041aa000 // cnt	z0.b, p0/m, z0.b
+	WORD $0x04012021 // uaddv	d1, p0, z1.b
+	WORD $0x04012000 // uaddv	d0, p0, z0.b
+	WORD $0x9e66002a // fmov	x10, d1
+	WORD $0x9e66000b // fmov	x11, d0
+	WORD $0x8b080148 // add	x8, x10, x8
+	WORD $0x8b090169 // add	x9, x11, x9
 LBB2_6:
-	WORD $0xf100053f
-	WORD $0x5400010b
-	WORD $0x9e220100
-	WORD $0x9e230121
-	WORD $0x1e211800
-	WORD $0x1e2e1001
-	WORD $0x1e203820
-	WORD $0xbd000060
+	WORD $0xf100053f // cmp	x9, #0x1
+	WORD $0x5400010b // b.lt	0x1c0 <jaccardSve2+0xd4>
+	WORD $0x9e220100 // scvtf	s0, x8
+	WORD $0x9e230121 // ucvtf	s1, x9
+	WORD $0x1e211800 // fdiv	s0, s0, s1
+	WORD $0x1e2e1001 // fmov	s1, #1.00000000
+	WORD $0x1e203820 // fsub	s0, s1, s0
+	WORD $0xbd000060 // str	s0, [x3]
 	RET
 LBB2_8:
-	WORD $0x2f00e400
-	WORD $0xbd000060
+	WORD $0x2f00e400 // movi	d0, #0000000000000000
+	WORD $0xbd000060 // str	s0, [x3]
 	RET
-Lfunc_end2:
 
 TEXT ·popcountSve2(SB), NOSPLIT, $0-24
 	MOVD a+0(FP), R0
 	MOVD n+8(FP), R1
 
-	WORD $0x04bf5028
-	WORD $0xeb01011f
-	WORD $0x5400008d
-	WORD $0xaa1f03e9
-	WORD $0xaa1f03e8
-	WORD $0x1400000d
+	WORD $0x04bf5028 // rdvl	x8, #0x1
+	WORD $0xeb01011f // cmp	x8, x1
+	WORD $0x5400008d // b.le	0x18 <popcountSve2+0x18>
+	WORD $0xaa1f03e9 // mov	x9, xzr
+	WORD $0xaa1f03e8 // mov	x8, xzr
+	WORD $0x1400000d // b	0x48 <popcountSve2+0x48>
 LBB0_2:
-	WORD $0x2518e3e0
-	WORD $0xaa1f03e9
-	WORD $0xaa1f03e8
+	WORD $0x2518e3e0 // ptrue	p0.b
+	WORD $0xaa1f03e9 // mov	x9, xzr
+	WORD $0xaa1f03e8 // mov	x8, xzr
 LBB0_3:
-	WORD $0xa4094000
-	WORD $0x04295029
-	WORD $0x0429502a
-	WORD $0xeb01015f
-	WORD $0x041aa000
-	WORD $0x04012000
-	WORD $0x9e66000a
-	WORD $0x8b080148
-	WORD $0x54ffff0d
+	WORD $0xa4094000 // ld1b	{ z0.b }, p0/z, [x0, x9]
+	WORD $0x04295029 // addvl	x9, x9, #0x1
+	WORD $0x0429502a // addvl	x10, x9, #0x1
+	WORD $0xeb01015f // cmp	x10, x1
+	WORD $0x041aa000 // cnt	z0.b, p0/m, z0.b
+	WORD $0x04012000 // uaddv	d0, p0, z0.b
+	WORD $0x9e66000a // fmov	x10, d0
+	WORD $0x8b080148 // add	x8, x10, x8
+	WORD $0x54ffff0d // b.le	0x24 <popcountSve2+0x24>
 LBB0_4:
-	WORD $0xeb01013f
-	WORD $0x540000ea
-	WORD $0x25211520
-	WORD $0xa4094000
-	WORD $0x041aa000
-	WORD $0x04012000
-	WORD $0x9e660009
-	WORD $0x8b080128
+	WORD $0xeb01013f // cmp	x9, x1
+	WORD $0x540000ea // b.ge	0x68 <popcountSve2+0x68>
+	WORD $0x25211520 // whilelt	p0.b, x9, x1
+	WORD $0xa4094000 // ld1b	{ z0.b }, p0/z, [x0, x9]
+	WORD $0x041aa000 // cnt	z0.b, p0/m, z0.b
+	WORD $0x04012000 // uaddv	d0, p0, z0.b
+	WORD $0x9e660009 // fmov	x9, d0
+	WORD $0x8b080128 // add	x8, x9, x8
 LBB0_6:
-	WORD $0xaa0803e0
+	WORD $0xaa0803e0 // mov	x0, x8
 	MOVD R0, ret+16(FP)
 	RET
-Lfunc_end0:
 

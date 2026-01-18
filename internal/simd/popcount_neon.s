@@ -9,104 +9,102 @@ TEXT ·hammingNeon(SB), NOSPLIT, $0-32
 	MOVD b+8(FP), R1
 	MOVD n+16(FP), R2
 
-	WORD $0xf1004048
-	WORD $0x5400014a
-	WORD $0x6f00e400
-	WORD $0xaa1f03eb
-	WORD $0x6e602800
-	WORD $0xeb1f0049
-	WORD $0x6ea02800
-	WORD $0x5ef1b800
-	WORD $0x9e660008
-	WORD $0x5400028c
-	WORD $0x1400001f
+	WORD $0xf1004048 // subs	x8, x2, #0x10
+	WORD $0x5400014a // b.ge	0xc4 <hammingNeon+0x2c>
+	WORD $0x6f00e400 // movi	v0.2d, #0000000000000000
+	WORD $0xaa1f03eb // mov	x11, xzr
+	WORD $0x6e602800 // uaddlp	v0.4s, v0.8h
+	WORD $0xeb1f0049 // subs	x9, x2, xzr
+	WORD $0x6ea02800 // uaddlp	v0.2d, v0.4s
+	WORD $0x5ef1b800 // addp	d0, v0.2d
+	WORD $0x9e660008 // fmov	x8, d0
+	WORD $0x5400028c // b.gt	0x10c <hammingNeon+0x74>
+	WORD $0x1400001f // b	0x13c <hammingNeon+0xa4>
 LBB1_2:
-	WORD $0x6f00e400
-	WORD $0xaa1f03e9
-	WORD $0x927ced0a
+	WORD $0x6f00e400 // movi	v0.2d, #0000000000000000
+	WORD $0xaa1f03e9 // mov	x9, xzr
+	WORD $0x927ced0a // and	x10, x8, #0xfffffffffffffff0
 LBB1_3:
-	WORD $0x3ce96801
-	WORD $0x3ce96822
-	WORD $0x91004129
-	WORD $0xeb08013f
-	WORD $0x6e211c41
-	WORD $0x4e205821
-	WORD $0x6e206820
-	WORD $0x54ffff2d
-	WORD $0x9100414b
-	WORD $0x6e602800
-	WORD $0xeb0b0049
-	WORD $0x6ea02800
-	WORD $0x5ef1b800
-	WORD $0x9e660008
-	WORD $0x540001ad
+	WORD $0x3ce96801 // ldr	q1, [x0, x9]
+	WORD $0x3ce96822 // ldr	q2, [x1, x9]
+	WORD $0x91004129 // add	x9, x9, #0x10
+	WORD $0xeb08013f // cmp	x9, x8
+	WORD $0x6e211c41 // eor	v1.16b, v2.16b, v1.16b
+	WORD $0x4e205821 // cnt	v1.16b, v1.16b
+	WORD $0x6e206820 // uadalp	v0.8h, v1.16b
+	WORD $0x54ffff2d // b.le	0xd0 <hammingNeon+0x38>
+	WORD $0x9100414b // add	x11, x10, #0x10
+	WORD $0x6e602800 // uaddlp	v0.4s, v0.8h
+	WORD $0xeb0b0049 // subs	x9, x2, x11
+	WORD $0x6ea02800 // uaddlp	v0.2d, v0.4s
+	WORD $0x5ef1b800 // addp	d0, v0.2d
+	WORD $0x9e660008 // fmov	x8, d0
+	WORD $0x540001ad // b.le	0x13c <hammingNeon+0xa4>
 LBB1_5:
-	WORD $0x8b0b002a
-	WORD $0x8b0b000b
+	WORD $0x8b0b002a // add	x10, x1, x11
+	WORD $0x8b0b000b // add	x11, x0, x11
 LBB1_6:
-	WORD $0x3840156c
-	WORD $0xf1000529
-	WORD $0x3840154d
-	WORD $0x4a0c01ac
-	WORD $0x1e270180
-	WORD $0x0e205800
-	WORD $0x2e303800
-	WORD $0x1e26000c
-	WORD $0x8b0c0108
-	WORD $0x54fffee1
+	WORD $0x3840156c // ldrb	w12, [x11], #0x1
+	WORD $0xf1000529 // subs	x9, x9, #0x1
+	WORD $0x3840154d // ldrb	w13, [x10], #0x1
+	WORD $0x4a0c01ac // eor	w12, w13, w12
+	WORD $0x1e270180 // fmov	s0, w12
+	WORD $0x0e205800 // cnt	v0.8b, v0.8b
+	WORD $0x2e303800 // uaddlv	h0, v0.8b
+	WORD $0x1e26000c // fmov	w12, s0
+	WORD $0x8b0c0108 // add	x8, x8, x12
+	WORD $0x54fffee1 // b.ne	0x114 <hammingNeon+0x7c>
 LBB1_7:
-	WORD $0xaa0803e0
+	WORD $0xaa0803e0 // mov	x0, x8
 	MOVD R0, ret+24(FP)
 	RET
-Lfunc_end1:
 
 TEXT ·popcountNeon(SB), NOSPLIT, $0-24
 	MOVD a+0(FP), R0
 	MOVD n+8(FP), R1
 
-	WORD $0xf1004028
-	WORD $0x5400014a
-	WORD $0x6f00e400
-	WORD $0xaa1f03ea
-	WORD $0x6e602800
-	WORD $0xeb1f0029
-	WORD $0x6ea02800
-	WORD $0x5ef1b800
-	WORD $0x9e660008
-	WORD $0x5400024c
-	WORD $0x1400001a
+	WORD $0xf1004028 // subs	x8, x1, #0x10
+	WORD $0x5400014a // b.ge	0x2c <popcountNeon+0x2c>
+	WORD $0x6f00e400 // movi	v0.2d, #0000000000000000
+	WORD $0xaa1f03ea // mov	x10, xzr
+	WORD $0x6e602800 // uaddlp	v0.4s, v0.8h
+	WORD $0xeb1f0029 // subs	x9, x1, xzr
+	WORD $0x6ea02800 // uaddlp	v0.2d, v0.4s
+	WORD $0x5ef1b800 // addp	d0, v0.2d
+	WORD $0x9e660008 // fmov	x8, d0
+	WORD $0x5400024c // b.gt	0x6c <popcountNeon+0x6c>
+	WORD $0x1400001a // b	0x90 <popcountNeon+0x90>
 LBB0_2:
-	WORD $0x6f00e400
-	WORD $0xaa1f03e9
-	WORD $0x927ced0a
+	WORD $0x6f00e400 // movi	v0.2d, #0000000000000000
+	WORD $0xaa1f03e9 // mov	x9, xzr
+	WORD $0x927ced0a // and	x10, x8, #0xfffffffffffffff0
 LBB0_3:
-	WORD $0x3ce96801
-	WORD $0x91004129
-	WORD $0xeb08013f
-	WORD $0x4e205821
-	WORD $0x6e206820
-	WORD $0x54ffff6d
-	WORD $0x9100414a
-	WORD $0x6e602800
-	WORD $0xeb0a0029
-	WORD $0x6ea02800
-	WORD $0x5ef1b800
-	WORD $0x9e660008
-	WORD $0x5400014d
+	WORD $0x3ce96801 // ldr	q1, [x0, x9]
+	WORD $0x91004129 // add	x9, x9, #0x10
+	WORD $0xeb08013f // cmp	x9, x8
+	WORD $0x4e205821 // cnt	v1.16b, v1.16b
+	WORD $0x6e206820 // uadalp	v0.8h, v1.16b
+	WORD $0x54ffff6d // b.le	0x38 <popcountNeon+0x38>
+	WORD $0x9100414a // add	x10, x10, #0x10
+	WORD $0x6e602800 // uaddlp	v0.4s, v0.8h
+	WORD $0xeb0a0029 // subs	x9, x1, x10
+	WORD $0x6ea02800 // uaddlp	v0.2d, v0.4s
+	WORD $0x5ef1b800 // addp	d0, v0.2d
+	WORD $0x9e660008 // fmov	x8, d0
+	WORD $0x5400014d // b.le	0x90 <popcountNeon+0x90>
 LBB0_5:
-	WORD $0x8b0a000a
+	WORD $0x8b0a000a // add	x10, x0, x10
 LBB0_6:
-	WORD $0x3840154b
-	WORD $0xf1000529
-	WORD $0x9e670160
-	WORD $0x0e205800
-	WORD $0x2e303800
-	WORD $0x1e26000b
-	WORD $0x8b0b0108
-	WORD $0x54ffff21
+	WORD $0x3840154b // ldrb	w11, [x10], #0x1
+	WORD $0xf1000529 // subs	x9, x9, #0x1
+	WORD $0x9e670160 // fmov	d0, x11
+	WORD $0x0e205800 // cnt	v0.8b, v0.8b
+	WORD $0x2e303800 // uaddlv	h0, v0.8b
+	WORD $0x1e26000b // fmov	w11, s0
+	WORD $0x8b0b0108 // add	x8, x8, x11
+	WORD $0x54ffff21 // b.ne	0x70 <popcountNeon+0x70>
 LBB0_7:
-	WORD $0xaa0803e0
+	WORD $0xaa0803e0 // mov	x0, x8
 	MOVD R0, ret+16(FP)
 	RET
-Lfunc_end0:
 

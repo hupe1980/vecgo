@@ -11,46 +11,45 @@ TEXT ·countRangeF64Sve2(SB), NOSPLIT, $0-40
 	FMOVD maxVal+24(FP), F1
 	MOVD countOut+32(FP), R2
 
-	WORD $0x04e0e3e8
-	WORD $0xeb01011f
-	WORD $0x5400008d
-	WORD $0xaa1f03e9
-	WORD $0xaa1f03e8
-	WORD $0x14000011
-LBB3_2:
-	WORD $0x05282002
-	WORD $0x05282023
-	WORD $0xaa1f03e9
-	WORD $0x25d8e3e0
-	WORD $0xaa1f03e8
-LBB3_3:
-	WORD $0xa5e94004
-	WORD $0x04f0e3e9
-	WORD $0x65c24081
-	WORD $0x65c44062
-	WORD $0xaa0903ea
-	WORD $0x04f0e3ea
-	WORD $0x25024021
-	WORD $0xeb01015f
-	WORD $0x25e0802b
-	WORD $0x8b080168
-	WORD $0x54fffecd
-LBB3_4:
-	WORD $0xeb01013f
-	WORD $0x5400014a
-	WORD $0x25e11520
-	WORD $0x05282000
-	WORD $0x05282021
-	WORD $0xa5e94002
-	WORD $0x65c04041
-	WORD $0x65c24022
-	WORD $0x25024021
-	WORD $0x25e08029
-	WORD $0x8b080128
-LBB3_6:
-	WORD $0xf9000048
+	WORD $0x04e0e3e8 // cntd	x8
+	WORD $0xeb01011f // cmp	x8, x1
+	WORD $0x5400008d // b.le	0x1f8 <countRangeF64Sve2+0x18>
+	WORD $0xaa1f03e9 // mov	x9, xzr
+	WORD $0xaa1f03e8 // mov	x8, xzr
+	WORD $0x14000011 // b	0x238 <countRangeF64Sve2+0x58>
+LBB2_2:
+	WORD $0x05282002 // mov	z2.d, d0
+	WORD $0x05282023 // mov	z3.d, d1
+	WORD $0xaa1f03e9 // mov	x9, xzr
+	WORD $0x25d8e3e0 // ptrue	p0.d
+	WORD $0xaa1f03e8 // mov	x8, xzr
+LBB2_3:
+	WORD $0xa5e94004 // ld1d	{ z4.d }, p0/z, [x0, x9, lsl #3]
+	WORD $0x04f0e3e9 // incd	x9
+	WORD $0x65c24081 // fcmge	p1.d, p0/z, z4.d, z2.d
+	WORD $0x65c44062 // fcmge	p2.d, p0/z, z3.d, z4.d
+	WORD $0xaa0903ea // mov	x10, x9
+	WORD $0x04f0e3ea // incd	x10
+	WORD $0x25024021 // and	p1.b, p0/z, p1.b, p2.b
+	WORD $0xeb01015f // cmp	x10, x1
+	WORD $0x25e0802b // cntp	x11, p0, p1.d
+	WORD $0x8b080168 // add	x8, x11, x8
+	WORD $0x54fffecd // b.le	0x20c <countRangeF64Sve2+0x2c>
+LBB2_4:
+	WORD $0xeb01013f // cmp	x9, x1
+	WORD $0x5400014a // b.ge	0x264 <countRangeF64Sve2+0x84>
+	WORD $0x25e11520 // whilelt	p0.d, x9, x1
+	WORD $0x05282000 // mov	z0.d, d0
+	WORD $0x05282021 // mov	z1.d, d1
+	WORD $0xa5e94002 // ld1d	{ z2.d }, p0/z, [x0, x9, lsl #3]
+	WORD $0x65c04041 // fcmge	p1.d, p0/z, z2.d, z0.d
+	WORD $0x65c24022 // fcmge	p2.d, p0/z, z1.d, z2.d
+	WORD $0x25024021 // and	p1.b, p0/z, p1.b, p2.b
+	WORD $0x25e08029 // cntp	x9, p0, p1.d
+	WORD $0x8b080128 // add	x8, x9, x8
+LBB2_6:
+	WORD $0xf9000048 // str	x8, [x2]
 	RET
-Lfunc_end3:
 
 TEXT ·filterRangeF64IndicesSve2(SB), NOSPLIT, $0-48
 	MOVD values+0(FP), R0
@@ -60,67 +59,80 @@ TEXT ·filterRangeF64IndicesSve2(SB), NOSPLIT, $0-48
 	MOVD dst+32(FP), R2
 	MOVD countOut+40(FP), R3
 
-	WORD $0x04e0e3eb
-	WORD $0xeb01017f
-	WORD $0x5400024d
-	WORD $0xaa1f03e9
-	WORD $0xaa1f03e8
-LBB2_2:
-	WORD $0xeb01013f
-	WORD $0x540000cb
-LBB2_3:
-	WORD $0xf9000068
+	WORD $0xd10443ff // sub	sp, sp, #0x110
+	WORD $0x04e0e3ec // cntd	x12
+	WORD $0xf90083fd // str	x29, [sp, #0x100]
+	WORD $0xeb01019f // cmp	x12, x1
+	WORD $0x540003ad // b.le	0x160 <filterRangeF64IndicesSve2+0x84>
+	WORD $0xaa1f03e9 // mov	x9, xzr
+	WORD $0xaa1f03e8 // mov	x8, xzr
+LBB1_2:
+	WORD $0xeb01013f // cmp	x9, x1
+	WORD $0x540002aa // b.ge	0x150 <filterRangeF64IndicesSve2+0x74>
+	WORD $0x25e11520 // whilelt	p0.d, x9, x1
+	WORD $0x05282000 // mov	z0.d, d0
+	WORD $0x05282021 // mov	z1.d, d1
+	WORD $0x910003ea // mov	x10, sp
+	WORD $0xa5e94002 // ld1d	{ z2.d }, p0/z, [x0, x9, lsl #3]
+	WORD $0x65c04041 // fcmge	p1.d, p0/z, z2.d, z0.d
+	WORD $0x65c24022 // fcmge	p2.d, p0/z, z1.d, z2.d
+	WORD $0x25024021 // and	p1.b, p0/z, p1.b, p2.b
+	WORD $0x05d10020 // mov	z0.d, p1/z, #0x1        // =1
+	WORD $0xe5e0e140 // st1d	{ z0.d }, p0, [x10]
+	WORD $0x14000004 // b	0x138 <filterRangeF64IndicesSve2+0x5c>
+LBB1_4:
+	WORD $0x91000529 // add	x9, x9, #0x1
+	WORD $0xeb09003f // cmp	x1, x9
+	WORD $0x540000e0 // b.eq	0x150 <filterRangeF64IndicesSve2+0x74>
+LBB1_5:
+	WORD $0xf840854b // ldr	x11, [x10], #0x8
+	WORD $0xb4ffff8b // cbz	x11, 0x12c <filterRangeF64IndicesSve2+0x50>
+	WORD $0x9100050b // add	x11, x8, #0x1
+	WORD $0xb8287849 // str	w9, [x2, x8, lsl #2]
+	WORD $0xaa0b03e8 // mov	x8, x11
+	WORD $0x17fffff8 // b	0x12c <filterRangeF64IndicesSve2+0x50>
+LBB1_7:
+	WORD $0xf94083fd // ldr	x29, [sp, #0x100]
+	WORD $0xf9000068 // str	x8, [x3]
+	WORD $0x910443ff // add	sp, sp, #0x110
 	RET
-LBB2_4:
-	WORD $0x91000529
-	WORD $0xeb09003f
-	WORD $0x54ffff80
-LBB2_5:
-	WORD $0xfc697802
-	WORD $0x1e602040
-	WORD $0x1e61a442
-	WORD $0x54ffff48
-	WORD $0x9100050a
-	WORD $0xb8287849
-	WORD $0xaa0a03e8
-	WORD $0x17fffff6
-LBB2_7:
-	WORD $0x05282002
-	WORD $0x05282023
-	WORD $0xaa1f03ea
-	WORD $0x25d8e3e0
-	WORD $0xaa1f03e8
-	WORD $0x14000006
-LBB2_8:
-	WORD $0xaa0903eb
-	WORD $0x04f0e3ea
-	WORD $0x04f0e3eb
-	WORD $0xeb01017f
-	WORD $0x54fffcec
-LBB2_9:
-	WORD $0xa5ea4004
-	WORD $0xaa1f03ec
-	WORD $0xaa0b03e9
-	WORD $0x65c24081
-	WORD $0x65c44062
-	WORD $0x25024021
-	WORD $0x14000005
-LBB2_10:
-	WORD $0xaa0b03ed
-	WORD $0xaa0b03ec
-	WORD $0x04f0e7ed
-	WORD $0xb4fffe2d
-LBB2_11:
-	WORD $0x9100058b
-	WORD $0x25eb1582
-	WORD $0x25424022
-	WORD $0x54ffff25
-	WORD $0x9100050d
-	WORD $0x0b0c014c
-	WORD $0xb828784c
-	WORD $0xaa0d03e8
-	WORD $0x17fffff4
-Lfunc_end2:
+LBB1_8:
+	WORD $0x05282002 // mov	z2.d, d0
+	WORD $0x05282023 // mov	z3.d, d1
+	WORD $0xaa1f03ea // mov	x10, xzr
+	WORD $0x25d8e3e0 // ptrue	p0.d
+	WORD $0xaa1f03e8 // mov	x8, xzr
+	WORD $0x910003eb // mov	x11, sp
+	WORD $0x14000006 // b	0x190 <filterRangeF64IndicesSve2+0xb4>
+LBB1_9:
+	WORD $0xaa0903ec // mov	x12, x9
+	WORD $0x04f0e3ea // incd	x10
+	WORD $0x04f0e3ec // incd	x12
+	WORD $0xeb01019f // cmp	x12, x1
+	WORD $0x54fffb6c // b.gt	0xf8 <filterRangeF64IndicesSve2+0x1c>
+LBB1_10:
+	WORD $0xa5ea4004 // ld1d	{ z4.d }, p0/z, [x0, x10, lsl #3]
+	WORD $0xaa1f03ed // mov	x13, xzr
+	WORD $0xaa0c03e9 // mov	x9, x12
+	WORD $0x65c24081 // fcmge	p1.d, p0/z, z4.d, z2.d
+	WORD $0x65c44062 // fcmge	p2.d, p0/z, z3.d, z4.d
+	WORD $0x25024021 // and	p1.b, p0/z, p1.b, p2.b
+	WORD $0x05d10024 // mov	z4.d, p1/z, #0x1        // =1
+	WORD $0xe5e0e164 // st1d	{ z4.d }, p0, [x11]
+	WORD $0x14000005 // b	0x1c4 <filterRangeF64IndicesSve2+0xe8>
+LBB1_11:
+	WORD $0x910005ad // add	x13, x13, #0x1
+	WORD $0xaa0d03ec // mov	x12, x13
+	WORD $0x04f0e7ec // decd	x12
+	WORD $0xb4fffdec // cbz	x12, 0x17c <filterRangeF64IndicesSve2+0xa0>
+LBB1_12:
+	WORD $0xf86d796c // ldr	x12, [x11, x13, lsl #3]
+	WORD $0xb4ffff6c // cbz	x12, 0x1b4 <filterRangeF64IndicesSve2+0xd8>
+	WORD $0x9100050c // add	x12, x8, #0x1
+	WORD $0x0b0d014e // add	w14, w10, w13
+	WORD $0xb828784e // str	w14, [x2, x8, lsl #2]
+	WORD $0xaa0c03e8 // mov	x8, x12
+	WORD $0x17fffff6 // b	0x1b4 <filterRangeF64IndicesSve2+0xd8>
 
 TEXT ·filterRangeF64Sve2(SB), NOSPLIT, $0-40
 	MOVD values+0(FP), R0
@@ -129,122 +141,67 @@ TEXT ·filterRangeF64Sve2(SB), NOSPLIT, $0-40
 	FMOVD maxVal+24(FP), F1
 	MOVD dst+32(FP), R2
 
-	WORD $0x04e0e3ea
-	WORD $0xeb01015f
-	WORD $0x5400006d
-	WORD $0xaa1f03e8
-	WORD $0x1400001a
+	WORD $0xd10443ff // sub	sp, sp, #0x110
+	WORD $0x04e0e3eb // cntd	x11
+	WORD $0xf90083fd // str	x29, [sp, #0x100]
+	WORD $0xeb01017f // cmp	x11, x1
+	WORD $0x5400006d // b.le	0x1c <filterRangeF64Sve2+0x1c>
+	WORD $0xaa1f03e8 // mov	x8, xzr
+	WORD $0x1400001b // b	0x84 <filterRangeF64Sve2+0x84>
 LBB0_2:
-	WORD $0xaa1f03e8
-	WORD $0x05282002
-	WORD $0x05282023
-	WORD $0x25d8e3e0
-	WORD $0xaa0203e9
+	WORD $0x05282002 // mov	z2.d, d0
+	WORD $0x05282023 // mov	z3.d, d1
+	WORD $0xaa1f03e8 // mov	x8, xzr
+	WORD $0x25d8e3e0 // ptrue	p0.d
+	WORD $0x910003e9 // mov	x9, sp
+	WORD $0xaa0203ea // mov	x10, x2
 LBB0_3:
-	WORD $0xa5e84004
-	WORD $0xaa1f03eb
-	WORD $0xaa0a03e8
-	WORD $0x65c24081
-	WORD $0x65c44062
-	WORD $0x25024021
+	WORD $0xaa0803ed // mov	x13, x8
+	WORD $0xaa1f03ec // mov	x12, xzr
+	WORD $0xaa0b03e8 // mov	x8, x11
+	WORD $0xa5ed4004 // ld1d	{ z4.d }, p0/z, [x0, x13, lsl #3]
+	WORD $0x65c24081 // fcmge	p1.d, p0/z, z4.d, z2.d
+	WORD $0x65c44062 // fcmge	p2.d, p0/z, z3.d, z4.d
+	WORD $0x25024021 // and	p1.b, p0/z, p1.b, p2.b
+	WORD $0x05d10024 // mov	z4.d, p1/z, #0x1        // =1
+	WORD $0xe5e0e124 // st1d	{ z4.d }, p0, [x9]
 LBB0_4:
-	WORD $0x9100056a
-	WORD $0xaa0a03ec
-	WORD $0x25ea1562
-	WORD $0x04f0e7ec
-	WORD $0x25424022
-	WORD $0x1a9f57ed
-	WORD $0x382b692d
-	WORD $0xaa0a03eb
-	WORD $0xb5ffff0c
-	WORD $0xaa0803ea
-	WORD $0x04f0e3e9
-	WORD $0x04f0e3ea
-	WORD $0xeb01015f
-	WORD $0x54fffdad
+	WORD $0xf86c792b // ldr	x11, [x9, x12, lsl #3]
+	WORD $0x382c694b // strb	w11, [x10, x12]
+	WORD $0x9100058c // add	x12, x12, #0x1
+	WORD $0xaa0c03eb // mov	x11, x12
+	WORD $0x04f0e7eb // decd	x11
+	WORD $0xb5ffff6b // cbnz	x11, 0x58 <filterRangeF64Sve2+0x58>
+	WORD $0xaa0803eb // mov	x11, x8
+	WORD $0x04f0e3ea // incd	x10
+	WORD $0x04f0e3eb // incd	x11
+	WORD $0xeb01017f // cmp	x11, x1
+	WORD $0x54fffdad // b.le	0x34 <filterRangeF64Sve2+0x34>
 LBB0_6:
-	WORD $0xeb080029
-	WORD $0x5400026d
-	WORD $0x25e11500
-	WORD $0x05282000
-	WORD $0x05282021
-	WORD $0xaa1f03ea
-	WORD $0xa5e84002
-	WORD $0x8b080048
-	WORD $0x65c04041
-	WORD $0x65c24022
-	WORD $0x25024020
-	WORD $0x25d8e3e1
+	WORD $0xeb080029 // subs	x9, x1, x8
+	WORD $0x5400024d // b.le	0xd0 <filterRangeF64Sve2+0xd0>
+	WORD $0x25e11500 // whilelt	p0.d, x8, x1
+	WORD $0x05282000 // mov	z0.d, d0
+	WORD $0x05282021 // mov	z1.d, d1
+	WORD $0xaa1f03ea // mov	x10, xzr
+	WORD $0x910003eb // mov	x11, sp
+	WORD $0xa5e84002 // ld1d	{ z2.d }, p0/z, [x0, x8, lsl #3]
+	WORD $0x8b080048 // add	x8, x2, x8
+	WORD $0x65c04041 // fcmge	p1.d, p0/z, z2.d, z0.d
+	WORD $0x65c24022 // fcmge	p2.d, p0/z, z1.d, z2.d
+	WORD $0x25024021 // and	p1.b, p0/z, p1.b, p2.b
+	WORD $0x05d10020 // mov	z0.d, p1/z, #0x1        // =1
+	WORD $0xe5e0e160 // st1d	{ z0.d }, p0, [x11]
 LBB0_8:
-	WORD $0x9100054b
-	WORD $0x25eb1542
-	WORD $0x25424402
-	WORD $0x1a9f57ec
-	WORD $0xeb0b013f
-	WORD $0x382a690c
-	WORD $0xaa0b03ea
-	WORD $0x54ffff21
+	WORD $0xf86a796c // ldr	x12, [x11, x10, lsl #3]
+	WORD $0x382a690c // strb	w12, [x8, x10]
+	WORD $0x9100054a // add	x10, x10, #0x1
+	WORD $0xeb0a013f // cmp	x9, x10
+	WORD $0x54ffff81 // b.ne	0xbc <filterRangeF64Sve2+0xbc>
 LBB0_9:
+	WORD $0xf94083fd // ldr	x29, [sp, #0x100]
+	WORD $0x910443ff // add	sp, sp, #0x110
 	RET
-Lfunc_end0:
-
-TEXT ·filterRangeF64Sve2Simple(SB), NOSPLIT, $0-40
-	MOVD values+0(FP), R0
-	MOVD n+8(FP), R1
-	FMOVD minVal+16(FP), F0
-	FMOVD maxVal+24(FP), F1
-	MOVD dst+32(FP), R2
-
-	WORD $0x04e0e3ea
-	WORD $0xeb01015f
-	WORD $0x5400006d
-	WORD $0xaa1f03e8
-	WORD $0x1400001a
-LBB1_2:
-	WORD $0x05282002
-	WORD $0x05282023
-	WORD $0xaa1f03e8
-	WORD $0x25d8e3e0
-	WORD $0xaa0203e9
-LBB1_3:
-	WORD $0xa5e84004
-	WORD $0xaa1f03eb
-	WORD $0xaa0a03e8
-	WORD $0x65c24081
-	WORD $0x65c44062
-	WORD $0x25024021
-LBB1_4:
-	WORD $0x9100056a
-	WORD $0xaa0a03ec
-	WORD $0x25ea1562
-	WORD $0x04f0e7ec
-	WORD $0x25424022
-	WORD $0x1a9f57ed
-	WORD $0x382b692d
-	WORD $0xaa0a03eb
-	WORD $0xb5ffff0c
-	WORD $0xaa0803ea
-	WORD $0x04f0e3e9
-	WORD $0x04f0e3ea
-	WORD $0xeb01015f
-	WORD $0x54fffdad
-LBB1_6:
-	WORD $0xeb080029
-	WORD $0x5400016d
-	WORD $0x8b080c0a
-	WORD $0x8b080048
-LBB1_8:
-	WORD $0xfc408542
-	WORD $0x1e602040
-	WORD $0x1a9fb7eb
-	WORD $0x1e612040
-	WORD $0x1a8b83eb
-	WORD $0xf1000529
-	WORD $0x3800150b
-	WORD $0x54ffff21
-LBB1_9:
-	RET
-Lfunc_end1:
 
 TEXT ·gatherU32Sve2(SB), NOSPLIT, $0-32
 	MOVD src+0(FP), R0
@@ -252,31 +209,30 @@ TEXT ·gatherU32Sve2(SB), NOSPLIT, $0-32
 	MOVD n+16(FP), R2
 	MOVD dst+24(FP), R3
 
-	WORD $0x04a0e3e8
-	WORD $0xeb02011f
-	WORD $0x5400006d
-	WORD $0xaa1f03e8
-	WORD $0x1400000b
-LBB4_2:
-	WORD $0x2598e3e0
-	WORD $0xaa1f03e8
-LBB4_3:
-	WORD $0xa5484020
-	WORD $0x85604000
-	WORD $0xe5484060
-	WORD $0x04b0e3e8
-	WORD $0xaa0803e9
-	WORD $0x04b0e3e9
-	WORD $0xeb02013f
-	WORD $0x54ffff2d
-LBB4_4:
-	WORD $0xeb02011f
-	WORD $0x540000aa
-	WORD $0x25a21500
-	WORD $0xa5484020
-	WORD $0x85604000
-	WORD $0xe5484060
-LBB4_6:
+	WORD $0x04a0e3e8 // cntw	x8
+	WORD $0xeb02011f // cmp	x8, x2
+	WORD $0x5400006d // b.le	0x280 <gatherU32Sve2+0x14>
+	WORD $0xaa1f03e8 // mov	x8, xzr
+	WORD $0x1400000b // b	0x2a8 <gatherU32Sve2+0x3c>
+LBB3_2:
+	WORD $0x2598e3e0 // ptrue	p0.s
+	WORD $0xaa1f03e8 // mov	x8, xzr
+LBB3_3:
+	WORD $0xa5484020 // ld1w	{ z0.s }, p0/z, [x1, x8, lsl #2]
+	WORD $0x85604000 // ld1w	{ z0.s }, p0/z, [x0, z0.s, sxtw #2]
+	WORD $0xe5484060 // st1w	{ z0.s }, p0, [x3, x8, lsl #2]
+	WORD $0x04b0e3e8 // incw	x8
+	WORD $0xaa0803e9 // mov	x9, x8
+	WORD $0x04b0e3e9 // incw	x9
+	WORD $0xeb02013f // cmp	x9, x2
+	WORD $0x54ffff2d // b.le	0x288 <gatherU32Sve2+0x1c>
+LBB3_4:
+	WORD $0xeb02011f // cmp	x8, x2
+	WORD $0x540000aa // b.ge	0x2c0 <gatherU32Sve2+0x54>
+	WORD $0x25a21500 // whilelt	p0.s, x8, x2
+	WORD $0xa5484020 // ld1w	{ z0.s }, p0/z, [x1, x8, lsl #2]
+	WORD $0x85604000 // ld1w	{ z0.s }, p0/z, [x0, z0.s, sxtw #2]
+	WORD $0xe5484060 // st1w	{ z0.s }, p0, [x3, x8, lsl #2]
+LBB3_6:
 	RET
-Lfunc_end4:
 

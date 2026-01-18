@@ -9,70 +9,66 @@ TEXT ·andNotWordsSVE2Asm(SB), NOSPLIT, $0-24
 	MOVD src+8(FP), R1
 	MOVD n+16(FP), R2
 
-	WORD $0x25e217e0
-	WORD $0xaa1f03e8
+	WORD $0x25e217e0 // whilelt	p0.d, xzr, x2
+	WORD $0xaa1f03e8 // mov	x8, xzr
 LBB1_1:
-	WORD $0xa5e84000
-	WORD $0xa5e84021
-	WORD $0x04db0020
-	WORD $0xe5e84000
-	WORD $0x04f0e3e8
-	WORD $0x25e21500
-	WORD $0x54ffff41
+	WORD $0xa5e84000 // ld1d	{ z0.d }, p0/z, [x0, x8, lsl #3]
+	WORD $0xa5e84021 // ld1d	{ z1.d }, p0/z, [x1, x8, lsl #3]
+	WORD $0x04db0020 // bic	z0.d, p0/m, z0.d, z1.d
+	WORD $0xe5e84000 // st1d	{ z0.d }, p0, [x0, x8, lsl #3]
+	WORD $0x04f0e3e8 // incd	x8
+	WORD $0x25e21500 // whilelt	p0.d, x8, x2
+	WORD $0x54ffff41 // b.ne	0x30 <andNotWordsSVE2Asm+0x8>
 	RET
-Lfunc_end1:
 
 TEXT ·andWordsSVE2Asm(SB), NOSPLIT, $0-24
 	MOVD dst+0(FP), R0
 	MOVD src+8(FP), R1
 	MOVD n+16(FP), R2
 
-	WORD $0x25e217e0
-	WORD $0xaa1f03e8
+	WORD $0x25e217e0 // whilelt	p0.d, xzr, x2
+	WORD $0xaa1f03e8 // mov	x8, xzr
 LBB0_1:
-	WORD $0xa5e84000
-	WORD $0xa5e84021
-	WORD $0x04da0020
-	WORD $0xe5e84000
-	WORD $0x04f0e3e8
-	WORD $0x25e21500
-	WORD $0x54ffff41
+	WORD $0xa5e84000 // ld1d	{ z0.d }, p0/z, [x0, x8, lsl #3]
+	WORD $0xa5e84021 // ld1d	{ z1.d }, p0/z, [x1, x8, lsl #3]
+	WORD $0x04da0020 // and	z0.d, p0/m, z0.d, z1.d
+	WORD $0xe5e84000 // st1d	{ z0.d }, p0, [x0, x8, lsl #3]
+	WORD $0x04f0e3e8 // incd	x8
+	WORD $0x25e21500 // whilelt	p0.d, x8, x2
+	WORD $0x54ffff41 // b.ne	0x8 <andWordsSVE2Asm+0x8>
 	RET
-Lfunc_end0:
 
 TEXT ·orWordsSVE2Asm(SB), NOSPLIT, $0-24
 	MOVD dst+0(FP), R0
 	MOVD src+8(FP), R1
 	MOVD n+16(FP), R2
 
-	WORD $0x25e217e0
-	WORD $0xaa1f03e8
+	WORD $0x25e217e0 // whilelt	p0.d, xzr, x2
+	WORD $0xaa1f03e8 // mov	x8, xzr
 LBB2_1:
-	WORD $0xa5e84000
-	WORD $0xa5e84021
-	WORD $0x04d80020
-	WORD $0xe5e84000
-	WORD $0x04f0e3e8
-	WORD $0x25e21500
-	WORD $0x54ffff41
+	WORD $0xa5e84000 // ld1d	{ z0.d }, p0/z, [x0, x8, lsl #3]
+	WORD $0xa5e84021 // ld1d	{ z1.d }, p0/z, [x1, x8, lsl #3]
+	WORD $0x04d80020 // orr	z0.d, p0/m, z0.d, z1.d
+	WORD $0xe5e84000 // st1d	{ z0.d }, p0, [x0, x8, lsl #3]
+	WORD $0x04f0e3e8 // incd	x8
+	WORD $0x25e21500 // whilelt	p0.d, x8, x2
+	WORD $0x54ffff41 // b.ne	0x58 <orWordsSVE2Asm+0x8>
 	RET
-Lfunc_end2:
 
 TEXT ·xorWordsSVE2Asm(SB), NOSPLIT, $0-24
 	MOVD dst+0(FP), R0
 	MOVD src+8(FP), R1
 	MOVD n+16(FP), R2
 
-	WORD $0x25e217e0
-	WORD $0xaa1f03e8
+	WORD $0x25e217e0 // whilelt	p0.d, xzr, x2
+	WORD $0xaa1f03e8 // mov	x8, xzr
 LBB3_1:
-	WORD $0xa5e84000
-	WORD $0xa5e84021
-	WORD $0x04d90020
-	WORD $0xe5e84000
-	WORD $0x04f0e3e8
-	WORD $0x25e21500
-	WORD $0x54ffff41
+	WORD $0xa5e84000 // ld1d	{ z0.d }, p0/z, [x0, x8, lsl #3]
+	WORD $0xa5e84021 // ld1d	{ z1.d }, p0/z, [x1, x8, lsl #3]
+	WORD $0x04d90020 // eor	z0.d, p0/m, z0.d, z1.d
+	WORD $0xe5e84000 // st1d	{ z0.d }, p0, [x0, x8, lsl #3]
+	WORD $0x04f0e3e8 // incd	x8
+	WORD $0x25e21500 // whilelt	p0.d, x8, x2
+	WORD $0x54ffff41 // b.ne	0x80 <xorWordsSVE2Asm+0x8>
 	RET
-Lfunc_end3:
 

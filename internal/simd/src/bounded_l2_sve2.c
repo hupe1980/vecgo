@@ -25,15 +25,14 @@ void squaredL2BoundedSve2(
     int64_t i = 0;
     
     // Block size for early exit check (process ~64 elements then check)
-    // Adjust based on vector length
-    int64_t blockSize = vl * 4;  // 4 iterations per block
+    int64_t blockSize = vl * 4;
     int64_t checkInterval = (64 / blockSize > 0) ? (64 / blockSize) * blockSize : blockSize;
     int64_t processed = 0;
     
+    svbool_t pg = svptrue_b32();
+    
     // Main loop with 4x unrolling
     while (i + vl * 4 <= n) {
-        svbool_t pg = svptrue_b32();
-        
         // Load 4 vectors
         svfloat32_t v1_1 = svld1_f32(pg, vec1 + i);
         svfloat32_t v1_2 = svld1_f32(pg, vec1 + i + vl);
@@ -77,25 +76,35 @@ void squaredL2BoundedSve2(
         }
     }
     
-    // Final reduction of accumulators
-    svbool_t pg = svptrue_b32();
+    // Final reduction of 4x unrolled accumulators
     svfloat32_t combined = svadd_f32_x(pg, 
         svadd_f32_x(pg, sum1, sum2), 
         svadd_f32_x(pg, sum3, sum4));
     total = svaddv_f32(pg, combined);
     
-    // Handle tail elements with predicated loads
-    while (i < n) {
-        int64_t remaining = n - i;
-        svbool_t pg_tail = svwhilelt_b32_s64(0, remaining);
-        
+    // Single accumulator for remaining full vectors
+    svfloat32_t tail_sum = svdup_f32(0.0f);
+    
+    // Process remaining full vectors one at a time
+    while (i + vl <= n) {
+        svfloat32_t v1 = svld1_f32(pg, vec1 + i);
+        svfloat32_t v2 = svld1_f32(pg, vec2 + i);
+        svfloat32_t diff = svsub_f32_x(pg, v1, v2);
+        tail_sum = svmla_f32_x(pg, tail_sum, diff, diff);
+        i += vl;
+    }
+    
+    // Add remaining full vectors to total
+    total += svaddv_f32(pg, tail_sum);
+    
+    // Handle final tail elements with predicated load
+    if (i < n) {
+        svbool_t pg_tail = svwhilelt_b32_s64(i, n);
         svfloat32_t v1 = svld1_f32(pg_tail, vec1 + i);
         svfloat32_t v2 = svld1_f32(pg_tail, vec2 + i);
         svfloat32_t diff = svsub_f32_x(pg_tail, v1, v2);
         svfloat32_t sq = svmul_f32_x(pg_tail, diff, diff);
         total += svaddv_f32(pg_tail, sq);
-        
-        i += remaining;
     }
     
     *result = total;

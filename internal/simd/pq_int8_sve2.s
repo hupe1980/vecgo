@@ -12,92 +12,91 @@ TEXT ·buildDistanceTableInt8Sve2(SB), NOSPLIT, $0-48
 	MOVD offset+32(FP), R4
 	MOVD out+40(FP), R5
 
-	WORD $0x2598e3e0
-	WORD $0x04a0e3e8
-	WORD $0xeb02011f
-	WORD $0x8540c060
-	WORD $0x8540c081
-	WORD $0x5400032d
-	WORD $0xf100045f
-	WORD $0x540007cb
-	WORD $0x25a217e1
-	WORD $0x25b8c003
-	WORD $0xaa1f03e8
-	WORD $0x252217e2
-	WORD $0xa540a402
+	WORD $0x2598e3e0 // ptrue	p0.s
+	WORD $0x04a0e3e8 // cntw	x8
+	WORD $0xeb02011f // cmp	x8, x2
+	WORD $0x8540c060 // ld1rw	{ z0.s }, p0/z, [x3]
+	WORD $0x8540c081 // ld1rw	{ z1.s }, p0/z, [x4]
+	WORD $0x5400032d // b.le	0x114 <buildDistanceTableInt8Sve2+0x78>
+	WORD $0xf100045f // cmp	x2, #0x1
+	WORD $0x540007cb // b.lt	0x1b0 <buildDistanceTableInt8Sve2+0x114>
+	WORD $0x25a217e1 // whilelt	p1.s, xzr, x2
+	WORD $0x25b8c003 // mov	z3.s, #0x0              // =0
+	WORD $0xaa1f03e8 // mov	x8, xzr
+	WORD $0x252217e2 // whilelt	p2.b, xzr, x2
+	WORD $0xa540a402 // ld1w	{ z2.s }, p1/z, [x0]
 LBB1_3:
-	WORD $0xa400a824
-	WORD $0x04613025
-	WORD $0x8b020021
-	WORD $0x05703884
-	WORD $0x05b03884
-	WORD $0x6594a484
-	WORD $0x65a00485
-	WORD $0x0420bc44
-	WORD $0x658184a4
-	WORD $0x04633065
-	WORD $0x65a40485
-	WORD $0x658020a4
-	WORD $0xbc2868a4
-	WORD $0x91001108
-	WORD $0xf110011f
-	WORD $0x54fffe21
-	WORD $0x1400002f
+	WORD $0xa400a824 // ld1b	{ z4.b }, p2/z, [x1]
+	WORD $0x04613025 // mov	z5.d, z1.d
+	WORD $0x8b020021 // add	x1, x1, x2
+	WORD $0x05703884 // sunpklo	z4.h, z4.b
+	WORD $0x05b03884 // sunpklo	z4.s, z4.h
+	WORD $0x6594a484 // scvtf	z4.s, p1/m, z4.s
+	WORD $0x65a00485 // fmla	z5.s, p1/m, z4.s, z0.s
+	WORD $0x0420bc44 // movprfx	z4, z2
+	WORD $0x658184a4 // fsub	z4.s, p1/m, z4.s, z5.s
+	WORD $0x04633065 // mov	z5.d, z3.d
+	WORD $0x65a40485 // fmla	z5.s, p1/m, z4.s, z4.s
+	WORD $0x658020a4 // faddv	s4, p0, z5.s
+	WORD $0xbc2868a4 // str	s4, [x5, x8]
+	WORD $0x91001108 // add	x8, x8, #0x4
+	WORD $0xf110011f // cmp	x8, #0x400
+	WORD $0x54fffe21 // b.ne	0xd0 <buildDistanceTableInt8Sve2+0x34>
+	WORD $0x1400002f // b	0x1cc <buildDistanceTableInt8Sve2+0x130>
 LBB1_4:
-	WORD $0x25b8c002
-	WORD $0xaa1f03e8
-	WORD $0x14000007
+	WORD $0x25b8c002 // mov	z2.s, #0x0              // =0
+	WORD $0xaa1f03e8 // mov	x8, xzr
+	WORD $0x14000007 // b	0x138 <buildDistanceTableInt8Sve2+0x9c>
 LBB1_5:
-	WORD $0x65802063
-	WORD $0x8b020021
-	WORD $0xbc2878a3
-	WORD $0x91000508
-	WORD $0xf104011f
-	WORD $0x540004c0
+	WORD $0x65802063 // faddv	s3, p0, z3.s
+	WORD $0x8b020021 // add	x1, x1, x2
+	WORD $0xbc2878a3 // str	s3, [x5, x8, lsl #2]
+	WORD $0x91000508 // add	x8, x8, #0x1
+	WORD $0xf104011f // cmp	x8, #0x100
+	WORD $0x540004c0 // b.eq	0x1cc <buildDistanceTableInt8Sve2+0x130>
 LBB1_6:
-	WORD $0x04623043
-	WORD $0xaa1f03e9
+	WORD $0x04623043 // mov	z3.d, z2.d
+	WORD $0xaa1f03e9 // mov	x9, xzr
 LBB1_7:
-	WORD $0x25221521
-	WORD $0xa5494005
-	WORD $0xa4094424
-	WORD $0x04b0e3e9
-	WORD $0x05703884
-	WORD $0xaa0903ea
-	WORD $0x04b0e3ea
-	WORD $0x05b03884
-	WORD $0xeb02015f
-	WORD $0x6594a084
-	WORD $0x65a18004
-	WORD $0x658404a4
-	WORD $0x65a40083
-	WORD $0x54fffe6d
-	WORD $0xeb02013f
-	WORD $0x54fffd2a
-	WORD $0x25221521
-	WORD $0x04613025
-	WORD $0xa4094424
-	WORD $0x25a21521
-	WORD $0x05703884
-	WORD $0x05b03884
-	WORD $0x6594a484
-	WORD $0x65a00485
-	WORD $0xa5494404
-	WORD $0x658184a4
-	WORD $0x65a40483
-	WORD $0x17ffffdd
+	WORD $0x25221521 // whilelt	p1.b, x9, x2
+	WORD $0xa5494005 // ld1w	{ z5.s }, p0/z, [x0, x9, lsl #2]
+	WORD $0xa4094424 // ld1b	{ z4.b }, p1/z, [x1, x9]
+	WORD $0x04b0e3e9 // incw	x9
+	WORD $0x05703884 // sunpklo	z4.h, z4.b
+	WORD $0xaa0903ea // mov	x10, x9
+	WORD $0x04b0e3ea // incw	x10
+	WORD $0x05b03884 // sunpklo	z4.s, z4.h
+	WORD $0xeb02015f // cmp	x10, x2
+	WORD $0x6594a084 // scvtf	z4.s, p0/m, z4.s
+	WORD $0x65a18004 // fmad	z4.s, p0/m, z0.s, z1.s
+	WORD $0x658404a4 // fsub	z4.s, z5.s, z4.s
+	WORD $0x65a40083 // fmla	z3.s, p0/m, z4.s, z4.s
+	WORD $0x54fffe6d // b.le	0x140 <buildDistanceTableInt8Sve2+0xa4>
+	WORD $0xeb02013f // cmp	x9, x2
+	WORD $0x54fffd2a // b.ge	0x120 <buildDistanceTableInt8Sve2+0x84>
+	WORD $0x25221521 // whilelt	p1.b, x9, x2
+	WORD $0x04613025 // mov	z5.d, z1.d
+	WORD $0xa4094424 // ld1b	{ z4.b }, p1/z, [x1, x9]
+	WORD $0x25a21521 // whilelt	p1.s, x9, x2
+	WORD $0x05703884 // sunpklo	z4.h, z4.b
+	WORD $0x05b03884 // sunpklo	z4.s, z4.h
+	WORD $0x6594a484 // scvtf	z4.s, p1/m, z4.s
+	WORD $0x65a00485 // fmla	z5.s, p1/m, z4.s, z0.s
+	WORD $0xa5494404 // ld1w	{ z4.s }, p1/z, [x0, x9, lsl #2]
+	WORD $0x658184a4 // fsub	z4.s, p1/m, z4.s, z5.s
+	WORD $0x65a40483 // fmla	z3.s, p1/m, z4.s, z4.s
+	WORD $0x17ffffdd // b	0x120 <buildDistanceTableInt8Sve2+0x84>
 LBB1_10:
-	WORD $0x25b8c000
-	WORD $0xaa1f03e8
-	WORD $0x65802000
+	WORD $0x25b8c000 // mov	z0.s, #0x0              // =0
+	WORD $0xaa1f03e8 // mov	x8, xzr
+	WORD $0x65802000 // faddv	s0, p0, z0.s
 LBB1_11:
-	WORD $0xbc2868a0
-	WORD $0x91001108
-	WORD $0xf110011f
-	WORD $0x54ffffa1
+	WORD $0xbc2868a0 // str	s0, [x5, x8]
+	WORD $0x91001108 // add	x8, x8, #0x4
+	WORD $0xf110011f // cmp	x8, #0x400
+	WORD $0x54ffffa1 // b.ne	0x1bc <buildDistanceTableInt8Sve2+0x120>
 LBB1_12:
 	RET
-Lfunc_end1:
 
 TEXT ·findNearestCentroidInt8Sve2(SB), NOSPLIT, $0-48
 	MOVD query+0(FP), R0
@@ -107,109 +106,108 @@ TEXT ·findNearestCentroidInt8Sve2(SB), NOSPLIT, $0-48
 	MOVD offset+32(FP), R4
 	MOVD outIndex+40(FP), R5
 
-	WORD $0x2598e3e0
-	WORD $0x04a0e3e8
-	WORD $0xeb02011f
-	WORD $0x8540c060
-	WORD $0x8540c081
-	WORD $0x5400050d
-	WORD $0xf100045f
-	WORD $0x54000acb
-	WORD $0x252217e1
-	WORD $0x04613024
-	WORD $0x25b8c003
-	WORD $0x25a217e2
-	WORD $0xaa1f03e8
-	WORD $0x8b020029
-	WORD $0xa400a422
-	WORD $0x5280002a
-	WORD $0x04633065
-	WORD $0x05703842
-	WORD $0x05b03842
-	WORD $0x6594a842
-	WORD $0x65a00844
-	WORD $0xa540a802
-	WORD $0x65838844
-	WORD $0x65a40885
-	WORD $0x658020a4
+	WORD $0x2598e3e0 // ptrue	p0.s
+	WORD $0x04a0e3e8 // cntw	x8
+	WORD $0xeb02011f // cmp	x8, x2
+	WORD $0x8540c060 // ld1rw	{ z0.s }, p0/z, [x3]
+	WORD $0x8540c081 // ld1rw	{ z1.s }, p0/z, [x4]
+	WORD $0x5400050d // b.le	0x284 <findNearestCentroidInt8Sve2+0xb4>
+	WORD $0xf100045f // cmp	x2, #0x1
+	WORD $0x54000acb // b.lt	0x344 <findNearestCentroidInt8Sve2+0x174>
+	WORD $0x252217e1 // whilelt	p1.b, xzr, x2
+	WORD $0x04613024 // mov	z4.d, z1.d
+	WORD $0x25b8c003 // mov	z3.s, #0x0              // =0
+	WORD $0x25a217e2 // whilelt	p2.s, xzr, x2
+	WORD $0xaa1f03e8 // mov	x8, xzr
+	WORD $0x8b020029 // add	x9, x1, x2
+	WORD $0xa400a422 // ld1b	{ z2.b }, p1/z, [x1]
+	WORD $0x5280002a // mov	w10, #0x1               // =1
+	WORD $0x04633065 // mov	z5.d, z3.d
+	WORD $0x05703842 // sunpklo	z2.h, z2.b
+	WORD $0x05b03842 // sunpklo	z2.s, z2.h
+	WORD $0x6594a842 // scvtf	z2.s, p2/m, z2.s
+	WORD $0x65a00844 // fmla	z4.s, p2/m, z2.s, z0.s
+	WORD $0xa540a802 // ld1w	{ z2.s }, p2/z, [x0]
+	WORD $0x65838844 // fsubr	z4.s, p2/m, z4.s, z2.s
+	WORD $0x65a40885 // fmla	z5.s, p2/m, z4.s, z4.s
+	WORD $0x658020a4 // faddv	s4, p0, z5.s
 LBB2_3:
-	WORD $0xa400a525
-	WORD $0x04613026
-	WORD $0x8b020129
-	WORD $0x057038a5
-	WORD $0x05b038a5
-	WORD $0x6594a8a5
-	WORD $0x65a008a6
-	WORD $0x0420bc45
-	WORD $0x658188c5
-	WORD $0x04633066
-	WORD $0x65a508a6
-	WORD $0x658020c5
-	WORD $0x1e2420a0
-	WORD $0x1e244ca4
-	WORD $0x9a884148
-	WORD $0x9100054a
-	WORD $0xf104015f
-	WORD $0x54fffde1
+	WORD $0xa400a525 // ld1b	{ z5.b }, p1/z, [x9]
+	WORD $0x04613026 // mov	z6.d, z1.d
+	WORD $0x8b020129 // add	x9, x9, x2
+	WORD $0x057038a5 // sunpklo	z5.h, z5.b
+	WORD $0x05b038a5 // sunpklo	z5.s, z5.h
+	WORD $0x6594a8a5 // scvtf	z5.s, p2/m, z5.s
+	WORD $0x65a008a6 // fmla	z6.s, p2/m, z5.s, z0.s
+	WORD $0x0420bc45 // movprfx	z5, z2
+	WORD $0x658188c5 // fsub	z5.s, p2/m, z5.s, z6.s
+	WORD $0x04633066 // mov	z6.d, z3.d
+	WORD $0x65a508a6 // fmla	z6.s, p2/m, z5.s, z5.s
+	WORD $0x658020c5 // faddv	s5, p0, z6.s
+	WORD $0x1e2420a0 // fcmp	s5, s4
+	WORD $0x1e244ca4 // fcsel	s4, s5, s4, mi
+	WORD $0x9a884148 // csel	x8, x10, x8, mi
+	WORD $0x9100054a // add	x10, x10, #0x1
+	WORD $0xf104015f // cmp	x10, #0x100
+	WORD $0x54fffde1 // b.ne	0x234 <findNearestCentroidInt8Sve2+0x64>
 LBB2_4:
-	WORD $0xf90000a8
+	WORD $0xf90000a8 // str	x8, [x5]
 	RET
 LBB2_5:
-	WORD $0x2f00e402
-	WORD $0x25b8c003
-	WORD $0xaa1f03e9
-	WORD $0xaa1f03e8
-	WORD $0x5280002a
-	WORD $0x1400000d
+	WORD $0x2f00e402 // movi	d2, #0000000000000000
+	WORD $0x25b8c003 // mov	z3.s, #0x0              // =0
+	WORD $0xaa1f03e9 // mov	x9, xzr
+	WORD $0xaa1f03e8 // mov	x8, xzr
+	WORD $0x5280002a // mov	w10, #0x1               // =1
+	WORD $0x1400000d // b	0x2cc <findNearestCentroidInt8Sve2+0xfc>
 LBB2_6:
-	WORD $0x65802084
-	WORD $0x8b020021
-	WORD $0x1e222080
-	WORD $0x1a9f57eb
-	WORD $0x2a0b014a
-	WORD $0x7200015f
-	WORD $0x2a1f03ea
-	WORD $0x1e221c82
-	WORD $0x9a881128
-	WORD $0x91000529
-	WORD $0xf104013f
-	WORD $0x54fffda0
+	WORD $0x65802084 // faddv	s4, p0, z4.s
+	WORD $0x8b020021 // add	x1, x1, x2
+	WORD $0x1e222080 // fcmp	s4, s2
+	WORD $0x1a9f57eb // cset	w11, mi
+	WORD $0x2a0b014a // orr	w10, w10, w11
+	WORD $0x7200015f // tst	w10, #0x1
+	WORD $0x2a1f03ea // mov	w10, wzr
+	WORD $0x1e221c82 // fcsel	s2, s4, s2, ne
+	WORD $0x9a881128 // csel	x8, x9, x8, ne
+	WORD $0x91000529 // add	x9, x9, #0x1
+	WORD $0xf104013f // cmp	x9, #0x100
+	WORD $0x54fffda0 // b.eq	0x27c <findNearestCentroidInt8Sve2+0xac>
 LBB2_7:
-	WORD $0x04633064
-	WORD $0xaa1f03eb
+	WORD $0x04633064 // mov	z4.d, z3.d
+	WORD $0xaa1f03eb // mov	x11, xzr
 LBB2_8:
-	WORD $0x25221561
-	WORD $0xa54b4006
-	WORD $0xa40b4425
-	WORD $0x04b0e3eb
-	WORD $0x057038a5
-	WORD $0xaa0b03ec
-	WORD $0x04b0e3ec
-	WORD $0x05b038a5
-	WORD $0xeb02019f
-	WORD $0x6594a0a5
-	WORD $0x65a18005
-	WORD $0x658504c5
-	WORD $0x65a500a4
-	WORD $0x54fffe6d
-	WORD $0xeb02017f
-	WORD $0x54fffc6a
-	WORD $0x25221561
-	WORD $0x04613026
-	WORD $0xa40b4425
-	WORD $0x25a21561
-	WORD $0x057038a5
-	WORD $0x05b038a5
-	WORD $0x6594a4a5
-	WORD $0x65a004a6
-	WORD $0xa54b4405
-	WORD $0x658184c5
-	WORD $0x65a504a4
-	WORD $0x17ffffd7
+	WORD $0x25221561 // whilelt	p1.b, x11, x2
+	WORD $0xa54b4006 // ld1w	{ z6.s }, p0/z, [x0, x11, lsl #2]
+	WORD $0xa40b4425 // ld1b	{ z5.b }, p1/z, [x1, x11]
+	WORD $0x04b0e3eb // incw	x11
+	WORD $0x057038a5 // sunpklo	z5.h, z5.b
+	WORD $0xaa0b03ec // mov	x12, x11
+	WORD $0x04b0e3ec // incw	x12
+	WORD $0x05b038a5 // sunpklo	z5.s, z5.h
+	WORD $0xeb02019f // cmp	x12, x2
+	WORD $0x6594a0a5 // scvtf	z5.s, p0/m, z5.s
+	WORD $0x65a18005 // fmad	z5.s, p0/m, z0.s, z1.s
+	WORD $0x658504c5 // fsub	z5.s, z6.s, z5.s
+	WORD $0x65a500a4 // fmla	z4.s, p0/m, z5.s, z5.s
+	WORD $0x54fffe6d // b.le	0x2d4 <findNearestCentroidInt8Sve2+0x104>
+	WORD $0xeb02017f // cmp	x11, x2
+	WORD $0x54fffc6a // b.ge	0x29c <findNearestCentroidInt8Sve2+0xcc>
+	WORD $0x25221561 // whilelt	p1.b, x11, x2
+	WORD $0x04613026 // mov	z6.d, z1.d
+	WORD $0xa40b4425 // ld1b	{ z5.b }, p1/z, [x1, x11]
+	WORD $0x25a21561 // whilelt	p1.s, x11, x2
+	WORD $0x057038a5 // sunpklo	z5.h, z5.b
+	WORD $0x05b038a5 // sunpklo	z5.s, z5.h
+	WORD $0x6594a4a5 // scvtf	z5.s, p1/m, z5.s
+	WORD $0x65a004a6 // fmla	z6.s, p1/m, z5.s, z0.s
+	WORD $0xa54b4405 // ld1w	{ z5.s }, p1/z, [x0, x11, lsl #2]
+	WORD $0x658184c5 // fsub	z5.s, p1/m, z5.s, z6.s
+	WORD $0x65a504a4 // fmla	z4.s, p1/m, z5.s, z5.s
+	WORD $0x17ffffd7 // b	0x29c <findNearestCentroidInt8Sve2+0xcc>
 LBB2_11:
-	WORD $0xf90000bf
+	WORD $0xf90000bf // str	xzr, [x5]
 	RET
-Lfunc_end2:
 
 TEXT ·squaredL2Int8DequantizedSve2(SB), NOSPLIT, $0-48
 	MOVD query+0(FP), R0
@@ -219,48 +217,47 @@ TEXT ·squaredL2Int8DequantizedSve2(SB), NOSPLIT, $0-48
 	MOVD offset+32(FP), R4
 	MOVD out+40(FP), R5
 
-	WORD $0x2598e3e0
-	WORD $0x25b8c001
-	WORD $0x04a0e3e8
-	WORD $0xeb02011f
-	WORD $0x8540c062
-	WORD $0x8540c080
-	WORD $0x5400006d
-	WORD $0xaa1f03e8
-	WORD $0x14000010
+	WORD $0x2598e3e0 // ptrue	p0.s
+	WORD $0x25b8c001 // mov	z1.s, #0x0              // =0
+	WORD $0x04a0e3e8 // cntw	x8
+	WORD $0xeb02011f // cmp	x8, x2
+	WORD $0x8540c062 // ld1rw	{ z2.s }, p0/z, [x3]
+	WORD $0x8540c080 // ld1rw	{ z0.s }, p0/z, [x4]
+	WORD $0x5400006d // b.le	0x24 <squaredL2Int8DequantizedSve2+0x24>
+	WORD $0xaa1f03e8 // mov	x8, xzr
+	WORD $0x14000010 // b	0x60 <squaredL2Int8DequantizedSve2+0x60>
 LBB0_2:
-	WORD $0xaa1f03e8
+	WORD $0xaa1f03e8 // mov	x8, xzr
 LBB0_3:
-	WORD $0x25221501
-	WORD $0xa5484004
-	WORD $0xa4084423
-	WORD $0x04b0e3e8
-	WORD $0x05703863
-	WORD $0xaa0803e9
-	WORD $0x04b0e3e9
-	WORD $0x05b03863
-	WORD $0xeb02013f
-	WORD $0x6594a063
-	WORD $0x65a08043
-	WORD $0x65830483
-	WORD $0x65a30061
-	WORD $0x54fffe6d
+	WORD $0x25221501 // whilelt	p1.b, x8, x2
+	WORD $0xa5484004 // ld1w	{ z4.s }, p0/z, [x0, x8, lsl #2]
+	WORD $0xa4084423 // ld1b	{ z3.b }, p1/z, [x1, x8]
+	WORD $0x04b0e3e8 // incw	x8
+	WORD $0x05703863 // sunpklo	z3.h, z3.b
+	WORD $0xaa0803e9 // mov	x9, x8
+	WORD $0x04b0e3e9 // incw	x9
+	WORD $0x05b03863 // sunpklo	z3.s, z3.h
+	WORD $0xeb02013f // cmp	x9, x2
+	WORD $0x6594a063 // scvtf	z3.s, p0/m, z3.s
+	WORD $0x65a08043 // fmad	z3.s, p0/m, z2.s, z0.s
+	WORD $0x65830483 // fsub	z3.s, z4.s, z3.s
+	WORD $0x65a30061 // fmla	z1.s, p0/m, z3.s, z3.s
+	WORD $0x54fffe6d // b.le	0x28 <squaredL2Int8DequantizedSve2+0x28>
 LBB0_4:
-	WORD $0xeb02011f
-	WORD $0x5400016a
-	WORD $0x25221501
-	WORD $0xa4084423
-	WORD $0x25a21501
-	WORD $0x05703863
-	WORD $0x05b03863
-	WORD $0x6594a463
-	WORD $0x65a20460
-	WORD $0xa5484402
-	WORD $0x65838440
-	WORD $0x65a00401
+	WORD $0xeb02011f // cmp	x8, x2
+	WORD $0x5400016a // b.ge	0x90 <squaredL2Int8DequantizedSve2+0x90>
+	WORD $0x25221501 // whilelt	p1.b, x8, x2
+	WORD $0xa4084423 // ld1b	{ z3.b }, p1/z, [x1, x8]
+	WORD $0x25a21501 // whilelt	p1.s, x8, x2
+	WORD $0x05703863 // sunpklo	z3.h, z3.b
+	WORD $0x05b03863 // sunpklo	z3.s, z3.h
+	WORD $0x6594a463 // scvtf	z3.s, p1/m, z3.s
+	WORD $0x65a20460 // fmla	z0.s, p1/m, z3.s, z2.s
+	WORD $0xa5484402 // ld1w	{ z2.s }, p1/z, [x0, x8, lsl #2]
+	WORD $0x65838440 // fsubr	z0.s, p1/m, z0.s, z2.s
+	WORD $0x65a00401 // fmla	z1.s, p1/m, z0.s, z0.s
 LBB0_6:
-	WORD $0x65802020
-	WORD $0xbd0000a0
+	WORD $0x65802020 // faddv	s0, p0, z1.s
+	WORD $0xbd0000a0 // str	s0, [x5]
 	RET
-Lfunc_end0:
 

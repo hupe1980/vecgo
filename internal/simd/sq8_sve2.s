@@ -13,95 +13,94 @@ TEXT ·sq8L2BatchSve2(SB), NOSPLIT, $0-56
 	MOVD n+40(FP), R5
 	MOVD out+48(FP), R6
 
-	WORD $0xf10004bf
-	WORD $0x540009cb
-	WORD $0x04a0e3e8
-	WORD $0x2598e3e0
-	WORD $0xeb04011f
-	WORD $0x5400034d
-	WORD $0xf100049f
-	WORD $0x5400086b
-	WORD $0x25a417e1
-	WORD $0x25b8c001
-	WORD $0x252417e2
-	WORD $0xa540a400
+	WORD $0xf10004bf // cmp	x5, #0x1
+	WORD $0x540009cb // b.lt	0x13c <sq8L2BatchSve2+0x13c>
+	WORD $0x04a0e3e8 // cntw	x8
+	WORD $0x2598e3e0 // ptrue	p0.s
+	WORD $0xeb04011f // cmp	x8, x4
+	WORD $0x5400034d // b.le	0x7c <sq8L2BatchSve2+0x7c>
+	WORD $0xf100049f // cmp	x4, #0x1
+	WORD $0x5400086b // b.lt	0x128 <sq8L2BatchSve2+0x128>
+	WORD $0x25a417e1 // whilelt	p1.s, xzr, x4
+	WORD $0x25b8c001 // mov	z1.s, #0x0              // =0
+	WORD $0x252417e2 // whilelt	p2.b, xzr, x4
+	WORD $0xa540a400 // ld1w	{ z0.s }, p1/z, [x0]
 LBB0_4:
-	WORD $0xa400a822
-	WORD $0x8540c043
-	WORD $0xf10004a5
-	WORD $0x8540c064
-	WORD $0x91001063
-	WORD $0x91001042
-	WORD $0x8b040021
-	WORD $0x05703842
-	WORD $0x05b03842
-	WORD $0x6594a442
-	WORD $0x65a30444
-	WORD $0x04613023
-	WORD $0x0420bc02
-	WORD $0x65818482
-	WORD $0x65a20443
-	WORD $0x65802062
-	WORD $0xbc0044c2
-	WORD $0x54fffde1
-	WORD $0x14000031
+	WORD $0xa400a822 // ld1b	{ z2.b }, p2/z, [x1]
+	WORD $0x8540c043 // ld1rw	{ z3.s }, p0/z, [x2]
+	WORD $0xf10004a5 // subs	x5, x5, #0x1
+	WORD $0x8540c064 // ld1rw	{ z4.s }, p0/z, [x3]
+	WORD $0x91001063 // add	x3, x3, #0x4
+	WORD $0x91001042 // add	x2, x2, #0x4
+	WORD $0x8b040021 // add	x1, x1, x4
+	WORD $0x05703842 // sunpklo	z2.h, z2.b
+	WORD $0x05b03842 // sunpklo	z2.s, z2.h
+	WORD $0x6594a442 // scvtf	z2.s, p1/m, z2.s
+	WORD $0x65a30444 // fmla	z4.s, p1/m, z2.s, z3.s
+	WORD $0x04613023 // mov	z3.d, z1.d
+	WORD $0x0420bc02 // movprfx	z2, z0
+	WORD $0x65818482 // fsub	z2.s, p1/m, z2.s, z4.s
+	WORD $0x65a20443 // fmla	z3.s, p1/m, z2.s, z2.s
+	WORD $0x65802062 // faddv	s2, p0, z3.s
+	WORD $0xbc0044c2 // str	s2, [x6], #0x4
+	WORD $0x54fffde1 // b.ne	0x30 <sq8L2BatchSve2+0x30>
+	WORD $0x14000031 // b	0x13c <sq8L2BatchSve2+0x13c>
 LBB0_5:
-	WORD $0x25b8c000
-	WORD $0xaa1f03e8
-	WORD $0x14000007
+	WORD $0x25b8c000 // mov	z0.s, #0x0              // =0
+	WORD $0xaa1f03e8 // mov	x8, xzr
+	WORD $0x14000007 // b	0xa0 <sq8L2BatchSve2+0xa0>
 LBB0_6:
-	WORD $0x65802021
-	WORD $0x8b040021
-	WORD $0xbc2878c1
-	WORD $0x91000508
-	WORD $0xeb05011f
-	WORD $0x54000500
+	WORD $0x65802021 // faddv	s1, p0, z1.s
+	WORD $0x8b040021 // add	x1, x1, x4
+	WORD $0xbc2878c1 // str	s1, [x6, x8, lsl #2]
+	WORD $0x91000508 // add	x8, x8, #0x1
+	WORD $0xeb05011f // cmp	x8, x5
+	WORD $0x54000500 // b.eq	0x13c <sq8L2BatchSve2+0x13c>
 LBB0_7:
-	WORD $0xd37ef50a
-	WORD $0x04603001
-	WORD $0xaa1f03e9
-	WORD $0x8b0a004b
-	WORD $0x8b0a006a
-	WORD $0x8540c163
-	WORD $0x8540c142
+	WORD $0xd37ef50a // lsl	x10, x8, #2
+	WORD $0x04603001 // mov	z1.d, z0.d
+	WORD $0xaa1f03e9 // mov	x9, xzr
+	WORD $0x8b0a004b // add	x11, x2, x10
+	WORD $0x8b0a006a // add	x10, x3, x10
+	WORD $0x8540c163 // ld1rw	{ z3.s }, p0/z, [x11]
+	WORD $0x8540c142 // ld1rw	{ z2.s }, p0/z, [x10]
 LBB0_8:
-	WORD $0x25241521
-	WORD $0xa5494005
-	WORD $0xa4094424
-	WORD $0x04b0e3e9
-	WORD $0x05703884
-	WORD $0xaa0903ea
-	WORD $0x04b0e3ea
-	WORD $0x05b03884
-	WORD $0xeb04015f
-	WORD $0x6594a084
-	WORD $0x65a28064
-	WORD $0x658404a4
-	WORD $0x65a40081
-	WORD $0x54fffe6d
-	WORD $0xeb04013f
-	WORD $0x54fffc8a
-	WORD $0x25241521
-	WORD $0xa4094424
-	WORD $0x25a41521
-	WORD $0x05703884
-	WORD $0x05b03884
-	WORD $0x6594a484
-	WORD $0x65a30482
-	WORD $0xa5494403
-	WORD $0x65838462
-	WORD $0x65a20441
-	WORD $0x17ffffd9
+	WORD $0x25241521 // whilelt	p1.b, x9, x4
+	WORD $0xa5494005 // ld1w	{ z5.s }, p0/z, [x0, x9, lsl #2]
+	WORD $0xa4094424 // ld1b	{ z4.b }, p1/z, [x1, x9]
+	WORD $0x04b0e3e9 // incw	x9
+	WORD $0x05703884 // sunpklo	z4.h, z4.b
+	WORD $0xaa0903ea // mov	x10, x9
+	WORD $0x04b0e3ea // incw	x10
+	WORD $0x05b03884 // sunpklo	z4.s, z4.h
+	WORD $0xeb04015f // cmp	x10, x4
+	WORD $0x6594a084 // scvtf	z4.s, p0/m, z4.s
+	WORD $0x65a28064 // fmad	z4.s, p0/m, z3.s, z2.s
+	WORD $0x658404a4 // fsub	z4.s, z5.s, z4.s
+	WORD $0x65a40081 // fmla	z1.s, p0/m, z4.s, z4.s
+	WORD $0x54fffe6d // b.le	0xbc <sq8L2BatchSve2+0xbc>
+	WORD $0xeb04013f // cmp	x9, x4
+	WORD $0x54fffc8a // b.ge	0x88 <sq8L2BatchSve2+0x88>
+	WORD $0x25241521 // whilelt	p1.b, x9, x4
+	WORD $0xa4094424 // ld1b	{ z4.b }, p1/z, [x1, x9]
+	WORD $0x25a41521 // whilelt	p1.s, x9, x4
+	WORD $0x05703884 // sunpklo	z4.h, z4.b
+	WORD $0x05b03884 // sunpklo	z4.s, z4.h
+	WORD $0x6594a484 // scvtf	z4.s, p1/m, z4.s
+	WORD $0x65a30482 // fmla	z2.s, p1/m, z4.s, z3.s
+	WORD $0xa5494403 // ld1w	{ z3.s }, p1/z, [x0, x9, lsl #2]
+	WORD $0x65838462 // fsubr	z2.s, p1/m, z2.s, z3.s
+	WORD $0x65a20441 // fmla	z1.s, p1/m, z2.s, z2.s
+	WORD $0x17ffffd9 // b	0x88 <sq8L2BatchSve2+0x88>
 LBB0_11:
-	WORD $0x25b8c000
-	WORD $0x65802000
+	WORD $0x25b8c000 // mov	z0.s, #0x0              // =0
+	WORD $0x65802000 // faddv	s0, p0, z0.s
 LBB0_12:
-	WORD $0xf10004a5
-	WORD $0xbc0044c0
-	WORD $0x54ffffc1
+	WORD $0xf10004a5 // subs	x5, x5, #0x1
+	WORD $0xbc0044c0 // str	s0, [x6], #0x4
+	WORD $0x54ffffc1 // b.ne	0x130 <sq8L2BatchSve2+0x130>
 LBB0_13:
 	RET
-Lfunc_end0:
 
 TEXT ·sq8uL2BatchPerDimensionSve2(SB), NOSPLIT, $0-56
 	MOVD query+0(FP), R0
@@ -112,91 +111,90 @@ TEXT ·sq8uL2BatchPerDimensionSve2(SB), NOSPLIT, $0-56
 	MOVD n+40(FP), R5
 	MOVD out+48(FP), R6
 
-	WORD $0xf10004bf
-	WORD $0x5400098b
-	WORD $0x04a0e3e8
-	WORD $0x2598e3e0
-	WORD $0xeb04011f
-	WORD $0x5400032d
-	WORD $0xf100049f
-	WORD $0x5400082b
-	WORD $0x25a417e1
-	WORD $0x25b8c003
-	WORD $0x252417e2
-	WORD $0xa540a440
-	WORD $0xa540a461
-	WORD $0xa540a402
+	WORD $0xf10004bf // cmp	x5, #0x1
+	WORD $0x5400098b // b.lt	0x274 <sq8uL2BatchPerDimensionSve2+0x134>
+	WORD $0x04a0e3e8 // cntw	x8
+	WORD $0x2598e3e0 // ptrue	p0.s
+	WORD $0xeb04011f // cmp	x8, x4
+	WORD $0x5400032d // b.le	0x1b8 <sq8uL2BatchPerDimensionSve2+0x78>
+	WORD $0xf100049f // cmp	x4, #0x1
+	WORD $0x5400082b // b.lt	0x260 <sq8uL2BatchPerDimensionSve2+0x120>
+	WORD $0x25a417e1 // whilelt	p1.s, xzr, x4
+	WORD $0x25b8c003 // mov	z3.s, #0x0              // =0
+	WORD $0x252417e2 // whilelt	p2.b, xzr, x4
+	WORD $0xa540a440 // ld1w	{ z0.s }, p1/z, [x2]
+	WORD $0xa540a461 // ld1w	{ z1.s }, p1/z, [x3]
+	WORD $0xa540a402 // ld1w	{ z2.s }, p1/z, [x0]
 LBB1_4:
-	WORD $0xa400a824
-	WORD $0x04603005
-	WORD $0xf10004a5
-	WORD $0x8b040021
-	WORD $0x05723884
-	WORD $0x05b23884
-	WORD $0x6595a484
-	WORD $0x65a10485
-	WORD $0x0420bc44
-	WORD $0x658184a4
-	WORD $0x04633065
-	WORD $0x65a40485
-	WORD $0x658020a4
-	WORD $0xbc0044c4
-	WORD $0x54fffe41
-	WORD $0x14000030
+	WORD $0xa400a824 // ld1b	{ z4.b }, p2/z, [x1]
+	WORD $0x04603005 // mov	z5.d, z0.d
+	WORD $0xf10004a5 // subs	x5, x5, #0x1
+	WORD $0x8b040021 // add	x1, x1, x4
+	WORD $0x05723884 // uunpklo	z4.h, z4.b
+	WORD $0x05b23884 // uunpklo	z4.s, z4.h
+	WORD $0x6595a484 // ucvtf	z4.s, p1/m, z4.s
+	WORD $0x65a10485 // fmla	z5.s, p1/m, z4.s, z1.s
+	WORD $0x0420bc44 // movprfx	z4, z2
+	WORD $0x658184a4 // fsub	z4.s, p1/m, z4.s, z5.s
+	WORD $0x04633065 // mov	z5.d, z3.d
+	WORD $0x65a40485 // fmla	z5.s, p1/m, z4.s, z4.s
+	WORD $0x658020a4 // faddv	s4, p0, z5.s
+	WORD $0xbc0044c4 // str	s4, [x6], #0x4
+	WORD $0x54fffe41 // b.ne	0x178 <sq8uL2BatchPerDimensionSve2+0x38>
+	WORD $0x14000030 // b	0x274 <sq8uL2BatchPerDimensionSve2+0x134>
 LBB1_5:
-	WORD $0x25b8c000
-	WORD $0xaa1f03e8
-	WORD $0x14000007
+	WORD $0x25b8c000 // mov	z0.s, #0x0              // =0
+	WORD $0xaa1f03e8 // mov	x8, xzr
+	WORD $0x14000007 // b	0x1dc <sq8uL2BatchPerDimensionSve2+0x9c>
 LBB1_6:
-	WORD $0x65802021
-	WORD $0x8b040021
-	WORD $0xbc2878c1
-	WORD $0x91000508
-	WORD $0xeb05011f
-	WORD $0x540004e0
+	WORD $0x65802021 // faddv	s1, p0, z1.s
+	WORD $0x8b040021 // add	x1, x1, x4
+	WORD $0xbc2878c1 // str	s1, [x6, x8, lsl #2]
+	WORD $0x91000508 // add	x8, x8, #0x1
+	WORD $0xeb05011f // cmp	x8, x5
+	WORD $0x540004e0 // b.eq	0x274 <sq8uL2BatchPerDimensionSve2+0x134>
 LBB1_7:
-	WORD $0x04603001
-	WORD $0xaa1f03e9
+	WORD $0x04603001 // mov	z1.d, z0.d
+	WORD $0xaa1f03e9 // mov	x9, xzr
 LBB1_8:
-	WORD $0x25241521
-	WORD $0xa5494043
-	WORD $0xa5494064
-	WORD $0xa4094422
-	WORD $0x05723842
-	WORD $0x05b23842
-	WORD $0x6595a042
-	WORD $0x65a38082
-	WORD $0xa5494003
-	WORD $0x04b0e3e9
-	WORD $0xaa0903ea
-	WORD $0x65820462
-	WORD $0x04b0e3ea
-	WORD $0xeb04015f
-	WORD $0x65a20041
-	WORD $0x54fffe2d
-	WORD $0xeb04013f
-	WORD $0x54fffcea
-	WORD $0x25241521
-	WORD $0xa4094422
-	WORD $0x25a41521
-	WORD $0xa5494443
-	WORD $0xa5494464
-	WORD $0x05723842
-	WORD $0x05b23842
-	WORD $0x6595a442
-	WORD $0x65a40443
-	WORD $0xa5494402
-	WORD $0x65818462
-	WORD $0x65a20441
-	WORD $0x17ffffda
+	WORD $0x25241521 // whilelt	p1.b, x9, x4
+	WORD $0xa5494043 // ld1w	{ z3.s }, p0/z, [x2, x9, lsl #2]
+	WORD $0xa5494064 // ld1w	{ z4.s }, p0/z, [x3, x9, lsl #2]
+	WORD $0xa4094422 // ld1b	{ z2.b }, p1/z, [x1, x9]
+	WORD $0x05723842 // uunpklo	z2.h, z2.b
+	WORD $0x05b23842 // uunpklo	z2.s, z2.h
+	WORD $0x6595a042 // ucvtf	z2.s, p0/m, z2.s
+	WORD $0x65a38082 // fmad	z2.s, p0/m, z4.s, z3.s
+	WORD $0xa5494003 // ld1w	{ z3.s }, p0/z, [x0, x9, lsl #2]
+	WORD $0x04b0e3e9 // incw	x9
+	WORD $0xaa0903ea // mov	x10, x9
+	WORD $0x65820462 // fsub	z2.s, z3.s, z2.s
+	WORD $0x04b0e3ea // incw	x10
+	WORD $0xeb04015f // cmp	x10, x4
+	WORD $0x65a20041 // fmla	z1.s, p0/m, z2.s, z2.s
+	WORD $0x54fffe2d // b.le	0x1e4 <sq8uL2BatchPerDimensionSve2+0xa4>
+	WORD $0xeb04013f // cmp	x9, x4
+	WORD $0x54fffcea // b.ge	0x1c4 <sq8uL2BatchPerDimensionSve2+0x84>
+	WORD $0x25241521 // whilelt	p1.b, x9, x4
+	WORD $0xa4094422 // ld1b	{ z2.b }, p1/z, [x1, x9]
+	WORD $0x25a41521 // whilelt	p1.s, x9, x4
+	WORD $0xa5494443 // ld1w	{ z3.s }, p1/z, [x2, x9, lsl #2]
+	WORD $0xa5494464 // ld1w	{ z4.s }, p1/z, [x3, x9, lsl #2]
+	WORD $0x05723842 // uunpklo	z2.h, z2.b
+	WORD $0x05b23842 // uunpklo	z2.s, z2.h
+	WORD $0x6595a442 // ucvtf	z2.s, p1/m, z2.s
+	WORD $0x65a40443 // fmla	z3.s, p1/m, z2.s, z4.s
+	WORD $0xa5494402 // ld1w	{ z2.s }, p1/z, [x0, x9, lsl #2]
+	WORD $0x65818462 // fsub	z2.s, p1/m, z2.s, z3.s
+	WORD $0x65a20441 // fmla	z1.s, p1/m, z2.s, z2.s
+	WORD $0x17ffffda // b	0x1c4 <sq8uL2BatchPerDimensionSve2+0x84>
 LBB1_11:
-	WORD $0x25b8c000
-	WORD $0x65802000
+	WORD $0x25b8c000 // mov	z0.s, #0x0              // =0
+	WORD $0x65802000 // faddv	s0, p0, z0.s
 LBB1_12:
-	WORD $0xf10004a5
-	WORD $0xbc0044c0
-	WORD $0x54ffffc1
+	WORD $0xf10004a5 // subs	x5, x5, #0x1
+	WORD $0xbc0044c0 // str	s0, [x6], #0x4
+	WORD $0x54ffffc1 // b.ne	0x268 <sq8uL2BatchPerDimensionSve2+0x128>
 LBB1_13:
 	RET
-Lfunc_end1:
 

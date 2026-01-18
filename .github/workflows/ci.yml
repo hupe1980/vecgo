@@ -270,10 +270,11 @@ jobs:
 
       - name: Run SIMD Benchmarks
         run: |
+          set -o pipefail
           echo "## SIMD Benchmarks (${{ matrix.arch }})" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           go test -run '^$' -bench . -benchtime=500ms -benchmem ./internal/simd/... \
-            | tee -a $GITHUB_STEP_SUMMARY
+            2>&1 | tee -a $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
 
   # ─────────────────────────────────────────────────────────────────────

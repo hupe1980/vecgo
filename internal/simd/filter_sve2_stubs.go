@@ -16,8 +16,5 @@ func filterRangeF64IndicesSve2(values unsafe.Pointer, n int64, minVal float64, m
 func filterRangeF64Sve2(values unsafe.Pointer, n int64, minVal float64, maxVal float64, dst unsafe.Pointer)
 
 //go:noescape
-func filterRangeF64Sve2Simple(values unsafe.Pointer, n int64, minVal float64, maxVal float64, dst unsafe.Pointer)
-
-//go:noescape
 func gatherU32Sve2(src unsafe.Pointer, indices unsafe.Pointer, n int64, dst unsafe.Pointer)
 

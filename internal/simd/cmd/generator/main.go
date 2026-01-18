@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 )
 
@@ -118,6 +117,7 @@ type AsmLine struct {
 	Labels   []string
 	Assembly string
 	Binary   []string
+	Disasm   string // Original disassembly from objdump (for comments)
 }
 
 func (g *Generator) Generate() error {
@@ -503,6 +503,7 @@ func (g *Generator) parseAssembly(asmPath string) (map[string]*Function, error) 
 
 	functions := make(map[string]*Function)
 	var current string
+	var pendingLabels []string // Track labels that need to be merged with next code line
 
 	sc := bufio.NewScanner(file)
 	for sc.Scan() {
@@ -520,6 +521,7 @@ func (g *Generator) parseAssembly(asmPath string) (map[string]*Function, error) 
 		if m := nameLine.FindStringSubmatch(line); m != nil {
 			current = m[1]
 			functions[current] = &Function{Name: current}
+			pendingLabels = nil // Reset pending labels for new function
 			continue
 		}
 
@@ -528,9 +530,8 @@ func (g *Generator) parseAssembly(asmPath string) (map[string]*Function, error) 
 		}
 
 		if m := labelLine.FindStringSubmatch(line); m != nil {
-			functions[current].Lines = append(functions[current].Lines, AsmLine{
-				Labels: []string{m[1]},
-			})
+			// Accumulate labels - they will be attached to the next code line
+			pendingLabels = append(pendingLabels, m[1])
 			continue
 		}
 
@@ -540,9 +541,12 @@ func (g *Generator) parseAssembly(asmPath string) (map[string]*Function, error) 
 				asm = strings.TrimSpace(asm[:i])
 			}
 			if asm != "" {
+				// Create line with any pending labels merged in
 				functions[current].Lines = append(functions[current].Lines, AsmLine{
+					Labels:   pendingLabels,
 					Assembly: asm,
 				})
+				pendingLabels = nil // Clear pending labels after attaching
 			}
 		}
 	}
@@ -568,7 +572,6 @@ func (g *Generator) extractBinary(objPath string, functions map[string]*Function
 
 	var fn *Function
 	idx := 0
-	var lastAddr int64 = -1
 
 	sc := bufio.NewScanner(&out)
 	for sc.Scan() {
@@ -580,7 +583,6 @@ func (g *Generator) extractBinary(objPath string, functions map[string]*Function
 		if m := sym.FindStringSubmatch(line); m != nil {
 			fn = functions[m[1]]
 			idx = 0
-			lastAddr = -1
 			continue
 		}
 
@@ -595,78 +597,32 @@ func (g *Generator) extractBinary(objPath string, functions map[string]*Function
 				continue
 			}
 
-			// Parse address to check for gaps (padding)
-			addrStr := strings.TrimSpace(parts[0])
-			addr, err := strconv.ParseInt(addrStr, 16, 64)
-			if err == nil {
-				if lastAddr != -1 && addr > lastAddr {
-					gap := addr - lastAddr
-					if gap > 0 {
-						// Detected padding gap
-						// Insert NOPs into the Go assembly structure to maintain alignment
-						// ARM64 NOP is 4 bytes (0xd503201f)
-						// x86 NOP is 1 byte (0x90)
-						var nopBytes []string
-						var stride int64
-
-						if g.Arch == "arm64" {
-							nopBytes = []string{"d503201f"}
-							stride = 4
-						} else {
-							nopBytes = []string{"90"}
-							stride = 1
-						}
-
-						if gap%stride == 0 {
-							count := int(gap / stride)
-							nopLine := AsmLine{
-								Assembly: "// NOP padding",
-								Binary:   nopBytes,
-							}
-
-							if g.Verbose {
-								fmt.Printf("Inserting %d NOPs at idx %d (gap %d)\n", count, idx, gap)
-							}
-
-							for i := 0; i < count; i++ {
-								// Find generic insertion point (skip empty/labels)
-								// Actually, strict insertion at idx is better to keep sync with binary flow
-								// But idx points to next *source* line.
-								// If we skip labels in idx search, we should respect that.
-								// But here we are inserting *before* the current instruction match.
-
-								// We insert at the current consumption cursor 'idx'.
-								// Note: We normally advance idx to skip labels *before* assigning.
-								// But here we interact with the stream.
-
-								// Insert into slice
-								if idx >= len(fn.Lines) {
-									fn.Lines = append(fn.Lines, nopLine)
-								} else {
-									fn.Lines = append(fn.Lines[:idx], append([]AsmLine{nopLine}, fn.Lines[idx:]...)...)
-								}
-								idx++
-							}
-							// Update lastAddr so we don't re-detect this gap or count it wrong
-							lastAddr += gap
-						}
-					}
-				}
-			}
-
 			content := parts[1]
 
-			// If there is a tab, the bytes are before the tab
+			// Extract the disassembly mnemonic (after the tab)
+			var mnemonic string
 			if tabIdx := strings.Index(content, "\t"); tabIdx != -1 {
+				mnemonic = strings.TrimSpace(content[tabIdx+1:])
 				content = content[:tabIdx]
+			}
+
+			// Skip NOP instructions - they are padding inserted by the compiler
+			// and don't have corresponding lines in the assembly source
+			if strings.Contains(strings.ToLower(mnemonic), "nop") {
+				continue
 			}
 
 			// Parse hex bytes or words
 			fields := strings.Fields(content)
 			var bytes []string
 			for _, p := range fields {
-				if (len(p) == 2 || len(p) == 8) && isHex(p) {
+				if len(p) == 2 && isHex(p) {
+					// x86: individual bytes like "c5 f8 77"
 					bytes = append(bytes, p)
+				} else if len(p) == 8 && isHex(p) {
+					// ARM64: 4-byte words like "f100205f"
+					// Split into individual bytes (little-endian order for ARM)
+					bytes = append(bytes, p[6:8], p[4:6], p[2:4], p[0:2])
 				}
 			}
 
@@ -675,27 +631,12 @@ func (g *Generator) extractBinary(objPath string, functions map[string]*Function
 					fmt.Printf("Matched binary: %v for line idx %d\n", bytes, idx)
 				}
 
-				// Update address tracker
-				size := 0
-				for _, b := range bytes {
-					if len(b) == 2 {
-						size++
-					} else if len(b) == 8 {
-						size += 4
-					}
-				}
-				// If we failed parsing address earlier, assume continuity?
-				// But we handle gaps primarily.
-				// If parsing worked, use it. If not, best effort.
-				if err == nil {
-					lastAddr = addr + int64(size)
-				}
-
 				for idx < len(fn.Lines) && (len(fn.Lines[idx].Binary) > 0 || fn.Lines[idx].Assembly == "") {
 					idx++
 				}
 				if idx < len(fn.Lines) {
 					fn.Lines[idx].Binary = bytes
+					fn.Lines[idx].Disasm = mnemonic // Store disassembly for comments
 					idx++
 				}
 			}
@@ -832,13 +773,46 @@ func (g *Generator) generateGoAsm(functions map[string]*Function) error {
 			}
 
 			if len(l.Binary) > 0 {
-				for _, b := range l.Binary {
-					if len(b) == 8 {
-						fmt.Fprintf(&buf, "\tWORD $0x%s\n", b)
+				// Pack bytes into QUAD/LONG/WORD for more compact output
+				// Note: ARM64 uses WORD for 4-byte values (not LONG)
+				buf.WriteString("\t")
+				pos := 0
+				for pos < len(l.Binary) {
+					if pos > 0 {
+						buf.WriteString("; ")
+					}
+					remaining := len(l.Binary) - pos
+					if remaining >= 8 && g.Arch == "amd64" {
+						// QUAD: 8 bytes (little-endian) - AMD64 only
+						fmt.Fprintf(&buf, "QUAD $0x%s%s%s%s%s%s%s%s",
+							l.Binary[pos+7], l.Binary[pos+6], l.Binary[pos+5], l.Binary[pos+4],
+							l.Binary[pos+3], l.Binary[pos+2], l.Binary[pos+1], l.Binary[pos])
+						pos += 8
+					} else if remaining >= 4 && g.Arch == "amd64" {
+						// LONG: 4 bytes (little-endian) - AMD64
+						fmt.Fprintf(&buf, "LONG $0x%s%s%s%s",
+							l.Binary[pos+3], l.Binary[pos+2], l.Binary[pos+1], l.Binary[pos])
+						pos += 4
+					} else if remaining >= 4 && g.Arch == "arm64" {
+						// WORD: 4 bytes for ARM64 (ARM uses WORD for 32-bit)
+						fmt.Fprintf(&buf, "WORD $0x%s%s%s%s",
+							l.Binary[pos+3], l.Binary[pos+2], l.Binary[pos+1], l.Binary[pos])
+						pos += 4
+					} else if remaining >= 2 {
+						// WORD: 2 bytes (little-endian) - AMD64 only
+						fmt.Fprintf(&buf, "WORD $0x%s%s", l.Binary[pos+1], l.Binary[pos])
+						pos += 2
 					} else {
-						fmt.Fprintf(&buf, "\tBYTE $0x%s\n", b)
+						// BYTE: 1 byte
+						fmt.Fprintf(&buf, "BYTE $0x%s", l.Binary[pos])
+						pos++
 					}
 				}
+				// Add disassembly as comment
+				if l.Disasm != "" {
+					fmt.Fprintf(&buf, " // %s", l.Disasm)
+				}
+				buf.WriteString("\n")
 			}
 		}
 		buf.WriteString("\n")
