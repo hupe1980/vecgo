@@ -21,7 +21,7 @@ LBB1_2:
 	LONG $0x6f7ec1c4; BYTE $0x10 // vmovdqu	(%r8), %ymm2
 	LONG $0xe0428d48 // leaq	-0x20(%rdx), %rax
 	LONG $0x20f88348 // cmpq	$0x20, %rax
-	JCC LBB1_4
+	JAE LBB1_4
 	LONG $0xc9eff1c5 // vpxor	%xmm1, %xmm1, %xmm1
 	WORD $0x3145; BYTE $0xc0 // xorl	%r8d, %r8d
 	JMP LBB1_6
@@ -139,7 +139,7 @@ LBB0_2:
 	LONG $0x116ffec5 // vmovdqu	(%rcx), %ymm2
 	LONG $0xe0468d48 // leaq	-0x20(%rsi), %rax
 	LONG $0x20f88348 // cmpq	$0x20, %rax
-	JCC LBB0_4
+	JAE LBB0_4
 	LONG $0xc9eff1c5 // vpxor	%xmm1, %xmm1, %xmm1
 	WORD $0xd231 // xorl	%edx, %edx
 	JMP LBB0_6

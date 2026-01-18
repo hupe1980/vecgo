@@ -83,7 +83,7 @@ LBB2_2:
 	WORD $0x8945; BYTE $0xd0 // movl	%r10d, %r8d
 	LONG $0x03e08341 // andl	$0x3, %r8d
 	LONG $0x18f88348 // cmpq	$0x18, %rax
-	JCC LBB2_4
+	JAE LBB2_4
 	LONG $0xc957f0c5 // vxorps	%xmm1, %xmm1, %xmm1
 	WORD $0x3145; BYTE $0xc9 // xorl	%r9d, %r9d
 	JMP LBB2_6
@@ -189,7 +189,7 @@ TEXT ·scaleAvx2(SB), NOSPLIT, $0-24
 	JLE LBB3_9
 	LONG $0x187de2c4; BYTE $0x02 // vbroadcastss	(%rdx), %ymm0
 	LONG $0x20fe8348 // cmpq	$0x20, %rsi
-	JCS LBB3_4
+	JLO LBB3_4
 	WORD $0x8948; BYTE $0xf0 // movq	%rsi, %rax
 	LONG $0x05e8c148 // shrq	$0x5, %rax
 	WORD $0x8948; BYTE $0xf9 // movq	%rdi, %rcx

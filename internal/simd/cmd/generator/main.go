@@ -493,37 +493,18 @@ func (g *Generator) validateNoRelocations(objPath string) error {
 // AMD64 Jump Instruction Handling
 // ------------------------------------------------------------
 
-// amd64JumpOpcodes maps x86 jump mnemonics to Go assembly mnemonics
+// amd64JumpOpcodes maps x86 jump mnemonics to Go assembly mnemonics.
+// Go's assembler supports standard x86 mnemonics, so we just uppercase most opcodes.
+// Only a few need special handling for Go's naming convention.
 var amd64JumpOpcodes = map[string]string{
-	"jmp":  "JMP",
-	"je":   "JE",
-	"jz":   "JE", // alias
-	"jne":  "JNE",
-	"jnz":  "JNE", // alias
-	"jl":   "JLT",
-	"jlt":  "JLT",
-	"jle":  "JLE",
-	"jg":   "JGT",
-	"jgt":  "JGT",
-	"jge":  "JGE",
-	"jb":   "JCS", // below (unsigned) = carry set
-	"jnae": "JCS", // alias
-	"jc":   "JCS", // carry
-	"jae":  "JCC", // above or equal (unsigned) = carry clear
-	"jnb":  "JCC", // alias
-	"jnc":  "JCC", // no carry
-	"ja":   "JHI", // above (unsigned)
-	"jnbe": "JHI", // alias
-	"jbe":  "JLS", // below or equal (unsigned)
-	"jna":  "JLS", // alias
-	"js":   "JMI", // sign (negative)
-	"jns":  "JPL", // not sign (positive)
-	"jo":   "JOS", // overflow
-	"jno":  "JOC", // no overflow
-	"jp":   "JPE", // parity even
-	"jpe":  "JPE", // alias
-	"jnp":  "JPO", // parity odd
-	"jpo":  "JPO", // alias
+	// These need explicit mapping to Go's names
+	"jl":  "JLT", // less than (signed)
+	"jg":  "JGT", // greater than (signed)
+	"jb":  "JLO", // below (unsigned) - Go uses JLO
+	"ja":  "JHI", // above (unsigned) - Go uses JHI
+	"jc":  "JCS", // carry set
+	"jnc": "JCC", // carry clear
+	// All others just get uppercased: jmp->JMP, je->JE, jne->JNE, jge->JGE, etc.
 }
 
 // isAMD64Jump returns true if the assembly represents a jump instruction.

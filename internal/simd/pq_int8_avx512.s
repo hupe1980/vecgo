@@ -96,7 +96,7 @@ LBB1_26:
 LBB1_2:
 	LONG $0xd257e8c5 // vxorps	%xmm2, %xmm2, %xmm2
 	LONG $0x10f88348 // cmpq	$0x10, %rax
-	JCC LBB1_14
+	JAE LBB1_14
 	WORD $0x3145; BYTE $0xed // xorl	%r13d, %r13d
 	JMP LBB1_16
 LBB1_14:
@@ -310,7 +310,7 @@ LBB2_25:
 LBB2_2:
 	LONG $0xdb57e0c5 // vxorps	%xmm3, %xmm3, %xmm3
 	LONG $0x10f98348 // cmpq	$0x10, %rcx
-	JCC LBB2_13
+	JAE LBB2_13
 	WORD $0x3145; BYTE $0xf6 // xorl	%r14d, %r14d
 	JMP LBB2_15
 LBB2_13:
@@ -424,7 +424,7 @@ TEXT ·squaredL2Int8DequantizedAvx512(SB), NOSPLIT, $0-48
 LBB0_2:
 	LONG $0xf04a8d48 // leaq	-0x10(%rdx), %rcx
 	LONG $0x10f98348 // cmpq	$0x10, %rcx
-	JCC LBB0_4
+	JAE LBB0_4
 	LONG $0xd257e8c5 // vxorps	%xmm2, %xmm2, %xmm2
 	WORD $0x3145; BYTE $0xc0 // xorl	%r8d, %r8d
 	JMP LBB0_6

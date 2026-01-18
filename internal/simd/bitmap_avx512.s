@@ -16,7 +16,7 @@ TEXT ·andNotWordsAVX512Asm(SB), NOSPLIT, $0-24
 LBB1_2:
 	LONG $0xf84a8d48 // leaq	-0x8(%rdx), %rcx
 	LONG $0x08f98348 // cmpq	$0x8, %rcx
-	JCC LBB1_13
+	JAE LBB1_13
 	LONG $0x0008b841; WORD $0x0000 // movl	$0x8, %r8d
 	WORD $0xc031 // xorl	%eax, %eax
 	WORD $0xc1f6; BYTE $0x08 // testb	$0x8, %cl
@@ -93,7 +93,7 @@ LBB0_2:
 	WORD $0x8944; BYTE $0xc1 // movl	%r8d, %ecx
 	WORD $0xe183; BYTE $0x03 // andl	$0x3, %ecx
 	LONG $0x18f88348 // cmpq	$0x18, %rax
-	JCC LBB0_14
+	JAE LBB0_14
 	LONG $0x0008b841; WORD $0x0000 // movl	$0x8, %r8d
 	WORD $0xc031 // xorl	%eax, %eax
 	WORD $0x8548; BYTE $0xc9 // testq	%rcx, %rcx
@@ -181,7 +181,7 @@ LBB2_2:
 	WORD $0x8944; BYTE $0xc1 // movl	%r8d, %ecx
 	WORD $0xe183; BYTE $0x03 // andl	$0x3, %ecx
 	LONG $0x18f88348 // cmpq	$0x18, %rax
-	JCC LBB2_14
+	JAE LBB2_14
 	LONG $0x0008b841; WORD $0x0000 // movl	$0x8, %r8d
 	WORD $0xc031 // xorl	%eax, %eax
 	WORD $0x8548; BYTE $0xc9 // testq	%rcx, %rcx
@@ -269,7 +269,7 @@ LBB3_2:
 	WORD $0x8944; BYTE $0xc1 // movl	%r8d, %ecx
 	WORD $0xe183; BYTE $0x03 // andl	$0x3, %ecx
 	LONG $0x18f88348 // cmpq	$0x18, %rax
-	JCC LBB3_14
+	JAE LBB3_14
 	LONG $0x0008b841; WORD $0x0000 // movl	$0x8, %r8d
 	WORD $0xc031 // xorl	%eax, %eax
 	WORD $0x8548; BYTE $0xc9 // testq	%rcx, %rcx

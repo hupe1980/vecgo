@@ -56,7 +56,7 @@ LBB0_3:
 	LONG $0xed7cd3c5 // vhaddps	%xmm5, %xmm5, %xmm5
 	LONG $0xed7cd3c5 // vhaddps	%xmm5, %xmm5, %xmm5
 	LONG $0xe82ef8c5 // vucomiss	%xmm0, %xmm5
-	JLS LBB0_6
+	JBE LBB0_6
 	LONG $0x2911fac5 // vmovss	%xmm5, (%rcx)
 	LONG $0x000001b8; BYTE $0x00 // movl	$0x1, %eax
 	WORD $0x8941; BYTE $0x00 // movl	%eax, (%r8)

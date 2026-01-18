@@ -22,7 +22,7 @@ LBB1_2:
 	WORD $0x8944; BYTE $0xc8 // movl	%r9d, %eax
 	WORD $0xe083; BYTE $0x03 // andl	$0x3, %eax
 	LONG $0xc0f98148; WORD $0x0000; BYTE $0x00 // cmpq	$0xc0, %rcx
-	JCC LBB1_4
+	JAE LBB1_4
 	LONG $0xc0eff9c5 // vpxor	%xmm0, %xmm0, %xmm0
 	WORD $0x3145; BYTE $0xc0 // xorl	%r8d, %r8d
 	JMP LBB1_6
@@ -133,7 +133,7 @@ LBB0_2:
 	WORD $0x8944; BYTE $0xc0 // movl	%r8d, %eax
 	WORD $0xe083; BYTE $0x03 // andl	$0x3, %eax
 	LONG $0xc0f98148; WORD $0x0000; BYTE $0x00 // cmpq	$0xc0, %rcx
-	JCC LBB0_4
+	JAE LBB0_4
 	LONG $0xc0eff9c5 // vpxor	%xmm0, %xmm0, %xmm0
 	WORD $0xd231 // xorl	%edx, %edx
 	JMP LBB0_6

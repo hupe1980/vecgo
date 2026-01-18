@@ -21,7 +21,7 @@ LBB2_2:
 	LONG $0x197de2c4; BYTE $0xd9 // vbroadcastsd	%xmm1, %ymm3
 	LONG $0xfc468d4c // leaq	-0x4(%rsi), %r8
 	LONG $0x04f88349 // cmpq	$0x4, %r8
-	JCC LBB2_14
+	JAE LBB2_14
 	LONG $0x000004b9; BYTE $0x00 // movl	$0x4, %ecx
 	WORD $0xc031 // xorl	%eax, %eax
 	WORD $0x3145; BYTE $0xc9 // xorl	%r9d, %r9d
@@ -265,9 +265,9 @@ LBB1_26:
 LBB1_5:
 	LONG $0x107ba1c4; WORD $0xcf14 // vmovsd	(%rdi,%r9,8), %xmm2
 	LONG $0xd02ef9c5 // vucomisd	%xmm0, %xmm2
-	JCS LBB1_8
+	JLO LBB1_8
 	LONG $0xca2ef9c5 // vucomisd	%xmm2, %xmm1
-	JCS LBB1_8
+	JLO LBB1_8
 	LONG $0x820c8944 // movl	%r9d, (%rdx,%rax,4)
 	WORD $0xff48; BYTE $0xc0 // incq	%rax
 LBB1_8:
@@ -287,17 +287,17 @@ LBB1_16:
 LBB1_10:
 	LONG $0x107ba1c4; WORD $0xc714 // vmovsd	(%rdi,%r8,8), %xmm2
 	LONG $0xd02ef9c5 // vucomisd	%xmm0, %xmm2
-	JCS LBB1_13
+	JLO LBB1_13
 	LONG $0xca2ef9c5 // vucomisd	%xmm2, %xmm1
-	JCS LBB1_13
+	JLO LBB1_13
 	LONG $0x82048944 // movl	%r8d, (%rdx,%rax,4)
 	WORD $0xff48; BYTE $0xc0 // incq	%rax
 LBB1_13:
 	LONG $0x107ba1c4; WORD $0xc754; BYTE $0x08 // vmovsd	0x8(%rdi,%r8,8), %xmm2
 	LONG $0xd02ef9c5 // vucomisd	%xmm0, %xmm2
-	JCS LBB1_16
+	JLO LBB1_16
 	LONG $0xca2ef9c5 // vucomisd	%xmm2, %xmm1
-	JCS LBB1_16
+	JLO LBB1_16
 	LONG $0x01488d45 // leal	0x1(%r8), %r9d
 	LONG $0x820c8944 // movl	%r9d, (%rdx,%rax,4)
 	WORD $0xff48; BYTE $0xc0 // incq	%rax
@@ -321,7 +321,7 @@ LBB3_2:
 	WORD $0x8945; BYTE $0xc8 // movl	%r9d, %r8d
 	LONG $0x03e08341 // andl	$0x3, %r8d
 	LONG $0x18f88348 // cmpq	$0x18, %rax
-	JCC LBB3_14
+	JAE LBB3_14
 	LONG $0x0008b941; WORD $0x0000 // movl	$0x8, %r9d
 	WORD $0xc031 // xorl	%eax, %eax
 	WORD $0x854d; BYTE $0xc0 // testq	%r8, %r8
