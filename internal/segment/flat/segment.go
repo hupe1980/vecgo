@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 	"unsafe"
 
 	"github.com/hupe1980/vecgo/blobstore"
@@ -444,11 +445,16 @@ func (s *Segment) HasGraphIndex() bool {
 
 // Search performs an exact scan.
 func (s *Segment) Search(ctx context.Context, q []float32, k int, filter segment.Filter, opts model.SearchOptions, searcherCtx *searcher.Searcher) error {
+	searchStart := time.Now()
 	descending := s.Metric() != distance.MetricL2
 
 	var h *searcher.CandidateHeap
+	var stats *searcher.FilterGateStats
 	if searcherCtx != nil {
 		h = searcherCtx.Heap
+		stats = &searcherCtx.FilterGateStats
+		// Track that this is a brute-force segment search
+		stats.BruteForceSegments++
 		// Do NOT reset if we are accumulating results from multiple segments
 		// But wait, engine.Search calls Reset() before loop.
 		// If we are in a loop, we want to KEEP existing items.
@@ -457,6 +463,12 @@ func (s *Segment) Search(ctx context.Context, q []float32, k int, filter segment
 	} else {
 		h = searcher.NewCandidateHeap(k, descending)
 	}
+	// Track search timing
+	defer func() {
+		if stats != nil {
+			stats.SearchTimeNanos += time.Since(searchStart).Nanoseconds()
+		}
+	}()
 
 	dim := int(s.header.Dim)
 
@@ -538,6 +550,9 @@ func (s *Segment) Search(ctx context.Context, q []float32, k int, filter segment
 				if err := s.sq.L2DistanceBatch(q, batchCodes, count, batchScores[:count]); err != nil {
 					return err
 				}
+				if stats != nil {
+					stats.DistanceComputations += count
+				}
 
 				for j := 0; j < count; j++ {
 					idx := i + j
@@ -571,6 +586,9 @@ func (s *Segment) Search(ctx context.Context, q []float32, k int, filter segment
 						Approx:    true,
 					}
 
+					if stats != nil {
+						stats.CandidatesEvaluated++
+					}
 					if h.Len() < k {
 						h.Push(cand)
 					} else {
@@ -653,6 +671,9 @@ func (s *Segment) Search(ctx context.Context, q []float32, k int, filter segment
 				if err != nil {
 					return err
 				}
+				if stats != nil {
+					stats.DistanceComputations++
+				}
 				approx = true
 			} else if s.pq != nil {
 				m := s.pq.NumSubvectors()
@@ -662,6 +683,9 @@ func (s *Segment) Search(ctx context.Context, q []float32, k int, filter segment
 				if err != nil {
 					return err
 				}
+				if stats != nil {
+					stats.DistanceComputations++
+				}
 				approx = true
 			} else {
 				// Use vectors
@@ -670,6 +694,9 @@ func (s *Segment) Search(ctx context.Context, q []float32, k int, filter segment
 					dist = distance.SquaredL2(q, vec)
 				} else {
 					dist = distance.Dot(q, vec)
+				}
+				if stats != nil {
+					stats.DistanceComputations++
 				}
 				approx = false
 			}
@@ -681,6 +708,9 @@ func (s *Segment) Search(ctx context.Context, q []float32, k int, filter segment
 				Approx:    approx,
 			}
 
+			if stats != nil {
+				stats.CandidatesEvaluated++
+			}
 			if h.Len() < k {
 				h.Push(cand)
 			} else {

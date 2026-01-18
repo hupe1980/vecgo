@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/hupe1980/vecgo/distance"
 	"github.com/hupe1980/vecgo/internal/arena"
@@ -382,6 +383,15 @@ func (m *MemTable) Search(ctx context.Context, q []float32, k int, filter segmen
 	// And allows re-using the same searcher/heap without mutex.
 	// Actually, wait. The Heap is global. `shard.Search` pushes to `searcherCtx.Heap`.
 	// Correct.
+
+	// Track that this is an HNSW segment search and track timing
+	if searcherCtx != nil {
+		searcherCtx.FilterGateStats.HNSWSegments++
+		searchStart := time.Now()
+		defer func() {
+			searcherCtx.FilterGateStats.SearchTimeNanos += time.Since(searchStart).Nanoseconds()
+		}()
+	}
 
 	for _, s := range m.shards {
 		if err := s.Search(ctx, q, k, filter, opts, searcherCtx); err != nil {

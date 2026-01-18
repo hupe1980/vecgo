@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"time"
 
 	"github.com/hupe1980/vecgo/distance"
 	imetadata "github.com/hupe1980/vecgo/internal/metadata"
@@ -119,11 +120,20 @@ func (e *Engine) searchSegmentWithCursor(
 		}
 	}
 
+	// Track search timing
+	searchStart := time.Now()
+	defer func() {
+		s.FilterGateStats.SearchTimeNanos += time.Since(searchStart).Nanoseconds()
+	}()
+
 	// Set up state
 	batchSize := config.BatchSize
 	if batchSize <= 0 {
 		batchSize = 64
 	}
+
+	// Track that this is a brute-force segment search
+	s.FilterGateStats.BruteForceSegments++
 
 	// Ensure batch buffer capacity
 	if cap(s.ScratchIDs) < batchSize {
@@ -161,6 +171,8 @@ func (e *Engine) searchSegmentWithCursor(
 			}
 
 			dist := scoreFunc(query, vec)
+			s.FilterGateStats.DistanceComputations++
+			s.FilterGateStats.CandidatesEvaluated++
 
 			c := searcher.InternalCandidate{
 				SegmentID: segID,
@@ -213,6 +225,8 @@ func (e *Engine) searchSegmentWithCursor(
 
 			vec := s.ScratchVecBuf[i*e.dim : (i+1)*e.dim]
 			dist := scoreFunc(query, vec)
+			s.FilterGateStats.DistanceComputations++
+			s.FilterGateStats.CandidatesEvaluated++
 
 			c := searcher.InternalCandidate{
 				SegmentID: segID,

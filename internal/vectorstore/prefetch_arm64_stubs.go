@@ -8,7 +8,4 @@ package vectorstore
 import "unsafe"
 
 //go:noescape
-func prefetchVectorNEON(ptr unsafe.Pointer)
-
-//go:noescape
 func prefetchBatchNEON(base unsafe.Pointer, dim, count int, ids []uint32)

@@ -336,6 +336,9 @@ func (s *shard) Search(ctx context.Context, q []float32, k int, filter segment.F
 		// RowID = (ShardIdx << 28) | LocalRowID
 		globalRowID := (uint32(s.shardIdx) << 28) | uint32(item.Node)
 
+		// Track candidates evaluated
+		sr.FilterGateStats.CandidatesEvaluated++
+
 		if sr.Heap.Len() < k {
 			sr.Heap.Push(searcher.InternalCandidate{
 				SegmentID: uint32(s.id),

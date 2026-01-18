@@ -2122,6 +2122,7 @@ func (e *Engine) Vacuum(ctx context.Context) error {
 
 // EngineStats contains runtime statistics for the engine.
 type EngineStats struct {
+	ManifestID       uint64 // Current manifest version (for time-travel)
 	SegmentCount     int
 	RowCount         int
 	TombstoneCount   int
@@ -2141,7 +2142,12 @@ func (e *Engine) Stats() EngineStats {
 	}
 	defer snap.DecRef()
 
+	e.mu.RLock()
+	manifestID := e.manifest.ID
+	e.mu.RUnlock()
+
 	stats := EngineStats{
+		ManifestID:       manifestID,
 		SegmentCount:     len(snap.segments),
 		RowCount:         int(snap.active.RowCount()),
 		MemoryUsageBytes: snap.active.Size(),

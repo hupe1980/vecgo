@@ -1235,6 +1235,7 @@ func (h *HNSW) searchLayerUnfiltered(s *searcher.Searcher, g *graph, query []flo
 	candidates := s.ScratchCandidates
 	results := s.Candidates
 	visited := s.Visited
+	stats := &s.FilterGateStats // Track search statistics
 
 	// Check if bounded distance is available (L2 metric only)
 	useShortCircuit := h.opts.DistanceType == distance.MetricL2
@@ -1342,6 +1343,7 @@ func (h *HNSW) searchLayerUnfiltered(s *searcher.Searcher, g *graph, query []flo
 				if alreadyVisited {
 					continue
 				}
+				stats.NodesVisited++
 
 				// Distance short-circuiting: when we have enough results and L2 metric,
 				// use bounded distance to exit early if partial sum exceeds worst result.
@@ -1353,9 +1355,10 @@ func (h *HNSW) searchLayerUnfiltered(s *searcher.Searcher, g *graph, query []flo
 					if ok {
 						var exceeded bool
 						nextDist, exceeded = distance.SquaredL2Bounded(query, vec, bound)
+						stats.DistanceComputations++
 						if exceeded {
 							// Skip this candidate - partial distance already exceeds bound
-							s.OpsPerformed++ // Track short-circuited ops for metrics
+							stats.DistanceShortCircuits++
 							continue
 						}
 					} else {
@@ -1363,6 +1366,7 @@ func (h *HNSW) searchLayerUnfiltered(s *searcher.Searcher, g *graph, query []flo
 					}
 				} else {
 					nextDist = distFunc(next.ID)
+					stats.DistanceComputations++
 				}
 
 				shouldExplore := true

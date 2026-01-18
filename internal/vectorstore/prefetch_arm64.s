@@ -5,18 +5,6 @@
 
 #include "textflag.h"
 
-// func prefetchVectorNEON(ptr unsafe.Pointer)
-// Prefetch a cache line into L1 data cache using ARM64 PRFM instruction.
-// This is non-blocking and returns immediately.
-TEXT ·prefetchVectorNEON(SB), NOSPLIT, $0-8
-    MOVD ptr+0(FP), R0
-    // PRFM PLDL1STRM, [R0] - Prefetch for Load into L1 cache, streaming (non-temporal)
-    // Opcode: 0xF9800000 | (Rn << 5) where Rn=R0=0
-    // PRFM PLDL1KEEP is encoded as: 0xF9800000 + offset + Rt
-    // For simple prefetch with R0 as base:
-    WORD $0xF9800000  // PRFM PLDL1KEEP, [X0]
-    RET
-
 // func prefetchBatchNEON(base unsafe.Pointer, dim, count int, ids []uint32)
 // Prefetch multiple vectors at once using ARM64 PRFM.
 // base: pointer to vector data (float32 array)

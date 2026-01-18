@@ -700,6 +700,8 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 
 								vec := s.ScratchVecBuf[i*e.dim : (i+1)*e.dim]
 								dist := scoreFunc(qExec, vec)
+								s.FilterGateStats.DistanceComputations++
+								s.FilterGateStats.CandidatesEvaluated++
 
 								c := searcher.InternalCandidate{
 									SegmentID: uint32(sf.seg.ID()),
@@ -1090,6 +1092,20 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 				return
 			}
 		}
+
+		// Populate internal stats from searcher before returning
+		// Note: TotalDurationMicros, SegmentsSearched, Strategy are set by Search()
+		if options.Stats != nil {
+			options.Stats.DistanceComputations = int64(s.FilterGateStats.DistanceComputations)
+			options.Stats.DistanceShortCircuits = int64(s.FilterGateStats.DistanceShortCircuits)
+			options.Stats.NodesVisited = int64(s.FilterGateStats.NodesVisited)
+			options.Stats.CandidatesEvaluated = int64(s.FilterGateStats.CandidatesEvaluated)
+			options.Stats.BruteForceSegments = s.FilterGateStats.BruteForceSegments
+			options.Stats.HNSWSegments = s.FilterGateStats.HNSWSegments
+			options.Stats.FilterPassRate = s.FilterGateStats.FilterPassRate()
+			options.Stats.FilterTimeMicros = s.FilterGateStats.FilterTimeNanos / 1000
+			options.Stats.SearchTimeMicros = s.FilterGateStats.SearchTimeNanos / 1000
+		}
 	}
 }
 
@@ -1118,17 +1134,10 @@ func (e *Engine) Search(ctx context.Context, q []float32, k int, opts ...func(*m
 
 	// Populate stats if requested
 	if options.Stats != nil {
-		snap, _ := e.loadSnapshot()
-		if snap != nil {
-			segCount := len(snap.sortedSegments)
-			if snap.active != nil {
-				segCount++
-			}
-			options.Stats.SegmentsSearched = segCount
-			snap.DecRef()
-		}
 		options.Stats.TotalDurationMicros = time.Since(start).Microseconds()
 		options.Stats.CandidatesReturned = len(res)
+		// SegmentsSearched is derived from actual search activity (already set by SearchIter)
+		options.Stats.SegmentsSearched = options.Stats.BruteForceSegments + options.Stats.HNSWSegments
 		if options.Filter == nil {
 			options.Stats.Strategy = "hnsw"
 		} else {

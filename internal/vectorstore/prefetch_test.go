@@ -87,7 +87,7 @@ func TestPrefetchBatchFromStore(t *testing.T) {
 	ctx := context.Background()
 
 	// Add vectors
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		vec := make([]float32, 64)
 		store.Append(ctx, vec)
 	}
@@ -105,7 +105,7 @@ func BenchmarkPrefetch(b *testing.B) {
 	ctx := context.Background()
 
 	// Add 10K vectors
-	for i := 0; i < 10000; i++ {
+	for i := range 10000 {
 		vec := make([]float32, 768)
 		for j := range vec {
 			vec[j] = float32(i*768 + j)
@@ -119,10 +119,9 @@ func BenchmarkPrefetch(b *testing.B) {
 		ids[i] = model.RowID(i * 100)
 	}
 
-	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		store.Prefetch(ids)
 	}
 }

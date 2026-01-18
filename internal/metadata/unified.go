@@ -1029,9 +1029,8 @@ func (ui *UnifiedIndex) FilterCursor(fs *metadata.FilterSet, rowCount uint32) Fi
 			}
 			// Larger bitmap: iterate directly without slice extraction
 			return NewBitmapCursor(b)
-		} else {
-			return GetEmptyCursor()
 		}
+		return GetEmptyCursor()
 	}
 
 	// Build filter checks (same as CreateStreamingFilter but returns cursor)

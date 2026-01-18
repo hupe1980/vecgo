@@ -388,6 +388,8 @@ sequenceDiagram
 | [rag](examples/rag) | Retrieval-Augmented Generation workflow |
 | [cloud_tiered](examples/cloud_tiered) | Writer/reader separation with S3 |
 | [bulk_load](examples/bulk_load) | High-throughput ingestion with `BatchInsertDeferred` |
+| [time_travel](examples/time_travel) | Query historical versions by time or version ID |
+| [explain](examples/explain) | Query statistics, cost estimation, performance debugging |
 | [observability](examples/observability) | Prometheus metrics integration |
 
 ## �📄 Algorithm References

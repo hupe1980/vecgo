@@ -120,6 +120,16 @@ type FilterGateStats struct {
 	DistanceComputations int
 	// DistanceShortCircuits is the count of distance computations short-circuited.
 	DistanceShortCircuits int
+	// CandidatesEvaluated is the number of candidates evaluated (pushed to heap).
+	CandidatesEvaluated int
+	// BruteForceSegments is the number of segments searched with brute-force.
+	BruteForceSegments int
+	// HNSWSegments is the number of segments searched with HNSW.
+	HNSWSegments int
+	// FilterTimeNanos is the cumulative time spent on filter evaluation.
+	FilterTimeNanos int64
+	// SearchTimeNanos is the cumulative time spent on search (distance computation + heap operations).
+	SearchTimeNanos int64
 }
 
 // Reset clears the filter gate stats.
@@ -130,6 +140,27 @@ func (f *FilterGateStats) Reset() {
 	f.ExpansionsSkipped = 0
 	f.DistanceComputations = 0
 	f.DistanceShortCircuits = 0
+	f.CandidatesEvaluated = 0
+	f.BruteForceSegments = 0
+	f.HNSWSegments = 0
+	f.FilterTimeNanos = 0
+	f.SearchTimeNanos = 0
+}
+
+// Add aggregates stats from another FilterGateStats instance.
+// Used to merge stats from parallel searchers.
+func (f *FilterGateStats) Add(other *FilterGateStats) {
+	f.NodesVisited += other.NodesVisited
+	f.NodesPassedFilter += other.NodesPassedFilter
+	f.NodesRejectedByFilter += other.NodesRejectedByFilter
+	f.ExpansionsSkipped += other.ExpansionsSkipped
+	f.DistanceComputations += other.DistanceComputations
+	f.DistanceShortCircuits += other.DistanceShortCircuits
+	f.CandidatesEvaluated += other.CandidatesEvaluated
+	f.BruteForceSegments += other.BruteForceSegments
+	f.HNSWSegments += other.HNSWSegments
+	f.FilterTimeNanos += other.FilterTimeNanos
+	f.SearchTimeNanos += other.SearchTimeNanos
 }
 
 // FilterPassRate returns the filter pass rate (0.0-1.0).

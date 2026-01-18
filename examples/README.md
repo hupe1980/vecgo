@@ -63,6 +63,27 @@ Demonstrates **high-throughput ingestion** with `BatchInsertDeferred`:
 Key insight: `BatchInsertDeferred` achieves **significantly higher** throughput by deferring
 HNSW graph construction. Vectors become searchable after `Commit()`.
 
+## [Time Travel](./time_travel)
+
+Demonstrates **time-travel queries** for historical data access:
+1. Create and commit data at different points in time
+2. Query historical versions by version ID
+3. Query historical versions by timestamp
+4. A/B testing recall across versions
+
+Use cases: debugging, auditing, rollback, A/B testing.
+
+## [Explain](./explain)
+
+Demonstrates **query statistics and explain** for performance analysis:
+1. Collect `QueryStats` with `WithStats()`
+2. Human-readable `Explain()` output
+3. Filtered search statistics
+4. Cost comparison across filter types
+5. Per-segment breakdown
+
+Use cases: debugging, performance tuning, cost estimation.
+
 ## Running Examples
 
 ```bash
@@ -72,6 +93,8 @@ cd examples/modern && go run main.go
 cd examples/rag && go run main.go
 cd examples/cloud_tiered && go run main.go
 cd examples/bulk_load && go run main.go
+cd examples/time_travel && go run main.go
+cd examples/explain && go run main.go
 
 # Observability (separate module)
 cd examples/observability && go run main.go
