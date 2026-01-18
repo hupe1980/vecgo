@@ -77,7 +77,7 @@ go test -tags=genfixtures -run=TestCleanFixtures -v ./benchmark_test/...
 - `BenchmarkFastFiltered` - Filtered search at all selectivities
 - `BenchmarkFastDimensions` - Search across embedding dimensions
 
-### Production Metrics Benchmarks (`metrics_bench_test.go`) ⭐ NEW
+### Production Metrics Benchmarks (`metrics_bench_test.go`)
 Essential for SLA compliance and capacity planning:
 - `BenchmarkLatencyPercentiles` - P50/P95/P99/P99.9 search latency
 - `BenchmarkLatencyUnderLoad` - Latency percentiles under concurrent load
@@ -88,7 +88,7 @@ Essential for SLA compliance and capacity planning:
 - `BenchmarkDeletePerformance` - Delete throughput and post-delete search
 - `BenchmarkGCPressure` - Allocation patterns under sustained load
 
-### Algorithm Tuning Benchmarks (`tuning_bench_test.go`) ⭐ NEW
+### Algorithm Tuning Benchmarks (`tuning_bench_test.go`)
 For optimizing HNSW/DiskANN parameters:
 - `BenchmarkEfSearchTuning` - Effect of ef_search on recall/latency
 - `BenchmarkBuildQuality` - Build time vs search quality trade-off
@@ -158,8 +158,11 @@ go test -bench='BenchmarkLatency|BenchmarkMemory|BenchmarkCold' -short -run=^$ .
 # Algorithm tuning (dimension scaling, batch size optimization)
 go test -bench=BenchmarkDimension -short -run=^$ ./benchmark_test/...
 
-# Legacy: All benchmarks (slower, rebuilds indexes)
+# All benchmarks (rebuilds indexes each run)
 just bench-current
+
+# Full benchmark suite (30+ minutes, requires significant RAM)
+just bench-full
 
 # Filtered search comparison
 go test -bench=BenchmarkFastFiltered -benchtime=3s -run=^$ ./benchmark_test/...
