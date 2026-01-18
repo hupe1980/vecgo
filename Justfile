@@ -63,3 +63,7 @@ profile-cpu BENCH='BenchmarkSearch_Mixed':
 profile-heap BENCH='BenchmarkSearch_Mixed':
     go test -run '^$' -bench '{{BENCH}}' -benchmem -memprofile benchmark_test/heap.out ./benchmark_test
     go tool pprof -http=:0 benchmark_test/heap.out
+
+# Starts the local Jekyll documentation site (http://localhost:4000)
+docs-serve:
+    cd docs && bundle install && bundle exec jekyll serve --livereload --config _config.yml,_config.dev.yml

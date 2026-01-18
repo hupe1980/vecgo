@@ -1,0 +1,33 @@
+# Vecgo Documentation
+
+title: Vecgo
+description: High-performance embeddable vector database for Go. No external services, no CGO, just import and go.
+author: hupe1980
+lang: en
+
+# GitHub Pages
+baseurl: "/vecgo"
+url: "https://hupe1980.github.io"
+
+# SEO
+twitter:
+  card: summary_large_image
+social:
+  name: Vecgo
+  links:
+    - https://github.com/hupe1980/vecgo
+
+# Build
+markdown: kramdown
+highlighter: rouge
+permalink: pretty
+
+plugins:
+  - jekyll-seo-tag
+  - jekyll-sitemap
+
+exclude:
+  - Gemfile.lock
+  - node_modules/
+  - vendor/
+  - _config.dev.yml

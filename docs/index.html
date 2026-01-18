@@ -1,0 +1,312 @@
+---
+layout: default
+title: Home
+---
+
+<nav>
+  <div class="nav-container">
+    <a href="{{ '/' | relative_url }}" class="logo">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <polygon points="12,2 22,8.5 22,15.5 12,22 2,15.5 2,8.5" fill="rgba(139,92,246,0.2)" stroke="#8b5cf6"/>
+        <circle cx="12" cy="12" r="3" fill="#8b5cf6"/>
+      </svg>
+      Vecgo
+    </a>
+    <div class="nav-links">
+      <a href="#features">Features</a>
+      <a href="#architecture">Architecture</a>
+      <a href="#tuning">Tuning</a>
+      <a href="#operations">Operations</a>
+      <a href="https://github.com/hupe1980/vecgo" class="btn btn-outline">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<section class="hero">
+  <div class="hero-content">
+    <span class="hero-badge">⚠️ Experimental — Breaking Changes Expected</span>
+    <h1>High-Performance<br><span class="gradient">Vector Database</span><br>for Go</h1>
+    <p class="hero-subtitle">
+      Native embedding storage with HNSW + DiskANN hybrid indexing, SIMD acceleration, 
+      tiered cloud storage, and sub-millisecond search latency.
+    </p>
+    <div class="hero-buttons">
+      <a href="https://github.com/hupe1980/vecgo" class="btn btn-primary btn-large">
+        Get Started →
+      </a>
+      <a href="#architecture" class="btn btn-outline btn-large">
+        Learn More
+      </a>
+    </div>
+    
+    <div class="code-window">
+      <div class="code-header">
+        <span class="code-dot red"></span>
+        <span class="code-dot yellow"></span>
+        <span class="code-dot green"></span>
+        <span class="code-title">main.go</span>
+      </div>
+      <div class="code-content">
+<pre><span class="c">// Create index (128 dims, L2 distance)</span>
+db, _ := vecgo.<span class="f">Open</span>(ctx, vecgo.<span class="f">Local</span>(<span class="s">"./data"</span>), vecgo.<span class="f">Create</span>(<span class="n">128</span>, vecgo.MetricL2))
+<span class="k">defer</span> db.<span class="f">Close</span>()
+
+payload := []<span class="k">byte</span>(<span class="s">`{"title": "Hello World"}`</span>)
+id, _ := db.<span class="f">Insert</span>(ctx, embedding, metadata, payload)
+db.<span class="f">Commit</span>(ctx) <span class="c">// Durable after commit</span>
+
+results, _ := db.<span class="f">Search</span>(ctx, query, <span class="n">10</span>)
+<span class="k">for</span> _, r := <span class="k">range</span> results {
+    fmt.<span class="f">Printf</span>(<span class="s">"ID: %d, Score: %.4f\n"</span>, r.ID, r.Score)
+}</pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="features">
+  <div class="container">
+    <div class="section-header">
+      <h2>Why Vecgo?</h2>
+      <p>The sweet spot between embedded libraries and full database systems</p>
+    </div>
+    
+    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.5rem; margin-bottom: 3rem; text-align: center;">
+      <div style="padding: 1.5rem; background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px;">
+        <div style="font-size: 2rem; font-weight: 800; color: var(--accent);">100%</div>
+        <div style="color: var(--text-secondary); font-size: 0.85rem;">Pure Go — No CGO</div>
+      </div>
+      <div style="padding: 1.5rem; background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px;">
+        <div style="font-size: 2rem; font-weight: 800; color: var(--cyan);">70K+</div>
+        <div style="color: var(--text-secondary); font-size: 0.85rem;">Lines of Code</div>
+      </div>
+      <div style="padding: 1.5rem; background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px;">
+        <div style="font-size: 2rem; font-weight: 800; color: var(--green);">&lt;1ms</div>
+        <div style="color: var(--text-secondary); font-size: 0.85rem;">Search Latency</div>
+      </div>
+    </div>
+    
+    <div class="features-grid">
+      <div class="feature-card">
+        <div class="feature-icon">⚡</div>
+        <h3>SIMD Acceleration</h3>
+        <p>Runtime-detected AVX-512, AVX2, NEON, and SVE2 for blazing-fast distance calculations.</p>
+      </div>
+      
+      <div class="feature-card">
+        <div class="feature-icon">🔀</div>
+        <h3>Hybrid Indexing</h3>
+        <p>HNSW + DiskANN/Vamana with FreshDiskANN for real-time updates without rebuilding.</p>
+      </div>
+      
+      <div class="feature-card">
+        <div class="feature-icon">📦</div>
+        <h3>Quantization</h3>
+        <p>PQ, OPQ, SQ8, Binary, RaBitQ, and INT4 for 4-32× memory reduction with minimal recall loss.</p>
+      </div>
+      
+      <div class="feature-card">
+        <div class="feature-icon">☁️</div>
+        <h3>Tiered Storage</h3>
+        <p>Hot data in memory, warm on SSD, cold on S3/MinIO with automatic tiering.</p>
+      </div>
+      
+      <div class="feature-card">
+        <div class="feature-icon">⏱️</div>
+        <h3>Time Travel</h3>
+        <p>Query historical snapshots with MVCC-style versioning and point-in-time recovery.</p>
+      </div>
+      
+      <div class="feature-card">
+        <div class="feature-icon">🔍</div>
+        <h3>Hybrid Search</h3>
+        <p>Combine vector similarity with BM25 text search and metadata filtering.</p>
+      </div>
+      
+      <div class="feature-card">
+        <div class="feature-icon">🎯</div>
+        <h3>Distance Functions</h3>
+        <p>Euclidean, Cosine, Inner Product, and Hamming with automatic optimization.</p>
+      </div>
+      
+      <div class="feature-card">
+        <div class="feature-icon">📊</div>
+        <h3>Observability</h3>
+        <p>OpenTelemetry tracing and metrics for production monitoring.</p>
+      </div>
+      
+      <div class="feature-card">
+        <div class="feature-icon">🔒</div>
+        <h3>Commit-Oriented</h3>
+        <p>Append-only versioned commits with atomic segments — no WAL complexity.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="architecture" class="architecture">
+  <div class="container">
+    <div class="arch-grid">
+      <div class="arch-content">
+        <h3>Two-Tier Architecture</h3>
+        <p>Vecgo uses an LSM-tree inspired design with HNSW for hot data and DiskANN for cold data, providing optimal performance across all access patterns.</p>
+        
+        <ul class="arch-list">
+          <li><span class="icon">✓</span> <strong>L0 (Memory)</strong> — HNSW index for real-time insertions and fast reads</li>
+          <li><span class="icon">✓</span> <strong>L1 (Disk)</strong> — DiskANN/Vamana graph for billion-scale datasets</li>
+          <li><span class="icon">✓</span> <strong>Compaction</strong> — Background merging from L0 → L1 without blocking reads</li>
+          <li><span class="icon">✓</span> <strong>FreshDiskANN</strong> — Streaming updates without full index rebuilds</li>
+          <li><span class="icon">✓</span> <strong>Segment-based</strong> — Immutable segments with efficient GC</li>
+        </ul>
+      </div>
+      
+      <div class="arch-diagram">
+        <div class="arch-layer layer-l0">
+          <strong>L0: HNSW In-Memory</strong>
+          <span>Fast insertions, sub-ms reads, ~100K vectors</span>
+        </div>
+        <div class="arch-layer layer-l1">
+          <strong>L1: DiskANN On-Disk</strong>
+          <span>Compacted segments, billions of vectors</span>
+        </div>
+        <div class="arch-layer layer-storage">
+          <strong>Blob Storage: S3 / MinIO / Local</strong>
+          <span>Tiered cold storage with caching</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="tuning">
+  <div class="container">
+    <div class="section-header">
+      <h2>Tuning Guide</h2>
+      <p>Optimize for your workload: latency, throughput, or recall</p>
+    </div>
+    
+    <div class="table-wrapper">
+      <table>
+        <thead>
+          <tr>
+            <th>Parameter</th>
+            <th>Default</th>
+            <th>When to Increase</th>
+            <th>When to Decrease</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>M</code> (HNSW edges)</td>
+            <td>16</td>
+            <td>Higher recall needed, larger datasets</td>
+            <td>Memory constrained, small datasets</td>
+          </tr>
+          <tr>
+            <td><code>EfConstruction</code></td>
+            <td>200</td>
+            <td>Build once, query often</td>
+            <td>Faster indexing priority</td>
+          </tr>
+          <tr>
+            <td><code>EfSearch</code></td>
+            <td>100</td>
+            <td>Higher recall (0.99+)</td>
+            <td>Lower latency priority</td>
+          </tr>
+          <tr>
+            <td><code>R</code> (DiskANN degree)</td>
+            <td>64</td>
+            <td>Disk-based, high recall</td>
+            <td>Faster build, less disk I/O</td>
+          </tr>
+          <tr>
+            <td><code>L</code> (DiskANN search list)</td>
+            <td>100</td>
+            <td>Better recall at query time</td>
+            <td>Minimize SSD reads</td>
+          </tr>
+          <tr>
+            <td><code>PQ.M</code> (subquantizers)</td>
+            <td>dims/4</td>
+            <td>Better compression vs recall tradeoff</td>
+            <td>Memory less constrained</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section id="operations">
+  <div class="container">
+    <div class="arch-grid">
+      <div class="arch-content">
+        <h3>Operations & Durability</h3>
+        <p>Commit-oriented durability with no WAL complexity — simpler code, fewer moving parts.</p>
+        
+        <ul class="arch-list">
+          <li><span class="icon">✓</span> <strong>Commit-Oriented</strong> — Append-only versioned commits, no WAL rotation or checkpointing</li>
+          <li><span class="icon">✓</span> <strong>Atomic Segments</strong> — Immutable segments with all-or-nothing writes</li>
+          <li><span class="icon">✓</span> <strong>S3 Storage</strong> — S3 Express or standard S3 for tiered cold storage</li>
+          <li><span class="icon">✓</span> <strong>DynamoDB Commits</strong> — Optional coordination for concurrent S3 writers</li>
+          <li><span class="icon">✓</span> <strong>MinIO Support</strong> — Self-hosted S3-compatible storage</li>
+          <li><span class="icon">✓</span> <strong>Block Cache</strong> — Configurable cache for hot blob reads</li>
+        </ul>
+      </div>
+      
+      <div>
+        <div class="install-box">
+          <h3>Quick Start</h3>
+          <p style="color: var(--text-secondary); font-size: 0.9rem;">Requires Go 1.24+ (64-bit)</p>
+          <div class="install-command">
+            <code>go get github.com/hupe1980/vecgo</code>
+          </div>
+        </div>
+        
+        <div class="install-box" style="margin-top: 2rem;">
+          <h3>License</h3>
+          <p style="color: var(--text-secondary); font-size: 0.9rem;">Apache License 2.0</p>
+          <p style="color: var(--text-muted); font-size: 0.8rem; margin-top: 0.5rem;">
+            Free for commercial use, modification, and distribution.
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="cta">
+  <div class="container">
+    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1.5rem; margin-bottom: 3rem; text-align: left;">
+      <div style="padding: 1.25rem; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 10px;">
+        <div style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">vs Simple Libraries</div>
+        <div style="font-size: 0.9rem; color: var(--text-secondary);">More capable: durability, MVCC, hybrid search, cloud storage tiering</div>
+      </div>
+      <div style="padding: 1.25rem; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 10px;">
+        <div style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">vs CGO Wrappers</div>
+        <div style="font-size: 0.9rem; color: var(--text-secondary);">Simpler: pure Go toolchain, static binaries, easy cross-compilation</div>
+      </div>
+      <div style="padding: 1.25rem; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 10px;">
+        <div style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">vs Milvus/Qdrant</div>
+        <div style="font-size: 0.9rem; color: var(--text-secondary);">Embedded: no cluster to manage, sub-ms latency, single binary deployment</div>
+      </div>
+    </div>
+    
+    <h2>Ready to Build?</h2>
+    <p>Check out the examples and start building with Vecgo today.</p>
+    <a href="https://github.com/hupe1980/vecgo/tree/main/examples" class="btn btn-primary btn-large">
+      View Examples →
+    </a>
+  </div>
+</section>
+
+<footer>
+  <div class="container">
+    <p>
+      Vecgo is licensed under the <a href="https://www.apache.org/licenses/LICENSE-2.0">Apache License 2.0</a>.
+      <br>
+      Built with ❤️ by <a href="https://github.com/hupe1980">hupe1980</a>.
+    </p>
+  </div>
+</footer>

@@ -1,0 +1,157 @@
+<svg viewBox="0 0 800 400" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Gradient for glow effects -->
+    <radialGradient id="nodeGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#7c3aed" stop-opacity="0.8"/>
+      <stop offset="100%" stop-color="#7c3aed" stop-opacity="0"/>
+    </radialGradient>
+    
+    <radialGradient id="queryGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#06b6d4" stop-opacity="0.8"/>
+      <stop offset="100%" stop-color="#06b6d4" stop-opacity="0"/>
+    </radialGradient>
+    
+    <linearGradient id="lineGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#7c3aed" stop-opacity="0.6"/>
+      <stop offset="100%" stop-color="#06b6d4" stop-opacity="0.6"/>
+    </linearGradient>
+    
+    <filter id="blur" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="2"/>
+    </filter>
+    
+    <!-- Animated pulse -->
+    <style>
+      @keyframes pulse {
+        0%, 100% { transform: scale(1); opacity: 0.8; }
+        50% { transform: scale(1.2); opacity: 1; }
+      }
+      @keyframes float {
+        0%, 100% { transform: translateY(0); }
+        50% { transform: translateY(-5px); }
+      }
+      @keyframes dash {
+        to { stroke-dashoffset: -20; }
+      }
+      .node { animation: float 3s ease-in-out infinite; }
+      .node:nth-child(2n) { animation-delay: 0.5s; }
+      .node:nth-child(3n) { animation-delay: 1s; }
+      .query-node { animation: pulse 2s ease-in-out infinite; }
+      .connection { 
+        stroke-dasharray: 5 5;
+        animation: dash 1s linear infinite;
+      }
+    </style>
+  </defs>
+  
+  <!-- Background grid -->
+  <g opacity="0.1" stroke="#8b949e" stroke-width="0.5">
+    <line x1="0" y1="100" x2="800" y2="100"/>
+    <line x1="0" y1="200" x2="800" y2="200"/>
+    <line x1="0" y1="300" x2="800" y2="300"/>
+    <line x1="200" y1="0" x2="200" y2="400"/>
+    <line x1="400" y1="0" x2="400" y2="400"/>
+    <line x1="600" y1="0" x2="600" y2="400"/>
+  </g>
+  
+  <!-- HNSW Graph connections -->
+  <g class="connections" stroke="url(#lineGradient)" stroke-width="1" fill="none" opacity="0.4">
+    <!-- Layer 0 connections -->
+    <path d="M100,280 Q150,250 180,300"/>
+    <path d="M180,300 Q220,280 250,320"/>
+    <path d="M250,320 Q300,300 340,350"/>
+    <path d="M340,350 Q380,320 420,340"/>
+    
+    <path d="M150,180 Q200,200 230,160"/>
+    <path d="M230,160 Q280,180 320,140"/>
+    <path d="M320,140 Q380,160 420,120"/>
+    
+    <path d="M500,200 Q540,220 580,180"/>
+    <path d="M580,180 Q620,200 660,160"/>
+    <path d="M660,160 Q700,180 720,140"/>
+    
+    <path d="M480,300 Q520,280 560,320"/>
+    <path d="M560,320 Q600,300 640,340"/>
+    <path d="M640,340 Q680,320 700,360"/>
+    
+    <!-- Cross-layer connections -->
+    <path d="M230,160 Q300,220 340,350" stroke-opacity="0.2"/>
+    <path d="M420,120 Q450,200 480,300" stroke-opacity="0.2"/>
+    <path d="M580,180 Q590,240 560,320" stroke-opacity="0.2"/>
+  </g>
+  
+  <!-- Active search path -->
+  <g class="search-path">
+    <path class="connection" d="M400,200 Q350,180 320,140" stroke="#06b6d4" stroke-width="2" fill="none"/>
+    <path class="connection" d="M320,140 Q280,160 230,160" stroke="#06b6d4" stroke-width="2" fill="none" style="animation-delay: 0.2s"/>
+    <path class="connection" d="M230,160 Q200,180 150,180" stroke="#06b6d4" stroke-width="2" fill="none" style="animation-delay: 0.4s"/>
+  </g>
+  
+  <!-- Vector nodes - Layer 2 (top) -->
+  <g class="layer-2">
+    <circle class="node" cx="300" cy="80" r="6" fill="#4f46e5"/>
+    <circle class="node" cx="500" cy="60" r="6" fill="#4f46e5"/>
+  </g>
+  
+  <!-- Vector nodes - Layer 1 (middle) -->
+  <g class="layer-1">
+    <circle class="node" cx="150" cy="180" r="8" fill="#7c3aed"/>
+    <circle class="node" cx="230" cy="160" r="8" fill="#7c3aed"/>
+    <circle class="node" cx="320" cy="140" r="8" fill="#7c3aed"/>
+    <circle class="node" cx="420" cy="120" r="8" fill="#7c3aed"/>
+    <circle class="node" cx="500" cy="200" r="8" fill="#7c3aed"/>
+    <circle class="node" cx="580" cy="180" r="8" fill="#7c3aed"/>
+    <circle class="node" cx="660" cy="160" r="8" fill="#7c3aed"/>
+    <circle class="node" cx="720" cy="140" r="8" fill="#7c3aed"/>
+  </g>
+  
+  <!-- Vector nodes - Layer 0 (bottom, densest) -->
+  <g class="layer-0">
+    <circle class="node" cx="100" cy="280" r="5" fill="#a78bfa"/>
+    <circle class="node" cx="180" cy="300" r="5" fill="#a78bfa"/>
+    <circle class="node" cx="250" cy="320" r="5" fill="#a78bfa"/>
+    <circle class="node" cx="340" cy="350" r="5" fill="#a78bfa"/>
+    <circle class="node" cx="420" cy="340" r="5" fill="#a78bfa"/>
+    <circle class="node" cx="480" cy="300" r="5" fill="#a78bfa"/>
+    <circle class="node" cx="560" cy="320" r="5" fill="#a78bfa"/>
+    <circle class="node" cx="640" cy="340" r="5" fill="#a78bfa"/>
+    <circle class="node" cx="700" cy="360" r="5" fill="#a78bfa"/>
+    <circle class="node" cx="130" cy="350" r="5" fill="#a78bfa"/>
+    <circle class="node" cx="210" cy="370" r="5" fill="#a78bfa"/>
+    <circle class="node" cx="290" cy="380" r="5" fill="#a78bfa"/>
+    <circle class="node" cx="380" cy="370" r="5" fill="#a78bfa"/>
+    <circle class="node" cx="450" cy="360" r="5" fill="#a78bfa"/>
+    <circle class="node" cx="520" cy="370" r="5" fill="#a78bfa"/>
+    <circle class="node" cx="600" cy="380" r="5" fill="#a78bfa"/>
+    <circle class="node" cx="680" cy="370" r="5" fill="#a78bfa"/>
+    <circle class="node" cx="750" cy="340" r="5" fill="#a78bfa"/>
+  </g>
+  
+  <!-- Query point with glow -->
+  <g class="query">
+    <circle cx="400" cy="200" r="25" fill="url(#queryGlow)" filter="url(#blur)"/>
+    <circle class="query-node" cx="400" cy="200" r="10" fill="#06b6d4"/>
+    <text x="400" y="175" text-anchor="middle" fill="#06b6d4" font-size="12" font-family="system-ui">query</text>
+  </g>
+  
+  <!-- Nearest neighbor highlight -->
+  <g class="nearest">
+    <circle cx="150" cy="180" r="18" fill="none" stroke="#10b981" stroke-width="2" stroke-dasharray="4 2" opacity="0.8">
+      <animate attributeName="r" values="18;22;18" dur="1.5s" repeatCount="indefinite"/>
+      <animate attributeName="opacity" values="0.8;0.4;0.8" dur="1.5s" repeatCount="indefinite"/>
+    </circle>
+    <text x="150" y="155" text-anchor="middle" fill="#10b981" font-size="10" font-family="system-ui">nearest</text>
+  </g>
+  
+  <!-- Labels -->
+  <g fill="#8b949e" font-size="11" font-family="system-ui">
+    <text x="50" y="80">Layer 2</text>
+    <text x="50" y="180">Layer 1</text>
+    <text x="50" y="320">Layer 0</text>
+  </g>
+  
+  <!-- Title -->
+  <text x="400" y="30" text-anchor="middle" fill="#e6edf3" font-size="14" font-weight="600" font-family="system-ui">
+    HNSW Graph Traversal
+  </text>
+</svg>

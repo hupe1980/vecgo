@@ -41,17 +41,15 @@ func osMap(f *os.File, size int) ([]byte, func([]byte) error, error) {
 }
 
 func osMapAnon(size int) ([]byte, func([]byte) error, error) {
-	// On Windows, use CreateFileMapping with invalid handle and commit memory
-	// PAGE_READWRITE for R/W access
-	prot := uint32(windows.PAGE_READWRITE)
-	h, err := windows.CreateFileMapping(windows.InvalidHandle, nil, prot, 0, uint32(size), nil)
-	if err != nil {
-		return nil, nil, err
-	}
-	defer windows.CloseHandle(h)
-
-	// FILE_MAP_WRITE for read/write access
-	addr, err := windows.MapViewOfFile(h, windows.FILE_MAP_WRITE, 0, 0, uintptr(size))
+	// Use VirtualAlloc with MEM_RESERVE | MEM_COMMIT for anonymous memory.
+	// Unlike CreateFileMapping (which requires paging file commitment upfront),
+	// VirtualAlloc with MEM_COMMIT uses demand-paging: pages are only backed
+	// by physical memory when first accessed, similar to Unix mmap behavior.
+	//
+	// This avoids "paging file is too small" errors on systems with limited
+	// paging file space (e.g., CI runners).
+	addr, err := windows.VirtualAlloc(0, uintptr(size),
+		windows.MEM_RESERVE|windows.MEM_COMMIT, windows.PAGE_READWRITE)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -59,7 +57,8 @@ func osMapAnon(size int) ([]byte, func([]byte) error, error) {
 	data := unsafe.Slice((*byte)(unsafe.Pointer(addr)), size)
 
 	return data, func(b []byte) error {
-		return windows.UnmapViewOfFile(addr)
+		// VirtualFree with MEM_RELEASE frees the entire region
+		return windows.VirtualFree(addr, 0, windows.MEM_RELEASE)
 	}, nil
 }
 

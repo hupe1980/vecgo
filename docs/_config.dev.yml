@@ -1,0 +1,3 @@
+# Local development
+baseurl: ""
+url: "http://localhost:4000"

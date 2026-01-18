@@ -1,0 +1,14 @@
+# Jekyll build output
+_site/
+
+# Jekyll caches
+.jekyll-cache/
+.jekyll-metadata
+
+# Sass cache
+.sass-cache/
+
+# Bundle/vendor (installed in devcontainer)
+vendor/
+.bundle/
+Gemfile.lock

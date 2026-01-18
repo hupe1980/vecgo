@@ -436,6 +436,13 @@ func (w *Writer) buildGraph(ctx context.Context) error {
 		}
 
 		for i := 0; i < n; i++ {
+			// Check for cancellation periodically (every 100 nodes)
+			if i%100 == 0 {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+			}
+
 			// Greedy search to find candidates
 			candidates := w.greedySearch(w.vectors[i], w.entryPoint, w.l)
 

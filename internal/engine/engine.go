@@ -2328,13 +2328,21 @@ func (e *Engine) runFlushLoop() {
 
 func (e *Engine) runCompactionLoop() {
 	defer e.wg.Done()
+	// Create a cancellable context that gets cancelled when closeCh is closed.
+	// This allows in-flight compactions to be interrupted gracefully.
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-e.closeCh
+		cancel()
+	}()
+
 	for {
 		select {
 		case <-e.closeCh:
 			return
 		case <-e.compactionCh:
 			e.metrics.OnQueueDepth("compaction_queue", len(e.compactionCh))
-			e.checkCompaction(context.Background())
+			e.checkCompaction(ctx)
 		}
 	}
 }
