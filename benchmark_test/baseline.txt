@@ -2,125 +2,125 @@ goos: darwin
 goarch: arm64
 pkg: github.com/hupe1980/vecgo/benchmark_test
 cpu: Apple M4 Pro
-BenchmarkAdversarialSearch/uniform_128d_50k/sel=1%-14  	    1885	    122082 ns/op	      8191 qps	         1.000 recall@10	    5459 B/op	      82 allocs/op
-BenchmarkAdversarialSearch/uniform_128d_50k/sel=10%-14 	     982	    236365 ns/op	      4231 qps	         1.000 recall@10	    6104 B/op	      82 allocs/op
-BenchmarkAdversarialSearch/uniform_128d_50k/sel=50%-14 	     410	    581643 ns/op	      1719 qps	         1.000 recall@10	    7007 B/op	      82 allocs/op
-BenchmarkAdversarialSearch/zipfian_128d_50k/sel=1%-14  	     422	    551031 ns/op	      1815 qps	         1.000 recall@10	    6963 B/op	      82 allocs/op
-BenchmarkAdversarialSearch/zipfian_128d_50k/sel=10%-14 	     318	    736720 ns/op	      1357 qps	         1.000 recall@10	    7459 B/op	      82 allocs/op
-BenchmarkAdversarialSearch/zipfian_128d_50k/sel=50%-14 	     308	    769552 ns/op	      1299 qps	         1.000 recall@10	    7523 B/op	      82 allocs/op
-BenchmarkAdversarialSearch/seglocal_128d_50k/sel=1%-14 	    1249	    189720 ns/op	      5271 qps	         1.000 recall@10	    5965 B/op	      82 allocs/op
-BenchmarkAdversarialSearch/seglocal_128d_50k/sel=10%-14         	     266	    893405 ns/op	      1119 qps	         1.000 recall@10	    7847 B/op	      82 allocs/op
-BenchmarkAdversarialSearch/seglocal_128d_50k/sel=50%-14         	     266	    912127 ns/op	      1096 qps	         1.000 recall@10	    7847 B/op	      82 allocs/op
-BenchmarkAdversarialSearch/correlated_128d_50k/sel=1%-14        	    1994	    122416 ns/op	      8169 qps	         1.000 recall@10	    5459 B/op	      82 allocs/op
-BenchmarkAdversarialSearch/correlated_128d_50k/sel=10%-14       	     952	    243267 ns/op	      4111 qps	         1.000 recall@10	    6124 B/op	      82 allocs/op
-BenchmarkAdversarialSearch/correlated_128d_50k/sel=50%-14       	     405	    580839 ns/op	      1722 qps	         1.000 recall@10	    5472 B/op	      82 allocs/op
-BenchmarkAdversarialSearch/booladv_128d_50k/sel=1%-14           	    1959	    122786 ns/op	      8144 qps	         1.000 recall@10	    5780 B/op	      82 allocs/op
-BenchmarkAdversarialSearch/booladv_128d_50k/sel=10%-14          	     906	    259464 ns/op	      3854 qps	         1.000 recall@10	    6158 B/op	      82 allocs/op
-BenchmarkAdversarialSearch/booladv_128d_50k/sel=50%-14          	     304	    769110 ns/op	      1300 qps	         1.000 recall@10	    5477 B/op	      82 allocs/op
-BenchmarkSegmentLocalSkew/global_1pct_local_90pct-14            	    1222	    193179 ns/op	      5177 qps	    5976 B/op	      82 allocs/op
-BenchmarkCorrelatedVectors/sel=1%-14                            	    1930	    122645 ns/op	      8154 qps	    5785 B/op	      82 allocs/op
-BenchmarkCorrelatedVectors/sel=10%-14                           	     981	    244681 ns/op	      4087 qps	    6104 B/op	      82 allocs/op
-BenchmarkCorrelatedVectors/sel=50%-14                           	     405	    584462 ns/op	      1711 qps	    7029 B/op	      82 allocs/op
-BenchmarkBooleanAdversarial/simple_filter-14                    	    1894	    124640 ns/op	      8023 qps	    5791 B/op	      82 allocs/op
-BenchmarkBooleanAdversarial/range_filter-14                     	     302	    803535 ns/op	      1245 qps	    8708 B/op	      95 allocs/op
-BenchmarkBooleanAdversarial/multi_field_and-14                  	     890	    262081 ns/op	      3816 qps	    7314 B/op	      95 allocs/op
-BenchmarkDistributionComparison/uniform-14                      	    1947	    123775 ns/op	      8079 qps	         1.000 recall@10	    5783 B/op	      82 allocs/op
-BenchmarkDistributionComparison/zipfian-14                      	     416	    563147 ns/op	      1776 qps	         1.000 recall@10	    6988 B/op	      82 allocs/op
-BenchmarkDistributionComparison/seglocal-14                     	    1302	    190923 ns/op	      5238 qps	         1.000 recall@10	    5944 B/op	      82 allocs/op
-BenchmarkDistributionComparison/correlated-14                   	    1959	    123173 ns/op	      8119 qps	         1.000 recall@10	    5780 B/op	      82 allocs/op
-BenchmarkDistributionComparison/booladv-14                      	    1906	    123891 ns/op	      8072 qps	         1.000 recall@10	    5793 B/op	      82 allocs/op
-BenchmarkCompaction_Pressure-14                                 	    7107	     44738 ns/op	  139281 B/op	      15 allocs/op
-BenchmarkFastSearch/uniform_128d_10k/nofilter-14                	    2749	     92104 ns/op	     10857 qps	    2119 B/op	      11 allocs/op
-BenchmarkFastSearch/uniform_128d_10k/sel=1%-14                  	    8856	     27178 ns/op	     36795 qps	         1.000 recall@10	    2096 B/op	      22 allocs/op
-BenchmarkFastSearch/uniform_128d_10k/sel=5%-14                  	    5642	     40390 ns/op	     24758 qps	         1.000 recall@10	    2208 B/op	      22 allocs/op
-BenchmarkFastSearch/uniform_128d_10k/sel=10%-14                 	    4425	     52246 ns/op	     19140 qps	         1.000 recall@10	    2239 B/op	      22 allocs/op
-BenchmarkFastSearch/uniform_128d_10k/sel=50%-14                 	    2001	    119580 ns/op	      8363 qps	         1.000 recall@10	    2413 B/op	      22 allocs/op
-BenchmarkFastSearch/uniform_128d_10k/sel=90%-14                 	    1322	    182436 ns/op	      5481 qps	         1.000 recall@10	    2577 B/op	      22 allocs/op
-BenchmarkFastSearch/zipfian_128d_10k/nofilter-14                	    2724	     90088 ns/op	     11100 qps	    1490 B/op	      11 allocs/op
-BenchmarkFastSearch/zipfian_128d_10k/sel=1%-14                  	    2173	    106792 ns/op	      9364 qps	         1.000 recall@10	    2388 B/op	      22 allocs/op
-BenchmarkFastSearch/zipfian_128d_10k/sel=5%-14                  	    1659	    144641 ns/op	      6914 qps	         1.000 recall@10	    2479 B/op	      22 allocs/op
-BenchmarkFastSearch/zipfian_128d_10k/sel=10%-14                 	    1534	    152617 ns/op	      6552 qps	         1.000 recall@10	    2510 B/op	      22 allocs/op
-BenchmarkFastSearch/zipfian_128d_10k/sel=50%-14                 	    1486	    159098 ns/op	      6285 qps	         1.000 recall@10	    2100 B/op	      22 allocs/op
-BenchmarkFastSearch/zipfian_128d_10k/sel=90%-14                 	    1543	    160267 ns/op	      6240 qps	         1.000 recall@10	    2508 B/op	      22 allocs/op
-BenchmarkFastBatchSearch/batch=1-14                             	    2341	     97496 ns/op	     10257 qps	    9971 B/op	      58 allocs/op
-BenchmarkFastBatchSearch/batch=10-14                            	     829	    287435 ns/op	     34791 qps	  103043 B/op	     545 allocs/op
-BenchmarkFastBatchSearch/batch=50-14                            	     247	    955169 ns/op	     52347 qps	  498473 B/op	    2691 allocs/op
-BenchmarkFastBatchSearch/batch=100-14                           	     132	   1801560 ns/op	     55507 qps	 1001738 B/op	    5378 allocs/op
-BenchmarkFastConcurrentSearch/goroutines=1-14                   	   14436	     16558 ns/op	     60395 qps	    1488 B/op	      11 allocs/op
-BenchmarkFastConcurrentSearch/goroutines=2-14                   	   14558	     16527 ns/op	     60508 qps	    1488 B/op	      11 allocs/op
-BenchmarkFastConcurrentSearch/goroutines=4-14                   	   14312	     16379 ns/op	     61055 qps	    1489 B/op	      11 allocs/op
-BenchmarkFastConcurrentSearch/goroutines=8-14                   	   14545	     16356 ns/op	     61141 qps	    1490 B/op	      11 allocs/op
-BenchmarkFastFiltered/uniform_128d_10k/sel=1%-14                	    8236	     28042 ns/op	     35661 qps	    2173 B/op	      22 allocs/op
-BenchmarkFastFiltered/uniform_128d_10k/sel=5%-14                	    5966	     41314 ns/op	     24205 qps	    2097 B/op	      22 allocs/op
-BenchmarkFastFiltered/uniform_128d_10k/sel=10%-14               	    4371	     53140 ns/op	     18818 qps	    2241 B/op	      22 allocs/op
-BenchmarkFastFiltered/uniform_128d_10k/sel=30%-14               	    2655	     90543 ns/op	     11045 qps	    2335 B/op	      22 allocs/op
-BenchmarkFastFiltered/uniform_128d_10k/sel=50%-14               	    1932	    121830 ns/op	      8208 qps	    2425 B/op	      22 allocs/op
-BenchmarkFastFiltered/uniform_128d_10k/sel=90%-14               	    1304	    185800 ns/op	      5382 qps	    2583 B/op	      22 allocs/op
-BenchmarkFastFiltered/zipfian_128d_10k/sel=1%-14                	    2203	    107087 ns/op	      9338 qps	    2384 B/op	      22 allocs/op
-BenchmarkFastFiltered/zipfian_128d_10k/sel=5%-14                	    1636	    147534 ns/op	      6778 qps	    2484 B/op	      22 allocs/op
-BenchmarkFastFiltered/zipfian_128d_10k/sel=10%-14               	    1569	    154044 ns/op	      6492 qps	    2100 B/op	      22 allocs/op
-BenchmarkFastFiltered/zipfian_128d_10k/sel=30%-14               	    1513	    159810 ns/op	      6257 qps	    2516 B/op	      22 allocs/op
-BenchmarkFastFiltered/zipfian_128d_10k/sel=50%-14               	    1501	    161377 ns/op	      6197 qps	    2519 B/op	      22 allocs/op
-BenchmarkFastFiltered/zipfian_128d_10k/sel=90%-14               	    1525	    162823 ns/op	      6142 qps	    2513 B/op	      22 allocs/op
-BenchmarkFastDimensions/dim=128-14                              	    2630	     89986 ns/op	     11113 qps	    2279 B/op	      11 allocs/op
-BenchmarkHybridSearch/VectorOnly-14                             	     529	    450767 ns/op	         1.000 recall@10	   11920 B/op	      55 allocs/op
-BenchmarkHybridSearch/Hybrid-14                                 	     460	    516411 ns/op	         1.000 recall@10	   53678 B/op	     168 allocs/op
-BenchmarkHybridSearch/LexicalOnly-14                            	    6763	     35241 ns/op	         1.000 recall@10	     913 B/op	       3 allocs/op
-BenchmarkInsert/dim=128-14                                      	   10000	    160179 ns/op	      6243 vectors/sec	   37623 B/op	       5 allocs/op
-BenchmarkInsert/dim=768-14                                      	   10000	    127382 ns/op	      7850 vectors/sec	  113782 B/op	       6 allocs/op
-BenchmarkInsert/dim=1536-14                                     	    8358	     35191 ns/op	     28417 vectors/sec	  235426 B/op	       9 allocs/op
-BenchmarkBatchInsert/batch=10-14                                	    4454	    652812 ns/op	        10.00 batch_size	     15318 vectors/sec	 1181224 B/op	     125 allocs/op
-BenchmarkBatchInsert/batch=100-14                               	     100	   3881835 ns/op	       100.0 batch_size	     25761 vectors/sec	10378099 B/op	     801 allocs/op
-BenchmarkBatchInsert/batch=1000-14                              	     100	  66505296 ns/op	      1000 batch_size	     15036 vectors/sec	74917361 B/op	    7041 allocs/op
-BenchmarkDeferredInsert/n=1000-14                               	     135	   1757583 ns/op	    568963 vectors/sec	42559007 B/op	    2214 allocs/op
-BenchmarkDeferredInsert/n=10000-14                              	      52	   4909017 ns/op	   2037068 vectors/sec	43293504 B/op	   20534 allocs/op
-BenchmarkConcurrentInsert/goroutines=1-14                       	   10000	     44649 ns/op	     22397 vectors/sec	  117045 B/op	       8 allocs/op
-BenchmarkConcurrentInsert/goroutines=2-14                       	   10000	     38978 ns/op	     25656 vectors/sec	  115905 B/op	       8 allocs/op
-BenchmarkConcurrentInsert/goroutines=4-14                       	   10000	     33345 ns/op	     29989 vectors/sec	  106129 B/op	       8 allocs/op
-BenchmarkConcurrentInsert/goroutines=8-14                       	   10000	     33343 ns/op	     29991 vectors/sec	  106955 B/op	       8 allocs/op
-BenchmarkLatencyPercentiles-14                                  	1000000000	         0.1271 ns/op	        88.00 P50_μs	        92.00 P95_μs	       103.0 P99.9_μs	        94.00 P99_μs	       0 B/op	       0 allocs/op
-BenchmarkLatencyUnderLoad/conc=1-14                             	1000000000	         0.04591 ns/op	        90.00 P50_μs	       103.0 P95_μs	       123.0 P99_μs	       0 B/op	       0 allocs/op
-BenchmarkLatencyUnderLoad/conc=2-14                             	1000000000	         0.04754 ns/op	        94.00 P50_μs	       105.0 P95_μs	       113.0 P99_μs	       0 B/op	       0 allocs/op
-BenchmarkLatencyUnderLoad/conc=4-14                             	1000000000	         0.04802 ns/op	        94.00 P50_μs	       111.0 P95_μs	       122.0 P99_μs	       0 B/op	       0 allocs/op
-BenchmarkLatencyUnderLoad/conc=8-14                             	1000000000	         0.07033 ns/op	       115.0 P50_μs	       232.0 P95_μs	       289.0 P99_μs	       0 B/op	       0 allocs/op
-BenchmarkMemoryFootprint/dim=128/n=10000-14                     	       1	 381916709 ns/op	     15480 bytes/vec	        30.23 overhead_ratio	       512.0 raw_bytes/vec	276152688 B/op	   68469 allocs/op
-BenchmarkIndexBuildTime/dim=128/n=10000-14                      	       1	 400890875 ns/op	     24944 vecs/sec	274570832 B/op	   58268 allocs/op
-BenchmarkColdStart-14                                           	       1	 288723958 ns/op	        12.00 cold_start_ms	       183.0 first_query_μs	        12.00 open_ms	696513840 B/op	  898654 allocs/op
-BenchmarkRecallQPSTradeoff/k=1-14                               	    2667	     92703 ns/op	     10787 qps	         0 recall	     690 B/op	      11 allocs/op
-BenchmarkRecallQPSTradeoff/k=5-14                               	    2611	     89611 ns/op	     11159 qps	         0.01600 recall	    1042 B/op	      11 allocs/op
-BenchmarkRecallQPSTradeoff/k=10-14                              	    2486	     90287 ns/op	     11076 qps	         0.01000 recall	    1490 B/op	      11 allocs/op
-BenchmarkRecallQPSTradeoff/k=20-14                              	    2296	     98299 ns/op	     10173 qps	         0.01800 recall	    2386 B/op	      11 allocs/op
-BenchmarkRecallQPSTradeoff/k=50-14                              	    1872	    118030 ns/op	      8472 qps	         0.04000 recall	    5459 B/op	      11 allocs/op
-BenchmarkRecallQPSTradeoff/k=100-14                             	    1562	    147741 ns/op	      6769 qps	         0.07000 recall	   10067 B/op	      11 allocs/op
-BenchmarkDeletePerformance/delete-14                            	1000000000	         0.0000583 ns/op	  17142955 deletes/sec	        58.33 ns/delete	       0 B/op	       0 allocs/op
-BenchmarkDeletePerformance/search_after_delete-14               	     502	    456020 ns/op	      2193 qps	    4896 B/op	      26 allocs/op
-BenchmarkGCPressure-14                                          	1000000000	         0.1219 ns/op	      3570 bytes_alloc/op	         0 gc_cycles	     11036 qps	       0 B/op	      11 allocs/op
-BenchmarkBinaryQuantizer_Distance-14                            	37463414	         6.012 ns/op	       0 B/op	       0 allocs/op
-BenchmarkSearchOnly/uniform-14                                  	     801	    289392 ns/op	      5000 matches	         0 recall@10	         0.1000 selectivity	   11033 B/op	      80 allocs/op
-BenchmarkSearchOnly/realistic-14                                	     237	    924332 ns/op	     28765 matches	         0 recall@10	         0.5753 selectivity	   24550 B/op	      82 allocs/op
-BenchmarkSearchOnly/no_filter-14                                	     358	    579171 ns/op	         0 recall@10	   16078 B/op	      38 allocs/op
-BenchmarkSearchOnlySelectivity/sel=1%-14                        	    1628	    142668 ns/op	       500.0 matches	         0.01000 selectivity	    5744 B/op	      80 allocs/op
-BenchmarkSearchOnlySelectivity/sel=5%-14                        	    1062	    214362 ns/op	      2500 matches	         0.05000 selectivity	    5360 B/op	      80 allocs/op
-BenchmarkSearchOnlySelectivity/sel=10%-14                       	     836	    275586 ns/op	      5000 matches	         0.1000 selectivity	    6117 B/op	      80 allocs/op
-BenchmarkSearchOnlySelectivity/sel=30%-14                       	     489	    490385 ns/op	     15000 matches	         0.3000 selectivity	    6665 B/op	      80 allocs/op
-BenchmarkSearchOnlySelectivity/sel=50%-14                       	     362	    652646 ns/op	     25000 matches	         0.5000 selectivity	    7119 B/op	      80 allocs/op
-BenchmarkSearchOnlySelectivity/sel=70%-14                       	     290	    809357 ns/op	     35000 matches	         0.7000 selectivity	    7560 B/op	      80 allocs/op
-BenchmarkSearchOnlySelectivity/sel=90%-14                       	     248	    960549 ns/op	     45000 matches	         0.9000 selectivity	    7932 B/op	      80 allocs/op
-BenchmarkStorage_ReadRandom/Local_NVMe-14                       	15542154	        15.22 ns/op	       0 B/op	       0 allocs/op
-BenchmarkStorage_ReadRandom/Simulated_S3_Direct-14              	       7	  30930435 ns/op	       0 B/op	       0 allocs/op
-BenchmarkStorage_ReadRandom/Cached_S3_Warm-14                   	 1176476	       203.3 ns/op	     272 B/op	       4 allocs/op
-BenchmarkBuildQuality/n=10000-14                                	       1	 945550792 ns/op	       362.0 build_ms	     27616 build_vecs/sec	         1.000 recall@10	       454.0 search_P50_μs	294081008 B/op	   96418 allocs/op
-BenchmarkDimensionScaling/dim=128-14                            	       1	 835848500 ns/op	       451.0 P50_μs	       488.0 P99_μs	       358.0 build_ms	       512.0 bytes/vec_raw	285236800 B/op	   94655 allocs/op
-BenchmarkDimensionScaling/dim=768-14                            	       1	 895889541 ns/op	       203.0 P50_μs	      1118 P99_μs	       618.0 build_ms	      3072 bytes/vec_raw	938836144 B/op	   99603 allocs/op
-BenchmarkBatchSizeOptimal/batch=100-14                          	       1	1762258667 ns/op	     34234 ns/vec	     29211 vecs/sec	5380552024 B/op	  431614 allocs/op
-BenchmarkBatchSizeOptimal/batch=500-14                          	       1	2423390833 ns/op	     47379 ns/vec	     21106 vecs/sec	4451713712 B/op	  375891 allocs/op
-BenchmarkBatchSizeOptimal/batch=1000-14                         	       1	3276605333 ns/op	     64252 ns/vec	     15564 vecs/sec	3832988632 B/op	  360691 allocs/op
-BenchmarkMixedWorkload/read=50%-14                              	    4107	     90279 ns/op	     11077 ops/sec	      5648 reads/sec	      5429 writes/sec	  117500 B/op	      31 allocs/op
-BenchmarkMixedWorkload/read=80%-14                              	    1842	    125532 ns/op	      7966 ops/sec	      6362 reads/sec	      1604 writes/sec	  168828 B/op	      46 allocs/op
-BenchmarkMixedWorkload/read=95%-14                              	    3129	     71118 ns/op	     14061 ops/sec	     13333 reads/sec	       728.0 writes/sec	  101304 B/op	      47 allocs/op
-BenchmarkMixedWorkload/read=99%-14                              	    3038	     70440 ns/op	     14196 ops/sec	     14061 reads/sec	       135.5 writes/sec	   66852 B/op	      44 allocs/op
-BenchmarkBurstWorkload-14                                       	       5	  40801067 ns/op	      9804 qps	28715592 B/op	   12907 allocs/op
-BenchmarkReadAfterWrite-14                                      	     433	    781502 ns/op	      1280 ops/sec	    7299 B/op	      27 allocs/op
-BenchmarkThroughputUnderLoad-14                                 	     582	    398994 ns/op	     27005 bg_writes/sec	      2506 qps	 1846053 B/op	     170 allocs/op
+BenchmarkAdversarialSearch/uniform_128d_50k/sel=1%-14  	    1899	    122537 ns/op	      8161 qps	         1.000 recall@10	    5791 B/op	      82 allocs/op
+BenchmarkAdversarialSearch/uniform_128d_50k/sel=10%-14 	     962	    242287 ns/op	      4127 qps	         1.000 recall@10	    6117 B/op	      82 allocs/op
+BenchmarkAdversarialSearch/uniform_128d_50k/sel=50%-14 	     403	    572552 ns/op	      1747 qps	         1.000 recall@10	    7034 B/op	      82 allocs/op
+BenchmarkAdversarialSearch/zipfian_128d_50k/sel=1%-14  	     424	    559150 ns/op	      1788 qps	         1.000 recall@10	    6956 B/op	      82 allocs/op
+BenchmarkAdversarialSearch/zipfian_128d_50k/sel=10%-14 	     324	    738822 ns/op	      1354 qps	         1.000 recall@10	    7419 B/op	      82 allocs/op
+BenchmarkAdversarialSearch/zipfian_128d_50k/sel=50%-14 	     310	    772046 ns/op	      1295 qps	         1.000 recall@10	    5477 B/op	      82 allocs/op
+BenchmarkAdversarialSearch/seglocal_128d_50k/sel=1%-14 	    1162	    188168 ns/op	      5314 qps	         1.000 recall@10	    6003 B/op	      82 allocs/op
+BenchmarkAdversarialSearch/seglocal_128d_50k/sel=10%-14         	     267	    885921 ns/op	      1129 qps	         1.000 recall@10	    7840 B/op	      82 allocs/op
+BenchmarkAdversarialSearch/seglocal_128d_50k/sel=50%-14         	     268	    889638 ns/op	      1124 qps	         1.000 recall@10	    7831 B/op	      82 allocs/op
+BenchmarkAdversarialSearch/correlated_128d_50k/sel=1%-14        	    1864	    123892 ns/op	      8072 qps	         1.000 recall@10	    5459 B/op	      82 allocs/op
+BenchmarkAdversarialSearch/correlated_128d_50k/sel=10%-14       	     937	    243928 ns/op	      4100 qps	         1.000 recall@10	    6135 B/op	      82 allocs/op
+BenchmarkAdversarialSearch/correlated_128d_50k/sel=50%-14       	     396	    578891 ns/op	      1727 qps	         1.000 recall@10	    7063 B/op	      82 allocs/op
+BenchmarkAdversarialSearch/booladv_128d_50k/sel=1%-14           	    1903	    124285 ns/op	      8046 qps	         1.000 recall@10	    5790 B/op	      82 allocs/op
+BenchmarkAdversarialSearch/booladv_128d_50k/sel=10%-14          	     880	    263578 ns/op	      3794 qps	         1.000 recall@10	    6179 B/op	      82 allocs/op
+BenchmarkAdversarialSearch/booladv_128d_50k/sel=50%-14          	     308	    767675 ns/op	      1303 qps	         1.000 recall@10	    7521 B/op	      82 allocs/op
+BenchmarkSegmentLocalSkew/global_1pct_local_90pct-14            	    1260	    187130 ns/op	      5344 qps	    5960 B/op	      82 allocs/op
+BenchmarkCorrelatedVectors/sel=1%-14                            	    1875	    124799 ns/op	      8013 qps	    5795 B/op	      82 allocs/op
+BenchmarkCorrelatedVectors/sel=10%-14                           	     939	    244908 ns/op	      4083 qps	    6133 B/op	      82 allocs/op
+BenchmarkCorrelatedVectors/sel=50%-14                           	     405	    579038 ns/op	      1727 qps	    7028 B/op	      82 allocs/op
+BenchmarkBooleanAdversarial/simple_filter-14                    	    1866	    125563 ns/op	      7964 qps	    5459 B/op	      82 allocs/op
+BenchmarkBooleanAdversarial/range_filter-14                     	     303	    767009 ns/op	      1304 qps	    8701 B/op	      95 allocs/op
+BenchmarkBooleanAdversarial/multi_field_and-14                  	     889	    261764 ns/op	      3820 qps	    6607 B/op	      95 allocs/op
+BenchmarkDistributionComparison/uniform-14                      	    1902	    124676 ns/op	      8021 qps	         1.000 recall@10	    5790 B/op	      82 allocs/op
+BenchmarkDistributionComparison/zipfian-14                      	     418	    568262 ns/op	      1760 qps	         1.000 recall@10	    6980 B/op	      82 allocs/op
+BenchmarkDistributionComparison/seglocal-14                     	    1135	    189698 ns/op	      5272 qps	         1.000 recall@10	    6017 B/op	      82 allocs/op
+BenchmarkDistributionComparison/correlated-14                   	    1867	    124213 ns/op	      8051 qps	         1.000 recall@10	    5797 B/op	      82 allocs/op
+BenchmarkDistributionComparison/booladv-14                      	    1797	    126480 ns/op	      7906 qps	         1.000 recall@10	    5814 B/op	      82 allocs/op
+BenchmarkCompaction_Pressure-14                                 	   10000	     38442 ns/op	  126622 B/op	      15 allocs/op
+BenchmarkFastSearch/uniform_128d_10k/nofilter-14                	    2577	     93922 ns/op	     10647 qps	    1490 B/op	      11 allocs/op
+BenchmarkFastSearch/uniform_128d_10k/sel=1%-14                  	    8449	     27341 ns/op	     36574 qps	         1.000 recall@10	    2171 B/op	      22 allocs/op
+BenchmarkFastSearch/uniform_128d_10k/sel=5%-14                  	    5565	     41067 ns/op	     24350 qps	         1.000 recall@10	    2210 B/op	      22 allocs/op
+BenchmarkFastSearch/uniform_128d_10k/sel=10%-14                 	    4318	     53157 ns/op	     18812 qps	         1.000 recall@10	    2243 B/op	      22 allocs/op
+BenchmarkFastSearch/uniform_128d_10k/sel=50%-14                 	    1932	    120529 ns/op	      8297 qps	         1.000 recall@10	    2099 B/op	      22 allocs/op
+BenchmarkFastSearch/uniform_128d_10k/sel=90%-14                 	    1239	    184330 ns/op	      5425 qps	         1.000 recall@10	    2609 B/op	      22 allocs/op
+BenchmarkFastSearch/zipfian_128d_10k/nofilter-14                	    2721	     90559 ns/op	     11043 qps	    1490 B/op	      11 allocs/op
+BenchmarkFastSearch/zipfian_128d_10k/sel=1%-14                  	    2148	    105083 ns/op	      9516 qps	         1.000 recall@10	    2392 B/op	      22 allocs/op
+BenchmarkFastSearch/zipfian_128d_10k/sel=5%-14                  	    1651	    144957 ns/op	      6899 qps	         1.000 recall@10	    2099 B/op	      22 allocs/op
+BenchmarkFastSearch/zipfian_128d_10k/sel=10%-14                 	    1614	    150629 ns/op	      6639 qps	         1.000 recall@10	    2490 B/op	      22 allocs/op
+BenchmarkFastSearch/zipfian_128d_10k/sel=50%-14                 	    1478	    155578 ns/op	      6428 qps	         1.000 recall@10	    2100 B/op	      22 allocs/op
+BenchmarkFastSearch/zipfian_128d_10k/sel=90%-14                 	    1549	    157880 ns/op	      6334 qps	         1.000 recall@10	    2506 B/op	      22 allocs/op
+BenchmarkFastBatchSearch/batch=1-14                             	    2354	     98622 ns/op	     10140 qps	   10706 B/op	      58 allocs/op
+BenchmarkFastBatchSearch/batch=10-14                            	     825	    287582 ns/op	     34773 qps	  101810 B/op	     544 allocs/op
+BenchmarkFastBatchSearch/batch=50-14                            	     247	    958482 ns/op	     52166 qps	  503895 B/op	    2692 allocs/op
+BenchmarkFastBatchSearch/batch=100-14                           	     123	   1901979 ns/op	     52577 qps	 1005171 B/op	    5378 allocs/op
+BenchmarkFastConcurrentSearch/goroutines=1-14                   	   14067	     17233 ns/op	     58028 qps	    1537 B/op	      11 allocs/op
+BenchmarkFastConcurrentSearch/goroutines=2-14                   	   14206	     16856 ns/op	     59326 qps	    1488 B/op	      11 allocs/op
+BenchmarkFastConcurrentSearch/goroutines=4-14                   	   14170	     16854 ns/op	     59333 qps	    1489 B/op	      11 allocs/op
+BenchmarkFastConcurrentSearch/goroutines=8-14                   	   14317	     16875 ns/op	     59258 qps	    1492 B/op	      11 allocs/op
+BenchmarkFastFiltered/uniform_128d_10k/sel=1%-14                	    8215	     28129 ns/op	     35551 qps	    2173 B/op	      22 allocs/op
+BenchmarkFastFiltered/uniform_128d_10k/sel=5%-14                	    5314	     41808 ns/op	     23919 qps	    2215 B/op	      22 allocs/op
+BenchmarkFastFiltered/uniform_128d_10k/sel=10%-14               	    4136	     53823 ns/op	     18579 qps	    2249 B/op	      22 allocs/op
+BenchmarkFastFiltered/uniform_128d_10k/sel=30%-14               	    2598	     91497 ns/op	     10929 qps	    2340 B/op	      22 allocs/op
+BenchmarkFastFiltered/uniform_128d_10k/sel=50%-14               	    1882	    124356 ns/op	      8041 qps	    2433 B/op	      22 allocs/op
+BenchmarkFastFiltered/uniform_128d_10k/sel=90%-14               	    1263	    187869 ns/op	      5323 qps	    2599 B/op	      22 allocs/op
+BenchmarkFastFiltered/zipfian_128d_10k/sel=1%-14                	    2208	    107677 ns/op	      9287 qps	    2384 B/op	      22 allocs/op
+BenchmarkFastFiltered/zipfian_128d_10k/sel=5%-14                	    1636	    146881 ns/op	      6808 qps	    2484 B/op	      22 allocs/op
+BenchmarkFastFiltered/zipfian_128d_10k/sel=10%-14               	    1546	    154039 ns/op	      6492 qps	    2507 B/op	      22 allocs/op
+BenchmarkFastFiltered/zipfian_128d_10k/sel=30%-14               	    1490	    157159 ns/op	      6363 qps	    2522 B/op	      22 allocs/op
+BenchmarkFastFiltered/zipfian_128d_10k/sel=50%-14               	    1483	    159243 ns/op	      6280 qps	    2100 B/op	      22 allocs/op
+BenchmarkFastFiltered/zipfian_128d_10k/sel=90%-14               	    1490	    159810 ns/op	      6257 qps	    2522 B/op	      22 allocs/op
+BenchmarkFastDimensions/dim=128-14                              	    2431	     94898 ns/op	     10538 qps	    2916 B/op	      11 allocs/op
+BenchmarkHybridSearch/VectorOnly-14                             	    1632	    140969 ns/op	         1.000 recall@10	    9641 B/op	      49 allocs/op
+BenchmarkHybridSearch/Hybrid-14                                 	    1057	    214905 ns/op	         1.000 recall@10	   56039 B/op	     177 allocs/op
+BenchmarkHybridSearch/LexicalOnly-14                            	    7560	     33379 ns/op	         1.000 recall@10	     913 B/op	       3 allocs/op
+BenchmarkInsert/dim=128-14                                      	   10000	    132188 ns/op	      7565 vectors/sec	   45077 B/op	       6 allocs/op
+BenchmarkInsert/dim=768-14                                      	   10000	     25438 ns/op	     39312 vectors/sec	  134414 B/op	       7 allocs/op
+BenchmarkInsert/dim=1536-14                                     	   10000	     35091 ns/op	     28497 vectors/sec	  221231 B/op	       9 allocs/op
+BenchmarkBatchInsert/batch=10-14                                	    3255	    282463 ns/op	        10.00 batch_size	     35403 vectors/sec	 1344101 B/op	     130 allocs/op
+BenchmarkBatchInsert/batch=100-14                               	     100	   3068052 ns/op	       100.0 batch_size	     32594 vectors/sec	11644983 B/op	     832 allocs/op
+BenchmarkBatchInsert/batch=1000-14                              	      68	  67045571 ns/op	      1000 batch_size	     14915 vectors/sec	73668261 B/op	    7075 allocs/op
+BenchmarkDeferredInsert/n=1000-14                               	     144	   1718397 ns/op	    581938 vectors/sec	42559104 B/op	    2217 allocs/op
+BenchmarkDeferredInsert/n=10000-14                              	      49	   5051513 ns/op	   1979605 vectors/sec	43293603 B/op	   20536 allocs/op
+BenchmarkConcurrentInsert/goroutines=1-14                       	   10000	     25304 ns/op	     39519 vectors/sec	  126121 B/op	       8 allocs/op
+BenchmarkConcurrentInsert/goroutines=2-14                       	   10000	     24331 ns/op	     41099 vectors/sec	  126500 B/op	       8 allocs/op
+BenchmarkConcurrentInsert/goroutines=4-14                       	   10000	     25067 ns/op	     39892 vectors/sec	  112414 B/op	       8 allocs/op
+BenchmarkConcurrentInsert/goroutines=8-14                       	   10000	     27925 ns/op	     35811 vectors/sec	  119713 B/op	       8 allocs/op
+BenchmarkLatencyPercentiles-14                                  	1000000000	         0.1340 ns/op	        89.00 P50_μs	        99.00 P95_μs	       416.0 P99.9_μs	       395.0 P99_μs	       0 B/op	       0 allocs/op
+BenchmarkLatencyUnderLoad/conc=1-14                             	1000000000	         0.04723 ns/op	        90.00 P50_μs	        99.00 P95_μs	       385.0 P99_μs	       0 B/op	       0 allocs/op
+BenchmarkLatencyUnderLoad/conc=2-14                             	1000000000	         0.04968 ns/op	        93.00 P50_μs	       107.0 P95_μs	       543.0 P99_μs	       0 B/op	       0 allocs/op
+BenchmarkLatencyUnderLoad/conc=4-14                             	1000000000	         0.05180 ns/op	        96.00 P50_μs	       119.0 P95_μs	       463.0 P99_μs	       0 B/op	       0 allocs/op
+BenchmarkLatencyUnderLoad/conc=8-14                             	1000000000	         0.07437 ns/op	       115.0 P50_μs	       247.0 P95_μs	       414.0 P99_μs	       0 B/op	       0 allocs/op
+BenchmarkMemoryFootprint/dim=128/n=10000-14                     	       1	 327385083 ns/op	     15259 bytes/vec	        29.80 overhead_ratio	       512.0 raw_bytes/vec	354131440 B/op	   72573 allocs/op
+BenchmarkIndexBuildTime/dim=128/n=10000-14                      	       1	 383075999 ns/op	     26104 vecs/sec	312560504 B/op	   64922 allocs/op
+BenchmarkColdStart-14                                           	       1	 295396958 ns/op	        12.00 cold_start_ms	       239.0 first_query_μs	        12.00 open_ms	696550608 B/op	  898999 allocs/op
+BenchmarkRecallQPSTradeoff/k=1-14                               	    2551	     90543 ns/op	     11044 qps	         0 recall	     690 B/op	      11 allocs/op
+BenchmarkRecallQPSTradeoff/k=5-14                               	    2475	     91379 ns/op	     10943 qps	         0.01600 recall	    1741 B/op	      11 allocs/op
+BenchmarkRecallQPSTradeoff/k=10-14                              	    2510	     93293 ns/op	     10719 qps	         0.01000 recall	    1490 B/op	      11 allocs/op
+BenchmarkRecallQPSTradeoff/k=20-14                              	    2232	    100932 ns/op	      9908 qps	         0.01800 recall	    2386 B/op	      11 allocs/op
+BenchmarkRecallQPSTradeoff/k=50-14                              	    1890	    121575 ns/op	      8225 qps	         0.04000 recall	    5459 B/op	      11 allocs/op
+BenchmarkRecallQPSTradeoff/k=100-14                             	    1538	    147459 ns/op	      6782 qps	         0.07000 recall	   10067 B/op	      11 allocs/op
+BenchmarkDeletePerformance/delete-14                            	1000000000	         0.0000601 ns/op	  16655008 deletes/sec	        60.04 ns/delete	       0 B/op	       0 allocs/op
+BenchmarkDeletePerformance/search_after_delete-14               	    1018	    222529 ns/op	      4494 qps	    5251 B/op	      27 allocs/op
+BenchmarkGCPressure-14                                          	1000000000	         0.1250 ns/op	      3570 bytes_alloc/op	         0 gc_cycles	     10669 qps	       0 B/op	      11 allocs/op
+BenchmarkBinaryQuantizer_Distance-14                            	38045923	         5.945 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSearchOnly/uniform-14                                  	     764	    298735 ns/op	      5000 matches	         0 recall@10	         0.1000 selectivity	   12667 B/op	     104 allocs/op
+BenchmarkSearchOnly/realistic-14                                	     247	    899061 ns/op	     28765 matches	         0 recall@10	         0.5753 selectivity	   25169 B/op	     106 allocs/op
+BenchmarkSearchOnly/no_filter-14                                	     331	    620828 ns/op	         0 recall@10	   17379 B/op	      42 allocs/op
+BenchmarkSearchOnlySelectivity/sel=1%-14                        	    1602	    144082 ns/op	       500.0 matches	         0.01000 selectivity	    7094 B/op	     104 allocs/op
+BenchmarkSearchOnlySelectivity/sel=5%-14                        	    1078	    213039 ns/op	      2500 matches	         0.05000 selectivity	    7289 B/op	     104 allocs/op
+BenchmarkSearchOnlySelectivity/sel=10%-14                       	     828	    278199 ns/op	      5000 matches	         0.1000 selectivity	    7469 B/op	     104 allocs/op
+BenchmarkSearchOnlySelectivity/sel=30%-14                       	     463	    511540 ns/op	     15000 matches	         0.3000 selectivity	    8083 B/op	     104 allocs/op
+BenchmarkSearchOnlySelectivity/sel=50%-14                       	     344	    642834 ns/op	     25000 matches	         0.5000 selectivity	    6727 B/op	     104 allocs/op
+BenchmarkSearchOnlySelectivity/sel=70%-14                       	     285	    799020 ns/op	     35000 matches	         0.7000 selectivity	    8946 B/op	     104 allocs/op
+BenchmarkSearchOnlySelectivity/sel=90%-14                       	     249	    963419 ns/op	     45000 matches	         0.9000 selectivity	    9266 B/op	     104 allocs/op
+BenchmarkStorage_ReadRandom/Local_NVMe-14                       	15203906	        15.39 ns/op	       0 B/op	       0 allocs/op
+BenchmarkStorage_ReadRandom/Simulated_S3_Direct-14              	       7	  30939185 ns/op	       0 B/op	       0 allocs/op
+BenchmarkStorage_ReadRandom/Cached_S3_Warm-14                   	 1146208	       207.5 ns/op	     272 B/op	       4 allocs/op
+BenchmarkBuildQuality/n=10000-14                                	       1	 548553792 ns/op	       339.0 build_ms	     29426 build_vecs/sec	         1.000 recall@10	        83.00 search_P50_μs	326947712 B/op	   87339 allocs/op
+BenchmarkDimensionScaling/dim=128-14                            	       1	 458276041 ns/op	        81.00 P50_μs	       737.0 P99_μs	       341.0 build_ms	       512.0 bytes/vec_raw	320625816 B/op	   86540 allocs/op
+BenchmarkDimensionScaling/dim=768-14                            	       1	 858399208 ns/op	       230.0 P50_μs	       788.0 P99_μs	       562.0 build_ms	      3072 bytes/vec_raw	930135856 B/op	   98787 allocs/op
+BenchmarkBatchSizeOptimal/batch=100-14                          	       1	1542278833 ns/op	     30106 ns/vec	     33216 vecs/sec	5656492064 B/op	  437695 allocs/op
+BenchmarkBatchSizeOptimal/batch=500-14                          	       1	2478033042 ns/op	     49028 ns/vec	     20396 vecs/sec	4294221032 B/op	  374142 allocs/op
+BenchmarkBatchSizeOptimal/batch=1000-14                         	       1	3349573959 ns/op	     65698 ns/vec	     15221 vecs/sec	3825841584 B/op	  362162 allocs/op
+BenchmarkMixedWorkload/read=50%-14                              	    4122	     60325 ns/op	     16577 ops/sec	      8196 reads/sec	      8381 writes/sec	  123984 B/op	      33 allocs/op
+BenchmarkMixedWorkload/read=80%-14                              	    3021	     73429 ns/op	     13619 ops/sec	     10679 reads/sec	      2939 writes/sec	   79210 B/op	      42 allocs/op
+BenchmarkMixedWorkload/read=95%-14                              	    2853	     75714 ns/op	     13208 ops/sec	     12694 reads/sec	       513.9 writes/sec	   81612 B/op	      47 allocs/op
+BenchmarkMixedWorkload/read=99%-14                              	    3003	     71137 ns/op	     14057 ops/sec	     13931 reads/sec	       126.4 writes/sec	   67135 B/op	      43 allocs/op
+BenchmarkBurstWorkload-14                                       	       5	  42255717 ns/op	      9466 qps	13487134 B/op	   13052 allocs/op
+BenchmarkReadAfterWrite-14                                      	    1310	    179103 ns/op	      5583 ops/sec	  225221 B/op	      44 allocs/op
+BenchmarkThroughputUnderLoad-14                                 	     561	    402316 ns/op	     27971 bg_writes/sec	      2486 qps	 1908864 B/op	     175 allocs/op
 PASS
-ok  	github.com/hupe1980/vecgo/benchmark_test	121.504s
+ok  	github.com/hupe1980/vecgo/benchmark_test	112.514s
