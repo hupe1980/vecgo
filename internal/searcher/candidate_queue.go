@@ -113,6 +113,24 @@ func (h *CandidateHeap) TryReplaceTop(x InternalCandidate) bool {
 	return true
 }
 
+// TryPushBounded attempts to add a candidate to a bounded heap of size k.
+// If len < k, pushes unconditionally. If len == k, replaces root only if x is better.
+// Returns true if x was inserted, false if rejected.
+// This is the canonical fast-path for top-k maintenance.
+func (h *CandidateHeap) TryPushBounded(x InternalCandidate, k int) bool {
+	if h.Len() < k {
+		h.Push(x)
+		return true
+	}
+	// Heap is full - compare against worst (root)
+	if InternalCandidateBetter(x, h.Candidates[0], h.descending) {
+		h.Candidates[0] = x
+		h.down(0, h.Len())
+		return true
+	}
+	return false
+}
+
 // up moves element at j up the heap. Optimized with inline comparison and single final write.
 // 4-ary heap: parent = (j-1)/4 instead of (j-1)/2
 func (h *CandidateHeap) up(j int) {
@@ -160,7 +178,54 @@ func (h *CandidateHeap) down(i0, n int) {
 	h.Candidates[i] = item
 }
 
-// Candidates returns the underlying slice.
-func (h *CandidateHeap) GetCandidates() []InternalCandidate {
+// HeapView returns the underlying slice in heap order (NOT sorted).
+// The root (index 0) is the worst candidate (eviction target).
+// Use SortedResults() if you need best-first ordering.
+func (h *CandidateHeap) HeapView() []InternalCandidate {
 	return h.Candidates
+}
+
+// SortedResults returns candidates sorted best-first into dst.
+// Reuses dst if capacity is sufficient, otherwise allocates.
+// Does not modify the heap.
+func (h *CandidateHeap) SortedResults(dst []InternalCandidate) []InternalCandidate {
+	dst = append(dst[:0], h.Candidates...)
+	n := len(dst)
+	descending := h.descending
+
+	// Heap-sort: build max-heap (best at root), then extract
+	// Build heap with "best" elements at top
+	for i := n/2 - 1; i >= 0; i-- {
+		sortDownBest(dst, i, n, descending)
+	}
+	// Extract elements from heap into sorted order (best-first)
+	for i := n - 1; i > 0; i-- {
+		dst[0], dst[i] = dst[i], dst[0]
+		sortDownBest(dst, 0, i, descending)
+	}
+	// Now dst is sorted worst-first, reverse for best-first
+	for i, j := 0, n-1; i < j; i, j = i+1, j-1 {
+		dst[i], dst[j] = dst[j], dst[i]
+	}
+	return dst
+}
+
+// sortDownBest is a helper for SortedResults heap-sort.
+// It maintains a max-heap where "best" candidates bubble to the top.
+func sortDownBest(s []InternalCandidate, i, n int, descending bool) {
+	for {
+		left := 2*i + 1
+		if left >= n {
+			break
+		}
+		best := left
+		if right := left + 1; right < n && InternalCandidateBetter(s[right], s[best], descending) {
+			best = right
+		}
+		if !InternalCandidateBetter(s[best], s[i], descending) {
+			break
+		}
+		s[i], s[best] = s[best], s[i]
+		i = best
+	}
 }

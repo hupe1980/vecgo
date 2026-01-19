@@ -235,7 +235,7 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 
 						used, err := e.searchSegmentWithCursor(
 							ctx, snap.active, cursor, activeFilter,
-							config, s, qExec, searchK, descending,
+							config, s, qExec, searchK,
 						)
 						if err != nil {
 							yield(model.Candidate{}, err)
@@ -341,7 +341,7 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 						if forcePreFilter || segSel <= selectivityCutoff {
 							used, err := e.searchSegmentWithCursor(
 								ctx, snap.active, cursor, activeFilter,
-								cursorConfig, s, qExec, searchK, descending,
+								cursorConfig, s, qExec, searchK,
 							)
 							if err != nil {
 								imetadata.ReleaseFilterCursor(releaseCursor)
@@ -406,7 +406,7 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 
 								used, err := e.searchSegmentWithCursor(
 									ctx, seg, cursor, ts,
-									cursorConfig, s, qExec, searchK, descending,
+									cursorConfig, s, qExec, searchK,
 								)
 								imetadata.ReleaseFilterCursor(cursor)
 								if err != nil {
@@ -462,7 +462,7 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 							cursor := imetadata.NewFilterResultCursor(fr)
 							used, err := e.searchSegmentWithCursor(
 								ctx, seg, cursor, ts,
-								cursorConfig, s, qExec, searchK, descending,
+								cursorConfig, s, qExec, searchK,
 							)
 							if err != nil {
 								yield(model.Candidate{}, err)
@@ -903,15 +903,7 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 					// Merge results
 					for _, candidates := range results {
 						for _, c := range candidates {
-							if s.Heap.Len() < searchK {
-								s.Heap.Push(c)
-							} else {
-								worst := s.Heap.Peek()
-								if searcher.InternalCandidateBetter(c, worst, descending) {
-									s.Heap.Pop()
-									s.Heap.Push(c)
-								}
-							}
+							s.Heap.TryPushBounded(c, searchK)
 						}
 					}
 				} // end parallel search else block
@@ -977,14 +969,7 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 		for _, c := range s.Results {
 			// Convert model.Candidate back to InternalCandidate for Heap
 			ic := searcher.FromModel(c)
-			if s.Heap.Len() < k {
-				s.Heap.Push(ic)
-			} else {
-				top := s.Heap.Candidates[0]
-				if searcher.InternalCandidateBetter(ic, top, descending) {
-					s.Heap.ReplaceTop(ic)
-				}
-			}
+			s.Heap.TryPushBounded(ic, k)
 		}
 
 		// 5. Extract Final Results

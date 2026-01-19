@@ -622,14 +622,7 @@ func (s *Segment) searchInternal(ctx context.Context, query []float32, k int, l 
 		}
 
 		c := searcher.InternalCandidate{SegmentID: uint32(s.ID()), RowID: id, Score: dist, Approx: true}
-		if sc.Heap.Len() < k {
-			sc.Heap.Push(c)
-		} else {
-			top := sc.Heap.Candidates[0]
-			if searcher.InternalCandidateBetter(c, top, sc.Heap.Descending()) {
-				sc.Heap.ReplaceTop(c)
-			}
-		}
+		sc.Heap.TryPushBounded(c, k)
 	}
 
 	// Reset heap for local search if we were not passed a context?

@@ -130,7 +130,7 @@ func TestMemTable_Search(t *testing.T) {
 	err = mt.Search(ctx, q, 2, nil, model.SearchOptions{}, s)
 	require.NoError(t, err)
 
-	cands := s.Heap.GetCandidates()
+	cands := s.Heap.HeapView()
 	assert.Len(t, cands, 2)
 
 	// Best is 0 (score ~0), Next is 1 (score ~2).
@@ -145,7 +145,7 @@ func TestMemTable_Search(t *testing.T) {
 	s.Heap.Reset(false)
 	err = mt.Search(ctx, q, 2, nil, model.SearchOptions{}, s)
 	require.NoError(t, err)
-	cands = s.Heap.GetCandidates()
+	cands = s.Heap.HeapView()
 	// Should now be 1 and 2
 	assert.Equal(t, 2, len(cands))
 	// 2 is worse than 1.

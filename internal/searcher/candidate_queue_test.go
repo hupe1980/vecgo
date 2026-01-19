@@ -125,7 +125,7 @@ func TestCandidateHeap(t *testing.T) {
 		h.Push(InternalCandidate{Score: 0.9})
 		h.Push(InternalCandidate{Score: 0.5})
 
-		cands := h.GetCandidates()
+		cands := h.HeapView()
 		if len(cands) != 3 {
 			t.Errorf("expected 3 candidates, got %d", len(cands))
 		}
@@ -302,6 +302,94 @@ func TestCandidateHeap(t *testing.T) {
 		// Worse = larger ID
 		if !InternalCandidateWorse(c4, c3, false) {
 			t.Error("same score, larger ID should be worse")
+		}
+	})
+
+	t.Run("TryPushBounded", func(t *testing.T) {
+		h := NewCandidateHeap(10, false) // L2: smaller is better
+
+		// Fill to k=5
+		for i := 0; i < 5; i++ {
+			inserted := h.TryPushBounded(InternalCandidate{Score: float32(10 + i)}, 5)
+			if !inserted {
+				t.Errorf("should accept candidate when len < k")
+			}
+		}
+		if h.Len() != 5 {
+			t.Errorf("expected len 5, got %d", h.Len())
+		}
+
+		// Worst (root) should be 14 (largest score for L2)
+		if h.Peek().Score != 14 {
+			t.Errorf("expected worst=14, got %v", h.Peek().Score)
+		}
+
+		// Try to push worse candidate (score=20) - should be rejected
+		if h.TryPushBounded(InternalCandidate{Score: 20}, 5) {
+			t.Error("should reject candidate worse than root")
+		}
+		if h.Len() != 5 {
+			t.Errorf("len should still be 5, got %d", h.Len())
+		}
+
+		// Try to push better candidate (score=5) - should replace root
+		if !h.TryPushBounded(InternalCandidate{Score: 5}, 5) {
+			t.Error("should accept candidate better than root")
+		}
+
+		// New worst should be 13 (14 was evicted, 5 is best)
+		if h.Peek().Score != 13 {
+			t.Errorf("expected new worst=13, got %v", h.Peek().Score)
+		}
+	})
+
+	t.Run("SortedResults", func(t *testing.T) {
+		h := NewCandidateHeap(10, false) // L2: smaller is better
+
+		h.Push(InternalCandidate{Score: 5, RowID: 1})
+		h.Push(InternalCandidate{Score: 1, RowID: 2})
+		h.Push(InternalCandidate{Score: 9, RowID: 3})
+		h.Push(InternalCandidate{Score: 3, RowID: 4})
+		h.Push(InternalCandidate{Score: 7, RowID: 5})
+
+		var dst []InternalCandidate
+		sorted := h.SortedResults(dst)
+
+		if len(sorted) != 5 {
+			t.Fatalf("expected 5 results, got %d", len(sorted))
+		}
+
+		// Should be sorted best-first (ascending for L2)
+		expected := []float32{1, 3, 5, 7, 9}
+		for i, want := range expected {
+			if sorted[i].Score != want {
+				t.Errorf("sorted[%d]: expected %.0f, got %.0f", i, want, sorted[i].Score)
+			}
+		}
+
+		// Original heap should be unchanged
+		if h.Len() != 5 {
+			t.Errorf("heap len should still be 5, got %d", h.Len())
+		}
+	})
+
+	t.Run("SortedResults_Descending", func(t *testing.T) {
+		h := NewCandidateHeap(10, true) // Dot: larger is better
+
+		h.Push(InternalCandidate{Score: 5, RowID: 1})
+		h.Push(InternalCandidate{Score: 1, RowID: 2})
+		h.Push(InternalCandidate{Score: 9, RowID: 3})
+		h.Push(InternalCandidate{Score: 3, RowID: 4})
+		h.Push(InternalCandidate{Score: 7, RowID: 5})
+
+		sorted := h.SortedResults(nil)
+
+		// Should be sorted best-first (descending for Dot)
+		expected := []float32{9, 7, 5, 3, 1}
+		for i, want := range expected {
+			if sorted[i].Score != want {
+				t.Errorf("sorted[%d]: expected %.0f, got %.0f", i, want, sorted[i].Score)
+			}
 		}
 	})
 }

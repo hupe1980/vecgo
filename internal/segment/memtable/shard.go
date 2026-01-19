@@ -339,29 +339,12 @@ func (s *shard) Search(ctx context.Context, q []float32, k int, filter segment.F
 		// Track candidates evaluated
 		sr.FilterGateStats.CandidatesEvaluated++
 
-		if sr.Heap.Len() < k {
-			sr.Heap.Push(searcher.InternalCandidate{
-				SegmentID: uint32(s.id),
-				RowID:     globalRowID,
-				Score:     item.Distance,
-				Approx:    true,
-			})
-		} else {
-			top := sr.Heap.Candidates[0]
-			if searcher.InternalCandidateBetter(searcher.InternalCandidate{
-				SegmentID: uint32(s.id),
-				RowID:     globalRowID,
-				Score:     item.Distance,
-				Approx:    true,
-			}, top, sr.Heap.Descending()) {
-				sr.Heap.ReplaceTop(searcher.InternalCandidate{
-					SegmentID: uint32(s.id),
-					RowID:     globalRowID,
-					Score:     item.Distance,
-					Approx:    true,
-				})
-			}
-		}
+		sr.Heap.TryPushBounded(searcher.InternalCandidate{
+			SegmentID: uint32(s.id),
+			RowID:     globalRowID,
+			Score:     item.Distance,
+			Approx:    true,
+		}, k)
 	}
 
 	return nil

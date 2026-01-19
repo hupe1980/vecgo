@@ -452,7 +452,7 @@ func (h *HNSW) setConnections(g *graph, id model.RowID, layer int, conns []Neigh
 	return node.ReplaceConnections(g.arena, layer, conns, h.maxConnectionsPerLayer, h.maxConnectionsLayer0)
 }
 
-func (h *HNSW) addConnection(ctx context.Context, s *searcher.Searcher, scratch *scratch, g *graph, sourceID, targetID model.RowID, level int, dist float32) error {
+func (h *HNSW) addConnection(s *searcher.Searcher, scratch *scratch, g *graph, sourceID, targetID model.RowID, level int, dist float32) error {
 	g.shardedLocks[uint64(sourceID)%uint64(len(g.shardedLocks))].Lock()
 	defer g.shardedLocks[uint64(sourceID)%uint64(len(g.shardedLocks))].Unlock()
 
@@ -495,7 +495,7 @@ func (h *HNSW) addConnection(ctx context.Context, s *searcher.Searcher, scratch 
 		return h.addConnectionSimple(g, sourceID, level, conns, targetID, dist)
 	}
 
-	return h.addConnectionPrune(ctx, s, scratch, g, sourceID, level, conns, targetID, dist, maxM)
+	return h.addConnectionPrune(s, scratch, g, sourceID, level, conns, targetID, dist, maxM)
 }
 
 func (h *HNSW) addConnectionSimple(g *graph, sourceID model.RowID, level int, conns []Neighbor, targetID model.RowID, dist float32) error {
@@ -517,7 +517,7 @@ func (h *HNSW) addConnectionSimple(g *graph, sourceID model.RowID, level int, co
 	return h.setConnections(g, sourceID, level, newConns)
 }
 
-func (h *HNSW) addConnectionPrune(ctx context.Context, s *searcher.Searcher, scratch *scratch, g *graph, sourceID model.RowID, level int, conns []Neighbor, targetID model.RowID, dist float32, maxM int) error {
+func (h *HNSW) addConnectionPrune(s *searcher.Searcher, scratch *scratch, g *graph, sourceID model.RowID, level int, conns []Neighbor, targetID model.RowID, dist float32, maxM int) error {
 	// Prune
 	candidates := s.Candidates
 	candidates.Reset()
@@ -786,7 +786,7 @@ func (h *HNSW) insert(ctx context.Context, g *graph, v []float32, id model.RowID
 		}
 	}
 
-	wasFirst, err := h.performInsertion(ctx, g, id, vec, layer, distFunc)
+	wasFirst, err := h.performInsertion(g, id, vec, layer, distFunc)
 	if err != nil {
 		return 0, err
 	}
@@ -854,7 +854,7 @@ func (h *HNSW) determineLayer(id model.RowID, layer int, useProvidedID bool) int
 	return int(math.Floor(-math.Log(r) * h.layerMultiplier))
 }
 
-func (h *HNSW) performInsertion(ctx context.Context, g *graph, id model.RowID, vec []float32, layer int, distFunc DistFunc) (bool, error) {
+func (h *HNSW) performInsertion(g *graph, id model.RowID, vec []float32, layer int, distFunc DistFunc) (bool, error) {
 	retries := 0
 	for {
 		// Handle First Node
@@ -868,7 +868,7 @@ func (h *HNSW) performInsertion(ctx context.Context, g *graph, id model.RowID, v
 		}
 
 		// Insert into Graph
-		err := h.insertNode(ctx, g, id, vec, layer, distFunc)
+		err := h.insertNode(g, id, vec, layer, distFunc)
 		if errors.Is(err, ErrEntryPointDeleted) {
 			retries++
 			if retries > 10 {
@@ -902,7 +902,7 @@ func (h *HNSW) updateEntryPoint(g *graph, id model.RowID, layer int) {
 }
 
 // insertNode performs the graph traversal and linking.
-func (h *HNSW) insertNode(ctx context.Context, g *graph, id model.RowID, vec []float32, layer int, distFunc DistFunc) error {
+func (h *HNSW) insertNode(g *graph, id model.RowID, vec []float32, layer int, distFunc DistFunc) error {
 	epID := g.entryPointAtomic.Load()
 
 	// Handle case where entry point was deleted concurrently
@@ -976,7 +976,7 @@ func (h *HNSW) insertNode(ctx context.Context, g *graph, id model.RowID, vec []f
 		}
 
 		for _, neighbor := range neighbors {
-			if err := h.addConnection(ctx, s, scratch, g, neighbor.Node, id, level, neighbor.Distance); err != nil {
+			if err := h.addConnection(s, scratch, g, neighbor.Node, id, level, neighbor.Distance); err != nil {
 				return err
 			}
 		}
@@ -1144,7 +1144,7 @@ func (h *HNSW) searchLayer(s *searcher.Searcher, g *graph, query []float32, epID
 
 	// Low selectivity or unknown: use predicate-aware for aggressive pruning.
 	// Predicate-aware excels when <10% of nodes pass the filter.
-	h.searchLayerPredicateAware(s, g, query, epID, epDist, level, ef, filter, distFunc)
+	h.searchLayerPredicateAware(s, g, epID, epDist, level, ef, filter, distFunc)
 }
 
 // searchLayerWithPostFilter runs unfiltered search, then filters results.
@@ -1406,7 +1406,7 @@ func (h *HNSW) searchLayerUnfiltered(s *searcher.Searcher, g *graph, query []flo
 // 5. Filter gate tracking for query feedback and adaptive traversal
 // 6. Vector prefetching to hide memory latency for distance computation
 // 7. Frozen-mode plain loads when arena is frozen for 15-25% QPS improvement
-func (h *HNSW) searchLayerPredicateAware(s *searcher.Searcher, g *graph, query []float32, epID model.RowID, epDist float32, level int, ef int, filter segment.Filter, distFunc DistFunc) {
+func (h *HNSW) searchLayerPredicateAware(s *searcher.Searcher, g *graph, epID model.RowID, epDist float32, level int, ef int, filter segment.Filter, distFunc DistFunc) {
 	h.initializeSearch(s, epID)
 	h.processEntryPoint(s, g, epID, epDist, filter)
 
@@ -1805,7 +1805,7 @@ func (h *HNSW) searchExecute(ctx context.Context, s *searcher.Searcher, q []floa
 	s.Candidates.EnsureCapacity(ef)
 	s.ScratchCandidates.EnsureCapacity(ef * 2)
 
-	currID, currDist := h.greedySearch(g, q, model.RowID(epID), distFunc)
+	currID, currDist := h.greedySearch(g, model.RowID(epID), distFunc)
 
 	// 2. Search layer 0 with pre-filtering
 	var filter segment.Filter
@@ -1880,7 +1880,7 @@ func (h *HNSW) determineEF(k int, opts *SearchOptions, totalCount int64) int {
 	return ef
 }
 
-func (h *HNSW) greedySearch(g *graph, q []float32, epID model.RowID, distFunc DistFunc) (model.RowID, float32) {
+func (h *HNSW) greedySearch(g *graph, epID model.RowID, distFunc DistFunc) (model.RowID, float32) {
 	// 1. Greedy to layer 0
 	currID := epID
 	currDist := distFunc(currID)
@@ -1966,7 +1966,7 @@ func (h *HNSW) KNNSearchStream(ctx context.Context, q []float32, k int, opts *Se
 
 		ef := h.determineEF(k, opts, g.countAtomic.Load())
 
-		currID, currDist := h.greedySearch(g, q, model.RowID(epID), distFunc)
+		currID, currDist := h.greedySearch(g, model.RowID(epID), distFunc)
 
 		// 2. Search layer 0 with pre-filtering
 		var filter segment.Filter

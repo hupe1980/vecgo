@@ -86,7 +86,6 @@ func (e *Engine) searchSegmentWithCursor(
 	s *searcher.Searcher,
 	query []float32,
 	searchK int,
-	descending bool,
 ) (bool, error) {
 	// Check selectivity
 	if cursor.IsAll() {
@@ -181,15 +180,7 @@ func (e *Engine) searchSegmentWithCursor(
 				Approx:    false,
 			}
 
-			if s.Heap.Len() < searchK {
-				s.Heap.Push(c)
-			} else {
-				worst := s.Heap.Peek()
-				if searcher.InternalCandidateBetter(c, worst, descending) {
-					s.Heap.Pop()
-					s.Heap.Push(c)
-				}
-			}
+			s.Heap.TryPushBounded(c, searchK)
 
 			return true
 		})
@@ -235,15 +226,7 @@ func (e *Engine) searchSegmentWithCursor(
 				Approx:    false,
 			}
 
-			if s.Heap.Len() < searchK {
-				s.Heap.Push(c)
-			} else {
-				worst := s.Heap.Peek()
-				if searcher.InternalCandidateBetter(c, worst, descending) {
-					s.Heap.Pop()
-					s.Heap.Push(c)
-				}
-			}
+			s.Heap.TryPushBounded(c, searchK)
 		}
 
 		return nil
