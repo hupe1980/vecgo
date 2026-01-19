@@ -869,6 +869,110 @@ func (s *Segment) Fetch(ctx context.Context, rows []uint32, cols []string) (segm
 	return batch, nil
 }
 
+// FetchInto populates the provided FetchArena with data for the given rows.
+// This is the zero-allocation hot path for batch fetch operations.
+//
+// The arena must be Reset() and have sufficient capacity before calling.
+// The returned RecordBatch shares memory with the arena and is only valid
+// until the arena is Reset() or returned to the pool.
+//
+// This method eliminates per-batch allocations by:
+//  1. Reusing slice headers from the arena
+//  2. Reusing backing arrays for vectors
+//  3. Reusing pooled Metadata maps via UnmarshalBinaryInto
+//  4. Sharing payload data from the arena's backing buffer
+func (s *Segment) FetchInto(ctx context.Context, rows []uint32, cols []string, arena *segment.FetchArena) (*segment.SimpleRecordBatch, error) {
+	fetchVectors := cols == nil
+	fetchMetadata := cols == nil
+	fetchPayloads := cols == nil
+
+	if cols != nil {
+		fetchVectors = false
+		for _, c := range cols {
+			switch c {
+			case "vector":
+				fetchVectors = true
+			case "metadata":
+				fetchMetadata = true
+			case "payload":
+				fetchPayloads = true
+			}
+		}
+	}
+
+	dim := int(s.header.Dim)
+	batchSize := len(rows)
+
+	// Ensure arena has capacity and reset for this batch
+	arena.EnsureCapacity(batchSize, dim)
+	arena.Reset(batchSize)
+	arena.SetDimension(dim)
+
+	// Pre-size slices
+	arena.IDs = arena.IDs[:batchSize]
+	if fetchVectors {
+		arena.Vectors = arena.Vectors[:batchSize]
+	}
+	if fetchMetadata {
+		arena.Metadatas = arena.Metadatas[:batchSize]
+	}
+	if fetchPayloads {
+		arena.Payloads = arena.Payloads[:batchSize]
+	}
+
+	for i, rowID := range rows {
+		if rowID >= s.header.RowCount {
+			return nil, fmt.Errorf("rowID %d out of bounds", rowID)
+		}
+
+		// Fetch ID (zero-copy from mmap)
+		arena.IDs[i] = s.ids[rowID]
+
+		// Fetch Vector
+		if fetchVectors {
+			vec := s.vectors[int(rowID)*dim : (int(rowID)+1)*dim]
+			// Use arena's backing array
+			v := arena.AllocVectorSlice(i)
+			copy(v, vec)
+			arena.Vectors[i] = v
+		}
+
+		// Fetch Metadata (zero-alloc via pooled map)
+		if fetchMetadata && len(s.metadataOffsets) > 0 && rowID < uint32(len(s.metadataOffsets)-1) {
+			start := s.metadataOffsets[rowID]
+			end := s.metadataOffsets[rowID+1]
+			size := end - start
+			if size > 0 {
+				mdBytes := s.metadataBlob[start:end]
+				// Acquire pooled metadata map
+				md := arena.AcquireMetadata(i)
+				if err := md.UnmarshalBinaryInto(mdBytes); err != nil {
+					return nil, fmt.Errorf("failed to unmarshal metadata for row %d: %w", rowID, err)
+				}
+				arena.Metadatas[i] = *md
+			}
+		}
+
+		// Fetch Payload (zero-alloc via arena backing)
+		if fetchPayloads && s.payloadBlob != nil && rowID < s.payloadCount {
+			start := s.payloadOffsets[rowID]
+			end := s.payloadOffsets[rowID+1]
+			size := end - start
+			// Offset in file is 4 (count) + (count+1)*8 (offsets) + start
+			dataOffset := 4 + uint64(s.payloadCount+1)*8 + start
+
+			// Use arena's backing array instead of allocating
+			p := arena.AllocPayloadSlice(int(size))
+			if _, err := s.payloadBlob.ReadAt(ctx, p, int64(dataOffset)); err != nil {
+				return nil, err
+			}
+			arena.Payloads[i] = p
+		}
+	}
+
+	return arena.BuildRecordBatch(fetchVectors, fetchMetadata, fetchPayloads), nil
+}
+
 func (s *Segment) FetchIDs(ctx context.Context, rows []uint32, dst []model.ID) error {
 	if len(dst) != len(rows) {
 		return fmt.Errorf("dst length mismatch")

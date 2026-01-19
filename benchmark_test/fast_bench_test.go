@@ -123,6 +123,95 @@ func BenchmarkFastSearch(b *testing.B) {
 	}
 }
 
+// BenchmarkFastSearchWithData benchmarks search WITH metadata/vectors returned.
+// This exercises the FetchInto/Clone path which is the allocation hotspot.
+func BenchmarkFastSearchWithData(b *testing.B) {
+	ctx := context.Background()
+
+	fixtureName := "uniform_128d_50k"
+	if testing.Short() {
+		fixtureName = "uniform_128d_10k"
+	}
+
+	if !FixtureExists(fixtureName) {
+		b.Skipf("fixture %q not found", fixtureName)
+	}
+
+	db, err := OpenFixture(ctx, fixtureName)
+	if err != nil {
+		b.Fatalf("open fixture: %v", err)
+	}
+	defer db.Close()
+
+	data, err := LoadFixtureData(fixtureName)
+	if err != nil {
+		b.Fatalf("load fixture data: %v", err)
+	}
+
+	queries := data.Queries
+	const k = 10
+
+	// Test different data inclusion patterns
+	// Default includes metadata+payload, WithoutData excludes all, WithVector adds vector
+	b.Run("id_only", func(b *testing.B) {
+		b.ReportAllocs()
+		b.ResetTimer()
+
+		for i := 0; i < b.N; i++ {
+			q := queries[i%len(queries)]
+			results, err := db.Search(ctx, q, k, vecgo.WithoutData())
+			if err != nil {
+				b.Fatal(err)
+			}
+			if len(results) == 0 {
+				b.Fatal("no results")
+			}
+		}
+
+		b.StopTimer()
+		b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "qps")
+	})
+
+	b.Run("with_metadata_payload", func(b *testing.B) {
+		// Default behavior - includes metadata and payload
+		b.ReportAllocs()
+		b.ResetTimer()
+
+		for i := 0; i < b.N; i++ {
+			q := queries[i%len(queries)]
+			results, err := db.Search(ctx, q, k)
+			if err != nil {
+				b.Fatal(err)
+			}
+			if len(results) == 0 {
+				b.Fatal("no results")
+			}
+		}
+
+		b.StopTimer()
+		b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "qps")
+	})
+
+	b.Run("with_vector", func(b *testing.B) {
+		b.ReportAllocs()
+		b.ResetTimer()
+
+		for i := 0; i < b.N; i++ {
+			q := queries[i%len(queries)]
+			results, err := db.Search(ctx, q, k, vecgo.WithVector())
+			if err != nil {
+				b.Fatal(err)
+			}
+			if len(results) == 0 {
+				b.Fatal("no results")
+			}
+		}
+
+		b.StopTimer()
+		b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "qps")
+	})
+}
+
 // BenchmarkFastBatchSearch benchmarks batch search performance.
 func BenchmarkFastBatchSearch(b *testing.B) {
 	ctx := context.Background()

@@ -9,6 +9,13 @@ import (
 	"github.com/hupe1980/vecgo/model"
 )
 
+// Column name constants for Fetch operations.
+const (
+	ColVector   = "vector"
+	ColMetadata = "metadata"
+	ColPayload  = "payload"
+)
+
 // AccessPattern hints for memory access.
 type AccessPattern int
 
@@ -88,6 +95,12 @@ type Segment interface {
 
 	// Fetch resolves RowIDs to payload columns.
 	Fetch(ctx context.Context, rows []uint32, cols []string) (RecordBatch, error)
+
+	// FetchInto resolves RowIDs to payload columns using a pre-allocated arena.
+	// This is the zero-allocation hot path for batch fetch operations.
+	// The returned RecordBatch shares memory with the arena and is only valid
+	// until the arena is Reset() or returned to the pool.
+	FetchInto(ctx context.Context, rows []uint32, cols []string, arena *FetchArena) (*SimpleRecordBatch, error)
 
 	// FetchIDs resolves RowIDs to IDs.
 	// Results are written to dst.

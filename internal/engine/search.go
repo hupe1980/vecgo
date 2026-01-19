@@ -1035,25 +1035,47 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 						s.Results[i+k].ID = s.ScratchForeignIDs[k]
 					}
 				} else {
-					batch, fErr := seg.Fetch(ctx, s.ScratchIDs, cols)
+					// Use FetchInto with pooled arena for efficient deserialization.
+					// Arena provides pre-sized maps and backing arrays to reduce allocations
+					// during unmarshaling. We then COPY to user-owned memory for safe ownership.
+					arena := segment.GetFetchArena()
+					arena.Reset(countBatch)
+					arena.EnsureCapacity(countBatch, e.dim)
+					arena.SetDimension(e.dim)
+
+					batch, fErr := seg.FetchInto(ctx, s.ScratchIDs, cols, arena)
 					if fErr != nil {
+						segment.PutFetchArena(arena)
 						err = fErr
 						yield(model.Candidate{}, err)
 						return
 					}
 
+					// Copy arena data to user-owned memory for safe ownership.
+					// Arena is returned to pool immediately after copy.
 					for k := 0; k < countBatch; k++ {
 						s.Results[i+k].ID = batch.ID(k)
 						if options.IncludeVector {
-							s.Results[i+k].Vector = batch.Vector(k)
+							// Clone vector - user needs to own this
+							if src := batch.Vector(k); src != nil {
+								s.Results[i+k].Vector = slices.Clone(src)
+							}
 						}
 						if options.IncludeMetadata {
-							s.Results[i+k].Metadata = batch.Metadata(k)
+							// Clone metadata map - user needs to own this
+							if src := batch.Metadata(k); src != nil {
+								s.Results[i+k].Metadata = src.Clone()
+							}
 						}
 						if options.IncludePayload {
-							s.Results[i+k].Payload = batch.Payload(k)
+							// Clone payload - user needs to own this
+							if src := batch.Payload(k); src != nil {
+								s.Results[i+k].Payload = slices.Clone(src)
+							}
 						}
 					}
+					// Return arena to pool immediately - all data has been copied
+					segment.PutFetchArena(arena)
 				}
 			}
 			i = j

@@ -419,11 +419,11 @@ func (s *shard) Fetch(ctx context.Context, rows []uint32, cols []string) (segmen
 		fetchVectors = false
 		for _, c := range cols {
 			switch c {
-			case "vector":
+			case segment.ColVector:
 				fetchVectors = true
-			case "metadata":
+			case segment.ColMetadata:
 				fetchMetadata = true
-			case "payload":
+			case segment.ColPayload:
 				fetchPayload = true
 			}
 		}
@@ -475,6 +475,92 @@ func (s *shard) Fetch(ctx context.Context, rows []uint32, cols []string) (segmen
 	}
 
 	return batch, nil
+}
+
+// FetchInto resolves RowIDs to payload columns using a pre-allocated arena.
+// For memtable, this is similar to Fetch since the data is already in-memory.
+// The arena is used for consistency with the interface but memtable benefits less
+// from arena pooling since vectors are already zero-copy from columnar storage.
+func (s *shard) FetchInto(ctx context.Context, rows []uint32, cols []string, arena *segment.FetchArena) (*segment.SimpleRecordBatch, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.idx == nil {
+		return nil, fmt.Errorf("memtable is closed")
+	}
+
+	fetchVectors := cols == nil
+	fetchMetadata := cols == nil
+	fetchPayload := cols == nil
+
+	if cols != nil {
+		fetchVectors = false
+		for _, c := range cols {
+			switch c {
+			case segment.ColVector:
+				fetchVectors = true
+			case segment.ColMetadata:
+				fetchMetadata = true
+			case segment.ColPayload:
+				fetchPayload = true
+			}
+		}
+	}
+
+	batchSize := len(rows)
+
+	// Ensure arena has capacity
+	arena.EnsureCapacity(batchSize, s.dim)
+	arena.Reset(batchSize)
+	arena.SetDimension(s.dim)
+
+	// Pre-size slices
+	arena.IDs = arena.IDs[:batchSize]
+	if fetchVectors {
+		arena.Vectors = arena.Vectors[:batchSize]
+	}
+	if fetchMetadata {
+		arena.Metadatas = arena.Metadatas[:batchSize]
+	}
+	if fetchPayload {
+		arena.Payloads = arena.Payloads[:batchSize]
+	}
+
+	for i, rowID := range rows {
+		if id, ok := s.ids.Get(rowID); ok {
+			arena.IDs[i] = id
+		} else {
+			return nil, fmt.Errorf("rowID %d out of bounds (count=%d, shard=%d)", rowID, uint32(s.ids.Count()), s.shardIdx)
+		}
+
+		if fetchVectors {
+			vec, ok := s.vectors.GetVector(model.RowID(rowID))
+			if !ok {
+				return nil, fmt.Errorf("vector not found for rowID %d", rowID)
+			}
+			// Memtable vectors are already zero-copy, no need to use arena backing
+			arena.Vectors[i] = vec
+		}
+
+		if fetchMetadata {
+			if interned, ok := s.metadata.Get(rowID); ok && interned != nil {
+				// Use arena's pooled metadata map
+				md := arena.AcquireMetadata(i)
+				for k, v := range interned {
+					(*md)[k.Value()] = v
+				}
+				arena.Metadatas[i] = *md
+			}
+		}
+
+		if fetchPayload {
+			if pl, ok := s.payloads.Get(rowID); ok {
+				arena.Payloads[i] = pl
+			}
+		}
+	}
+
+	return arena.BuildRecordBatch(fetchVectors, fetchMetadata, fetchPayload), nil
 }
 
 // FetchIntoReqs fetches data for the given fetch requests and writes directly into the provided batch.

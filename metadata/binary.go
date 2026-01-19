@@ -71,6 +71,75 @@ func (m *Metadata) UnmarshalBinary(data []byte) error {
 	return nil
 }
 
+// UnmarshalBinaryInto deserializes metadata into an existing map.
+// This eliminates the map allocation when the caller provides a pre-allocated map.
+// The existing map is cleared before populating.
+//
+// This is the zero-allocation path for high-throughput batch operations.
+// Use with FetchArena.AcquireMetadata() for best performance.
+func (m *Metadata) UnmarshalBinaryInto(data []byte) error {
+	n, err := m.unmarshalBinaryIntoN(data)
+	if err != nil {
+		return err
+	}
+	if n != len(data) {
+		return errors.New("metadata: trailing data after unmarshal")
+	}
+	return nil
+}
+
+// unmarshalBinaryIntoN decodes Metadata into an existing map.
+// Unlike unmarshalBinaryN, this does NOT allocate a new map.
+// The existing map is cleared first, preserving capacity.
+func (m *Metadata) unmarshalBinaryIntoN(data []byte) (int, error) {
+	if len(data) == 0 {
+		return 0, errShortBuffer
+	}
+
+	count, n := binary.Uvarint(data)
+	if n <= 0 {
+		return 0, errInvalidLength
+	}
+	consumed := n
+	data = data[n:]
+
+	// Clear existing map but preserve capacity
+	if *m != nil {
+		clear(*m)
+	} else {
+		*m = make(Metadata, count)
+	}
+
+	for range count {
+		// Read key length
+		kLen, n := binary.Uvarint(data)
+		if n <= 0 {
+			return 0, errInvalidLength
+		}
+		consumed += n
+		data = data[n:]
+
+		// Read key
+		if uint64(len(data)) < kLen {
+			return 0, errShortBuffer
+		}
+		key := string(data[:kLen])
+		consumed += int(kLen)
+		data = data[kLen:]
+
+		// Read value
+		val, bytesRead, err := parseValueN(data)
+		if err != nil {
+			return 0, err
+		}
+		consumed += bytesRead
+		data = data[bytesRead:]
+
+		(*m)[key] = val
+	}
+	return consumed, nil
+}
+
 // unmarshalBinaryN decodes Metadata from data and returns the number of bytes consumed.
 // This is the streaming path that allows reading from a larger buffer.
 func (m *Metadata) unmarshalBinaryN(data []byte) (int, error) {

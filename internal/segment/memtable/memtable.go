@@ -470,11 +470,11 @@ func (m *MemTable) Fetch(ctx context.Context, rows []uint32, cols []string) (seg
 		fetchVectors = false
 		for _, c := range cols {
 			switch c {
-			case "vector":
+			case segment.ColVector:
 				fetchVectors = true
-			case "metadata":
+			case segment.ColMetadata:
 				fetchMetadata = true
-			case "payload":
+			case segment.ColPayload:
 				fetchPayload = true
 			}
 		}
@@ -536,6 +536,108 @@ func (m *MemTable) Fetch(ctx context.Context, rows []uint32, cols []string) (seg
 	fetchShardReqPool.Put(shardReqsPtr)
 
 	return resBatch, nil
+}
+
+// FetchInto resolves RowIDs to payload columns using a pre-allocated arena.
+// For MemTable, this dispatches to shards and uses the arena's pooled resources.
+func (m *MemTable) FetchInto(ctx context.Context, rows []uint32, cols []string, arena *segment.FetchArena) (*segment.SimpleRecordBatch, error) {
+	total := len(rows)
+
+	// Detect columns
+	fetchVectors := cols == nil
+	fetchMetadata := cols == nil
+	fetchPayload := cols == nil
+	if cols != nil {
+		fetchVectors = false
+		for _, c := range cols {
+			switch c {
+			case segment.ColVector:
+				fetchVectors = true
+			case segment.ColMetadata:
+				fetchMetadata = true
+			case segment.ColPayload:
+				fetchPayload = true
+			}
+		}
+	}
+
+	// Get dimension from first shard
+	dim := m.shards[0].dim
+
+	// Ensure arena has capacity and reset
+	arena.EnsureCapacity(total, dim)
+	arena.Reset(total)
+	arena.SetDimension(dim)
+
+	// Pre-size slices
+	arena.IDs = arena.IDs[:total]
+	if fetchVectors {
+		arena.Vectors = arena.Vectors[:total]
+	}
+	if fetchMetadata {
+		arena.Metadatas = arena.Metadatas[:total]
+	}
+	if fetchPayload {
+		arena.Payloads = arena.Payloads[:total]
+	}
+
+	// For MemTable, we need to iterate rows directly since shard dispatch is complex.
+	// This is still more efficient than regular Fetch because we reuse arena memory.
+	for i, r := range rows {
+		sIdx := r >> 28
+		if int(sIdx) >= shardCount {
+			return nil, fmt.Errorf("invalid rowID %d", r)
+		}
+		localRowID := r & uint32(rowIdMask)
+
+		shard := m.shards[sIdx]
+		shard.mu.RLock()
+
+		if shard.idx == nil {
+			shard.mu.RUnlock()
+			return nil, fmt.Errorf("memtable is closed")
+		}
+
+		// Fetch ID
+		if id, ok := shard.ids.Get(localRowID); ok {
+			arena.IDs[i] = id
+		} else {
+			shard.mu.RUnlock()
+			return nil, fmt.Errorf("rowID %d out of bounds", r)
+		}
+
+		// Fetch Vector (zero-copy from memtable storage)
+		if fetchVectors {
+			vec, ok := shard.vectors.GetVector(model.RowID(localRowID))
+			if !ok {
+				shard.mu.RUnlock()
+				return nil, fmt.Errorf("vector not found for rowID %d", r)
+			}
+			arena.Vectors[i] = vec
+		}
+
+		// Fetch Metadata using arena's pooled map
+		if fetchMetadata {
+			if interned, ok := shard.metadata.Get(localRowID); ok && interned != nil {
+				md := arena.AcquireMetadata(i)
+				for k, v := range interned {
+					(*md)[k.Value()] = v
+				}
+				arena.Metadatas[i] = *md
+			}
+		}
+
+		// Fetch Payload (zero-copy from memtable storage)
+		if fetchPayload {
+			if pl, ok := shard.payloads.Get(localRowID); ok {
+				arena.Payloads[i] = pl
+			}
+		}
+
+		shard.mu.RUnlock()
+	}
+
+	return arena.BuildRecordBatch(fetchVectors, fetchMetadata, fetchPayload), nil
 }
 
 func (m *MemTable) FetchIDs(ctx context.Context, rows []uint32, dst []model.ID) error {

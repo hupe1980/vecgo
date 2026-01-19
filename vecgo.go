@@ -320,6 +320,20 @@ func WithVector() SearchOption {
 	return engine.WithVector()
 }
 
+// WithMetadata requests metadata to be returned in the search results.
+// Metadata IS included by default. Use WithoutData() to exclude all, then
+// selectively include what you need with WithMetadata(), WithPayload(), etc.
+func WithMetadata() SearchOption {
+	return engine.WithMetadata()
+}
+
+// WithPayload requests payload to be returned in the search results.
+// Payload IS included by default. Use WithoutData() to exclude all, then
+// selectively include what you need with WithMetadata(), WithPayload(), etc.
+func WithPayload() SearchOption {
+	return engine.WithPayload()
+}
+
 // MetricsObserver interfaces for observing engine metrics.
 type MetricsObserver = engine.MetricsObserver
 

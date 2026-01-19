@@ -856,6 +856,115 @@ func (s *Segment) Fetch(ctx context.Context, rows []uint32, cols []string) (segm
 	return batch, nil
 }
 
+// FetchInto resolves RowIDs to payload columns using a pre-allocated arena.
+// This is the zero-allocation hot path for batch fetch operations.
+func (s *Segment) FetchInto(ctx context.Context, rows []uint32, cols []string, arena *segment.FetchArena) (*segment.SimpleRecordBatch, error) {
+	fetchVectors := cols == nil
+	fetchMetadata := cols == nil
+	fetchPayloads := cols == nil
+
+	if cols != nil {
+		fetchVectors = false
+		for _, c := range cols {
+			switch c {
+			case "vector":
+				fetchVectors = true
+			case "metadata":
+				fetchMetadata = true
+			case "payload":
+				fetchPayloads = true
+			}
+		}
+	}
+
+	dim := int(s.header.Dim)
+	batchSize := len(rows)
+
+	// Ensure arena has capacity and reset for this batch
+	arena.EnsureCapacity(batchSize, dim)
+	arena.Reset(batchSize)
+	arena.SetDimension(dim)
+
+	// Pre-size slices
+	arena.IDs = arena.IDs[:batchSize]
+	if fetchVectors {
+		arena.Vectors = arena.Vectors[:batchSize]
+	}
+	if fetchMetadata {
+		arena.Metadatas = arena.Metadatas[:batchSize]
+	}
+	if fetchPayloads {
+		arena.Payloads = arena.Payloads[:batchSize]
+	}
+
+	for i, rowID := range rows {
+		// Periodic context check (every 64 rows)
+		if i&63 == 0 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			default:
+			}
+		}
+
+		if rowID >= s.header.RowCount {
+			return nil, fmt.Errorf("rowID %d out of bounds", rowID)
+		}
+
+		// Fetch ID
+		if id, ok := s.GetID(ctx, rowID); ok {
+			arena.IDs[i] = id
+		} else {
+			return nil, fmt.Errorf("failed to get ID for row %d", rowID)
+		}
+
+		// Fetch Vector
+		if fetchVectors {
+			vec, err := s.Get(ctx, rowID)
+			if err != nil {
+				return nil, err
+			}
+			// Use arena's backing array
+			dst := arena.AllocVectorSlice(i)
+			copy(dst, vec)
+			arena.Vectors[i] = dst
+		}
+
+		// Fetch Metadata (zero-alloc via pooled map)
+		if fetchMetadata {
+			md, err := s.readMetadata(ctx, rowID)
+			if err != nil {
+				return nil, err
+			}
+			// Copy into arena's pooled metadata map
+			if md != nil {
+				pooledMd := arena.AcquireMetadata(i)
+				for k, v := range md {
+					(*pooledMd)[k] = v
+				}
+				arena.Metadatas[i] = *pooledMd
+			}
+		}
+
+		// Fetch Payload
+		// TODO: Optimize with arena.PayloadBacking for batch reads
+		if fetchPayloads && s.payloadBlob != nil && rowID < s.payloadCount {
+			start := s.payloadOffsets[rowID]
+			end := s.payloadOffsets[rowID+1]
+			size := end - start
+			dataOffset := 4 + uint64(s.payloadCount+1)*8 + start
+
+			p := make([]byte, size)
+			if _, err := s.payloadBlob.ReadAt(ctx, p, int64(dataOffset)); err != nil {
+				return nil, err
+			}
+			arena.Payloads[i] = p
+		}
+	}
+
+	return arena.BuildRecordBatch(fetchVectors, fetchMetadata, fetchPayloads), nil
+}
+
 func (s *Segment) FetchIDs(ctx context.Context, rows []uint32, dst []model.ID) error {
 	if len(dst) != len(rows) {
 		return fmt.Errorf("dst length mismatch")

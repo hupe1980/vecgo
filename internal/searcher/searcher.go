@@ -284,6 +284,9 @@ func (s *Searcher) Reset() {
 		s.QueryBitmap.Clear()
 	}
 
+	// Note: FetchArena is managed by the engine via sync.Pool, not by Searcher.
+	// This avoids an import cycle (segment -> searcher -> segment).
+
 	s.OpsPerformed = 0
 	s.FilterGateStats.Reset()
 }
