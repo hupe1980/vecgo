@@ -51,8 +51,10 @@ title: Home
 db, _ := vecgo.<span class="f">Open</span>(ctx, vecgo.<span class="f">Local</span>(<span class="s">"./data"</span>), vecgo.<span class="f">Create</span>(<span class="n">128</span>, vecgo.MetricL2))
 <span class="k">defer</span> db.<span class="f">Close</span>()
 
-payload := []<span class="k">byte</span>(<span class="s">`{"title": "Hello World"}`</span>)
-id, _ := db.<span class="f">Insert</span>(ctx, embedding, metadata, payload)
+rec := vecgo.<span class="f">NewRecord</span>(embedding).
+    <span class="f">WithMetadata</span>(<span class="s">"category"</span>, metadata.<span class="f">String</span>(<span class="s">"tech"</span>)).
+    <span class="f">WithPayload</span>([]<span class="k">byte</span>(<span class="s">`{"title": "Hello World"}`</span>))
+id, _ := db.<span class="f">InsertRecord</span>(ctx, rec)
 db.<span class="f">Commit</span>(ctx) <span class="c">// Durable after commit</span>
 
 results, _ := db.<span class="f">Search</span>(ctx, query, <span class="n">10</span>)
