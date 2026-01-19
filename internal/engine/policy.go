@@ -151,7 +151,7 @@ func (p *LeveledCompactionPolicy) Pick(segments []SegmentStats) *CompactionTask 
 	// 1. Check L0
 	// If L0 has too many files, compact them all into L1.
 	if len(levels[0]) >= p.L0Threshold {
-		var ids []model.SegmentID
+		ids := make([]model.SegmentID, 0, len(levels[0]))
 		// Sort L0 by Age (ID)
 		slices.SortFunc(levels[0], func(a, b SegmentStats) int {
 			return int(a.ID - b.ID)

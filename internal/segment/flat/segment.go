@@ -1084,6 +1084,13 @@ func (s *Segment) EvaluateFilterResult(ctx context.Context, filter *metadata.Fil
 	return imetadata.RowsResult(out), nil
 }
 
+// flatSegmentCursorPool pools flatSegmentCursor to avoid allocations per search.
+var flatSegmentCursorPool = sync.Pool{
+	New: func() any {
+		return &flatSegmentCursor{}
+	},
+}
+
 // FilterCursor returns a push-based cursor for filtered iteration.
 // This is the zero-allocation hot path that avoids Roaring bitmap operations.
 //
@@ -1092,6 +1099,7 @@ func (s *Segment) EvaluateFilterResult(ctx context.Context, filter *metadata.Fil
 //   - Otherwise: falls back to document scanning with lazy filter evaluation
 //
 // The cursor is valid until the segment is closed.
+// IMPORTANT: Call imetadata.ReleaseFilterCursor(cursor) when done.
 func (s *Segment) FilterCursor(filter *metadata.FilterSet) imetadata.FilterCursor {
 	if filter == nil || len(filter.Filters) == 0 {
 		return imetadata.NewAllCursor(s.header.RowCount)
@@ -1099,14 +1107,16 @@ func (s *Segment) FilterCursor(filter *metadata.FilterSet) imetadata.FilterCurso
 
 	// Fast path: use inverted index if available
 	if s.metadataIndex != nil {
-		// Note: Lock is acquired lazily in ForEach() to avoid deadlock
-		// when cursor is inspected (IsEmpty/IsAll) but ForEach is not called
-		return &flatSegmentCursor{
-			index:    s.metadataIndex,
-			segment:  s,
-			filter:   filter,
-			rowCount: s.header.RowCount,
-		}
+		// Get cursor from pool
+		c := flatSegmentCursorPool.Get().(*flatSegmentCursor)
+		c.index = s.metadataIndex
+		c.segment = s
+		c.filter = filter
+		c.rowCount = s.header.RowCount
+		c.initialized = false
+		c.inner = nil
+		c.scratch = nil
+		return c
 	}
 
 	// Slow path: scan metadata blobs with lazy evaluation
@@ -1121,29 +1131,39 @@ func (s *Segment) FilterCursor(filter *metadata.FilterSet) imetadata.FilterCurso
 // The inner cursor is created on first use and cached for subsequent calls.
 // Lock is acquired per-method to avoid deadlock when cursor is inspected
 // but ForEach is not called.
+//
+// This struct is pooled - use Release() to return it to the pool.
 type flatSegmentCursor struct {
 	index    *imetadata.UnifiedIndex
 	segment  *Segment
 	filter   *metadata.FilterSet
 	rowCount uint32
 
-	// Cached inner cursor (created on first use under lock)
-	inner   *imetadata.MatcherCursor
-	scratch *imetadata.MatcherScratch
-	once    sync.Once
+	// Cached inner cursor (created on first use)
+	inner       *imetadata.MatcherCursor
+	scratch     *imetadata.MatcherScratch
+	initialized bool // replaces sync.Once for pooling
+	mu          sync.Mutex
 }
 
 // ensureInner creates the inner cursor under lock on first call.
-// Subsequent calls return immediately (sync.Once guarantees single init).
+// Thread-safe: uses mutex instead of sync.Once to allow pooling.
 func (c *flatSegmentCursor) ensureInner() {
-	c.once.Do(func() {
-		// Get scratch from pool (will be released with cursor)
-		c.scratch = imetadata.GetMatcherScratch()
+	c.mu.Lock()
+	if c.initialized {
+		c.mu.Unlock()
+		return
+	}
 
-		c.index.RLock()
-		defer c.index.RUnlock()
-		c.inner = c.index.FilterCursorWithMatcher(c.filter, c.rowCount, c.scratch)
-	})
+	// Get scratch from pool (will be released with cursor)
+	c.scratch = imetadata.GetMatcherScratch()
+
+	c.index.RLock()
+	c.inner = c.index.FilterCursorWithMatcher(c.filter, c.rowCount, c.scratch)
+	c.index.RUnlock()
+
+	c.initialized = true
+	c.mu.Unlock()
 }
 
 func (c *flatSegmentCursor) ForEach(fn func(rowID uint32) bool) {
@@ -1166,8 +1186,8 @@ func (c *flatSegmentCursor) IsAll() bool {
 	return c.inner.IsAll()
 }
 
-// Release returns the cursor resources to pools.
-// Should be called when done with the cursor.
+// Release returns the cursor and its resources to pools.
+// Safe to call multiple times. Should be called when done with the cursor.
 func (c *flatSegmentCursor) Release() {
 	if c.inner != nil {
 		c.inner.Release()
@@ -1177,6 +1197,13 @@ func (c *flatSegmentCursor) Release() {
 		imetadata.PutMatcherScratch(c.scratch)
 		c.scratch = nil
 	}
+	// Clear references to allow GC
+	c.index = nil
+	c.segment = nil
+	c.filter = nil
+	c.initialized = false
+	// Return to pool
+	flatSegmentCursorPool.Put(c)
 }
 
 // flatScanCursor implements lazy document scanning when no index is available.
