@@ -3,6 +3,7 @@ package engine
 import (
 	"testing"
 
+	"github.com/hupe1980/vecgo/distance"
 	"github.com/hupe1980/vecgo/internal/manifest"
 	"github.com/hupe1980/vecgo/model"
 )
@@ -61,7 +62,7 @@ func TestSegmentScheduler_Basic(t *testing.T) {
 		return statsMap[id]
 	}
 
-	scheduler := NewSegmentScheduler(statsProvider, nil, 0, 128)
+	scheduler := NewSegmentScheduler(statsProvider, distance.MetricL2, 128)
 
 	// Create test segments
 	segments := []SegmentPriority{
@@ -130,7 +131,7 @@ func TestSegmentScheduler_DistancePruning(t *testing.T) {
 		return statsMap[id]
 	}
 
-	scheduler := NewSegmentScheduler(statsProvider, nil, 0, 128)
+	scheduler := NewSegmentScheduler(statsProvider, distance.MetricL2, 128)
 
 	segments := []SegmentPriority{
 		{SegmentID: 1},
@@ -181,7 +182,7 @@ func TestSegmentScheduler_EarlyTermination(t *testing.T) {
 		return statsMap[id]
 	}
 
-	scheduler := NewSegmentScheduler(statsProvider, nil, 0, 128)
+	scheduler := NewSegmentScheduler(statsProvider, distance.MetricL2, 128)
 
 	// Remaining segments with high centroid distances
 	remaining := []SegmentPriority{
@@ -230,7 +231,7 @@ func TestSegmentScheduler_NoEarlyTermination(t *testing.T) {
 		return statsMap[id]
 	}
 
-	scheduler := NewSegmentScheduler(statsProvider, nil, 0, 128)
+	scheduler := NewSegmentScheduler(statsProvider, distance.MetricL2, 128)
 
 	// Remaining segment with close centroid
 	remaining := []SegmentPriority{
@@ -259,7 +260,7 @@ func TestSegmentScheduler_NoEarlyTermination(t *testing.T) {
 }
 
 func TestSegmentScheduler_Stats(t *testing.T) {
-	scheduler := NewSegmentScheduler(nil, nil, 0, 128)
+	scheduler := NewSegmentScheduler(nil, distance.MetricL2, 128)
 
 	// Initial stats should be zero
 	stats := scheduler.Stats()
@@ -310,7 +311,7 @@ func BenchmarkSegmentScheduler_Schedule(b *testing.B) {
 		return statsMap[id]
 	}
 
-	scheduler := NewSegmentScheduler(statsProvider, nil, 0, 128)
+	scheduler := NewSegmentScheduler(statsProvider, distance.MetricL2, 128)
 
 	segments := make([]SegmentPriority, 100)
 	for i := range segments {

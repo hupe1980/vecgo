@@ -10,20 +10,16 @@ import (
 )
 
 // SegmentScheduler computes optimal segment traversal order for queries.
-// It uses manifest stats, centroid distances, and runtime feedback to
-// prioritize segments most likely to contain top-k results.
+// It uses manifest stats and centroid distances to prioritize segments
+// most likely to contain top-k results.
 //
 // Key optimizations:
 // - Triangle inequality pruning via centroid distance
 // - Cluster tightness ordering (search tight clusters first)
-// - Runtime selectivity learning for filtered queries
 // - Early termination when top segments yield sufficient results
 type SegmentScheduler struct {
 	// Stats provider for segment statistics
 	statsProvider func(model.SegmentID) *manifest.SegmentStats
-
-	// Runtime stats manager for feedback
-	runtimeStats *RuntimeStatsManager
 
 	// Metric for distance computation
 	metric distance.Metric
@@ -47,13 +43,11 @@ type SchedulerStats struct {
 // NewSegmentScheduler creates a new segment scheduler.
 func NewSegmentScheduler(
 	statsProvider func(model.SegmentID) *manifest.SegmentStats,
-	runtimeStats *RuntimeStatsManager,
 	metric distance.Metric,
 	dim int,
 ) *SegmentScheduler {
 	return &SegmentScheduler{
 		statsProvider: statsProvider,
-		runtimeStats:  runtimeStats,
 		metric:        metric,
 		dim:           dim,
 	}
@@ -174,25 +168,9 @@ func (ss *SegmentScheduler) computePriority(seg *SegmentPriority, params Schedul
 	// Base priority from manifest stats
 	priority := stats.SegmentPriority(seg.CentroidDistance)
 
-	// Boost for runtime feedback
-	if ss.runtimeStats != nil {
-		rt := ss.runtimeStats.GetRuntimeStats(seg.SegmentID)
-		if rt != nil {
-			// If this segment has good prune accuracy, boost slightly
-			priority += rt.PruneAccuracy * 0.1
-
-			// Penalize segments that have low efficiency
-			if rt.QueryCount > 10 {
-				// After enough queries, we have reliable efficiency data
-				// Low prune accuracy means segment is often needed
-				priority += (1.0 - rt.PruneAccuracy) * 0.1
-			}
-		}
-	}
-
 	// Boost for filter selectivity (if filter provided)
 	if params.Filter != nil && len(params.FilterKeys) > 0 {
-		selectivityBoost := ss.estimateFilterSelectivity(seg.SegmentID, stats, params.FilterKeys)
+		selectivityBoost := ss.estimateFilterSelectivity(stats, params.FilterKeys)
 		// Higher selectivity (fewer matches) = lower priority (less likely to have results)
 		// But also could mean faster search within segment
 		// Trade-off: prioritize segments with moderate selectivity
@@ -215,7 +193,6 @@ func (ss *SegmentScheduler) computePriority(seg *SegmentPriority, params Schedul
 
 // estimateFilterSelectivity estimates filter selectivity for a segment.
 func (ss *SegmentScheduler) estimateFilterSelectivity(
-	segID model.SegmentID,
 	stats *manifest.SegmentStats,
 	filterKeys []string,
 ) float32 {
@@ -223,26 +200,7 @@ func (ss *SegmentScheduler) estimateFilterSelectivity(
 		return 0.5 // Unknown
 	}
 
-	// Check runtime observed selectivity first
-	if ss.runtimeStats != nil {
-		rt := ss.runtimeStats.GetRuntimeStats(segID)
-		if rt != nil && rt.ObservedSelectivity != nil {
-			// Use average of observed selectivities for filter fields
-			var sum float32
-			var count int
-			for _, key := range filterKeys {
-				if sel, ok := rt.ObservedSelectivity[key]; ok {
-					sum += sel
-					count++
-				}
-			}
-			if count > 0 {
-				return sum / float32(count)
-			}
-		}
-	}
-
-	// Fall back to static estimates from categorical stats
+	// Use static estimates from categorical stats
 	for _, key := range filterKeys {
 		if cat, ok := stats.Categorical[key]; ok {
 			// Use entropy as proxy for selectivity
