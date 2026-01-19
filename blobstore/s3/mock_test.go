@@ -84,3 +84,11 @@ func (m *MockS3Client) AbortMultipartUpload(ctx context.Context, params *s3.Abor
 	}
 	return args.Get(0).(*s3.AbortMultipartUploadOutput), args.Error(1)
 }
+
+func (m *MockS3Client) ListMultipartUploads(ctx context.Context, params *s3.ListMultipartUploadsInput, optFns ...func(*s3.Options)) (*s3.ListMultipartUploadsOutput, error) {
+	args := m.Called(ctx, params)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*s3.ListMultipartUploadsOutput), args.Error(1)
+}

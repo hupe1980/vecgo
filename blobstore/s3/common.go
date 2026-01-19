@@ -6,10 +6,8 @@ import (
 	"fmt"
 	"io"
 	"sort"
-	"sync/atomic"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/hupe1980/vecgo/blobstore"
@@ -161,35 +159,4 @@ func openBlob(ctx context.Context, client Client, bucket, key string) (*baseBlob
 		key:    key,
 		size:   *head.ContentLength,
 	}, nil
-}
-
-// baseWritableBlob provides common implementation for writable S3 blobs.
-type baseWritableBlob struct {
-	pw       *io.PipeWriter
-	done     chan error
-	uploader *manager.Uploader
-	closed   atomic.Bool
-}
-
-func (b *baseWritableBlob) Write(p []byte) (int, error) {
-	if b.closed.Load() {
-		return 0, io.ErrClosedPipe
-	}
-	return b.pw.Write(p)
-}
-
-func (b *baseWritableBlob) Close() error {
-	if !b.closed.CompareAndSwap(false, true) {
-		return io.ErrClosedPipe
-	}
-	if err := b.pw.Close(); err != nil {
-		return err
-	}
-	return <-b.done
-}
-
-// Sync is a no-op for S3 uploads.
-// The upload is only finalized when Close() is called.
-func (b *baseWritableBlob) Sync() error {
-	return nil
 }

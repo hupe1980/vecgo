@@ -78,11 +78,11 @@ func (fs *FilterSet) MatchesBinary(data []byte) (bool, error) {
 		if f != nil {
 			// Key matches a filter.
 			// Decode Value and check match.
-			val, remaining, err := parseValue(data)
+			val, bytesRead, err := parseValueN(data)
 			if err != nil {
 				return false, err
 			}
-			data = remaining
+			data = data[bytesRead:]
 
 			if !f.MatchesValue(val) {
 				return false, nil // Short circuit: AND condition failed

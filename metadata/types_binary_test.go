@@ -193,3 +193,272 @@ func TestAdapter(t *testing.T) {
 	assert.True(t, ok)
 	assert.Equal(t, "str", sVal)
 }
+
+// =============================================================================
+// Zero-Allocation Binary API Tests
+// =============================================================================
+
+func TestAppendBinary(t *testing.T) {
+	tests := []struct {
+		name string
+		meta Metadata
+	}{
+		{"Empty", Metadata{}},
+		{"SingleInt", Metadata{"x": Int(42)}},
+		{"SingleString", Metadata{"name": String("vecgo")}},
+		{"Mixed", Metadata{
+			"id":     Int(123),
+			"name":   String("test"),
+			"score":  Float(0.95),
+			"active": Bool(true),
+		}},
+		{"NestedArray", Metadata{
+			"tags": Array([]Value{String("a"), String("b"), Int(1)}),
+		}},
+		{"DeepNested", Metadata{
+			"matrix": Array([]Value{
+				Array([]Value{Int(1), Int(2)}),
+				Array([]Value{Int(3), Int(4)}),
+			}),
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// AppendBinary to empty buffer should roundtrip correctly
+			got, err := tt.meta.AppendBinary(nil)
+			require.NoError(t, err)
+
+			// Verify roundtrip
+			var decoded Metadata
+			err = decoded.UnmarshalBinary(got)
+			require.NoError(t, err)
+			assert.Equal(t, len(tt.meta), len(decoded), "decoded should have same number of keys")
+
+			for k, v := range tt.meta {
+				gotV, ok := decoded[k]
+				require.True(t, ok, "key %q should exist", k)
+				if v.Kind == KindString {
+					assert.Equal(t, v.StringValue(), gotV.StringValue())
+				} else if v.Kind == KindArray {
+					assert.Equal(t, v.Kind, gotV.Kind)
+					assert.Equal(t, len(v.A), len(gotV.A))
+				} else {
+					assert.Equal(t, v, gotV)
+				}
+			}
+
+			// AppendBinary to pre-existing buffer (tests that it appends, not overwrites)
+			prefix := []byte("PREFIX")
+			got2, err := tt.meta.AppendBinary(prefix)
+			require.NoError(t, err)
+			assert.Equal(t, prefix, got2[:len(prefix)], "prefix should be preserved")
+
+			// Verify roundtrip of appended portion
+			var decoded2 Metadata
+			err = decoded2.UnmarshalBinary(got2[len(prefix):])
+			require.NoError(t, err)
+			assert.Equal(t, len(tt.meta), len(decoded2))
+		})
+	}
+}
+
+func TestUnmarshalBinaryN(t *testing.T) {
+	tests := []struct {
+		name string
+		meta Metadata
+	}{
+		{"Empty", Metadata{}},
+		{"SingleInt", Metadata{"x": Int(42)}},
+		{"Mixed", Metadata{"a": Int(1), "b": String("foo")}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := tt.meta.MarshalBinary()
+			require.NoError(t, err)
+
+			// Append trailing garbage - unmarshalBinaryN should ignore it
+			dataWithTrailing := append(data, []byte("TRAILING_GARBAGE")...)
+
+			var got Metadata
+			n, err := got.unmarshalBinaryN(dataWithTrailing)
+			require.NoError(t, err)
+			assert.Equal(t, len(data), n, "should return exact bytes consumed")
+
+			// Verify content
+			assert.Equal(t, len(tt.meta), len(got))
+			for k, v := range tt.meta {
+				gotV, ok := got[k]
+				require.True(t, ok, "key %q should exist", k)
+				if v.Kind == KindString {
+					assert.Equal(t, v.StringValue(), gotV.StringValue())
+				} else {
+					assert.Equal(t, v.Kind, gotV.Kind)
+				}
+			}
+		})
+	}
+}
+
+func TestAppendMetadataMap(t *testing.T) {
+	mm := map[uint64]Metadata{
+		1:   {"a": Int(1)},
+		100: {"b": String("test"), "c": Float(3.14)},
+		999: {"nested": Array([]Value{Int(1), Int(2)})},
+	}
+
+	// AppendMetadataMap should produce valid output that roundtrips
+	got, err := AppendMetadataMap(nil, mm)
+	require.NoError(t, err)
+
+	// Roundtrip
+	decoded, err := UnmarshalMetadataMap(got)
+	require.NoError(t, err)
+	assert.Equal(t, len(mm), len(decoded))
+
+	for id, meta := range mm {
+		gotMeta, ok := decoded[id]
+		require.True(t, ok, "id %d should exist", id)
+		assert.Equal(t, len(meta), len(gotMeta))
+
+		for k, v := range meta {
+			gotV, ok := gotMeta[k]
+			require.True(t, ok, "key %q should exist in id %d", k, id)
+			if v.Kind == KindString {
+				assert.Equal(t, v.StringValue(), gotV.StringValue())
+			} else if v.Kind == KindArray {
+				assert.Equal(t, len(v.A), len(gotV.A))
+			} else {
+				assert.Equal(t, v, gotV)
+			}
+		}
+	}
+
+	// Also verify MarshalMetadataMap produces valid output
+	got2, err := MarshalMetadataMap(mm)
+	require.NoError(t, err)
+	decoded2, err := UnmarshalMetadataMap(got2)
+	require.NoError(t, err)
+	assert.Equal(t, len(mm), len(decoded2))
+}
+
+func TestMetadataMapStreamingDecode(t *testing.T) {
+	// Test that MetadataMap decoding works without length prefix
+	// This tests the self-describing nature of the format
+	mm := map[uint64]Metadata{
+		1: {"x": Int(42)},
+		2: {"y": String("hello")},
+	}
+
+	data, err := MarshalMetadataMap(mm)
+	require.NoError(t, err)
+
+	// Decode should work correctly
+	got, err := UnmarshalMetadataMap(data)
+	require.NoError(t, err)
+	assert.Equal(t, int64(42), got[1]["x"].I64)
+	assert.Equal(t, "hello", got[2]["y"].StringValue())
+}
+
+func TestBinaryCorruption(t *testing.T) {
+	t.Run("EmptyBuffer", func(t *testing.T) {
+		var m Metadata
+		_, err := m.unmarshalBinaryN([]byte{})
+		assert.Error(t, err)
+	})
+
+	t.Run("TruncatedUvarint", func(t *testing.T) {
+		var m Metadata
+		// 0x80 has continuation bit set but no following byte
+		_, err := m.unmarshalBinaryN([]byte{0x80})
+		assert.Error(t, err)
+	})
+
+	t.Run("TruncatedKey", func(t *testing.T) {
+		// count=1, keyLen=10, but only 3 bytes of key
+		data := []byte{0x01, 0x0A, 'a', 'b', 'c'}
+		var m Metadata
+		_, err := m.unmarshalBinaryN(data)
+		assert.Error(t, err)
+	})
+
+	t.Run("UnknownKind", func(t *testing.T) {
+		// count=1, keyLen=1, key="x", kind=0xFF (invalid)
+		data := []byte{0x01, 0x01, 'x', 0xFF}
+		var m Metadata
+		_, err := m.unmarshalBinaryN(data)
+		assert.Error(t, err)
+	})
+}
+
+// =============================================================================
+// Benchmarks
+// =============================================================================
+
+func BenchmarkMetadataMarshal(b *testing.B) {
+	meta := Metadata{
+		"id":       Int(12345),
+		"name":     String("benchmark-record"),
+		"score":    Float(0.9876),
+		"active":   Bool(true),
+		"category": String("test"),
+	}
+
+	b.Run("MarshalBinary", func(b *testing.B) {
+		b.ReportAllocs()
+		for range b.N {
+			_, _ = meta.MarshalBinary()
+		}
+	})
+
+	b.Run("AppendBinary/Fresh", func(b *testing.B) {
+		b.ReportAllocs()
+		for range b.N {
+			_, _ = meta.AppendBinary(nil)
+		}
+	})
+
+	b.Run("AppendBinary/Reuse", func(b *testing.B) {
+		b.ReportAllocs()
+		buf := make([]byte, 0, 256)
+		for range b.N {
+			buf = buf[:0]
+			_, _ = meta.AppendBinary(buf)
+		}
+	})
+}
+
+func BenchmarkMetadataMapMarshal(b *testing.B) {
+	mm := make(map[uint64]Metadata, 100)
+	for i := uint64(0); i < 100; i++ {
+		mm[i] = Metadata{
+			"id":    Int(int64(i)),
+			"name":  String("record"),
+			"score": Float(float64(i) / 100.0),
+		}
+	}
+
+	b.Run("MarshalMetadataMap", func(b *testing.B) {
+		b.ReportAllocs()
+		for range b.N {
+			_, _ = MarshalMetadataMap(mm)
+		}
+	})
+
+	b.Run("AppendMetadataMap/Fresh", func(b *testing.B) {
+		b.ReportAllocs()
+		for range b.N {
+			_, _ = AppendMetadataMap(nil, mm)
+		}
+	})
+
+	b.Run("AppendMetadataMap/Reuse", func(b *testing.B) {
+		b.ReportAllocs()
+		buf := make([]byte, 0, 8192)
+		for range b.N {
+			buf = buf[:0]
+			_, _ = AppendMetadataMap(buf, mm)
+		}
+	})
+}
