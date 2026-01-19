@@ -28,7 +28,6 @@ package hnsw
 // - Query phase: read-only, no allocations, lock-free
 
 import (
-	"context"
 	"math"
 	"sync/atomic"
 	"unsafe"
@@ -113,6 +112,7 @@ func (n Node) setLevel(a *arena.Arena, level int) {
 
 // GetConnectionListPtr returns the offset to the connection list for the given layer.
 // Returns 0 if the node reference is invalid.
+// Uses atomic load for thread safety during build phase.
 func (n Node) GetConnectionListPtr(a *arena.Arena, layer int) uint64 {
 	// Node layout:
 	// Level at +0 (4 bytes)
@@ -132,6 +132,25 @@ func (n Node) GetConnectionListPtr(a *arena.Arena, layer int) uint64 {
 		return 0
 	}
 	return atomic.LoadUint64((*uint64)(ptr))
+}
+
+// GetConnectionListPtrFrozen returns the offset to the connection list for the given layer.
+// FROZEN-MODE OPTIMIZATION: Uses plain loads instead of atomic loads.
+// Only call this when arena.IsFrozen() == true.
+//
+//go:nosplit
+func (n Node) GetConnectionListPtrFrozen(a *arena.Arena, layer int) uint64 {
+	offset := n.ref.offset()
+	if offset == 0 {
+		return 0
+	}
+	ptrOffset := offset + 8 + uint64(layer)*8
+	ptr := a.Get(ptrOffset)
+	if ptr == nil {
+		return 0
+	}
+	// Plain load - safe after freeze because no more writes occur
+	return *(*uint64)(ptr)
 }
 
 // SetConnectionListPtr sets the offset to the connection list for the given layer.
@@ -184,6 +203,48 @@ func (n Node) GetConnectionsRaw(a *arena.Arena, layer int, m, m0 int) []uint64 {
 	}
 	if count > uint32(capacity) {
 		// Memory corruption or uninitialized - return empty
+		return nil
+	}
+
+	neighborsPtr := unsafe.Pointer(uintptr(ptr) + 8)
+	return unsafe.Slice((*uint64)(neighborsPtr), int(count))
+}
+
+// GetConnectionsRawFrozen returns the neighbors for the given layer as raw uint64s.
+// FROZEN-MODE OPTIMIZATION: Uses plain loads instead of atomic loads.
+// Only call this when arena.IsFrozen() == true.
+//
+// This is the query hot path optimization. After Freeze():
+// - No concurrent writes occur
+// - Plain loads allow compiler optimizations (reordering, vectorization)
+// - Expected 15-25% QPS improvement in query-heavy workloads
+//
+//go:nosplit
+func (n Node) GetConnectionsRawFrozen(a *arena.Arena, layer int, m, m0 int) []uint64 {
+	offset := n.ref.offset()
+	if offset == 0 {
+		return nil
+	}
+
+	listOffset := n.GetConnectionListPtrFrozen(a, layer)
+	if listOffset == 0 {
+		return nil
+	}
+
+	ptr := a.Get(listOffset)
+	if ptr == nil {
+		return nil
+	}
+
+	// Plain load - safe after freeze
+	count := *(*uint32)(ptr)
+
+	// Sanity check: count should never exceed capacity
+	capacity := m
+	if layer == 0 {
+		capacity = m0
+	}
+	if count > uint32(capacity) {
 		return nil
 	}
 
@@ -263,7 +324,10 @@ func (n Node) GetCount(a *arena.Arena, layer int, m, m0 int) int {
 //
 // Old connection list memory is not reused (monotonic arena), so readers
 // holding old slices still have valid memory.
-func (n Node) SetConnections(ctx context.Context, a *arena.Arena, layer int, neighbors []Neighbor, m, m0 int) error {
+//
+// NOTE: No context.Context parameter - this is an internal hot path method.
+// Cancellation checks belong at API boundaries (Insert, BulkInsert), not here.
+func (n Node) SetConnections(a *arena.Arena, layer int, neighbors []Neighbor, m, m0 int) error {
 	capacity := m
 	if layer == 0 {
 		capacity = m0
@@ -297,12 +361,15 @@ func (n Node) SetConnections(ctx context.Context, a *arena.Arena, layer int, nei
 }
 
 // ReplaceConnections is an alias for SetConnections for backward compatibility.
-func (n Node) ReplaceConnections(ctx context.Context, a *arena.Arena, layer int, neighbors []Neighbor, m, m0 int) error {
-	return n.SetConnections(ctx, a, layer, neighbors, m, m0)
+func (n Node) ReplaceConnections(a *arena.Arena, layer int, neighbors []Neighbor, m, m0 int) error {
+	return n.SetConnections(a, layer, neighbors, m, m0)
 }
 
 // Init initializes the node in the arena with empty connection lists.
-func (n Node) Init(ctx context.Context, a *arena.Arena, level int, m, m0 int) error {
+//
+// NOTE: No context.Context parameter - this is an internal hot path method.
+// Cancellation checks belong at API boundaries, not in initialization.
+func (n Node) Init(a *arena.Arena, level int, m, m0 int) error {
 	n.setLevel(a, level)
 
 	// Create initial empty lists for each layer
@@ -330,7 +397,10 @@ func (n Node) Init(ctx context.Context, a *arena.Arena, level int, m, m0 int) er
 }
 
 // AllocNode allocates a new node in the arena with empty connection lists.
-func AllocNode(ctx context.Context, a *arena.Arena, level int, m, m0 int) (Node, error) {
+//
+// NOTE: No context.Context parameter - this is an internal hot path method.
+// Cancellation checks belong at API boundaries (Insert, BulkInsert), not here.
+func AllocNode(a *arena.Arena, level int, m, m0 int) (Node, error) {
 	// Calculate size for Node struct:
 	// Header(8) + (Level+1)*8 (Pointers)
 	nodeSize := 8 + (level+1)*8
@@ -343,7 +413,7 @@ func AllocNode(ctx context.Context, a *arena.Arena, level int, m, m0 int) (Node,
 	// With monotonic arena, offset is the only reference needed
 	node := Node{ref: nodeRef(offset)}
 
-	if err := node.Init(ctx, a, level, m, m0); err != nil {
+	if err := node.Init(a, level, m, m0); err != nil {
 		return Node{}, err
 	}
 	return node, nil

@@ -320,7 +320,7 @@ func (h *HNSW) updateConnectionsForRepair(ctx context.Context, g *graph, id mode
 			finalNeighbors = append(finalNeighbors, Neighbor{ID: n.Node, Dist: n.Distance})
 		}
 
-		if err := h.setConnections(ctx, g, id, level, finalNeighbors); err != nil {
+		if err := h.setConnections(g, id, level, finalNeighbors); err != nil {
 			return err
 		}
 	}
@@ -392,7 +392,7 @@ func (h *HNSW) pruneNodeConnections(ctx context.Context, g *graph, id model.RowI
 		}
 
 		if hasTombstones {
-			if err := h.setConnections(ctx, g, id, l, activeConns); err != nil {
+			if err := h.setConnections(g, id, l, activeConns); err != nil {
 				return err
 			}
 		}
@@ -413,7 +413,7 @@ func (h *HNSW) clearNodeConnections(ctx context.Context, g *graph, id model.RowI
 	// We can't easily free the node struct itself without re-layout,
 	// but we can release the connection slices.
 	for l := 0; l <= node.Level(g.arena); l++ {
-		if err := h.setConnections(ctx, g, id, l, nil); err != nil {
+		if err := h.setConnections(g, id, l, nil); err != nil {
 			return err
 		}
 	}
