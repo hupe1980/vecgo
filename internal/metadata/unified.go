@@ -1001,6 +1001,123 @@ func (ui *UnifiedIndex) createInCheck(filter metadata.Filter) func(model.RowID) 
 	}
 }
 
+// GetFilterMatcher returns a pooled FilterMatcher for zero-allocation filter evaluation.
+// This is the preferred API for hot paths - uses interface dispatch instead of closures.
+//
+// Returns:
+//   - AlwaysTrueMatcher if fs is nil or empty
+//   - AlwaysFalseMatcher if any filter is impossible
+//   - CompositeMatcher for multiple filters (AND semantics)
+//   - Single matcher for single-filter cases
+//
+// Caller MUST call Release() on the returned matcher when done.
+// The caller MUST hold the read lock (RLock) while using the matcher.
+func (ui *UnifiedIndex) GetFilterMatcher(fs *metadata.FilterSet, scratch *MatcherScratch) FilterMatcher {
+	if fs == nil || len(fs.Filters) == 0 {
+		return GetAlwaysTrueMatcher()
+	}
+
+	// Reset scratch
+	scratch.Matchers = scratch.Matchers[:0]
+	scratch.Bitmaps = scratch.Bitmaps[:0]
+
+	for _, filter := range fs.Filters {
+		matcher := ui.createSingleMatcher(filter, scratch)
+		// Check for AlwaysFalse - short circuit
+		if _, isFalse := matcher.(*AlwaysFalseMatcher); isFalse {
+			for _, m := range scratch.Matchers {
+				m.Release()
+			}
+			scratch.Matchers = scratch.Matchers[:0]
+			return GetAlwaysFalseMatcher()
+		}
+		// Skip AlwaysTrue matchers (no-op)
+		if _, isTrue := matcher.(*AlwaysTrueMatcher); isTrue {
+			continue
+		}
+		scratch.Matchers = append(scratch.Matchers, matcher)
+	}
+
+	// If all filters were AlwaysTrue, return AlwaysTrue
+	if len(scratch.Matchers) == 0 {
+		return GetAlwaysTrueMatcher()
+	}
+
+	// Single filter optimization - return directly without composite wrapper
+	if len(scratch.Matchers) == 1 {
+		return scratch.Matchers[0]
+	}
+
+	// Multiple filters - create composite matcher
+	return GetCompositeMatcher(scratch.Matchers)
+}
+
+// createSingleMatcher creates a FilterMatcher for a single filter.
+// Returns nil if the filter is impossible.
+func (ui *UnifiedIndex) createSingleMatcher(filter metadata.Filter, scratch *MatcherScratch) FilterMatcher {
+	switch filter.Operator {
+	case metadata.OpEqual:
+		bitmap := ui.getBitmapLocked(filter.Key, filter.Value)
+		if bitmap == nil {
+			return GetAlwaysFalseMatcher()
+		}
+		return GetBitmapMatcher(bitmap)
+
+	case metadata.OpIn:
+		arr, ok := filter.Value.AsArray()
+		if !ok {
+			return GetAlwaysFalseMatcher()
+		}
+		// Collect bitmaps into scratch
+		scratch.Bitmaps = scratch.Bitmaps[:0]
+		for _, v := range arr {
+			if b := ui.getBitmapLocked(filter.Key, v); b != nil {
+				scratch.Bitmaps = append(scratch.Bitmaps, b)
+			}
+		}
+		if len(scratch.Bitmaps) == 0 {
+			return GetAlwaysFalseMatcher()
+		}
+		if len(scratch.Bitmaps) == 1 {
+			return GetBitmapMatcher(scratch.Bitmaps[0])
+		}
+		return GetMultiBitmapMatcher(scratch.Bitmaps)
+
+	case metadata.OpNotEqual:
+		// NotEqual is tricky - need to check if NOT in bitmap
+		// For now, fall back to closure-based (rare in practice)
+		bitmap := ui.getBitmapLocked(filter.Key, filter.Value)
+		if bitmap == nil {
+			return GetAlwaysTrueMatcher()
+		}
+		return GetNotBitmapMatcher(bitmap)
+
+	case metadata.OpLessThan, metadata.OpLessEqual, metadata.OpGreaterThan, metadata.OpGreaterEqual:
+		if !ui.numeric.HasField(filter.Key) {
+			return GetAlwaysFalseMatcher()
+		}
+
+		var filterVal float64
+		switch filter.Value.Kind {
+		case metadata.KindInt:
+			filterVal = float64(filter.Value.I64)
+		case metadata.KindFloat:
+			filterVal = filter.Value.F64
+		default:
+			return GetAlwaysFalseMatcher()
+		}
+
+		matcher := ui.numeric.GetNumericMatcher(filter.Key, filter.Operator, filterVal)
+		if matcher == nil {
+			return GetAlwaysFalseMatcher()
+		}
+		return matcher
+
+	default:
+		return GetAlwaysFalseMatcher()
+	}
+}
+
 // FilterCursor returns a push-based cursor for filtered iteration.
 // This is the zero-allocation hot path that:
 //   - Avoids Roaring bitmap OR operations (no dst.Or(bitmap) calls)
@@ -1221,6 +1338,94 @@ func (c *unifiedFilterCursor) ForEach(fn func(rowID uint32) bool) {
 func (c *unifiedFilterCursor) EstimateCardinality() int { return c.estimate }
 func (c *unifiedFilterCursor) IsEmpty() bool            { return c.rowCount == 0 }
 func (c *unifiedFilterCursor) IsAll() bool              { return len(c.checks) == 0 }
+
+// -----------------------------------------------------------------------------
+// MatcherCursor - Zero-allocation cursor using FilterMatcher interface
+// -----------------------------------------------------------------------------
+
+// MatcherCursor iterates over row IDs using a FilterMatcher for zero-allocation evaluation.
+// This is the preferred cursor for hot paths - eliminates closure allocations.
+type MatcherCursor struct {
+	matcher  FilterMatcher
+	rowCount uint32
+	estimate int
+}
+
+var matcherCursorPool = sync.Pool{
+	New: func() any { return &MatcherCursor{} },
+}
+
+// NewMatcherCursor creates a cursor from a FilterMatcher.
+// Caller MUST call Release() when done.
+func NewMatcherCursor(matcher FilterMatcher, rowCount uint32, estimate int) *MatcherCursor {
+	c := matcherCursorPool.Get().(*MatcherCursor)
+	c.matcher = matcher
+	c.rowCount = rowCount
+	c.estimate = estimate
+	return c
+}
+
+func (c *MatcherCursor) ForEach(fn func(rowID uint32) bool) {
+	for id := uint32(0); id < c.rowCount; id++ {
+		if c.matcher.Matches(id) {
+			if !fn(id) {
+				return
+			}
+		}
+	}
+}
+
+func (c *MatcherCursor) EstimateCardinality() int { return c.estimate }
+func (c *MatcherCursor) IsEmpty() bool            { return c.rowCount == 0 }
+func (c *MatcherCursor) IsAll() bool {
+	_, isAll := c.matcher.(*AlwaysTrueMatcher)
+	return isAll
+}
+
+// Release returns the cursor and its matcher to pools.
+func (c *MatcherCursor) Release() {
+	if c.matcher != nil {
+		c.matcher.Release()
+		c.matcher = nil
+	}
+	c.rowCount = 0
+	c.estimate = 0
+	matcherCursorPool.Put(c)
+}
+
+// FilterCursorWithMatcher returns a zero-allocation cursor using FilterMatcher.
+// This is the preferred API for hot paths.
+//
+// Returns:
+//   - cursor: The filter cursor (MUST call cursor.Release() when done)
+//   - estimate: Estimated cardinality
+//
+// The caller MUST hold the read lock (RLock) while using the cursor.
+func (ui *UnifiedIndex) FilterCursorWithMatcher(fs *metadata.FilterSet, rowCount uint32, scratch *MatcherScratch) *MatcherCursor {
+	if fs == nil || len(fs.Filters) == 0 {
+		return NewMatcherCursor(GetAlwaysTrueMatcher(), rowCount, int(rowCount))
+	}
+
+	// Get matcher (handles all filter types)
+	matcher := ui.GetFilterMatcher(fs, scratch)
+
+	// Estimate cardinality based on matcher type
+	estimate := int(rowCount)
+	if _, isFalse := matcher.(*AlwaysFalseMatcher); isFalse {
+		estimate = 0
+	} else if _, isTrue := matcher.(*AlwaysTrueMatcher); !isTrue {
+		// For real filters, estimate based on filter count
+		// Each filter typically reduces by ~0.3x (assumption)
+		for range fs.Filters {
+			estimate = int(float64(estimate) * 0.3)
+			if estimate < 1 {
+				estimate = 1
+			}
+		}
+	}
+
+	return NewMatcherCursor(matcher, rowCount, estimate)
+}
 
 // Query evaluates a filter set and returns a bitmap of matching documents.
 // Returns nil if the filter set matches all documents (empty filter).

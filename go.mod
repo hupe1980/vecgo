@@ -9,6 +9,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/feature/s3/manager v1.20.18
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.53.6
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.95.0
+	github.com/aws/smithy-go v1.24.0
 	github.com/klauspost/compress v1.18.2
 	github.com/minio/minio-go/v7 v7.0.98
 	github.com/pierrec/lz4/v4 v4.1.23
@@ -42,7 +43,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sso v1.30.8 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.35.12 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.41.5 // indirect
-	github.com/aws/smithy-go v1.24.0 // indirect
 	github.com/bits-and-blooms/bitset v1.24.4 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect

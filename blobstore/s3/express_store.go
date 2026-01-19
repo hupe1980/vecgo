@@ -4,16 +4,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"path"
-	"sort"
-	"sync/atomic"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
 	"github.com/hupe1980/vecgo/blobstore"
 )
 
@@ -54,31 +51,7 @@ func (s *ExpressStore) key(name string) string {
 }
 
 func (s *ExpressStore) Open(ctx context.Context, name string) (blobstore.Blob, error) {
-	key := s.key(name)
-
-	head, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
-		Bucket: aws.String(s.bucket),
-		Key:    aws.String(key),
-	})
-	if err != nil {
-		var nf *types.NotFound
-		if errors.As(err, &nf) {
-			return nil, blobstore.ErrNotFound
-		}
-		var nsk *types.NoSuchKey
-		if errors.As(err, &nsk) {
-			return nil, blobstore.ErrNotFound
-		}
-		return nil, err
-	}
-
-	return &expressBlob{
-		client: s.client,
-		bucket: s.bucket,
-		key:    key,
-		size:   *head.ContentLength,
-		etag:   aws.ToString(head.ETag),
-	}, nil
+	return openBlob(ctx, s.client, s.bucket, s.key(name))
 }
 
 // Put writes a blob atomically.
@@ -105,10 +78,14 @@ func (s *ExpressStore) PutIfNotExists(ctx context.Context, name string, data []b
 		IfNoneMatch: aws.String("*"), // Only succeed if object doesn't exist
 	})
 	if err != nil {
-		// Check for precondition failed
-		var apiErr interface{ ErrorCode() string }
-		if errors.As(err, &apiErr) && apiErr.ErrorCode() == "PreconditionFailed" {
-			return ErrConflict
+		// Check for precondition failed (object already exists)
+		// S3 Express returns PreconditionFailed or ConditionalRequestConflict
+		var apiErr smithy.APIError
+		if errors.As(err, &apiErr) {
+			code := apiErr.ErrorCode()
+			if code == "PreconditionFailed" || code == "ConditionalRequestConflict" {
+				return ErrConflict
+			}
 		}
 		return err
 	}
@@ -122,7 +99,7 @@ func (s *ExpressStore) Create(ctx context.Context, name string) (blobstore.Writa
 	key := s.key(name)
 	pr, pw := io.Pipe()
 
-	blob := &expressWritableBlob{
+	blob := &baseWritableBlob{
 		pw:       pw,
 		done:     make(chan error, 1),
 		uploader: manager.NewUploader(s.client),
@@ -151,148 +128,5 @@ func (s *ExpressStore) Delete(ctx context.Context, name string) error {
 }
 
 func (s *ExpressStore) List(ctx context.Context, prefix string) ([]string, error) {
-	fullPrefix := s.key(prefix)
-	var keys []string
-
-	paginator := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{
-		Bucket: aws.String(s.bucket),
-		Prefix: aws.String(fullPrefix),
-	})
-
-	for paginator.HasMorePages() {
-		page, err := paginator.NextPage(ctx)
-		if err != nil {
-			return nil, err
-		}
-		for _, obj := range page.Contents {
-			relPath := *obj.Key
-			if len(s.prefix) > 0 {
-				if len(relPath) > len(s.prefix) && relPath[:len(s.prefix)] == s.prefix {
-					relPath = relPath[len(s.prefix):]
-					if len(relPath) > 0 && relPath[0] == '/' {
-						relPath = relPath[1:]
-					}
-				}
-			}
-			keys = append(keys, relPath)
-		}
-	}
-	sort.Strings(keys)
-	return keys, nil
-}
-
-// expressBlob implements blobstore.Blob for S3 Express
-type expressBlob struct {
-	client Client
-	bucket string
-	key    string
-	size   int64
-	etag   string
-}
-
-func (b *expressBlob) Close() error {
-	return nil
-}
-
-func (b *expressBlob) Size() int64 {
-	return b.size
-}
-
-func (b *expressBlob) ReadAt(ctx context.Context, p []byte, off int64) (int, error) {
-	if off >= b.size {
-		return 0, io.EOF
-	}
-
-	if err := ctx.Err(); err != nil {
-		return 0, err
-	}
-
-	end := off + int64(len(p)) - 1
-	if end >= b.size {
-		end = b.size - 1
-	}
-
-	rangeHeader := fmt.Sprintf("bytes=%d-%d", off, end)
-
-	resp, err := b.client.GetObject(ctx, &s3.GetObjectInput{
-		Bucket: aws.String(b.bucket),
-		Key:    aws.String(b.key),
-		Range:  aws.String(rangeHeader),
-	})
-	if err != nil {
-		return 0, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	n, err := io.ReadFull(resp.Body, p)
-	if errors.Is(err, io.ErrUnexpectedEOF) {
-		if off+int64(n) == b.size {
-			return n, nil
-		}
-		return n, io.EOF
-	}
-
-	expected := end - off + 1
-	if int64(n) == expected && int64(n) < int64(len(p)) {
-		return n, io.EOF
-	}
-
-	return n, err
-}
-
-func (b *expressBlob) ReadRange(ctx context.Context, off, lenReq int64) (io.ReadCloser, error) {
-	if off >= b.size {
-		return nil, io.EOF
-	}
-
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	end := off + lenReq - 1
-	if end >= b.size {
-		end = b.size - 1
-	}
-
-	rangeHeader := fmt.Sprintf("bytes=%d-%d", off, end)
-
-	resp, err := b.client.GetObject(ctx, &s3.GetObjectInput{
-		Bucket: aws.String(b.bucket),
-		Key:    aws.String(b.key),
-		Range:  aws.String(rangeHeader),
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	return resp.Body, nil
-}
-
-// expressWritableBlob implements blobstore.WritableBlob
-type expressWritableBlob struct {
-	pw       *io.PipeWriter
-	done     chan error
-	uploader *manager.Uploader
-	closed   atomic.Bool
-}
-
-func (b *expressWritableBlob) Write(p []byte) (int, error) {
-	if b.closed.Load() {
-		return 0, io.ErrClosedPipe
-	}
-	return b.pw.Write(p)
-}
-
-func (b *expressWritableBlob) Close() error {
-	if !b.closed.CompareAndSwap(false, true) {
-		return io.ErrClosedPipe
-	}
-	if err := b.pw.Close(); err != nil {
-		return err
-	}
-	return <-b.done
-}
-
-func (b *expressWritableBlob) Sync() error {
-	return nil
+	return listObjects(ctx, s.client, s.bucket, s.key(prefix), s.prefix)
 }

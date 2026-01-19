@@ -1088,7 +1088,7 @@ func (s *Segment) EvaluateFilterResult(ctx context.Context, filter *metadata.Fil
 // This is the zero-allocation hot path that avoids Roaring bitmap operations.
 //
 // Architecture:
-//   - If metadataIndex exists: delegates to UnifiedIndex.FilterCursor
+//   - If metadataIndex exists: delegates to UnifiedIndex.FilterCursorWithMatcher (zero-alloc)
 //   - Otherwise: falls back to document scanning with lazy filter evaluation
 //
 // The cursor is valid until the segment is closed.
@@ -1117,6 +1117,7 @@ func (s *Segment) FilterCursor(filter *metadata.FilterSet) imetadata.FilterCurso
 }
 
 // flatSegmentCursor wraps UnifiedIndex cursor with lazy lock management.
+// Uses FilterCursorWithMatcher for zero-allocation filter evaluation.
 // The inner cursor is created on first use and cached for subsequent calls.
 // Lock is acquired per-method to avoid deadlock when cursor is inspected
 // but ForEach is not called.
@@ -1127,17 +1128,21 @@ type flatSegmentCursor struct {
 	rowCount uint32
 
 	// Cached inner cursor (created on first use under lock)
-	inner imetadata.FilterCursor
-	once  sync.Once
+	inner   *imetadata.MatcherCursor
+	scratch *imetadata.MatcherScratch
+	once    sync.Once
 }
 
 // ensureInner creates the inner cursor under lock on first call.
 // Subsequent calls return immediately (sync.Once guarantees single init).
 func (c *flatSegmentCursor) ensureInner() {
 	c.once.Do(func() {
+		// Get scratch from pool (will be released with cursor)
+		c.scratch = imetadata.GetMatcherScratch()
+
 		c.index.RLock()
 		defer c.index.RUnlock()
-		c.inner = c.index.FilterCursor(c.filter, c.rowCount)
+		c.inner = c.index.FilterCursorWithMatcher(c.filter, c.rowCount, c.scratch)
 	})
 }
 
@@ -1159,6 +1164,19 @@ func (c *flatSegmentCursor) IsEmpty() bool {
 func (c *flatSegmentCursor) IsAll() bool {
 	c.ensureInner()
 	return c.inner.IsAll()
+}
+
+// Release returns the cursor resources to pools.
+// Should be called when done with the cursor.
+func (c *flatSegmentCursor) Release() {
+	if c.inner != nil {
+		c.inner.Release()
+		c.inner = nil
+	}
+	if c.scratch != nil {
+		imetadata.PutMatcherScratch(c.scratch)
+		c.scratch = nil
+	}
 }
 
 // flatScanCursor implements lazy document scanning when no index is available.

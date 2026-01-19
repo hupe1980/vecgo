@@ -180,49 +180,6 @@ func (b *LocalBitmap) Or(other *LocalBitmap) {
 	b.rb.Or(other.rb)
 }
 
-// OrMany computes the union of this bitmap with multiple other bitmaps.
-// Uses roaring.FastOr for optimal performance when combining many bitmaps.
-// This is significantly faster than calling Or() in a loop for 3+ bitmaps.
-func (b *LocalBitmap) OrMany(others []*LocalBitmap) {
-	if len(others) == 0 {
-		return
-	}
-	if len(others) == 1 {
-		b.rb.Or(others[0].rb)
-		return
-	}
-
-	// Collect all bitmaps including self
-	bitmaps := make([]*roaring.Bitmap, 0, len(others)+1)
-	bitmaps = append(bitmaps, b.rb)
-	for _, other := range others {
-		bitmaps = append(bitmaps, other.rb)
-	}
-
-	// FastOr is optimized for combining many bitmaps at once
-	result := roaring.FastOr(bitmaps...)
-	b.rb = result
-}
-
-// FastOrMany creates a new bitmap that is the union of all provided bitmaps.
-// Returns nil if the input slice is empty.
-// This is a static helper that doesn't modify any input bitmaps.
-func FastOrMany(bitmaps []*LocalBitmap) *LocalBitmap {
-	if len(bitmaps) == 0 {
-		return nil
-	}
-	if len(bitmaps) == 1 {
-		return bitmaps[0].Clone()
-	}
-
-	rbs := make([]*roaring.Bitmap, len(bitmaps))
-	for i, b := range bitmaps {
-		rbs[i] = b.rb
-	}
-
-	return &LocalBitmap{rb: roaring.FastOr(rbs...)}
-}
-
 // AddMany adds multiple RowIDs to the bitmap in batch.
 // This is more efficient than calling Add repeatedly.
 func (b *LocalBitmap) AddMany(ids []uint32) {
@@ -940,73 +897,6 @@ func andQueryBitmaps(a, b *bitmap.QueryBitmap, qs *QueryScratch) FilterResult {
 	}
 
 	return QueryBitmapResult(qs.Tmp1)
-}
-
-// FilterResultOr performs OR operation on two FilterResults.
-// Design rules:
-//   - Rows ∪ Rows → Rows if small, else QueryBitmap (SIMD)
-//   - Rows ∪ Bitmap → QueryBitmap (SIMD)
-//   - Bitmap ∪ Bitmap → QueryBitmap (SIMD)
-//
-// Uses QueryScratch for scratch space.
-func FilterResultOr(a, b FilterResult, qs *QueryScratch) FilterResult {
-	if a.mode == FilterNone {
-		return b
-	}
-	if b.mode == FilterNone {
-		return a
-	}
-
-	// Rows | Rows: stay in rows mode if result is small
-	const rowsThreshold = 1024
-	if a.mode == FilterRows && b.mode == FilterRows {
-		if len(a.rows)+len(b.rows) <= rowsThreshold {
-			return orRowsRows(a.rows, b.rows, qs)
-		}
-	}
-
-	// Fallback to QueryBitmap for large unions (SIMD OR)
-	qs.Tmp1.Clear()
-	materializeIntoQueryBitmap(a, qs.Tmp1)
-	materializeIntoQueryBitmap(b, qs.Tmp1)
-	return QueryBitmapResult(qs.Tmp1)
-}
-
-// orRowsRows performs sorted union of row slices.
-// Uses QueryScratch.TmpRowIDs.
-func orRowsRows(a, b []uint32, qs *QueryScratch) FilterResult {
-	out := qs.TmpRowIDs[:0]
-
-	i, j := 0, 0
-	for i < len(a) && j < len(b) {
-		if a[i] == b[j] {
-			out = append(out, a[i])
-			i++
-			j++
-		} else if a[i] < b[j] {
-			out = append(out, a[i])
-			i++
-		} else {
-			out = append(out, b[j])
-			j++
-		}
-	}
-	// Append remaining
-	out = append(out, a[i:]...)
-	out = append(out, b[j:]...)
-
-	qs.TmpRowIDs = out
-	return RowsResult(out)
-}
-
-// materializeIntoQueryBitmap adds FilterResult contents to a QueryBitmap.
-func materializeIntoQueryBitmap(fr FilterResult, qb *bitmap.QueryBitmap) {
-	switch fr.mode {
-	case FilterRows:
-		qb.AddMany(fr.rows)
-	case FilterBitmap:
-		qb.Or(fr.qbm)
-	}
 }
 
 // BitmapBuilder provides zero-allocation bitmap construction.

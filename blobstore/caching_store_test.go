@@ -144,3 +144,178 @@ func TestCachingStore_SmallFile(t *testing.T) {
 	// If the file ends, the last block will be short.
 	assert.Equal(t, data, buf[:n])
 }
+
+func TestCachingStore_Create(t *testing.T) {
+	inner := &mockStore{blobs: make(map[string]*mockBlob)}
+	c := cache.NewLRUBlockCache(1024, nil)
+	store := NewCachingStore(inner, c, 256)
+
+	ctx := context.Background()
+
+	// Create delegates to inner store
+	wb, err := store.Create(ctx, "newfile")
+	assert.NoError(t, err)
+	// mockStore.Create returns nil, nil
+	assert.Nil(t, wb)
+}
+
+func TestCachingStore_Put(t *testing.T) {
+	inner := &mockStore{blobs: make(map[string]*mockBlob)}
+	c := cache.NewLRUBlockCache(1024, nil)
+	store := NewCachingStore(inner, c, 256)
+
+	ctx := context.Background()
+
+	// Put data
+	err := store.Put(ctx, "test", []byte("data"))
+	require.NoError(t, err)
+
+	// Verify data was stored
+	blob, err := store.Open(ctx, "test")
+	require.NoError(t, err)
+	assert.Equal(t, int64(4), blob.Size())
+
+	// Read the data
+	buf := make([]byte, 10)
+	n, _ := blob.ReadAt(ctx, buf, 0)
+	assert.Equal(t, 4, n)
+	assert.Equal(t, []byte("data"), buf[:n])
+}
+
+func TestCachingStore_Delete(t *testing.T) {
+	inner := &mockStore{
+		blobs: map[string]*mockBlob{
+			"test": {data: []byte("hello")},
+		},
+	}
+	c := cache.NewLRUBlockCache(1024, nil)
+	store := NewCachingStore(inner, c, 256)
+
+	ctx := context.Background()
+
+	// Open and read to populate cache
+	blob, err := store.Open(ctx, "test")
+	require.NoError(t, err)
+	buf := make([]byte, 5)
+	_, err = blob.ReadAt(ctx, buf, 0)
+	require.NoError(t, err)
+	blob.Close()
+
+	// Delete the file
+	err = store.Delete(ctx, "test")
+	require.NoError(t, err)
+}
+
+func TestCachingStore_List(t *testing.T) {
+	inner := &mockStore{
+		blobs: map[string]*mockBlob{
+			"file1": {data: []byte("a")},
+			"file2": {data: []byte("b")},
+		},
+	}
+	c := cache.NewLRUBlockCache(1024, nil)
+	store := NewCachingStore(inner, c, 256)
+
+	ctx := context.Background()
+
+	// List delegates to inner (mock returns nil)
+	files, err := store.List(ctx, "")
+	assert.NoError(t, err)
+	assert.Nil(t, files)
+}
+
+func TestCachingStore_NotFound(t *testing.T) {
+	inner := &mockStore{blobs: make(map[string]*mockBlob)}
+	c := cache.NewLRUBlockCache(1024, nil)
+	store := NewCachingStore(inner, c, 256)
+
+	ctx := context.Background()
+
+	_, err := store.Open(ctx, "notexist")
+	assert.Equal(t, ErrNotFound, err)
+}
+
+func TestCachingBlob_Close(t *testing.T) {
+	inner := &mockStore{
+		blobs: map[string]*mockBlob{
+			"test": {data: []byte("data")},
+		},
+	}
+	c := cache.NewLRUBlockCache(1024, nil)
+	store := NewCachingStore(inner, c, 256)
+
+	ctx := context.Background()
+	blob, err := store.Open(ctx, "test")
+	require.NoError(t, err)
+
+	// Close should not error
+	err = blob.Close()
+	assert.NoError(t, err)
+}
+
+func TestCachingStore_DefaultBlockSize(t *testing.T) {
+	inner := &mockStore{blobs: make(map[string]*mockBlob)}
+	c := cache.NewLRUBlockCache(1024, nil)
+
+	// Zero block size should default to 4096
+	store := NewCachingStore(inner, c, 0)
+	assert.Equal(t, int64(4096), store.blockSize)
+
+	// Negative block size should also default
+	store2 := NewCachingStore(inner, c, -100)
+	assert.Equal(t, int64(4096), store2.blockSize)
+}
+
+func TestCachingBlob_EmptyRead(t *testing.T) {
+	inner := &mockStore{
+		blobs: map[string]*mockBlob{
+			"test": {data: []byte("data")},
+		},
+	}
+	c := cache.NewLRUBlockCache(1024, nil)
+	store := NewCachingStore(inner, c, 256)
+
+	ctx := context.Background()
+	blob, err := store.Open(ctx, "test")
+	require.NoError(t, err)
+
+	// Empty buffer should return 0, nil
+	buf := make([]byte, 0)
+	n, err := blob.ReadAt(ctx, buf, 0)
+	assert.Equal(t, 0, n)
+	assert.NoError(t, err)
+}
+
+func TestCachingStore_CacheInvalidationOnPut(t *testing.T) {
+	data := []byte("original")
+	inner := &mockStore{
+		blobs: map[string]*mockBlob{
+			"test": {data: data},
+		},
+	}
+	c := cache.NewLRUBlockCache(1024, nil)
+	store := NewCachingStore(inner, c, 256)
+
+	ctx := context.Background()
+
+	// Read to populate cache
+	blob, err := store.Open(ctx, "test")
+	require.NoError(t, err)
+	buf := make([]byte, 10)
+	n, _ := blob.ReadAt(ctx, buf, 0)
+	assert.Equal(t, len(data), n)
+	blob.Close()
+
+	// Overwrite with new data
+	newData := []byte("updated")
+	err = store.Put(ctx, "test", newData)
+	require.NoError(t, err)
+
+	// Read again - should get new data (cache was invalidated)
+	blob2, err := store.Open(ctx, "test")
+	require.NoError(t, err)
+	buf2 := make([]byte, 10)
+	n2, _ := blob2.ReadAt(ctx, buf2, 0)
+	assert.Equal(t, len(newData), n2)
+	assert.Equal(t, newData, buf2[:n2])
+}

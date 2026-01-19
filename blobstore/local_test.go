@@ -126,3 +126,82 @@ func TestLocalBlobStore_ReadRange_Boundaries(t *testing.T) {
 		r.Close()
 	}
 }
+
+func TestLocalBlobStore_Put(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := NewLocalStore(tmpDir)
+	ctx := context.Background()
+
+	// Put data directly
+	blobName := "put-test.bin"
+	data := []byte("direct put data")
+
+	err := store.Put(ctx, blobName, data)
+	require.NoError(t, err)
+
+	// Verify by reading back
+	blob, err := store.Open(ctx, blobName)
+	require.NoError(t, err)
+	defer blob.Close()
+
+	require.Equal(t, int64(len(data)), blob.Size())
+
+	buf := make([]byte, len(data))
+	n, err := blob.ReadAt(ctx, buf, 0)
+	require.NoError(t, err)
+	require.Equal(t, len(data), n)
+	require.Equal(t, data, buf)
+}
+
+func TestLocalBlobStore_Sync(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := NewLocalStore(tmpDir)
+	ctx := context.Background()
+
+	blobName := "sync-test.bin"
+	data := []byte("sync test data")
+
+	w, err := store.Create(ctx, blobName)
+	require.NoError(t, err)
+
+	_, err = w.Write(data)
+	require.NoError(t, err)
+
+	// Sync should work without error
+	err = w.Sync()
+	require.NoError(t, err)
+
+	err = w.Close()
+	require.NoError(t, err)
+
+	// Verify data persisted
+	blob, err := store.Open(ctx, blobName)
+	require.NoError(t, err)
+	defer blob.Close()
+	require.Equal(t, int64(len(data)), blob.Size())
+}
+
+func TestLocalBlobStore_CreateSubdir(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := NewLocalStore(tmpDir)
+	ctx := context.Background()
+
+	// Create blob in nested directory
+	blobName := "subdir/nested/file.bin"
+	data := []byte("nested file")
+
+	w, err := store.Create(ctx, blobName)
+	require.NoError(t, err)
+
+	_, err = w.Write(data)
+	require.NoError(t, err)
+
+	err = w.Close()
+	require.NoError(t, err)
+
+	// Verify file exists
+	blob, err := store.Open(ctx, blobName)
+	require.NoError(t, err)
+	defer blob.Close()
+	require.Equal(t, int64(len(data)), blob.Size())
+}

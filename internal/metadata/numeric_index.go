@@ -899,6 +899,42 @@ func (ni *NumericIndex) MatchRowID(fieldKey string, op metadata.Operator, filter
 	}
 }
 
+// GetNumericMatcher returns a pooled FilterMatcher for zero-allocation filter evaluation.
+// This replaces closure-based GetFieldMatcher to eliminate heap escapes.
+//
+// Returns nil if the field doesn't exist or isn't sealed.
+// Caller MUST call Release() on the returned matcher when done.
+func (ni *NumericIndex) GetNumericMatcher(fieldKey string, op metadata.Operator, filterVal float64) FilterMatcher {
+	field, ok := ni.fields[fieldKey]
+	if !ok {
+		return nil
+	}
+
+	// Pre-capture slices/maps
+	rowIDToIndexSlice := field.rowIDToIndexSlice
+	rowIDToIndex := field.rowIDToIndex
+	values := field.values
+
+	// If neither lookup structure is populated, the index isn't sealed.
+	if rowIDToIndexSlice == nil && rowIDToIndex == nil {
+		return nil
+	}
+
+	// Note: We don't support pendingDeletes in the zero-alloc path.
+	// Immutable segments (the hot path) never have pending deletes.
+	// Memtables use a different code path.
+
+	numOp := NumericOpFromOperator(op)
+
+	if rowIDToIndexSlice != nil {
+		// Dense path: array indexing (optimal for immutable segments)
+		return GetDenseNumericMatcher(rowIDToIndexSlice, values, numOp, filterVal)
+	}
+
+	// Sparse path: map lookup
+	return GetSparseNumericMatcher(rowIDToIndex, values, numOp, filterVal)
+}
+
 // GetFieldMatcher returns a closure that matches rowIDs against a filter condition.
 // The field is looked up ONCE at call time, eliminating per-rowID string map lookups.
 // This is the optimized hot path for FilterCursor.

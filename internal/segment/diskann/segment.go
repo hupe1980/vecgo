@@ -1138,7 +1138,7 @@ func (s *Segment) EvaluateFilterResult(ctx context.Context, filter *metadata.Fil
 }
 
 // FilterCursor returns a push-based cursor for filtered iteration.
-// This is the zero-allocation hot path that avoids Roaring bitmap operations.
+// Uses FilterCursorWithMatcher for zero-allocation filter evaluation.
 func (s *Segment) FilterCursor(filter *metadata.FilterSet) imetadata.FilterCursor {
 	if filter == nil || len(filter.Filters) == 0 {
 		return imetadata.NewAllCursor(s.header.RowCount)
@@ -1159,6 +1159,7 @@ func (s *Segment) FilterCursor(filter *metadata.FilterSet) imetadata.FilterCurso
 }
 
 // diskannSegmentCursor wraps UnifiedIndex cursor with lazy lock management.
+// Uses FilterCursorWithMatcher for zero-allocation filter evaluation.
 // The inner cursor is created on first use and cached for subsequent calls.
 // Lock is acquired per-method to avoid deadlock when cursor is inspected
 // but ForEach is not called.
@@ -1168,17 +1169,21 @@ type diskannSegmentCursor struct {
 	rowCount uint32
 
 	// Cached inner cursor (created on first use under lock)
-	inner imetadata.FilterCursor
-	once  sync.Once
+	inner   *imetadata.MatcherCursor
+	scratch *imetadata.MatcherScratch
+	once    sync.Once
 }
 
 // ensureInner creates the inner cursor under lock on first call.
 // Subsequent calls return immediately (sync.Once guarantees single init).
 func (c *diskannSegmentCursor) ensureInner() {
 	c.once.Do(func() {
+		// Get scratch from pool (will be released with cursor)
+		c.scratch = imetadata.GetMatcherScratch()
+
 		c.index.RLock()
 		defer c.index.RUnlock()
-		c.inner = c.index.FilterCursor(c.filter, c.rowCount)
+		c.inner = c.index.FilterCursorWithMatcher(c.filter, c.rowCount, c.scratch)
 	})
 }
 
@@ -1200,6 +1205,19 @@ func (c *diskannSegmentCursor) IsEmpty() bool {
 func (c *diskannSegmentCursor) IsAll() bool {
 	c.ensureInner()
 	return c.inner.IsAll()
+}
+
+// Release returns the cursor resources to pools.
+// Should be called when done with the cursor.
+func (c *diskannSegmentCursor) Release() {
+	if c.inner != nil {
+		c.inner.Release()
+		c.inner = nil
+	}
+	if c.scratch != nil {
+		imetadata.PutMatcherScratch(c.scratch)
+		c.scratch = nil
+	}
 }
 
 // readID reads the ID for the given row from the blob.

@@ -40,6 +40,37 @@ type FilterCursor interface {
 	IsAll() bool
 }
 
+// ReleasableCursor is an optional interface for cursors that hold pooled resources.
+// Callers should check if the cursor implements this interface and call Release()
+// after using the cursor to return resources to pools.
+//
+// Usage:
+//
+//	cursor := segment.FilterCursor(filter)
+//	defer func() {
+//	    if r, ok := cursor.(ReleasableCursor); ok {
+//	        r.Release()
+//	    }
+//	}()
+//	cursor.ForEach(fn)
+type ReleasableCursor interface {
+	FilterCursor
+	// Release returns the cursor and any pooled resources (matchers, scratch buffers)
+	// back to their respective pools. Safe to call multiple times.
+	Release()
+}
+
+// ReleaseFilterCursor releases a cursor if it implements ReleasableCursor.
+// This is a convenience function for callers that want to release cursors
+// without type assertion boilerplate.
+//
+// Safe to call with nil or non-releasable cursors.
+func ReleaseFilterCursor(cursor FilterCursor) {
+	if r, ok := cursor.(ReleasableCursor); ok {
+		r.Release()
+	}
+}
+
 // RowsCursor wraps a sorted []uint32 slice as a FilterCursor.
 // This is the most common cursor type for low-cardinality results.
 // Zero allocations - borrows the slice.
@@ -245,32 +276,6 @@ rowLoop:
 func (c *ColumnFilterCursor) EstimateCardinality() int { return c.estimate }
 func (c *ColumnFilterCursor) IsEmpty() bool            { return c.universeSize == 0 }
 func (c *ColumnFilterCursor) IsAll() bool              { return len(c.filters) == 0 }
-
-// TombstoneFilterCursor wraps another cursor and filters out tombstoned rows.
-// This is a decorator pattern - composes with any underlying cursor.
-type TombstoneFilterCursor struct {
-	inner     FilterCursor
-	tombstone func(rowID uint32) bool // returns true if row is alive
-}
-
-// NewTombstoneFilterCursor wraps a cursor with tombstone filtering.
-// The alive function returns true if the row is NOT tombstoned.
-func NewTombstoneFilterCursor(inner FilterCursor, alive func(rowID uint32) bool) *TombstoneFilterCursor {
-	return &TombstoneFilterCursor{inner: inner, tombstone: alive}
-}
-
-func (c *TombstoneFilterCursor) ForEach(fn func(rowID uint32) bool) {
-	c.inner.ForEach(func(rowID uint32) bool {
-		if c.tombstone(rowID) {
-			return fn(rowID)
-		}
-		return true // continue, skip tombstoned
-	})
-}
-
-func (c *TombstoneFilterCursor) EstimateCardinality() int { return c.inner.EstimateCardinality() }
-func (c *TombstoneFilterCursor) IsEmpty() bool            { return c.inner.IsEmpty() }
-func (c *TombstoneFilterCursor) IsAll() bool              { return false } // tombstones make it not "all"
 
 // FilterResultCursor wraps an existing FilterResult as a cursor.
 // This provides backward compatibility during migration.

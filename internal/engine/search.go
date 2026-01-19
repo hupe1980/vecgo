@@ -220,6 +220,8 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 
 				// Get cursor from memtable (zero-alloc)
 				cursor := snap.active.FilterCursor(options.Filter)
+				// Note: memtable cursors don't need release, but safe to call anyway
+				defer imetadata.ReleaseFilterCursor(cursor)
 
 				if !cursor.IsAll() && !cursor.IsEmpty() {
 					segSel := float64(cursor.EstimateCardinality()) / float64(snap.active.RowCount())
@@ -329,6 +331,8 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 				// Process Active Segment (memtable) with cursor
 				if snap.active != nil {
 					cursor := snap.active.FilterCursor(options.Filter)
+					// Note: memtable cursors don't need release, but safe to call anyway
+					releaseCursor := cursor
 					if !cursor.IsAll() && !cursor.IsEmpty() {
 						segSel := float64(cursor.EstimateCardinality()) / float64(snap.active.RowCount())
 						if segSel > maxSelectivity {
@@ -340,6 +344,7 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 								cursorConfig, s, qExec, searchK, descending,
 							)
 							if err != nil {
+								imetadata.ReleaseFilterCursor(releaseCursor)
 								yield(model.Candidate{}, err)
 								return
 							}
@@ -351,6 +356,7 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 							skipBitmapForHNSW = true
 						}
 					}
+					imetadata.ReleaseFilterCursor(releaseCursor)
 				}
 
 				// Process Immutable Segments using FilterCursor when available
@@ -370,6 +376,7 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 								// Matches all - use HNSW for this segment
 								// But only if this segment has a graph index
 								if segmentHasGraphIndex(seg) {
+									imetadata.ReleaseFilterCursor(cursor)
 									skipBitmapForHNSW = true
 									maxSelectivity = 1.0
 									break
@@ -387,6 +394,7 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 								// - For flat segments: ALWAYS use cursor (avoids expensive MatchesBinary)
 								if !forcePreFilter && segSel > selectivityCutoff && segmentHasGraphIndex(seg) {
 									// Graph segment with high selectivity - switch to HNSW for all remaining
+									imetadata.ReleaseFilterCursor(cursor)
 									skipBitmapForHNSW = true
 									break
 								}
@@ -400,6 +408,7 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 									ctx, seg, cursor, ts,
 									cursorConfig, s, qExec, searchK, descending,
 								)
+								imetadata.ReleaseFilterCursor(cursor)
 								if err != nil {
 									yield(model.Candidate{}, err)
 									return
@@ -407,6 +416,8 @@ func (e *Engine) SearchIter(ctx context.Context, q []float32, k int, opts ...fun
 								if used {
 									usedStreaming = true
 								}
+							} else {
+								imetadata.ReleaseFilterCursor(cursor)
 							}
 							continue
 						}

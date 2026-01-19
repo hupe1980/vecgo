@@ -92,6 +92,10 @@ type Searcher struct {
 	// Collects rowIDs into slice, builds bitmap once via AddMany.
 	BitmapBuilder *imetadata.BitmapBuilder
 
+	// MatcherScratch is a pooled scratch for building FilterMatcher composites.
+	// Eliminates closure allocations in the filter hot path.
+	MatcherScratch *imetadata.MatcherScratch
+
 	// QueryBitmap is a SIMD-friendly bitmap for query-time filter operations.
 	// Supports O(1) block skipping, active-mask-driven AND/OR, and zero allocations.
 	// This is the hot-path bitmap for filtered graph traversal.
@@ -225,6 +229,8 @@ func NewSearcher(visitedCap, queueCap int) *Searcher {
 		SemChan: make(chan struct{}, 16), // Will grow if needed, but rarely
 		// BitmapBuilder for zero-alloc filter evaluation
 		BitmapBuilder: imetadata.NewBitmapBuilder(),
+		// MatcherScratch for zero-alloc filter matcher building
+		MatcherScratch: imetadata.GetMatcherScratch(),
 		// QueryBitmap for SIMD-friendly filter operations (1M universe covers most segments)
 		QueryBitmap: bitmap.New(DefaultUniverseSize),
 		// ScratchVecBuf for batch vector fetching (64 batch * 512 dim = 32K floats covers most cases)
