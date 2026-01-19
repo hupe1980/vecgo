@@ -25,6 +25,10 @@ func TestConcurrentInserts(t *testing.T) {
 		o.Dimension = dim
 		o.M = 8
 		o.EF = 200
+		// Use small arena chunks to test multi-chunk allocation paths.
+		// This exercises chunk boundary transitions during concurrent operations.
+		// Default (1GB) would fit in single chunk, masking potential races.
+		o.InitialArenaSize = 16 * 1024 * 1024 // 16MB
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -66,6 +70,7 @@ func TestConcurrentSearches(t *testing.T) {
 		o.Dimension = dim
 		o.M = 8
 		o.EF = 200
+		o.InitialArenaSize = 64 * 1024 * 1024 // 64MB - smaller for CI
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -117,6 +122,7 @@ func TestConcurrentInsertsAndSearches(t *testing.T) {
 		o.Dimension = dim
 		o.M = 8
 		o.EF = 200
+		o.InitialArenaSize = 64 * 1024 * 1024 // 64MB - smaller for CI
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -192,6 +198,7 @@ func TestConcurrentDeletes(t *testing.T) {
 		o.Dimension = dim
 		o.M = 8
 		o.EF = 200
+		o.InitialArenaSize = 64 * 1024 * 1024 // 64MB - smaller for CI
 	})
 	if err != nil {
 		t.Fatal(err)

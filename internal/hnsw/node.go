@@ -1,8 +1,34 @@
 package hnsw
 
+// Node and connection list concurrency model:
+//
+// MEMORY MODEL (Monotonic Arena - DiskANN style):
+// - Arena is append-only. Memory is never reused or reset.
+// - Once an offset is allocated, it remains valid until arena.Free().
+// - Connection lists use copy-on-write (COW) for atomic updates.
+// - All pointer/offset stores use atomic.Store (release semantics).
+// - All pointer/offset loads use atomic.Load (acquire semantics).
+//
+// SAFE OPERATIONS:
+// - Concurrent reads of connection lists (GetConnectionsRaw, GetConnection)
+// - Single-writer updates via SetConnections (COW swap)
+// - Concurrent node lookups via getNode/setNode
+//
+// UNSAFE OPERATIONS (require external synchronization):
+// - Arena Free() while nodes are being accessed
+//
+// LIFETIME:
+// - Slices from GetConnectionsRaw are valid until SetConnections swaps
+// - After SetConnections, old slices point to logically dead (but valid) memory
+// - This is safe because arena is monotonic - memory is never reused
+//
+// BUILD vs QUERY PHASE:
+// - Build phase: allocations and writes allowed
+// - Freeze: call arena.Freeze() to transition to read-only
+// - Query phase: read-only, no allocations, lock-free
+
 import (
 	"context"
-	"errors"
 	"math"
 	"sync/atomic"
 	"unsafe"
@@ -14,34 +40,13 @@ import (
 // NodeOffsetSegment is a fixed-size array of node offsets.
 type NodeOffsetSegment [nodeSegmentSize]atomic.Uint64
 
-// nodeRef represents a packed reference to a node (Generation + Offset).
-// Optimizes memory by avoiding pointer chasing and heap allocations for node headers.
-//
-// Bit Layout:
-// [0:40] Offset (40 bits) -> Max 1TB arena size
-// [40:64] Gen (24 bits)   -> Max 16M generations
+// nodeRef represents a reference to a node in the arena.
+// With monotonic arena semantics, this is simply the offset.
+// The offset remains valid from allocation until arena.Free().
 type nodeRef uint64
 
-const (
-	offsetBits = 40
-	offsetMask = (1 << offsetBits) - 1
-	genBits    = 64 - offsetBits
-)
-
-// ErrOffsetOverflow is returned when a node offset exceeds 40 bits (1TB arena limit).
-var ErrOffsetOverflow = errors.New("hnsw: node offset exceeds 40 bits (1TB limit)")
-
-func packNodeRef(offset uint64, gen uint32) (nodeRef, error) {
-	if offset > offsetMask {
-		return 0, ErrOffsetOverflow
-	}
-	return nodeRef(offset | (uint64(gen) << offsetBits)), nil
-}
-
-func (n nodeRef) unpack() (offset uint64, gen uint32) {
-	offset = uint64(n) & offsetMask
-	gen = uint32(uint64(n) >> offsetBits)
-	return
+func (n nodeRef) offset() uint64 {
+	return uint64(n)
 }
 
 func (n nodeRef) isValid() bool {
@@ -49,7 +54,7 @@ func (n nodeRef) isValid() bool {
 }
 
 // Node is a view over the arena data.
-// It uses a value receiver over the packed reference to avoid heap allocations.
+// It uses a value receiver to avoid heap allocations.
 type Node struct {
 	ref nodeRef
 }
@@ -81,19 +86,25 @@ func (n Node) IsZero() bool {
 }
 
 // Level returns the level of the node.
+// Returns -1 if the node reference is invalid.
 func (n Node) Level(a *arena.Arena) int {
-	offset, gen := n.ref.unpack()
-	ptr := a.GetSafe(arena.Ref{Gen: gen, Offset: offset})
+	offset := n.ref.offset()
+	if offset == 0 {
+		return -1
+	}
+	ptr := a.Get(offset)
 	if ptr == nil {
-		// Stale reference or invalid offset
 		return -1
 	}
 	return int(*(*uint32)(ptr))
 }
 
 func (n Node) setLevel(a *arena.Arena, level int) {
-	offset, gen := n.ref.unpack()
-	ptr := a.GetSafe(arena.Ref{Gen: gen, Offset: offset})
+	offset := n.ref.offset()
+	if offset == 0 {
+		return
+	}
+	ptr := a.Get(offset)
 	if ptr == nil {
 		return
 	}
@@ -101,18 +112,22 @@ func (n Node) setLevel(a *arena.Arena, level int) {
 }
 
 // GetConnectionListPtr returns the offset to the connection list for the given layer.
+// Returns 0 if the node reference is invalid.
 func (n Node) GetConnectionListPtr(a *arena.Arena, layer int) uint64 {
-	// Node at n.Offset
-	// Level at +0
-	// Padding at +4
-	// Ptr L0 at +8
-	// Ptr L1 at +16
+	// Node layout:
+	// Level at +0 (4 bytes)
+	// Padding at +4 (4 bytes)
+	// Ptr L0 at +8 (8 bytes)
+	// Ptr L1 at +16 (8 bytes)
 	// ...
 	// Ptr Li at +8 + i*8
 
-	offset, gen := n.ref.unpack()
+	offset := n.ref.offset()
+	if offset == 0 {
+		return 0
+	}
 	ptrOffset := offset + 8 + uint64(layer)*8
-	ptr := a.GetSafe(arena.Ref{Gen: gen, Offset: ptrOffset})
+	ptr := a.Get(ptrOffset)
 	if ptr == nil {
 		return 0
 	}
@@ -120,10 +135,14 @@ func (n Node) GetConnectionListPtr(a *arena.Arena, layer int) uint64 {
 }
 
 // SetConnectionListPtr sets the offset to the connection list for the given layer.
+// This is the publication point - readers will see the new list after this store.
 func (n Node) SetConnectionListPtr(a *arena.Arena, layer int, listOffset uint64) {
-	offset, gen := n.ref.unpack()
+	offset := n.ref.offset()
+	if offset == 0 {
+		return
+	}
 	ptrOffset := offset + 8 + uint64(layer)*8
-	ptr := a.GetSafe(arena.Ref{Gen: gen, Offset: ptrOffset})
+	ptr := a.Get(ptrOffset)
 	if ptr == nil {
 		return
 	}
@@ -132,21 +151,42 @@ func (n Node) SetConnectionListPtr(a *arena.Arena, layer int, listOffset uint64)
 
 // GetConnectionsRaw returns the neighbors for the given layer as raw uint64s.
 // It returns a slice backed by the arena memory.
-// WARNING: The slice is valid only until the arena is reset/freed.
-// Concurrent access: Safe for concurrent reads if updates are atomic (COW).
+//
+// SAFETY: With monotonic arena, the returned slice remains valid memory
+// until arena.Free(). After SetConnections, the slice points to the OLD
+// connection list which is logically dead but still valid memory.
+//
+// Concurrent access: Safe for concurrent reads with single-writer updates.
+// Readers may see the old or new list during SetConnections, but never
+// a corrupted state.
 func (n Node) GetConnectionsRaw(a *arena.Arena, layer int, m, m0 int) []uint64 {
+	offset := n.ref.offset()
+	if offset == 0 {
+		return nil
+	}
+
 	listOffset := n.GetConnectionListPtr(a, layer)
 	if listOffset == 0 {
 		return nil
 	}
 
-	_, gen := n.ref.unpack()
-	ptr := a.GetSafe(arena.Ref{Gen: gen, Offset: listOffset})
+	ptr := a.Get(listOffset)
 	if ptr == nil {
 		return nil
 	}
 
 	count := atomic.LoadUint32((*uint32)(ptr))
+
+	// Sanity check: count should never exceed capacity
+	capacity := m
+	if layer == 0 {
+		capacity = m0
+	}
+	if count > uint32(capacity) {
+		// Memory corruption or uninitialized - return empty
+		return nil
+	}
+
 	neighborsPtr := unsafe.Pointer(uintptr(ptr) + 8)
 	return unsafe.Slice((*uint64)(neighborsPtr), int(count))
 }
@@ -158,11 +198,10 @@ func (n Node) GetConnection(a *arena.Arena, layer int, index int, m, m0 int) Nei
 		return Neighbor{}
 	}
 
-	_, gen := n.ref.unpack()
 	// List layout: [Count u32][Padding u32][Neighbor0 u64][Neighbor1 u64]...
 	neighborOffset := listOffset + 8 + uint64(index)*8
 
-	ptr := a.GetSafe(arena.Ref{Gen: gen, Offset: neighborOffset})
+	ptr := a.Get(neighborOffset)
 	if ptr == nil {
 		return Neighbor{}
 	}
@@ -170,17 +209,15 @@ func (n Node) GetConnection(a *arena.Arena, layer int, index int, m, m0 int) Nei
 }
 
 // SetConnection sets the neighbor at the given index for the given layer.
+// NOTE: This mutates in place. For concurrent updates, use SetConnections (COW).
 func (n Node) SetConnection(a *arena.Arena, layer int, index int, neighbor Neighbor, m, m0 int) {
 	listOffset := n.GetConnectionListPtr(a, layer)
 	if listOffset == 0 {
-		// Should not happen if initialized correctly
 		return
 	}
 
-	_, gen := n.ref.unpack()
 	neighborOffset := listOffset + 8 + uint64(index)*8
-
-	ptr := a.GetSafe(arena.Ref{Gen: gen, Offset: neighborOffset})
+	ptr := a.Get(neighborOffset)
 	if ptr == nil {
 		return
 	}
@@ -188,14 +225,14 @@ func (n Node) SetConnection(a *arena.Arena, layer int, index int, neighbor Neigh
 }
 
 // SetCount sets the number of connections for the given layer.
+// NOTE: This mutates in place. For concurrent updates, use SetConnections (COW).
 func (n Node) SetCount(a *arena.Arena, layer int, count int, m, m0 int) {
 	listOffset := n.GetConnectionListPtr(a, layer)
 	if listOffset == 0 {
 		return
 	}
 
-	_, gen := n.ref.unpack()
-	ptr := a.GetSafe(arena.Ref{Gen: gen, Offset: listOffset})
+	ptr := a.Get(listOffset)
 	if ptr == nil {
 		return
 	}
@@ -209,17 +246,24 @@ func (n Node) GetCount(a *arena.Arena, layer int, m, m0 int) int {
 		return 0
 	}
 
-	_, gen := n.ref.unpack()
-	ptr := a.GetSafe(arena.Ref{Gen: gen, Offset: listOffset})
+	ptr := a.Get(listOffset)
 	if ptr == nil {
 		return 0
 	}
 	return int(atomic.LoadUint32((*uint32)(ptr)))
 }
 
-// ReplaceConnections replaces the connection list for the given layer with a new list (COW).
-// This ensures atomic visibility of the new list to concurrent readers.
-func (n Node) ReplaceConnections(ctx context.Context, a *arena.Arena, layer int, neighbors []Neighbor, m, m0 int) error {
+// SetConnections atomically replaces the connection list for the given layer (COW).
+//
+// This is the ONLY safe way to update connections with concurrent readers:
+// 1. Allocate new list in arena
+// 2. Write all neighbors
+// 3. Write count
+// 4. Atomically swap pointer
+//
+// Old connection list memory is not reused (monotonic arena), so readers
+// holding old slices still have valid memory.
+func (n Node) SetConnections(ctx context.Context, a *arena.Arena, layer int, neighbors []Neighbor, m, m0 int) error {
 	capacity := m
 	if layer == 0 {
 		capacity = m0
@@ -228,94 +272,64 @@ func (n Node) ReplaceConnections(ctx context.Context, a *arena.Arena, layer int,
 		neighbors = neighbors[:capacity]
 	}
 
-	// Alloc new list
+	// Allocate new list
 	size := 8 + capacity*8
-	offset, data, err := a.Alloc(size)
+	listOffset, data, err := a.Alloc(size)
 	if err != nil {
 		return err
 	}
 
 	ptr := unsafe.Pointer(&data[0])
 
-	// 1. Write Count
-	*(*uint32)(ptr) = uint32(len(neighbors))
-
-	// 2. Write Neighbors
+	// 1. Write all neighbors FIRST (before count)
 	neighborsPtr := unsafe.Pointer(uintptr(ptr) + 8)
-
 	target := unsafe.Slice((*uint64)(neighborsPtr), len(neighbors))
 	for i, neighbor := range neighbors {
 		target[i] = neighbor.AsUint64()
 	}
 
-	// 3. Atomic Swap
-	n.SetConnectionListPtr(a, layer, offset)
+	// 2. Write count - this acts as release for all neighbor writes
+	atomic.StoreUint32((*uint32)(ptr), uint32(len(neighbors)))
+
+	// 3. Publish pointer - readers will now see the new list
+	n.SetConnectionListPtr(a, layer, listOffset)
 	return nil
 }
 
-// AppendConnection appends a neighbor to the existing list if capacity allows.
-// This is safe for concurrent readers because we write the element first, then increment the count.
-func (n Node) AppendConnection(a *arena.Arena, layer int, neighbor Neighbor, m, m0 int) bool {
-	listOffset := n.GetConnectionListPtr(a, layer)
-	if listOffset == 0 {
-		return false
-	}
-
-	_, gen := n.ref.unpack()
-	ptr := a.GetSafe(arena.Ref{Gen: gen, Offset: listOffset})
-	if ptr == nil {
-		return false
-	}
-
-	// Read current count
-	countPtr := (*uint32)(ptr)
-	count := atomic.LoadUint32(countPtr)
-
-	capacity := m
-	if layer == 0 {
-		capacity = m0
-	}
-
-	if int(count) >= capacity {
-		return false // List full
-	}
-
-	// Write neighbor at index 'count'
-	neighborOffset := 8 + uint64(count)*8
-	elemPtr := unsafe.Pointer(uintptr(ptr) + uintptr(neighborOffset))
-
-	atomic.StoreUint64((*uint64)(elemPtr), neighbor.AsUint64())
-	atomic.StoreUint32(countPtr, count+1)
-	return true
+// ReplaceConnections is an alias for SetConnections for backward compatibility.
+func (n Node) ReplaceConnections(ctx context.Context, a *arena.Arena, layer int, neighbors []Neighbor, m, m0 int) error {
+	return n.SetConnections(ctx, a, layer, neighbors, m, m0)
 }
 
-// Init initializes the node in the arena.
+// Init initializes the node in the arena with empty connection lists.
 func (n Node) Init(ctx context.Context, a *arena.Arena, level int, m, m0 int) error {
 	n.setLevel(a, level)
 
-	// Create initial empty lists
+	// Create initial empty lists for each layer
 	for i := 0; i <= level; i++ {
 		capacity := m
 		if i == 0 {
 			capacity = m0
 		}
 
-		// Alloc list: 8 + capacity*8 (to ensure 8-byte alignment for neighbors)
+		// Allocate list: 8 bytes header + capacity*8 bytes for neighbors
 		size := 8 + capacity*8
-		offset, data, err := a.Alloc(size)
+		listOffset, data, err := a.Alloc(size)
 		if err != nil {
 			return err
 		}
 
 		// Initialize count to 0
-		*(*uint32)(unsafe.Pointer(&data[0])) = 0
+		// Memory is already zeroed by mmap, but explicit store ensures visibility
+		atomic.StoreUint32((*uint32)(unsafe.Pointer(&data[0])), 0)
 
-		n.SetConnectionListPtr(a, i, offset)
+		// Publish the connection list pointer
+		n.SetConnectionListPtr(a, i, listOffset)
 	}
 	return nil
 }
 
-// AllocNode allocates a new node in the arena with pointer-based connection lists.
+// AllocNode allocates a new node in the arena with empty connection lists.
 func AllocNode(ctx context.Context, a *arena.Arena, level int, m, m0 int) (Node, error) {
 	// Calculate size for Node struct:
 	// Header(8) + (Level+1)*8 (Pointers)
@@ -326,12 +340,8 @@ func AllocNode(ctx context.Context, a *arena.Arena, level int, m, m0 int) (Node,
 		return Node{}, err
 	}
 
-	// Pack offset and generation into reference
-	ref, err := packNodeRef(offset, a.Generation())
-	if err != nil {
-		return Node{}, err
-	}
-	node := Node{ref: ref}
+	// With monotonic arena, offset is the only reference needed
+	node := Node{ref: nodeRef(offset)}
 
 	if err := node.Init(ctx, a, level, m, m0); err != nil {
 		return Node{}, err

@@ -289,59 +289,6 @@ func TestArena_Free(t *testing.T) {
 	}
 }
 
-func TestArena_Reset(t *testing.T) {
-	t.Run("basic reset", func(t *testing.T) {
-		a, err := New(1024)
-		if err != nil {
-			t.Fatalf("New failed: %v", err)
-		}
-		defer a.Free()
-
-		a.AllocBytes(100)
-		a.AllocBytes(200)
-
-		statsBefore := a.Stats()
-		allocsBefore := statsBefore.TotalAllocs
-
-		a.Reset()
-
-		statsAfter := a.Stats()
-		if statsAfter.BytesUsed != 0 {
-			t.Errorf("expected BytesUsed=0 after reset, got %d", statsAfter.BytesUsed)
-		}
-		if statsAfter.TotalAllocs != allocsBefore {
-			t.Error("alloc count should be preserved after reset")
-		}
-		if statsAfter.ActiveChunks != 1 {
-			t.Errorf("expected ActiveChunks=1 after reset, got %d", statsAfter.ActiveChunks)
-		}
-	})
-
-	t.Run("reset after multiple chunks", func(t *testing.T) {
-		a, err := New(256)
-		if err != nil {
-			t.Fatalf("New failed: %v", err)
-		}
-		defer a.Free()
-
-		for i := 0; i < 10; i++ {
-			a.AllocBytes(128)
-		}
-
-		statsBefore := a.Stats()
-		if statsBefore.ActiveChunks <= 1 {
-			t.Error("expected multiple chunks before reset")
-		}
-
-		a.Reset()
-
-		statsAfter := a.Stats()
-		if statsAfter.ActiveChunks != 1 {
-			t.Errorf("expected ActiveChunks=1 after reset, got %d", statsAfter.ActiveChunks)
-		}
-	})
-}
-
 func TestArena_Usage(t *testing.T) {
 	a, err := New(1000)
 	if err != nil {

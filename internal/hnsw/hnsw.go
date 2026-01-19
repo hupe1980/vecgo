@@ -502,18 +502,12 @@ func (h *HNSW) addConnection(ctx context.Context, s *searcher.Searcher, scratch 
 }
 
 func (h *HNSW) addConnectionSimple(ctx context.Context, g *graph, sourceID model.RowID, level int, conns []Neighbor, targetID model.RowID, dist float32) error {
-	// Try optimized Append
+	// Use COW to add the new connection
+	// With monotonic arena, old connection list memory remains valid but is logically dead
 	node := h.getNode(g, sourceID)
 	if node.IsZero() {
 		return nil
 	}
-
-	if ok := node.AppendConnection(g.arena, level, Neighbor{ID: targetID, Dist: dist}, h.maxConnectionsPerLayer, h.maxConnectionsLayer0); ok {
-		return nil
-	}
-
-	// Fallback to COW if Append failed (e.g. race condition filled it up or something else)
-	// This ensures robustness.
 
 	var newConns []Neighbor
 	if cap(conns) >= len(conns)+1 {

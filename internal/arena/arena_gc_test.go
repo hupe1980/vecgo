@@ -5,12 +5,10 @@ import (
 	"testing"
 )
 
-// BenchmarkArenaReuse simulates real HNSW usage: create arena once, allocate many times, reset between builds.
-// This is the CORRECT way to benchmark arena - mimics actual usage pattern.
-func BenchmarkArenaReuse(b *testing.B) {
-	a, _ := New(DefaultChunkSize)
-	defer a.Free()
-
+// BenchmarkArenaMonotonic benchmarks monotonic arena allocation.
+// With monotonic semantics, arena is never reset - just freed when done.
+// This matches DiskANN's memory model.
+func BenchmarkArenaMonotonic(b *testing.B) {
 	runtime.GC()
 	var m1 runtime.MemStats
 	runtime.ReadMemStats(&m1)
@@ -18,10 +16,11 @@ func BenchmarkArenaReuse(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for b.Loop() {
+		a, _ := New(DefaultChunkSize)
 		for j := 0; j < 1000; j++ {
 			_, _ = a.AllocUint32Slice(16)
 		}
-		a.Reset()
+		a.Free()
 	}
 
 	b.StopTimer()

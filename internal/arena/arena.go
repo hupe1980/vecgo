@@ -17,6 +17,17 @@ import (
 // Stats are always tracked. The overhead is negligible (~0.5ns per alloc)
 // and the visibility is valuable for debugging and monitoring.
 
+// ArenaState represents the lifecycle state of an arena.
+type ArenaState int32
+
+const (
+	// Building means the arena accepts allocations and writes.
+	Building ArenaState = iota
+	// Frozen means the arena is read-only. No more allocations or writes.
+	// This is the state during query phase for maximum performance.
+	Frozen
+)
+
 // MemoryAcquirer is an interface for acquiring memory.
 type MemoryAcquirer interface {
 	AcquireMemory(ctx context.Context, amount int64) error
@@ -59,13 +70,6 @@ type Stats struct {
 	TotalAllocs     uint64 // Historical: total allocations
 }
 
-// Ref represents a safe reference to an arena allocation.
-// It includes the generation ID to detect stale references.
-type Ref struct {
-	Gen    uint32
-	Offset uint64
-}
-
 type atomicStats struct {
 	ChunksAllocated atomic.Uint64
 	BytesReserved   atomic.Uint64
@@ -83,6 +87,17 @@ type chunk struct {
 }
 
 // Arena is a memory arena allocator.
+//
+// MEMORY MODEL:
+// - Arena is append-only (monotonic). Memory is never reused.
+// - Once allocated, offsets remain valid until Free().
+// - Arena can be frozen for read-only access (query phase).
+// - This design matches DiskANN's memory semantics.
+//
+// LIFECYCLE:
+// - Building: allocations and writes allowed
+// - Frozen: read-only, no allocations (optimal for queries)
+// - Freed: all memory released, arena unusable
 type Arena struct {
 	chunkSize  int
 	chunkBits  int    // Power of 2 exponent for chunk size
@@ -93,8 +108,8 @@ type Arena struct {
 	current    atomic.Pointer[chunk]
 	mu         sync.Mutex
 	stats      atomicStats
-	refs       atomic.Int64  // Reference count for safety
-	generation atomic.Uint32 // Generation counter to detect stale offsets
+	refs       atomic.Int64 // Reference count for safety
+	state      atomic.Int32 // ArenaState: Building or Frozen
 	acquirer   MemoryAcquirer
 }
 
@@ -121,6 +136,16 @@ func New(chunkSize int, opts ...Option) (*Arena, error) {
 	// Example: 1025 -> 1024 -> Len=11. 1<<11 = 2048. Correct.
 
 	chunkSize = 1 << chunkBits
+
+	// Validate that global offset encoding won't overflow:
+	// globalOffset = (chunkIndex << chunkBits) | localOffset
+	// chunkIndex can be up to MaxChunks-1, requiring bits.Len(MaxChunks-1) bits
+	// Total bits needed: chunkBits + bits.Len(MaxChunks-1) must be < 64
+	maxChunkIndexBits := bits.Len(uint(MaxChunks - 1))
+	if chunkBits+maxChunkIndexBits >= 64 {
+		return nil, fmt.Errorf("arena: chunk size %d with MaxChunks %d would overflow 64-bit offset encoding", chunkSize, MaxChunks)
+	}
+
 	chunkMask, err := conv.IntToUint64(chunkSize - 1)
 	if err != nil {
 		return nil, err
@@ -137,8 +162,8 @@ func New(chunkSize int, opts ...Option) (*Arena, error) {
 		opt(a)
 	}
 
-	// Initialize generation to 1 so 0 is invalid
-	a.generation.Store(1)
+	// Arena starts in Building state
+	a.state.Store(int32(Building))
 
 	if err := a.allocateChunk(context.Background()); err != nil {
 		return nil, err
@@ -162,18 +187,25 @@ func (a *Arena) DecRef() {
 	a.refs.Add(-1)
 }
 
-// Generation returns the current generation of the arena.
-func (a *Arena) Generation() uint32 {
-	return a.generation.Load()
+// State returns the current state of the arena.
+func (a *Arena) State() ArenaState {
+	return ArenaState(a.state.Load())
 }
 
-// GetSafe returns a pointer to the data at the given reference.
-// It validates the generation and returns nil if the reference is stale.
-func (a *Arena) GetSafe(ref Ref) unsafe.Pointer {
-	if ref.Gen != a.generation.Load() {
-		return nil
-	}
-	return a.Get(ref.Offset)
+// Freeze transitions the arena to read-only state.
+// After freezing:
+// - No more allocations are allowed
+// - All reads are lock-free and safe
+// - This is the optimal state for query phase
+//
+// Freeze is idempotent - calling it multiple times is safe.
+func (a *Arena) Freeze() {
+	a.state.Store(int32(Frozen))
+}
+
+// IsFrozen returns true if the arena is in read-only state.
+func (a *Arena) IsFrozen() bool {
+	return ArenaState(a.state.Load()) == Frozen
 }
 
 func (a *Arena) allocateChunk(ctx context.Context) error {
@@ -221,31 +253,39 @@ func (a *Arena) allocateChunkLocked(ctx context.Context) error {
 		index:   idx,
 	}
 
-	// Store in array using atomic pointer (though lock protects against concurrent allocateChunk,
-	// Get() is lock-free and needs to see the pointer safely)
+	// CRITICAL ORDERING for publication safety:
+	// 1. Store chunk pointer in array
+	// 2. Update current for allocators
+	// 3. Increment count (makes chunk visible to readers)
+	//
+	// This ensures any reader that sees chunkCount > idx will
+	// also see the chunk pointer (due to seq-cst atomics).
 	a.chunks[idx].Store(newChunk)
+	a.current.Store(newChunk)
 
-	// Update stats
+	// Update stats before making visible
 	a.stats.ChunksAllocated.Add(1)
 	a.stats.BytesReserved.Add(uint64(a.chunkSize))
 	a.stats.ActiveChunks.Add(1)
 
-	// Update count for next allocation
-	// Must be done BEFORE updating current to ensure Get() sees valid count
-	// when Alloc() returns an offset from the new chunk.
+	// Finally, increment count to make chunk visible to Get()
 	a.chunkCount.Add(1)
-
-	// Make visible to Alloc
-	a.current.Store(newChunk)
 
 	return nil
 }
 
 // Alloc allocates memory and returns the global offset and the byte slice.
 // The global offset can be used with Get() to retrieve the pointer later.
+//
+// Returns error if the arena is frozen (read-only state).
 func (a *Arena) Alloc(size int) (uint64, []byte, error) {
 	if size <= 0 {
 		return 0, nil, nil
+	}
+
+	// Check if arena is frozen
+	if ArenaState(a.state.Load()) == Frozen {
+		return 0, nil, errors.New("arena is frozen (read-only)")
 	}
 
 	mask := a.alignment - 1
@@ -290,6 +330,11 @@ func (a *Arena) tryAllocInChunk(curr *chunk, size, alignedSize int) (uint64, []b
 		return 0, nil, false
 	}
 
+	// Publish the allocation via CAS.
+	// Memory is guaranteed zero from mmap (MAP_ANON/MEM_COMMIT).
+	// Visibility to other goroutines is established by the atomic stores
+	// that follow allocation (e.g., storing count, then pointer).
+	// NOTE: Do NOT reuse arena memory after Reset() for live data structures.
 	if !curr.offset.CompareAndSwap(oldOffset, newOffset) {
 		return 0, nil, false
 	}
@@ -301,30 +346,34 @@ func (a *Arena) tryAllocInChunk(curr *chunk, size, alignedSize int) (uint64, []b
 
 	// Calculate global offset
 	globalOffset := (uint64(curr.index) << a.chunkBits) | uint64(oldOffset)
-	return globalOffset, curr.data[oldOffset:newOffset:newOffset], true
+	data := curr.data[oldOffset:newOffset:newOffset]
+
+	return globalOffset, data, true
 }
 
 // Get returns an unsafe.Pointer to the memory at the given global offset.
-// Returns nil if the offset is invalid (out of bounds or stale).
-// Callers should check for nil if using untrusted offsets.
+// Returns nil if the offset is invalid (out of bounds).
+//
+// SAFETY: With monotonic arena semantics, once an offset is returned from
+// Alloc(), it remains valid until Free(). No generation checking is needed.
+// This is the same memory model used by DiskANN.
 func (a *Arena) Get(offset uint64) unsafe.Pointer {
 	chunkIdx := offset >> a.chunkBits
 	chunkOffset := offset & a.chunkMask
 
-	// Bounds check - return nil instead of panic for invalid offsets
-	if chunkIdx >= uint64(a.chunkCount.Load()) {
+	// Bounds check against current chunk count
+	count := a.chunkCount.Load()
+	if chunkIdx >= uint64(count) {
 		return nil
 	}
 
-	// Use atomic load to safely read the chunk pointer without locks.
-	// Since chunks are only appended and never removed/moved during allocation,
-	// and we use a fixed-size array, this is safe.
+	// Load chunk pointer (atomic for safe concurrent access)
 	c := a.chunks[chunkIdx].Load()
 	if c == nil {
 		return nil
 	}
 
-	// Final bounds check on chunk data
+	// Bounds check within chunk
 	if chunkOffset >= uint64(len(c.data)) {
 		return nil
 	}
@@ -393,10 +442,11 @@ func (a *Arena) Stats() Stats {
 // Free releases all arena memory back to the garbage collector.
 //
 // IMPORTANT:
-//  1. Do NOT call Free concurrently with allocations
+//  1. Do NOT call Free concurrently with allocations OR Get() calls
 //  2. Memory is eligible for GC but not immediately returned to OS
 //  3. All slices allocated from this arena become invalid after Free
-//  4. Typical usage: defer arena.Free() or call in Close() method
+//  4. All offsets become invalid - Get() on old offsets is undefined behavior
+//  5. Typical usage: defer arena.Free() or call in Close() method
 //
 // After Free(), the arena cannot be reused. Create a new arena instead.
 func (a *Arena) Free() {
@@ -417,8 +467,8 @@ func (a *Arena) Free() {
 		}
 	}
 
-	// Increment generation to invalidate old references
-	a.generation.Add(1)
+	// Mark arena as freed
+	a.state.Store(int32(Frozen))
 
 	// Clear chunk references and unmap memory
 	count := a.chunkCount.Load()
@@ -436,64 +486,6 @@ func (a *Arena) Free() {
 	// Update stats to reflect freed state
 	a.stats.ActiveChunks.Store(0)
 	a.stats.BytesReserved.Store(0)
-	a.stats.BytesUsed.Store(0)
-	a.stats.BytesWasted.Store(0)
-}
-
-// Reset clears all allocations and releases extra chunks, keeping only the first chunk.
-//
-// IMPORTANT:
-//  1. Do NOT call Reset concurrently with allocations
-//  2. All slices allocated before Reset become invalid
-//  3. Useful for reusing arena across multiple independent build phases
-//
-// Reset is more efficient than Free + New when you need to reuse the arena.
-func (a *Arena) Reset() {
-	// Wait for references to drop
-	for a.refs.Load() > 0 {
-		runtime.Gosched()
-	}
-
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	// Increment generation to invalidate old references
-	a.generation.Add(1)
-
-	count := a.chunkCount.Load()
-	if count > 0 {
-		// Release memory for freed chunks
-		if a.acquirer != nil {
-			// We keep 1 chunk, so release (count - 1) * chunkSize
-			chunksToFree := count - 1
-			if chunksToFree > 0 {
-				chunksToFree64 := int64(chunksToFree)
-				chunkSize64 := int64(a.chunkSize)
-				a.acquirer.ReleaseMemory(chunksToFree64 * chunkSize64)
-			}
-		}
-
-		firstChunk := a.chunks[0].Load()
-		// Reset offset of first chunk
-		firstChunk.offset.Store(0)
-
-		// Free extra chunks (keep first for reuse)
-		for i := uint32(1); i < count; i++ {
-			chunk := a.chunks[i].Load()
-			if chunk != nil && chunk.mapping != nil {
-				_ = chunk.mapping.Close() // Unmap off-heap memory
-			}
-			a.chunks[i].Store(nil)
-		}
-		a.chunkCount.Store(1)
-		a.current.Store(firstChunk)
-
-		// Update stats - only first chunk remains
-		a.stats.ActiveChunks.Store(1)
-		a.stats.BytesReserved.Store(uint64(a.chunkSize))
-	}
-
-	// Clear usage stats (historical counts like ChunksAllocated/TotalAllocs unchanged)
 	a.stats.BytesUsed.Store(0)
 	a.stats.BytesWasted.Store(0)
 }
