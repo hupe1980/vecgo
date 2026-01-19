@@ -294,7 +294,7 @@ func (w *Writer) trainPQ(ctx context.Context) error {
 
 	if w.rc != nil {
 		size := int64(len(w.vectors) * w.pqSubvectors)
-		if err := w.rc.AcquireMemory(ctx, size); err != nil {
+		if err := w.rc.AcquireMemory(size); err != nil {
 			return err
 		}
 	}
@@ -316,7 +316,7 @@ func (w *Writer) trainRaBitQ(ctx context.Context) error {
 	bytesPerVec := ((w.dim+63)/64)*8 + 4
 	if w.rc != nil {
 		size := int64(len(w.vectors) * bytesPerVec)
-		if err := w.rc.AcquireMemory(ctx, size); err != nil {
+		if err := w.rc.AcquireMemory(size); err != nil {
 			return err
 		}
 	}
@@ -343,7 +343,7 @@ func (w *Writer) trainInt4(ctx context.Context) error {
 	bytesPerVec := (w.dim + 1) / 2
 	if w.rc != nil {
 		size := int64(len(w.vectors) * bytesPerVec)
-		if err := w.rc.AcquireMemory(ctx, size); err != nil {
+		if err := w.rc.AcquireMemory(size); err != nil {
 			return err
 		}
 	}
@@ -371,7 +371,7 @@ func (w *Writer) buildGraph(ctx context.Context) error {
 	if w.rc != nil {
 		// Estimate memory: n * r * 4 bytes
 		estimatedBytes := int64(n * w.r * 4)
-		if err := w.rc.AcquireMemory(ctx, estimatedBytes); err != nil {
+		if err := w.rc.AcquireMemory(estimatedBytes); err != nil {
 			return err
 		}
 	}

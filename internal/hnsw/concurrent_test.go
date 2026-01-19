@@ -46,7 +46,7 @@ func TestConcurrentInserts(t *testing.T) {
 				for k := range vector {
 					vector[k] = float32(offset*vectorsPerGoroutine + j + k)
 				}
-				if _, err := idx.Insert(context.Background(), vector); err != nil {
+				if _, err := idx.Insert(vector); err != nil {
 					t.Errorf("Insert failed: %v", err)
 				}
 			}
@@ -85,7 +85,7 @@ func TestConcurrentSearches(t *testing.T) {
 		for j := range vector {
 			vector[j] = float32(i + j)
 		}
-		if _, err := idx.Insert(context.Background(), vector); err != nil {
+		if _, err := idx.Insert(vector); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -141,7 +141,7 @@ func TestConcurrentInsertsAndSearches(t *testing.T) {
 		for j := range vector {
 			vector[j] = float32(i + j)
 		}
-		if _, err := idx.Insert(context.Background(), vector); err != nil {
+		if _, err := idx.Insert(vector); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -158,7 +158,7 @@ func TestConcurrentInsertsAndSearches(t *testing.T) {
 				for k := range vector {
 					vector[k] = float32(numInitialVectors + offset*vectorsPerGoroutine + j + k)
 				}
-				if _, err := idx.Insert(context.Background(), vector); err != nil {
+				if _, err := idx.Insert(vector); err != nil {
 					t.Errorf("Insert failed: %v", err)
 				}
 			}
@@ -214,7 +214,7 @@ func TestConcurrentDeletes(t *testing.T) {
 		for j := range vector {
 			vector[j] = float32(i + j)
 		}
-		id, err := idx.Insert(context.Background(), vector)
+		id, err := idx.Insert(vector)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -228,7 +228,7 @@ func TestConcurrentDeletes(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < numVectors/2; i++ {
-			if err := idx.Delete(context.Background(), ids[i]); err != nil {
+			if err := idx.Delete(ids[i]); err != nil {
 				t.Errorf("Delete failed: %v", err)
 			}
 		}

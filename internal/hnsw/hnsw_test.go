@@ -114,15 +114,15 @@ func TestHNSW_DotProduct_DistanceOrdering(t *testing.T) {
 	}
 	defer h.Close()
 
-	id0, err := h.Insert(ctx, []float32{1, 0, 0})
+	id0, err := h.Insert([]float32{1, 0, 0})
 	if !assert.NoError(t, err) {
 		return
 	}
-	id1, err := h.Insert(ctx, []float32{2, 0, 0})
+	id1, err := h.Insert([]float32{2, 0, 0})
 	if !assert.NoError(t, err) {
 		return
 	}
-	id2, err := h.Insert(ctx, []float32{-1, 0, 0})
+	id2, err := h.Insert([]float32{-1, 0, 0})
 	if !assert.NoError(t, err) {
 		return
 	}
@@ -192,7 +192,7 @@ func runValidateInsertSearchCase(t *testing.T, ctx context.Context, tc TestCases
 	defer h.Close()
 
 	for i := 0; i < len(vecs); i++ {
-		if _, err := h.Insert(ctx, vecs[i]); err != nil {
+		if _, err := h.Insert(vecs[i]); err != nil {
 			t.Fatalf("Insert failed at i=%d: %v", i, err)
 		}
 	}

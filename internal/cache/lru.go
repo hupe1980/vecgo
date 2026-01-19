@@ -80,7 +80,7 @@ func (c *LRUBlockCache) Set(ctx context.Context, key CacheKey, b []byte) {
 		newSize := int64(len(b))
 		if c.rc != nil && newSize > oldSize {
 			// If the global ResourceController denies the growth, keep the old value.
-			if !c.rc.TryAcquireMemory(newSize - oldSize) {
+			if c.rc.AcquireMemory(newSize-oldSize) != nil {
 				return
 			}
 		}
@@ -119,8 +119,8 @@ func (c *LRUBlockCache) Set(ctx context.Context, key CacheKey, b []byte) {
 
 	// Acquire memory from RC
 	if c.rc != nil {
-		// We use TryAcquire here to avoid blocking on cache set
-		if !c.rc.TryAcquireMemory(itemSize) {
+		// We use non-blocking acquire here to avoid blocking on cache set
+		if c.rc.AcquireMemory(itemSize) != nil {
 			// If we can't acquire, we might need to evict to make space in RC?
 			// Or just don't cache.
 			// But RC tracks GLOBAL memory. If we are within cache capacity but global limit is hit,

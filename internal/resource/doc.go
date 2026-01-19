@@ -2,7 +2,7 @@
 //
 // The ResourceController provides centralized management of three resource types:
 //
-//   - Memory: Track and limit memory usage across the engine
+//   - Memory: Track and limit memory usage across the engine (non-blocking, fail-fast)
 //   - Concurrency: Limit background worker threads (compaction, etc.)
 //   - IO: Rate-limit background IO to avoid starving foreground queries
 //
@@ -12,10 +12,10 @@
 //	│                    ResourceController                       │
 //	├─────────────────┬─────────────────┬─────────────────────────┤
 //	│  Memory Limit   │  Background     │  IO Rate Limiter        │
-//	│  (semaphore)    │  Workers (sem)  │  (token bucket)         │
+//	│  (fail-fast)    │  Workers (sem)  │  (token bucket)         │
 //	├─────────────────┼─────────────────┼─────────────────────────┤
 //	│  AcquireMemory  │  AcquireBack-   │  AcquireIO              │
-//	│  TryAcquire     │  ground         │  RateLimitedWriter      │
+//	│  (non-blocking) │  ground         │  RateLimitedWriter      │
 //	│  ReleaseMemory  │  TryAcquire     │  RateLimitedReader      │
 //	│  MemoryUsage    │  Release        │                         │
 //	└─────────────────┴─────────────────┴─────────────────────────┘
@@ -23,23 +23,18 @@
 // # Memory Management
 //
 // Memory tracking uses a weighted semaphore for hard limits and atomic counters
-// for usage tracking. Operations can either block (AcquireMemory) or fail fast
-// (TryAcquireMemory):
+// for usage tracking. AcquireMemory is non-blocking and returns immediately
+// with ErrMemoryLimitExceeded if the limit would be exceeded:
 //
 //	rc := resource.NewController(resource.Config{
 //	    MemoryLimitBytes: 1 << 30, // 1GB limit
 //	})
 //
-//	// Blocking acquire (waits for memory)
-//	if err := rc.AcquireMemory(ctx, 1024*1024); err != nil {
-//	    // Context canceled or deadline exceeded
+//	// Non-blocking acquire (returns error immediately if limit exceeded)
+//	if err := rc.AcquireMemory(1024*1024); err != nil {
+//	    // ErrMemoryLimitExceeded - caller decides retry/backoff
 //	}
 //	defer rc.ReleaseMemory(1024*1024)
-//
-//	// Non-blocking acquire
-//	if rc.TryAcquireMemory(1024*1024) {
-//	    defer rc.ReleaseMemory(1024*1024)
-//	}
 //
 // # Background Worker Limits
 //

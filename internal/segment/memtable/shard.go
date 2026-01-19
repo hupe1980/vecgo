@@ -61,14 +61,14 @@ func (s *shard) Close() error {
 }
 
 // newShard creates a new shard.
-func newShard(ctx context.Context, id model.SegmentID, shardIdx uint8, dim int, metric distance.Metric, acquirer arena.MemoryAcquirer) (*shard, error) {
+func newShard(_ context.Context, id model.SegmentID, shardIdx uint8, dim int, metric distance.Metric, acquirer arena.MemoryAcquirer) (*shard, error) {
 	store, err := vectorstore.New(dim, acquirer)
 	if err != nil {
 		return nil, err
 	}
 
-	// Preallocate memory with caller-controlled context
-	if err := store.Preallocate(ctx); err != nil {
+	// Preallocate memory (fail-fast if limit exceeded)
+	if err := store.Preallocate(); err != nil {
 		return nil, err
 	}
 
@@ -127,7 +127,13 @@ func (s *shard) Insert(ctx context.Context, id model.ID, vec []float32) (model.R
 }
 
 // InsertDeferred adds a vector without building the HNSW graph (Bulk Load).
+// NOTE: Context is checked at shard boundary only. HNSW operations are context-free.
 func (s *shard) InsertDeferred(ctx context.Context, id model.ID, vec []float32, md metadata.Document, payload []byte) (model.RowID, error) {
+	// Check context BEFORE acquiring lock - stratified cancellation principle
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -135,8 +141,8 @@ func (s *shard) InsertDeferred(ctx context.Context, id model.ID, vec []float32, 
 		return 0, fmt.Errorf("memtable is closed")
 	}
 
-	// Insert into HNSW (Deferred Mode) - respects caller's context for cancellation
-	rowID, err := s.idx.InsertDeferred(ctx, vec)
+	// Insert into HNSW (Deferred Mode) - context-free, must complete once started
+	rowID, err := s.idx.InsertDeferred(vec)
 	if err != nil {
 		return 0, err
 	}
@@ -146,7 +152,13 @@ func (s *shard) InsertDeferred(ctx context.Context, id model.ID, vec []float32, 
 }
 
 // InsertWithPayload adds a vector and metadata to the memtable.
+// NOTE: Context is checked at shard boundary only. HNSW operations are context-free.
 func (s *shard) InsertWithPayload(ctx context.Context, id model.ID, vec []float32, md metadata.Document, payload []byte) (model.RowID, error) {
+	// Check context BEFORE acquiring lock - stratified cancellation principle
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -154,8 +166,8 @@ func (s *shard) InsertWithPayload(ctx context.Context, id model.ID, vec []float3
 		return 0, fmt.Errorf("memtable is closed")
 	}
 
-	// Insert into HNSW - respects caller's context for cancellation/timeout
-	rowID, err := s.idx.Insert(ctx, vec)
+	// Insert into HNSW - context-free, must complete once started
+	rowID, err := s.idx.Insert(vec)
 	if err != nil {
 		return 0, err
 	}
@@ -182,8 +194,8 @@ func (s *shard) commitInsert(rowID model.RowID, id model.ID, md metadata.Documen
 		gap := uint64(idx) - expected
 		for i := range gap {
 			// Mark the skipped ID as deleted in HNSW to ensure it's treated as a tombstone.
-			// Use Background context to ensure cleanup happens even if the current request is tight on time.
-			_ = s.idx.Delete(context.Background(), model.RowID(expected+i))
+			// Context-free - cleanup must complete.
+			_ = s.idx.Delete(model.RowID(expected + i))
 
 			s.ids.Append(0) // Placeholder ID
 			s.metadata.Append(metadata.InternedDocument{})
@@ -246,6 +258,7 @@ func (s *shard) GetID(_ context.Context, rowID uint32) (model.ID, bool) {
 }
 
 // Delete marks a RowID as deleted.
+// NOTE: Context-free - deletion is atomic and must complete.
 func (s *shard) Delete(rowID model.RowID) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -254,11 +267,8 @@ func (s *shard) Delete(rowID model.RowID) {
 		return
 	}
 
-	// HNSW handles tombstones
-	// We assume internal/hnsw has a Delete method.
-	// If not, we need to check.
-	// Checking... internal/hnsw/hnsw.go has Delete(id).
-	_ = s.idx.Delete(context.Background(), rowID)
+	// HNSW handles tombstones - context-free by design
+	_ = s.idx.Delete(rowID)
 }
 
 // Segment Interface Implementation
@@ -280,7 +290,16 @@ func (s *shard) Metric() distance.Metric {
 	return s.metric
 }
 
+// NOTE: Contexts are checked at shard boundaries only.
+// Index internals (HNSW, heaps, filters) are context-free by design
+// to guarantee correctness, predictability, and zero-overhead hot paths.
+
 func (s *shard) Search(ctx context.Context, q []float32, k int, filter segment.Filter, opts model.SearchOptions, searcherCtx *searcher.Searcher) error {
+	// Check context BEFORE acquiring lock - stratified cancellation principle
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 

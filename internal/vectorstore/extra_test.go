@@ -1,7 +1,6 @@
 package vectorstore
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -42,8 +41,8 @@ func TestMmap_Extras(t *testing.T) {
 	filename := filepath.Join(tmpDir, "mmap_extra.col")
 
 	s, _ := New(2, nil)
-	s.Append(context.Background(), []float32{1.0, 1.0})
-	s.Append(context.Background(), []float32{2.0, 2.0})
+	s.Append([]float32{1.0, 1.0})
+	s.Append([]float32{2.0, 2.0})
 	s.DeleteVector(0)
 
 	f, err := os.Create(filename)
@@ -89,7 +88,7 @@ func TestMmap_Extras(t *testing.T) {
 
 func TestColumnar_Extras(t *testing.T) {
 	s, _ := New(2, nil)
-	s.Append(context.Background(), []float32{1.0, 1.0})
+	s.Append([]float32{1.0, 1.0})
 
 	// Size
 	assert.Greater(t, s.Size(), int64(0))

@@ -24,15 +24,16 @@ func BenchmarkKNNSearchAlloc(b *testing.B) {
 	}
 
 	// Insert vectors
-	ctx := context.Background()
 	rng := testutil.NewRNG(0)
 	vectors := rng.UniformVectors(count, dim)
 
 	for _, vec := range vectors {
-		if _, err := idx.Insert(ctx, vec); err != nil {
+		if _, err := idx.Insert(vec); err != nil {
 			b.Fatal(err)
 		}
 	}
+
+	ctx := context.Background()
 
 	query := rng.UniformVectors(1, dim)[0]
 

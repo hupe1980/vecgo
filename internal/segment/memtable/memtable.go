@@ -213,6 +213,16 @@ func (m *MemTable) BatchInsertWithPayload(ctx context.Context, ids []model.ID, v
 		go func(shardIdx int, batch []shardItem) {
 			defer wg.Done()
 
+			// Check for cancellation at shard boundary (not per-row)
+			if err := ctx.Err(); err != nil {
+				errMu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				errMu.Unlock()
+				return
+			}
+
 			s := m.shards[shardIdx]
 
 			// Process all items in this shard under a single lock acquisition
@@ -229,26 +239,8 @@ func (m *MemTable) BatchInsertWithPayload(ctx context.Context, ids []model.ID, v
 			}
 
 			for _, item := range batch {
-				// Check for cancellation
-				if err := ctx.Err(); err != nil {
-					errMu.Lock()
-					if firstErr == nil {
-						firstErr = err
-					}
-					errMu.Unlock()
-					return
-				}
-
-				// Check for previous error
-				errMu.Lock()
-				if firstErr != nil {
-					errMu.Unlock()
-					return
-				}
-				errMu.Unlock()
-
-				// Insert into HNSW
-				localRowID, err := s.idx.Insert(ctx, item.vec)
+				// Insert into HNSW - context-free, must complete once started
+				localRowID, err := s.idx.Insert(item.vec)
 				if err != nil {
 					errMu.Lock()
 					if firstErr == nil {
@@ -270,7 +262,7 @@ func (m *MemTable) BatchInsertWithPayload(ctx context.Context, ids []model.ID, v
 				if uint64(idx) > expected {
 					gap := uint64(idx) - expected
 					for j := range gap {
-						_ = s.idx.Delete(context.Background(), model.RowID(expected+j))
+						_ = s.idx.Delete(model.RowID(expected + j))
 						s.ids.Append(0)
 						s.metadata.Append(metadata.InternedDocument{})
 						s.payloads.Append(nil)

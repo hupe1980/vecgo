@@ -2,7 +2,6 @@ package vectorstore
 
 import (
 	"bytes"
-	"context"
 	"os"
 	"path/filepath"
 	"sync"
@@ -49,7 +48,7 @@ func TestAppend(t *testing.T) {
 	}
 
 	vec1 := []float32{1.0, 2.0, 3.0}
-	id1, err := s.Append(context.Background(), vec1)
+	id1, err := s.Append(vec1)
 	if err != nil {
 		t.Fatalf("Append() error = %v", err)
 	}
@@ -58,7 +57,7 @@ func TestAppend(t *testing.T) {
 	}
 
 	vec2 := []float32{4.0, 5.0, 6.0}
-	id2, err := s.Append(context.Background(), vec2)
+	id2, err := s.Append(vec2)
 	if err != nil {
 		t.Fatalf("Append() error = %v", err)
 	}
@@ -95,7 +94,7 @@ func TestAppend_WrongDimension(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	_, err = s.Append(context.Background(), []float32{1.0, 2.0})
+	_, err = s.Append([]float32{1.0, 2.0})
 	if err == nil {
 		t.Error("Append() with wrong dimension should return error")
 	}
@@ -108,7 +107,7 @@ func TestSetVector(t *testing.T) {
 	}
 
 	vec := []float32{1.0, 2.0, 3.0}
-	if err := s.SetVector(context.Background(), 0, vec); err != nil {
+	if err := s.SetVector(0, vec); err != nil {
 		t.Fatalf("SetVector() error = %v", err)
 	}
 
@@ -121,7 +120,7 @@ func TestSetVector(t *testing.T) {
 	}
 
 	vec5 := []float32{7.0, 8.0, 9.0}
-	if err := s.SetVector(context.Background(), 5, vec5); err != nil {
+	if err := s.SetVector(5, vec5); err != nil {
 		t.Fatalf("SetVector(5) error = %v", err)
 	}
 
@@ -148,9 +147,9 @@ func TestDelete(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	s.Append(context.Background(), []float32{1.0, 2.0, 3.0})
-	s.Append(context.Background(), []float32{4.0, 5.0, 6.0})
-	s.Append(context.Background(), []float32{7.0, 8.0, 9.0})
+	s.Append([]float32{1.0, 2.0, 3.0})
+	s.Append([]float32{4.0, 5.0, 6.0})
+	s.Append([]float32{7.0, 8.0, 9.0})
 
 	if err := s.DeleteVector(1); err != nil {
 		t.Fatalf("DeleteVector() error = %v", err)
@@ -187,7 +186,7 @@ func TestDelete_OutOfBounds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	s.Append(context.Background(), []float32{1.0, 2.0, 3.0})
+	s.Append([]float32{1.0, 2.0, 3.0})
 
 	if err := s.DeleteVector(10); err == nil {
 		t.Error("DeleteVector() with out of bounds ID should return error")
@@ -205,10 +204,10 @@ func TestCompact(t *testing.T) {
 	vec2 := []float32{7.0, 8.0, 9.0}
 	vec3 := []float32{10.0, 11.0, 12.0}
 
-	s.Append(context.Background(), vec0)
-	s.Append(context.Background(), vec1)
-	s.Append(context.Background(), vec2)
-	s.Append(context.Background(), vec3)
+	s.Append(vec0)
+	s.Append(vec1)
+	s.Append(vec2)
+	s.Append(vec3)
 
 	s.DeleteVector(1)
 	s.DeleteVector(2)
@@ -264,8 +263,8 @@ func TestCompact_NothingToCompact(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	s.Append(context.Background(), []float32{1.0, 2.0, 3.0})
-	s.Append(context.Background(), []float32{4.0, 5.0, 6.0})
+	s.Append([]float32{1.0, 2.0, 3.0})
+	s.Append([]float32{4.0, 5.0, 6.0})
 
 	idMap, err := s.Compact()
 	if err != nil {
@@ -281,9 +280,9 @@ func TestIterate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	s.Append(context.Background(), []float32{1.0, 2.0, 3.0})
-	s.Append(context.Background(), []float32{4.0, 5.0, 6.0})
-	s.Append(context.Background(), []float32{7.0, 8.0, 9.0})
+	s.Append([]float32{1.0, 2.0, 3.0})
+	s.Append([]float32{4.0, 5.0, 6.0})
+	s.Append([]float32{7.0, 8.0, 9.0})
 	s.DeleteVector(1)
 
 	var visited []model.RowID
@@ -306,7 +305,7 @@ func TestIterate_EarlyStop(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 	for i := 0; i < 10; i++ {
-		s.Append(context.Background(), []float32{float32(i), float32(i), float32(i)})
+		s.Append([]float32{float32(i), float32(i), float32(i)})
 	}
 
 	count := 0
@@ -325,9 +324,9 @@ func TestWriteRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	s.Append(context.Background(), []float32{1.0, 2.0, 3.0})
-	s.Append(context.Background(), []float32{4.0, 5.0, 6.0})
-	s.Append(context.Background(), []float32{7.0, 8.0, 9.0})
+	s.Append([]float32{1.0, 2.0, 3.0})
+	s.Append([]float32{4.0, 5.0, 6.0})
+	s.Append([]float32{7.0, 8.0, 9.0})
 	s.DeleteVector(1)
 
 	var buf bytes.Buffer
@@ -390,7 +389,7 @@ func TestMmap(t *testing.T) {
 		for j := range vecs[i] {
 			vecs[i][j] = float32(i*128 + j)
 		}
-		s.Append(context.Background(), vecs[i])
+		s.Append(vecs[i])
 	}
 	s.DeleteVector(50)
 
@@ -437,7 +436,7 @@ func TestMmap(t *testing.T) {
 		}
 	}
 
-	if err := ms.SetVector(context.Background(), 0, vecs[0]); err == nil {
+	if err := ms.SetVector(0, vecs[0]); err == nil {
 		t.Error("SetVector() on mmap store should return error")
 	}
 	if err := ms.DeleteVector(0); err == nil {
@@ -455,7 +454,7 @@ func TestConcurrentRead(t *testing.T) {
 		for j := range vec {
 			vec[j] = float32(i*64 + j)
 		}
-		s.Append(context.Background(), vec)
+		s.Append(vec)
 	}
 
 	rng := testutil.NewRNG(0)
@@ -479,8 +478,8 @@ func TestRawData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	s.Append(context.Background(), []float32{1.0, 2.0, 3.0})
-	s.Append(context.Background(), []float32{4.0, 5.0, 6.0})
+	s.Append([]float32{1.0, 2.0, 3.0})
+	s.Append([]float32{4.0, 5.0, 6.0})
 
 	raw, _ := s.RawData()
 	if len(raw) != 6 {
@@ -509,7 +508,7 @@ func TestLargeStore(t *testing.T) {
 		for j := range vec {
 			vec[j] = float32(i*dim + j)
 		}
-		if _, err := s.Append(context.Background(), vec); err != nil {
+		if _, err := s.Append(vec); err != nil {
 			t.Fatalf("Append() error at %d: %v", i, err)
 		}
 	}
@@ -559,7 +558,7 @@ func BenchmarkAppend(b *testing.B) {
 			}
 			b.ResetTimer()
 			for b.Loop() {
-				s.Append(context.Background(), vec)
+				s.Append(vec)
 			}
 		})
 	}
@@ -573,7 +572,7 @@ func BenchmarkGetVector(b *testing.B) {
 	}
 	for i := 0; i < 10000; i++ {
 		vec := make([]float32, dim)
-		s.Append(context.Background(), vec)
+		s.Append(vec)
 	}
 
 	b.ResetTimer()
@@ -592,7 +591,7 @@ func BenchmarkIterate(b *testing.B) {
 	}
 	for i := 0; i < 10000; i++ {
 		vec := make([]float32, dim)
-		s.Append(context.Background(), vec)
+		s.Append(vec)
 	}
 
 	b.ResetTimer()

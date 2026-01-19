@@ -26,7 +26,7 @@ func TestHNSW_Extra_CRUD(t *testing.T) {
 		{0.2, 0.2, 0.2, 0.2},
 		{0.9, 0.9, 0.9, 0.9},
 	}
-	res := h.BatchInsert(ctx, vecs)
+	res := h.BatchInsert(vecs)
 	for _, err := range res.Errors {
 		require.NoError(t, err)
 	}
@@ -45,7 +45,7 @@ func TestHNSW_Extra_CRUD(t *testing.T) {
 	// Update
 	id := res.IDs[0]
 	newVec := []float32{0.5, 0.5, 0.5, 0.5}
-	err = h.Update(ctx, id, newVec)
+	err = h.Update(id, newVec)
 	require.NoError(t, err)
 
 	// Verify Update via VectorByID
@@ -78,7 +78,7 @@ func TestHNSW_Extra_Apply(t *testing.T) {
 
 	// ApplyInsert (Explicit ID)
 	id := model.RowID(100)
-	err = h.ApplyInsert(ctx, id, []float32{1.0, 1.0})
+	err = h.ApplyInsert(id, []float32{1.0, 1.0})
 	require.NoError(t, err)
 	assert.True(t, h.ContainsID(100))
 	assert.Equal(t, 1, h.VectorCount())
@@ -86,19 +86,19 @@ func TestHNSW_Extra_Apply(t *testing.T) {
 	// ApplyBatchInsert
 	ids := []model.RowID{200, 201}
 	vecs := [][]float32{{2.0, 2.0}, {2.1, 2.1}}
-	err = h.ApplyBatchInsert(ctx, ids, vecs)
+	err = h.ApplyBatchInsert(ids, vecs)
 	require.NoError(t, err)
 	assert.True(t, h.ContainsID(200))
 	assert.True(t, h.ContainsID(201))
 
 	// ApplyUpdate
-	err = h.ApplyUpdate(ctx, 200, []float32{3.0, 3.0})
+	err = h.ApplyUpdate(200, []float32{3.0, 3.0})
 	require.NoError(t, err)
 	v, _ := h.VectorByID(ctx, 200)
 	assert.Equal(t, []float32{3.0, 3.0}, v)
 
 	// ApplyDelete
-	err = h.ApplyDelete(ctx, 201)
+	err = h.ApplyDelete(201)
 	require.NoError(t, err)
 	// ApplyDelete keeps node in graph but marks tombstone?
 	// ContainsID checks tombstone?
@@ -124,12 +124,11 @@ func TestHNSW_Sharded_Stub(t *testing.T) {
 }
 
 func TestHNSW_Reset(t *testing.T) {
-	ctx := context.Background()
 	h, err := New(func(o *Options) { o.Dimension = 2 })
 	require.NoError(t, err)
 	defer h.Close()
 
-	_, err = h.Insert(ctx, []float32{1, 1})
+	_, err = h.Insert([]float32{1, 1})
 	require.NoError(t, err)
 	assert.Equal(t, 1, h.VectorCount())
 
@@ -151,11 +150,11 @@ func TestHNSW_Errors(t *testing.T) {
 	assert.Error(t, err)
 
 	// Update Not Found
-	err = h.Update(ctx, 9999, []float32{1, 1})
+	err = h.Update(9999, []float32{1, 1})
 	assert.Error(t, err)
 
 	// ApplyBatchInsert mismatch
-	err = h.ApplyBatchInsert(ctx, []model.RowID{1}, [][]float32{})
+	err = h.ApplyBatchInsert([]model.RowID{1}, [][]float32{})
 	assert.Error(t, err)
 }
 
@@ -173,7 +172,6 @@ func TestHNSW_Dimensions(t *testing.T) {
 }
 
 func TestHNSW_Stats(t *testing.T) {
-	ctx := context.Background()
 	h, err := New(func(o *Options) {
 		o.Dimension = 2
 		o.M = 10
@@ -189,7 +187,7 @@ func TestHNSW_Stats(t *testing.T) {
 		{0.3, 0.3},
 	}
 	for i, v := range vectors {
-		err := h.ApplyInsert(ctx, model.RowID(i), v)
+		err := h.ApplyInsert(model.RowID(i), v)
 		require.NoError(t, err)
 	}
 

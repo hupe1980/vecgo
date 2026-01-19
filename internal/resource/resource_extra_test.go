@@ -4,58 +4,49 @@ import (
 	"bytes"
 	"context"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func TestController_MemoryBlocking(t *testing.T) {
+func TestController_MemoryNonBlocking(t *testing.T) {
 	c := NewController(Config{MemoryLimitBytes: 100})
 
 	// Use all memory
-	err := c.AcquireMemory(context.Background(), 100)
+	err := c.AcquireMemory(100)
 	require.NoError(t, err)
 	assert.Equal(t, int64(100), c.MemoryUsage())
 
-	// Attempt to acquire 1 more -> should block
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-
-	err = c.AcquireMemory(ctx, 1)
-	assert.ErrorIs(t, err, context.DeadlineExceeded)
-
-	// TryAcquire should fail instantly
-	ok := c.TryAcquireMemory(1)
-	assert.False(t, ok)
+	// Attempt to acquire 1 more -> should return error immediately (non-blocking)
+	err = c.AcquireMemory(1)
+	assert.ErrorIs(t, err, ErrMemoryLimitExceeded)
 
 	// Release 10
 	c.ReleaseMemory(10)
 	assert.Equal(t, int64(90), c.MemoryUsage())
 
-	// TryAcquire 5 should succeed now
-	ok = c.TryAcquireMemory(5)
-	assert.True(t, ok)
+	// Acquire 5 should succeed now
+	err = c.AcquireMemory(5)
+	assert.NoError(t, err)
 	assert.Equal(t, int64(95), c.MemoryUsage())
 }
 
 func TestController_NilChecks(t *testing.T) {
 	var c *Controller
-	assert.NoError(t, c.AcquireMemory(context.Background(), 10))
-	assert.True(t, c.TryAcquireMemory(10))
+	assert.NoError(t, c.AcquireMemory(10))
 	c.ReleaseMemory(10) // Should not panic
 }
 
 func TestController_Background(t *testing.T) {
 	c := NewController(Config{MaxBackgroundWorkers: 1})
-	err := c.AcquireBackground(context.Background())
+	err := c.AcquireBackground(t.Context())
 	require.NoError(t, err)
 
 	// Second acquire should fail/timeout
 	assert.False(t, c.TryAcquireBackground())
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
-	defer cancel()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel() // Cancel immediately
 	err = c.AcquireBackground(ctx)
 	assert.Error(t, err)
 
@@ -66,25 +57,21 @@ func TestController_Background(t *testing.T) {
 
 func TestController_IO(t *testing.T) {
 	c := NewController(Config{IOLimitBytesPerSec: 1000}) // 1KB/s
-	ctx := context.Background()
 
 	// Small acquire
-	err := c.AcquireIO(ctx, 100)
+	err := c.AcquireIO(t.Context(), 100)
 	assert.NoError(t, err)
 
 	// Unlimited
 	c2 := NewController(Config{})
-	err = c2.AcquireIO(ctx, 1000000)
+	err = c2.AcquireIO(t.Context(), 1000000)
 	assert.NoError(t, err)
 }
 
 func TestController_InternalChecks(t *testing.T) {
 	c := NewController(Config{MemoryLimitBytes: 10})
-	err := c.AcquireMemory(context.Background(), -1)
+	err := c.AcquireMemory(-1)
 	assert.NoError(t, err)
-
-	ok := c.TryAcquireMemory(-1)
-	assert.True(t, ok)
 
 	c.ReleaseMemory(-1)
 	// nothing happens
@@ -106,15 +93,14 @@ func TestController_NilSafe(t *testing.T) {
 	var c *Controller
 
 	// All methods should be nil-safe
-	assert.NoError(t, c.AcquireMemory(context.Background(), 100))
-	assert.True(t, c.TryAcquireMemory(100))
+	assert.NoError(t, c.AcquireMemory(100))
 	c.ReleaseMemory(100)
 
-	assert.NoError(t, c.AcquireBackground(context.Background()))
+	assert.NoError(t, c.AcquireBackground(t.Context()))
 	assert.True(t, c.TryAcquireBackground())
 	c.ReleaseBackground()
 
-	assert.NoError(t, c.AcquireIO(context.Background(), 100))
+	assert.NoError(t, c.AcquireIO(t.Context(), 100))
 	assert.True(t, c.TryAcquireIO(100))
 }
 

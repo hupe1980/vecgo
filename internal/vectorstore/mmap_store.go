@@ -2,7 +2,6 @@ package vectorstore
 
 import (
 	"bytes"
-	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -265,7 +264,7 @@ func (s *MmapStore) GetVectorUnsafe(id model.RowID) ([]float32, bool) {
 }
 
 // SetVector is not supported on read-only mmap stores.
-func (s *MmapStore) SetVector(ctx context.Context, id model.RowID, v []float32) error {
+func (s *MmapStore) SetVector(id model.RowID, v []float32) error {
 	return fmt.Errorf("columnar: mmap store is read-only")
 }
 

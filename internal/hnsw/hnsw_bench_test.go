@@ -12,7 +12,6 @@ import (
 
 // BenchmarkInsertSequential measures sequential insert performance
 func BenchmarkInsertSequential(b *testing.B) {
-	ctx := context.Background()
 	vectors := testutil.NewRNG(42).UniformVectors(1000, 128)
 
 	b.ResetTimer()
@@ -30,7 +29,7 @@ func BenchmarkInsertSequential(b *testing.B) {
 		}
 
 		for _, v := range vectors {
-			_, err := h.Insert(ctx, v)
+			_, err := h.Insert(v)
 			if err != nil {
 				b.Fatalf("Insert failed: %v", err)
 			}
@@ -40,7 +39,6 @@ func BenchmarkInsertSequential(b *testing.B) {
 
 // BenchmarkInsertParallel measures parallel insert performance with fine-grained locking
 func BenchmarkInsertParallel(b *testing.B) {
-	ctx := context.Background()
 	vectors := testutil.NewRNG(42).UniformVectors(1000, 128)
 
 	b.ResetTimer()
@@ -72,7 +70,7 @@ func BenchmarkInsertParallel(b *testing.B) {
 				}
 
 				for j := start; j < end; j++ {
-					_, err := h.Insert(ctx, vectors[j])
+					_, err := h.Insert(vectors[j])
 					if err != nil {
 						b.Errorf("Insert failed: %v", err)
 					}
@@ -86,7 +84,6 @@ func BenchmarkInsertParallel(b *testing.B) {
 
 // BenchmarkBatchInsert measures batch insert performance
 func BenchmarkBatchInsert(b *testing.B) {
-	ctx := context.Background()
 	vectors := testutil.NewRNG(42).UniformVectors(1000, 128)
 
 	b.ResetTimer()
@@ -103,7 +100,7 @@ func BenchmarkBatchInsert(b *testing.B) {
 			b.Fatal(err)
 		}
 
-		_ = h.BatchInsert(ctx, vectors)
+		_ = h.BatchInsert(vectors)
 	}
 }
 
@@ -126,7 +123,7 @@ func BenchmarkKNNSearch(b *testing.B) {
 
 	// Build index
 	for _, v := range vectors {
-		_, err := h.Insert(ctx, v)
+		_, err := h.Insert(v)
 		if err != nil {
 			b.Fatalf("Insert failed: %v", err)
 		}
@@ -165,7 +162,7 @@ func BenchmarkConcurrentSearchAndInsert(b *testing.B) {
 
 	// Build initial index
 	for i := 0; i < 1000; i++ {
-		_, err := h.Insert(ctx, vectors[i])
+		_, err := h.Insert(vectors[i])
 		if err != nil {
 			b.Fatalf("Insert failed: %v", err)
 		}
@@ -202,7 +199,7 @@ func BenchmarkConcurrentSearchAndInsert(b *testing.B) {
 				defer wg.Done()
 				for j := 0; j < 50; j++ {
 					vecIdx := (1000 + workerID*50 + j + i*100) % len(vectors)
-					_, err := h.Insert(ctx, vectors[vecIdx])
+					_, err := h.Insert(vectors[vecIdx])
 					if err != nil {
 						b.Errorf("Insert failed: %v", err)
 					}
@@ -216,7 +213,6 @@ func BenchmarkConcurrentSearchAndInsert(b *testing.B) {
 
 // BenchmarkInsertAfterDelete measures performance of insertions after deletions
 func BenchmarkInsertAfterDelete(b *testing.B) {
-	ctx := context.Background()
 	dim := 128
 	vectors := testutil.NewRNG(42).UniformVectors(2000, dim)
 
@@ -237,7 +233,7 @@ func BenchmarkInsertAfterDelete(b *testing.B) {
 		// Insert 1000 vectors
 		ids := make([]model.RowID, 1000)
 		for j := 0; j < 1000; j++ {
-			id, err := h.Insert(ctx, vectors[j])
+			id, err := h.Insert(vectors[j])
 			if err != nil {
 				b.Fatalf("Insert failed: %v", err)
 			}
@@ -246,7 +242,7 @@ func BenchmarkInsertAfterDelete(b *testing.B) {
 
 		// Delete half of them
 		for j := 0; j < 500; j++ {
-			err := h.Delete(ctx, ids[j])
+			err := h.Delete(ids[j])
 			if err != nil {
 				b.Fatalf("Delete failed: %v", err)
 			}
@@ -254,7 +250,7 @@ func BenchmarkInsertAfterDelete(b *testing.B) {
 
 		// Insert 500 more - these should NOT reuse IDs (ID Stability)
 		for j := 1000; j < 1500; j++ {
-			id, err := h.Insert(ctx, vectors[j])
+			id, err := h.Insert(vectors[j])
 			if err != nil {
 				b.Fatalf("Insert failed: %v", err)
 			}

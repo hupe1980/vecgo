@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/hupe1980/vecgo/blobstore"
 	"github.com/hupe1980/vecgo/distance"
@@ -150,13 +149,10 @@ func TestWriter_ResourceLimits(t *testing.T) {
 		w.Add(model.ID(uint64(i)), []float32{1, 0, 0, 0}, nil, nil)
 	}
 
-	// Write should fail due to memory limit (timeout)
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-
-	err := w.Write(ctx)
+	// Write should fail due to memory limit (non-blocking fail-fast)
+	err := w.Write(t.Context())
 	assert.Error(t, err)
-	assert.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.ErrorIs(t, err, resource.ErrMemoryLimitExceeded)
 }
 
 func TestMetadataPersistence(t *testing.T) {
@@ -179,13 +175,13 @@ func TestMetadataPersistence(t *testing.T) {
 		{0, 1},
 	}
 
-	md1 := map[string]interface{}{
+	md1 := map[string]any{
 		"key1": "value1",
 		"key2": 123.0, // Use float to match JSON unmarshal behavior
 	}
 
-	md2 := map[string]interface{}{
-		"tags": []interface{}{"a", "b"},
+	md2 := map[string]any{
+		"tags": []any{"a", "b"},
 	}
 
 	doc1, err := metadata.FromMap(md1)

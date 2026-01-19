@@ -5,8 +5,8 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/hupe1980/vecgo/model"
 	"github.com/hupe1980/vecgo/internal/vectorstore"
+	"github.com/hupe1980/vecgo/model"
 )
 
 func TestCompact(t *testing.T) {
@@ -38,7 +38,7 @@ func TestCompact(t *testing.T) {
 		for j := 0; j < dim; j++ {
 			vectors[i][j] = rng.Float32()
 		}
-		if _, err := h.Insert(ctx, vectors[i]); err != nil {
+		if _, err := h.Insert(vectors[i]); err != nil {
 			t.Fatalf("Insert: %v", err)
 		}
 	}
@@ -47,7 +47,7 @@ func TestCompact(t *testing.T) {
 	deleted := make(map[model.RowID]bool)
 	for i := 0; i < deleteCount; i++ {
 		id := model.RowID(i * 2)
-		if err := h.Delete(ctx, id); err != nil {
+		if err := h.Delete(id); err != nil {
 			t.Fatalf("Delete: %v", err)
 		}
 		deleted[id] = true

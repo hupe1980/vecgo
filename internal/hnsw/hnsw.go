@@ -572,24 +572,23 @@ func (h *HNSW) releaseID(g *graph, id model.RowID) {
 }
 
 // Insert inserts a vector.
-func (h *HNSW) Insert(ctx context.Context, v []float32) (model.RowID, error) {
-	if err := ctx.Err(); err != nil {
-		return 0, err
-	}
+// NOTE: This method is context-free by design. Cancellation must be checked
+// by the caller BEFORE calling Insert. Once an insert begins, it must complete
+// to maintain graph consistency (ID allocation, node creation, vector storage
+// are non-idempotent operations).
+func (h *HNSW) Insert(v []float32) (model.RowID, error) {
 	g := h.currentGraph.Load()
 	g.arena.IncRef()
 	defer g.arena.DecRef()
-	return h.insert(ctx, g, v, 0, -1, false)
+	return h.insert(g, v, 0, -1, false)
 }
 
 // InsertDeferred inserts a vector without building the graph connections (Bulk Load).
 // This is significantly faster (~10x) but the inserted vector will NOT be found in search results
 // until the MemTable is flushed and compacted. The Flush operation (which creates a Flat segment)
 // works correctly because it iterates vectors by ID, which are preserved.
-func (h *HNSW) InsertDeferred(ctx context.Context, v []float32) (model.RowID, error) {
-	if err := ctx.Err(); err != nil {
-		return 0, err
-	}
+// NOTE: Context-free by design - caller must check cancellation before calling.
+func (h *HNSW) InsertDeferred(v []float32) (model.RowID, error) {
 	g := h.currentGraph.Load()
 	g.arena.IncRef()
 	defer g.arena.DecRef()
@@ -611,7 +610,9 @@ func (h *HNSW) InsertDeferred(ctx context.Context, v []float32) (model.RowID, er
 		return 0, err
 	}
 
-	if err := h.vectors.SetVector(ctx, id, vec); err != nil {
+	// SetVector is non-cancelable by design - once we've allocated ID and node,
+	// we must complete. Memory acquisition blocking is acceptable; partial state is not.
+	if err := h.vectors.SetVector(id, vec); err != nil {
 		h.releaseID(g, id)
 		return 0, err
 	}
@@ -624,24 +625,20 @@ func (h *HNSW) InsertDeferred(ctx context.Context, v []float32) (model.RowID, er
 }
 
 // ApplyInsert inserts a vector with a specific ID (for WAL replay).
-func (h *HNSW) ApplyInsert(ctx context.Context, id model.RowID, v []float32) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
+// NOTE: Context-free - WAL replay must complete to maintain consistency.
+func (h *HNSW) ApplyInsert(id model.RowID, v []float32) error {
 	g := h.currentGraph.Load()
 	g.arena.IncRef()
 	defer g.arena.DecRef()
-	_, err := h.insert(ctx, g, v, id, -1, true)
+	_, err := h.insert(g, v, id, -1, true)
 	return err
 }
 
 // ApplyBatchInsert inserts multiple vectors with specific IDs concurrently.
-func (h *HNSW) ApplyBatchInsert(ctx context.Context, ids []model.RowID, vectors [][]float32) error {
+// NOTE: Context-free - batch replay must complete to maintain consistency.
+func (h *HNSW) ApplyBatchInsert(ids []model.RowID, vectors [][]float32) error {
 	if len(ids) != len(vectors) {
 		return fmt.Errorf("ids and vectors length mismatch")
-	}
-	if err := ctx.Err(); err != nil {
-		return err
 	}
 
 	g := h.currentGraph.Load()
@@ -670,7 +667,7 @@ func (h *HNSW) ApplyBatchInsert(ctx context.Context, ids []model.RowID, vectors 
 					return
 				}
 
-				if _, err := h.insert(ctx, g, vectors[i], ids[i], -1, true); err != nil {
+				if _, err := h.insert(g, vectors[i], ids[i], -1, true); err != nil {
 					errMu.Lock()
 					if firstErr == nil {
 						firstErr = err
@@ -685,29 +682,26 @@ func (h *HNSW) ApplyBatchInsert(ctx context.Context, ids []model.RowID, vectors 
 }
 
 // ApplyDelete deletes a node with a specific ID (for WAL replay).
-func (h *HNSW) ApplyDelete(ctx context.Context, id model.RowID) error {
-	return h.Delete(ctx, id)
+// NOTE: Context-free - WAL replay must complete.
+func (h *HNSW) ApplyDelete(id model.RowID) error {
+	return h.Delete(id)
 }
 
 // ApplyUpdate updates a node with a specific ID (for WAL replay).
-func (h *HNSW) ApplyUpdate(ctx context.Context, id model.RowID, v []float32) error {
-	return h.Update(ctx, id, v)
+// NOTE: Context-free - WAL replay must complete.
+func (h *HNSW) ApplyUpdate(id model.RowID, v []float32) error {
+	return h.Update(id, v)
 }
 
 // BatchInsert inserts multiple vectors.
-func (h *HNSW) BatchInsert(ctx context.Context, vectors [][]float32) BatchInsertResult {
+// NOTE: Context-free - caller should check cancellation before calling.
+func (h *HNSW) BatchInsert(vectors [][]float32) BatchInsertResult {
 	result := BatchInsertResult{
 		IDs:    make([]model.RowID, len(vectors)),
 		Errors: make([]error, len(vectors)),
 	}
-	if err := ctx.Err(); err != nil {
-		for i := range result.Errors {
-			result.Errors[i] = err
-		}
-		return result
-	}
 	for i, v := range vectors {
-		id, err := h.Insert(ctx, v)
+		id, err := h.Insert(v)
 		result.IDs[i] = id
 		result.Errors[i] = err
 	}
@@ -715,7 +709,8 @@ func (h *HNSW) BatchInsert(ctx context.Context, vectors [][]float32) BatchInsert
 }
 
 // insert is the unified insertion logic.
-func (h *HNSW) insert(ctx context.Context, g *graph, v []float32, id model.RowID, layer int, useProvidedID bool) (model.RowID, error) {
+// NOTE: Context-free by design - once called, insertion must complete.
+func (h *HNSW) insert(g *graph, v []float32, id model.RowID, layer int, useProvidedID bool) (model.RowID, error) {
 	vec, err := h.prepareVector(v)
 	if err != nil {
 		return 0, err
@@ -760,7 +755,9 @@ func (h *HNSW) insert(ctx context.Context, g *graph, v []float32, id model.RowID
 		}
 	}
 
-	if err := h.vectors.SetVector(ctx, id, vec); err != nil {
+	// SetVector is non-cancelable by design - once we've allocated ID and node,
+	// we must complete. Memory acquisition blocking is acceptable; partial state is not.
+	if err := h.vectors.SetVector(id, vec); err != nil {
 		if !useProvidedID {
 			h.releaseID(g, id)
 		}
@@ -1599,10 +1596,9 @@ func (h *HNSW) dist(v []float32, id model.RowID) float32 {
 
 // Delete marks a node as deleted (logical delete).
 // This is O(1) and avoids graph instability.
-func (h *HNSW) Delete(ctx context.Context, id model.RowID) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
+// NOTE: Context-free by design - deletion is an atomic tombstone operation
+// that must complete to maintain consistency.
+func (h *HNSW) Delete(id model.RowID) error {
 	g := h.currentGraph.Load()
 	g.arena.IncRef()
 	defer g.arena.DecRef()
@@ -1631,7 +1627,8 @@ func (h *HNSW) Delete(ctx context.Context, id model.RowID) error {
 }
 
 // Update updates a vector.
-func (h *HNSW) Update(ctx context.Context, id model.RowID, v []float32) error {
+// NOTE: Context-free by design - update = delete + insert, both must complete.
+func (h *HNSW) Update(id model.RowID, v []float32) error {
 	g := h.currentGraph.Load()
 	node := h.getNode(g, id)
 	if node.IsZero() {
@@ -1639,18 +1636,23 @@ func (h *HNSW) Update(ctx context.Context, id model.RowID, v []float32) error {
 	}
 	layer := node.Level(g.arena)
 
-	if err := h.Delete(ctx, id); err != nil {
+	if err := h.Delete(id); err != nil {
 		return err
 	}
 
-	_, err := h.insert(ctx, g, v, id, layer, true)
+	_, err := h.insert(g, v, id, layer, true)
 	return err
 }
 
-// KNNSearch performs searcher.
+// KNNSearch performs K-nearest neighbor search.
+// NOTE: Context is checked at entry only. Graph traversal is bounded by EF
+// and does not check context to avoid hot-path overhead.
 func (h *HNSW) KNNSearch(ctx context.Context, q []float32, k int, opts *SearchOptions) ([]SearchResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	res := make([]SearchResult, 0, k)
-	if err := h.KNNSearchWithBuffer(ctx, q, k, opts, &res); err != nil {
+	if err := h.knnSearchInternal(q, k, opts, &res); err != nil {
 		return nil, err
 	}
 	return res, nil
@@ -1658,7 +1660,16 @@ func (h *HNSW) KNNSearch(ctx context.Context, q []float32, k int, opts *SearchOp
 
 // KNNSearchWithBuffer performs a K-nearest neighbor search and appends results to the provided buffer.
 // This avoids allocating a new slice for results, which is critical for high-throughput scenarios.
+// NOTE: Context is checked at entry only.
 func (h *HNSW) KNNSearchWithBuffer(ctx context.Context, q []float32, k int, opts *SearchOptions, buf *[]SearchResult) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return h.knnSearchInternal(q, k, opts, buf)
+}
+
+// knnSearchInternal is the context-free search implementation.
+func (h *HNSW) knnSearchInternal(q []float32, k int, opts *SearchOptions, buf *[]SearchResult) error {
 	s := searcher.Get()
 	defer searcher.Put(s)
 
@@ -1704,7 +1715,7 @@ func (h *HNSW) KNNSearchWithBuffer(ctx context.Context, q []float32, k int, opts
 				)
 
 				if total > 0 && (float64(card) < float64(total)*selectivityThreshold || card < absoluteThreshold) {
-					if err := h.searchBitmap(ctx, s, k, bm, distFunc); err != nil {
+					if err := h.searchBitmap(s, k, bm, distFunc); err != nil {
 						return err
 					}
 					goto extractResults
@@ -1713,7 +1724,7 @@ func (h *HNSW) KNNSearchWithBuffer(ctx context.Context, q []float32, k int, opts
 		}
 	}
 
-	if err := h.searchExecute(ctx, s, q, k, opts, distFunc); err != nil {
+	if err := h.searchExecute(s, q, k, opts, distFunc); err != nil {
 		return err
 	}
 
@@ -1740,7 +1751,12 @@ extractResults:
 }
 
 // KNNSearchWithContext performs a K-nearest neighbor search using the provided Searcher context.
+// NOTE: Context is checked at entry only. Graph traversal is bounded by EF and context-free.
 func (h *HNSW) KNNSearchWithContext(ctx context.Context, s *searcher.Searcher, q []float32, k int, opts *SearchOptions) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	// Prepare query (normalize if needed)
 	q, err := h.prepareQuery(s, q)
 	if err != nil {
@@ -1767,14 +1783,12 @@ func (h *HNSW) KNNSearchWithContext(ctx context.Context, s *searcher.Searcher, q
 		}
 	}
 
-	return h.searchExecute(ctx, s, q, k, opts, distFunc)
+	return h.searchExecute(s, q, k, opts, distFunc)
 }
 
-func (h *HNSW) searchExecute(ctx context.Context, s *searcher.Searcher, q []float32, k int, opts *SearchOptions, distFunc DistFunc) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
+// searchExecute is the context-free core search implementation.
+// Bounded by EF, no context checks during traversal.
+func (h *HNSW) searchExecute(s *searcher.Searcher, q []float32, k int, opts *SearchOptions, distFunc DistFunc) error {
 	g := h.currentGraph.Load()
 	if g == nil {
 		return fmt.Errorf("hnsw graph is nil")
@@ -2223,7 +2237,7 @@ func newDistanceFunc(metric distance.Metric) (distance.Func, error) {
 
 // searchBitmap performs a brute-force search over the IDs in the bitmap.
 // This is used for highly selective filters where graph traversal is inefficient.
-func (h *HNSW) searchBitmap(ctx context.Context, s *searcher.Searcher, k int, bm segment.Bitmap, distFunc DistFunc) error {
+func (h *HNSW) searchBitmap(s *searcher.Searcher, k int, bm segment.Bitmap, distFunc DistFunc) error {
 	s.Candidates.Reset()
 
 	g := h.currentGraph.Load()
@@ -2232,10 +2246,6 @@ func (h *HNSW) searchBitmap(ctx context.Context, s *searcher.Searcher, k int, bm
 	}
 
 	bm.ForEach(func(idU32 uint32) bool {
-		if ctx.Err() != nil {
-			return false
-		}
-
 		// Check tombstones (must check if deleted)
 		if g.tombstones.Test(idU32) {
 			return true
@@ -2244,18 +2254,10 @@ func (h *HNSW) searchBitmap(ctx context.Context, s *searcher.Searcher, k int, bm
 		id := model.RowID(idU32)
 		dist := distFunc(id)
 
-		// Maintain Heap of size K
-		if s.Candidates.Len() < k {
-			s.Candidates.PushItem(searcher.PriorityQueueItem{Node: id, Distance: dist})
-		} else {
-			top, _ := s.Candidates.TopItem()
-			if dist < top.Distance {
-				s.Candidates.PopItem()
-				s.Candidates.PushItem(searcher.PriorityQueueItem{Node: id, Distance: dist})
-			}
-		}
+		// Use TryPushBounded for O(log k) bounded push
+		s.Candidates.TryPushBounded(searcher.PriorityQueueItem{Node: id, Distance: dist}, k)
 		return true
 	})
 
-	return ctx.Err()
+	return nil
 }

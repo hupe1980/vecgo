@@ -1,7 +1,6 @@
 package arena
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"math/bits"
@@ -28,9 +27,19 @@ const (
 	Frozen
 )
 
-// MemoryAcquirer is an interface for acquiring memory.
+// MemoryAcquirer is an interface for tracking and limiting memory usage.
+//
+// Design: Non-blocking fail-fast pattern.
+//   - AcquireMemory returns error immediately if limit exceeded (no blocking)
+//   - Callers decide retry/backoff policy
+//   - No context = no false promise of cancellation
+//
+// This matches production database semantics (RocksDB, DiskANN, Lucene).
 type MemoryAcquirer interface {
-	AcquireMemory(ctx context.Context, amount int64) error
+	// AcquireMemory attempts to reserve memory.
+	// Returns ErrMemoryLimitExceeded if limit would be exceeded.
+	// Never blocks.
+	AcquireMemory(amount int64) error
 	ReleaseMemory(amount int64)
 }
 
@@ -165,7 +174,7 @@ func New(chunkSize int, opts ...Option) (*Arena, error) {
 	// Arena starts in Building state
 	a.state.Store(int32(Building))
 
-	if err := a.allocateChunk(context.Background()); err != nil {
+	if err := a.allocateChunk(); err != nil {
 		return nil, err
 	}
 	// Reserve offset 0 as null
@@ -208,13 +217,13 @@ func (a *Arena) IsFrozen() bool {
 	return ArenaState(a.state.Load()) == Frozen
 }
 
-func (a *Arena) allocateChunk(ctx context.Context) error {
+func (a *Arena) allocateChunk() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.allocateChunkLocked(ctx)
+	return a.allocateChunkLocked()
 }
 
-func (a *Arena) allocateChunkLocked(ctx context.Context) error {
+func (a *Arena) allocateChunkLocked() error {
 	idx := a.chunkCount.Load()
 	// fmt.Printf("DEBUG: Allocating chunk %d (Max: %d)\n", idx, MaxChunks)
 
@@ -223,11 +232,10 @@ func (a *Arena) allocateChunkLocked(ctx context.Context) error {
 		return ErrMaxChunksExceeded
 	}
 
-	// Acquire memory if acquirer is set
+	// Acquire memory if acquirer is set (non-blocking, fail-fast)
 	if a.acquirer != nil {
 		chunkSize64 := int64(a.chunkSize)
-		// Respect caller's context - they control timeouts
-		if err := a.acquirer.AcquireMemory(ctx, chunkSize64); err != nil {
+		if err := a.acquirer.AcquireMemory(chunkSize64); err != nil {
 			return err
 		}
 	}
@@ -313,7 +321,7 @@ func (a *Arena) Alloc(size int) (uint64, []byte, error) {
 			continue
 		}
 
-		if err := a.allocateChunkLocked(context.Background()); err != nil {
+		if err := a.allocateChunkLocked(); err != nil {
 			a.mu.Unlock()
 			return 0, nil, err
 		}

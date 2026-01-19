@@ -1,7 +1,6 @@
 package vectorstore
 
 import (
-	"context"
 	"testing"
 
 	"github.com/hupe1980/vecgo/model"
@@ -14,15 +13,13 @@ func TestPrefetch_Basic(t *testing.T) {
 	}
 	defer store.Close()
 
-	ctx := context.Background()
-
 	// Add some vectors
 	for i := 0; i < 100; i++ {
 		vec := make([]float32, 128)
 		for j := range vec {
 			vec[j] = float32(i + j)
 		}
-		if _, err := store.Append(ctx, vec); err != nil {
+		if _, err := store.Append(vec); err != nil {
 			t.Fatalf("failed to append vector %d: %v", i, err)
 		}
 	}
@@ -84,12 +81,10 @@ func TestPrefetchBatchFromStore(t *testing.T) {
 	}
 	defer store.Close()
 
-	ctx := context.Background()
-
 	// Add vectors
 	for range 50 {
 		vec := make([]float32, 64)
-		store.Append(ctx, vec)
+		store.Append(vec)
 	}
 
 	// Should not panic
@@ -102,15 +97,13 @@ func BenchmarkPrefetch(b *testing.B) {
 	store, _ := New(768, nil)
 	defer store.Close()
 
-	ctx := context.Background()
-
 	// Add 10K vectors
 	for i := range 10000 {
 		vec := make([]float32, 768)
 		for j := range vec {
 			vec[j] = float32(i*768 + j)
 		}
-		store.Append(ctx, vec)
+		store.Append(vec)
 	}
 
 	// Create typical HNSW neighbor batch (32 neighbors)

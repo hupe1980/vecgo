@@ -2,12 +2,16 @@ package resource
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"time"
 
 	"golang.org/x/sync/semaphore"
 	"golang.org/x/time/rate"
 )
+
+// ErrMemoryLimitExceeded is returned when memory limit would be exceeded.
+var ErrMemoryLimitExceeded = errors.New("memory limit exceeded")
 
 // Config holds resource limits.
 type Config struct {
@@ -62,9 +66,9 @@ func NewController(cfg Config) *Controller {
 }
 
 // AcquireMemory attempts to reserve memory.
-// If a hard limit is configured and usage would exceed it,
-// this blocks until memory is available or ctx is canceled.
-func (c *Controller) AcquireMemory(ctx context.Context, bytes int64) error {
+// Returns ErrMemoryLimitExceeded if limit would be exceeded.
+// Non-blocking - callers control retry/backoff policy.
+func (c *Controller) AcquireMemory(bytes int64) error {
 	if c == nil {
 		return nil
 	}
@@ -73,33 +77,13 @@ func (c *Controller) AcquireMemory(ctx context.Context, bytes int64) error {
 	}
 
 	if c.memSem != nil {
-		if err := c.memSem.Acquire(ctx, bytes); err != nil {
-			return err
+		if !c.memSem.TryAcquire(bytes) {
+			return ErrMemoryLimitExceeded
 		}
 	}
 
 	c.memUsed.Add(bytes)
 	return nil
-}
-
-// TryAcquireMemory attempts to reserve memory without blocking.
-// Returns true if acquired, false if limit would be exceeded.
-func (c *Controller) TryAcquireMemory(bytes int64) bool {
-	if c == nil {
-		return true
-	}
-	if bytes <= 0 {
-		return true
-	}
-
-	if c.memSem != nil {
-		if !c.memSem.TryAcquire(bytes) {
-			return false
-		}
-	}
-
-	c.memUsed.Add(bytes)
-	return true
 }
 
 // ReleaseMemory releases reserved memory.

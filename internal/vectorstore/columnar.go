@@ -1,7 +1,6 @@
 package vectorstore
 
 import (
-	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -163,8 +162,8 @@ func (s *ColumnarStore) Close() error {
 }
 
 // New creates a new in-memory columnar store with the given dimension.
-// The store is created without pre-allocated memory. Call Preallocate(ctx)
-// to acquire initial memory with caller-controlled context.
+// The store is created without pre-allocated memory. Call Preallocate()
+// to acquire initial memory with fail-fast semantics.
 func New(dim int, acquirer arena.MemoryAcquirer) (*ColumnarStore, error) {
 	if dim <= 0 {
 		dim = 1
@@ -193,11 +192,11 @@ func New(dim int, acquirer arena.MemoryAcquirer) (*ColumnarStore, error) {
 // Preallocate acquires initial memory for ~1K vectors.
 // This is optional - the store will grow on demand during Append.
 // Use this to fail fast if memory is not available.
-func (s *ColumnarStore) Preallocate(ctx context.Context) error {
+func (s *ColumnarStore) Preallocate() error {
 	initialCap := 1024 * int(s.dim)
 
 	if s.acquirer != nil {
-		if err := s.acquirer.AcquireMemory(ctx, int64(initialCap*4)); err != nil {
+		if err := s.acquirer.AcquireMemory(int64(initialCap * 4)); err != nil {
 			return fmt.Errorf("failed to acquire initial memory: %w", err)
 		}
 	}
@@ -208,6 +207,24 @@ func (s *ColumnarStore) Preallocate(ctx context.Context) error {
 	s.data.Store(&data)
 
 	return nil
+}
+
+// ReserveForAppend pre-acquires memory for n vectors.
+// This is the fail-fast phase of the two-phase append pattern.
+// Use this before calling Append to fail early if memory is unavailable.
+//
+// Example:
+//
+//	if err := store.ReserveForAppend(n); err != nil {
+//	    return err // Out of memory
+//	}
+//	id, err := store.Append(vec) // Will complete (memory reserved)
+func (s *ColumnarStore) ReserveForAppend(n int) error {
+	if s.acquirer == nil || n <= 0 {
+		return nil
+	}
+	bytes := int64(n * int(s.dim) * 4)
+	return s.acquirer.AcquireMemory(bytes)
 }
 
 // Dimension returns the vector dimensionality.
@@ -362,7 +379,11 @@ func (s *ColumnarStore) GetVectorUnsafe(id model.RowID) ([]float32, bool) {
 
 // SetVector sets (or replaces) the vector at the given ID.
 // This is part of the vectorstore.VectorStore interface.
-func (s *ColumnarStore) SetVector(ctx context.Context, id model.RowID, v []float32) error {
+//
+// This method is non-cancelable by design. Once called, the mutation will
+// complete atomically. For cancelable resource acquisition, use ReserveForAppend
+// before calling this method.
+func (s *ColumnarStore) SetVector(id model.RowID, v []float32) error {
 	if len(v) != int(s.dim) {
 		return ErrWrongDimension
 	}
@@ -383,7 +404,7 @@ func (s *ColumnarStore) SetVector(ctx context.Context, id model.RowID, v []float
 
 	// Copy-on-write for growth beyond current length.
 	if requiredLen > len(currentData) {
-		if err := s.growAndSet(ctx, id, requiredLen, currentData, v); err != nil {
+		if err := s.growAndSet(id, requiredLen, currentData, v); err != nil {
 			return err
 		}
 	} else {
@@ -406,7 +427,7 @@ func (s *ColumnarStore) SetVector(ctx context.Context, id model.RowID, v []float
 	return nil
 }
 
-func (s *ColumnarStore) growAndSet(ctx context.Context, id model.RowID, requiredLen int, currentData, v []float32) error {
+func (s *ColumnarStore) growAndSet(id model.RowID, requiredLen int, currentData, v []float32) error {
 	dim := int(s.dim)
 	idInt := int(id)
 	if requiredLen <= cap(currentData) {
@@ -422,11 +443,12 @@ func (s *ColumnarStore) growAndSet(ctx context.Context, id model.RowID, required
 		// Allocate new backing array, populate fully, then publish.
 		newCap := max(len(currentData)*2, requiredLen*2)
 
-		// Check memory limits
+		// Memory acquisition is non-blocking fail-fast. Once mutation starts,
+		// it must complete. Callers wanting cancellation should use ReserveForAppend.
 		if s.acquirer != nil {
 			delta := int64(newCap*4 - cap(currentData)*4)
 			if delta > 0 {
-				if err := s.acquirer.AcquireMemory(ctx, delta); err != nil {
+				if err := s.acquirer.AcquireMemory(delta); err != nil {
 					return err
 				}
 			}
@@ -457,7 +479,11 @@ func (s *ColumnarStore) growAndSet(ctx context.Context, id model.RowID, required
 }
 
 // Append adds a new vector and returns its ID.
-func (s *ColumnarStore) Append(ctx context.Context, v []float32) (model.RowID, error) {
+//
+// This method is non-cancelable by design. Once called, the mutation will
+// complete atomically. For cancelable resource acquisition, use ReserveForAppend
+// before calling this method.
+func (s *ColumnarStore) Append(v []float32) (model.RowID, error) {
 	if len(v) != int(s.dim) {
 		return 0, ErrWrongDimension
 	}
@@ -482,11 +508,12 @@ func (s *ColumnarStore) Append(ctx context.Context, v []float32) (model.RowID, e
 	if requiredLen > cap(currentData) {
 		newCap := max(requiredLen*2, len(currentData)*2)
 
-		// Check memory limits
+		// Memory acquisition is non-blocking fail-fast. Once mutation starts,
+		// it must complete. Callers wanting cancellation should use ReserveForAppend.
 		if s.acquirer != nil {
 			delta := int64(newCap*4 - cap(currentData)*4)
 			if delta > 0 {
-				if err := s.acquirer.AcquireMemory(ctx, delta); err != nil {
+				if err := s.acquirer.AcquireMemory(delta); err != nil {
 					return 0, err
 				}
 			}
